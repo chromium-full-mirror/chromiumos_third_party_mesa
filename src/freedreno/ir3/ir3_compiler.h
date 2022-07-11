@@ -48,7 +48,7 @@ struct ir3_compiler {
 
    struct nir_shader_compiler_options nir_options;
 
-   bool robust_ubo_access;
+   bool robust_buffer_access2;
 
    /*
     * Configuration options for things that are handled differently on
@@ -187,10 +187,10 @@ struct ir3_compiler {
 };
 
 struct ir3_compiler_options {
-   /* If true, UBO accesses are assumed to be bounds-checked as defined by
+   /* If true, UBO/SSBO accesses are assumed to be bounds-checked as defined by
     * VK_EXT_robustness2 and optimizations may have to be more conservative.
     */
-   bool robust_ubo_access;
+   bool robust_buffer_access2;
 
    /* If true, promote UBOs (except for constant data) to constants using ldc.k
     * in the preamble. The driver should ignore everything in ubo_state except
@@ -284,7 +284,7 @@ shader_debug_enabled(gl_shader_stage type)
    case MESA_SHADER_KERNEL:
       return !!(ir3_shader_debug & IR3_DBG_SHADER_CS);
    default:
-      debug_assert(0);
+      assert(0);
       return false;
    }
 }

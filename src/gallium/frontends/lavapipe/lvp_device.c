@@ -26,6 +26,7 @@
 #include "pipe-loader/pipe_loader.h"
 #include "git_sha1.h"
 #include "vk_cmd_enqueue_entrypoints.h"
+#include "vk_sampler.h"
 #include "vk_util.h"
 #include "pipe/p_config.h"
 #include "pipe/p_defines.h"
@@ -139,6 +140,7 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .KHR_vulkan_memory_model               = true,
    .KHR_zero_initialize_workgroup_memory  = true,
    .EXT_4444_formats                      = true,
+   .EXT_border_color_swizzle              = true,
    .EXT_calibrated_timestamps             = true,
    .EXT_color_write_enable                = true,
    .EXT_conditional_rendering             = true,
@@ -258,9 +260,9 @@ lvp_physical_device_init(struct lvp_physical_device *device,
       .maxImageDimension3D                      = (1 << device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_3D_LEVELS)),
       .maxImageDimensionCube                    = (1 << device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS)),
       .maxImageArrayLayers                      = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS),
-      .maxTexelBufferElements                   = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE),
-      .maxUniformBufferRange                    = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE),
-      .maxStorageBufferRange                    = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE),
+      .maxTexelBufferElements                   = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT),
+      .maxUniformBufferRange                    = min_shader_param(device->pscreen, PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE),
+      .maxStorageBufferRange                    = device->pscreen->get_param(device->pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT),
       .maxPushConstantsSize                     = MAX_PUSH_CONSTANTS_SIZE,
       .maxMemoryAllocationCount                 = UINT32_MAX,
       .maxSamplerAllocationCount                = 32 * 1024,
@@ -764,6 +766,13 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          features->primitivesGeneratedQuery = true;
          features->primitivesGeneratedQueryWithRasterizerDiscard = true;
          features->primitivesGeneratedQueryWithNonZeroStreams = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BORDER_COLOR_SWIZZLE_FEATURES_EXT: {
+         VkPhysicalDeviceBorderColorSwizzleFeaturesEXT *features =
+            (VkPhysicalDeviceBorderColorSwizzleFeaturesEXT *)ext;
+         features->borderColorSwizzle = true;
+         features->borderColorSwizzleFromImage = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT: {
@@ -1484,23 +1493,6 @@ lvp_queue_finish(struct lvp_queue *queue)
    queue->ctx->destroy(queue->ctx);
 }
 
-static void
-ref_pipeline_layout(struct vk_device *vk_device, VkPipelineLayout _layout)
-{
-   LVP_FROM_HANDLE(lvp_pipeline_layout, layout, _layout);
-
-   lvp_pipeline_layout_ref(layout);
-}
-
-static void
-unref_pipeline_layout(struct vk_device *vk_device, VkPipelineLayout _layout)
-{
-   struct lvp_device *device = container_of(vk_device, struct lvp_device, vk);
-   LVP_FROM_HANDLE(lvp_pipeline_layout, layout, _layout);
-
-   lvp_pipeline_layout_unref(device, layout);
-}
-
 VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
    VkPhysicalDevice                            physicalDevice,
    const VkDeviceCreateInfo*                   pCreateInfo,
@@ -1544,9 +1536,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
 
    device->instance = (struct lvp_instance *)physical_device->vk.instance;
    device->physical_device = physical_device;
-
-   device->vk.ref_pipeline_layout = ref_pipeline_layout;
-   device->vk.unref_pipeline_layout = unref_pipeline_layout;
 
    device->pscreen = physical_device->pscreen;
 
@@ -1645,7 +1634,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_AllocateMemory(
          break;
       case VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO:
          export_info = (VkExportMemoryAllocateInfo*)ext;
-         assert(export_info->handleTypes == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
+         assert(!export_info->handleTypes || export_info->handleTypes == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT);
          break;
       case VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR:
          import_info = (VkImportMemoryFdInfoKHR*)ext;
@@ -1690,7 +1679,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_AllocateMemory(
          close(import_info->fd);
          goto fail;
       }
-      if (export_info) {
+      if (export_info && export_info->handleTypes) {
          mem->backed_fd = import_info->fd;
       }
       else {
@@ -1698,7 +1687,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_AllocateMemory(
       }
       mem->memory_type = LVP_DEVICE_MEMORY_TYPE_OPAQUE_FD;
    }
-   else if (export_info) {
+   else if (export_info && export_info->handleTypes) {
       mem->pmem = device->pscreen->allocate_memory_fd(device->pscreen, pAllocateInfo->allocationSize, &mem->backed_fd);
       if (!mem->pmem || mem->backed_fd < 0) {
          goto fail;
@@ -2150,9 +2139,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateSampler(
    const VkSamplerReductionModeCreateInfo *reduction_mode_create_info =
       vk_find_struct_const(pCreateInfo->pNext,
                            SAMPLER_REDUCTION_MODE_CREATE_INFO);
-   const VkSamplerCustomBorderColorCreateInfoEXT *custom_border_color_create_info =
-      vk_find_struct_const(pCreateInfo->pNext,
-                           SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT);
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
 
@@ -2165,40 +2151,10 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateSampler(
                        VK_OBJECT_TYPE_SAMPLER);
    sampler->create_info = *pCreateInfo;
 
-   switch (pCreateInfo->borderColor) {
-   case VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK:
-   case VK_BORDER_COLOR_INT_TRANSPARENT_BLACK:
-   default:
-      memset(&sampler->border_color, 0, sizeof(union pipe_color_union));
-      break;
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK:
-      sampler->border_color.f[0] = sampler->border_color.f[1] =
-      sampler->border_color.f[2] = 0.0f;
-      sampler->border_color.f[3] = 1.0f;
-      break;
-   case VK_BORDER_COLOR_INT_OPAQUE_BLACK:
-      sampler->border_color.i[0] = sampler->border_color.i[1] =
-      sampler->border_color.i[2] = 0;
-      sampler->border_color.i[3] = 1;
-      break;
-   case VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE:
-      sampler->border_color.f[0] = sampler->border_color.f[1] =
-      sampler->border_color.f[2] = 1.0f;
-      sampler->border_color.f[3] = 1.0f;
-      break;
-   case VK_BORDER_COLOR_INT_OPAQUE_WHITE:
-      sampler->border_color.i[0] = sampler->border_color.i[1] =
-      sampler->border_color.i[2] = 1;
-      sampler->border_color.i[3] = 1;
-      break;
-   case VK_BORDER_COLOR_FLOAT_CUSTOM_EXT:
-   case VK_BORDER_COLOR_INT_CUSTOM_EXT:
-      assert(custom_border_color_create_info != NULL);
-      memcpy(&sampler->border_color,
-             &custom_border_color_create_info->customBorderColor,
-             sizeof(union pipe_color_union));
-      break;
-   }
+   VkClearColorValue border_color =
+      vk_sampler_border_color_value(pCreateInfo, NULL);
+   STATIC_ASSERT(sizeof(sampler->border_color) == sizeof(border_color));
+   memcpy(&sampler->border_color, &border_color, sizeof(border_color));
 
    sampler->reduction_mode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
    if (reduction_mode_create_info)

@@ -234,6 +234,7 @@ struct gl_extensions
    GLboolean AMD_vertex_shader_viewport_index;
    GLboolean ANDROID_extension_pack_es31a;
    GLboolean APPLE_object_purgeable;
+   GLboolean ARM_shader_framebuffer_fetch_depth_stencil;
    GLboolean ATI_meminfo;
    GLboolean ATI_texture_compression_3dc;
    GLboolean ATI_texture_mirror_once;
@@ -285,6 +286,7 @@ struct gl_extensions
    GLboolean OES_draw_texture;
    GLboolean OES_depth_texture_cube_map;
    GLboolean OES_EGL_image_external;
+   GLboolean OES_texture_3D;
    GLboolean OES_texture_float;
    GLboolean OES_texture_float_linear;
    GLboolean OES_texture_half_float;
@@ -313,7 +315,6 @@ struct gl_shader_compiler_options
    /** Driver-selectable options: */
    GLboolean EmitNoCont;                  /**< Emit CONT opcode? */
    GLboolean EmitNoMainReturn;            /**< Emit CONT/RET opcodes? */
-   GLboolean EmitNoSat;                   /**< Emit SAT opcodes? */
    GLboolean LowerCombinedClipCullDistance; /** Lower gl_ClipDistance and
                                               * gl_CullDistance together from
                                               * float[8] to vec4[2]
@@ -346,11 +347,9 @@ struct gl_shader_compiler_options
    GLboolean EmitNoIndirectOutput;  /**< No indirect addressing of outputs */
    GLboolean EmitNoIndirectTemp;    /**< No indirect addressing of temps */
    GLboolean EmitNoIndirectUniform; /**< No indirect addressing of constants */
-   GLboolean EmitNoIndirectSampler; /**< No indirect addressing of samplers */
    /*@}*/
 
    GLuint MaxIfDepth;               /**< Maximum nested IF blocks */
-   GLuint MaxUnrollIterations;
 
    /**
     * Optimize code for array of structures backends.
@@ -934,6 +933,9 @@ struct gl_constants
     */
    bool BufferCreateMapUnsynchronizedThreadSafe;
 
+   /** Override GL_MAP_UNSYNCHRONIZED_BIT */
+   bool ForceMapBufferSynchronized;
+
    /** GL_ARB_get_program_binary */
    GLuint NumProgramBinaryFormats;
 
@@ -996,5 +998,11 @@ struct gl_constants
    GLuint MaxSparse3DTextureSize;
    GLuint MaxSparseArrayTextureLayers;
    bool SparseTextureFullArrayCubeMipmaps;
+
+   /** Use hardware accelerated GL_SELECT */
+   bool HardwareAcceleratedSelect;
+
+   /** Origin of point coordinates. True if upper left, false if lower left. */
+   bool PointCoordOriginUpperLeft;
 };
 #endif

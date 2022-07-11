@@ -74,6 +74,8 @@
 
 #define PVR_WORKGROUP_DIMENSIONS 3U
 
+#define PVR_SAMPLER_DESCRIPTOR_SIZE 4U
+
 #define PVR_STATE_PBE_DWORDS 2U
 
 #define PVR_PIPELINE_LAYOUT_SUPPORTED_DESCRIPTOR_TYPE_COUNT \
@@ -178,16 +180,6 @@ struct pvr_graphics_pipeline;
 struct pvr_instance;
 struct pvr_render_ctx;
 struct rogue_compiler;
-
-struct pvr_descriptor_limits {
-   uint32_t max_per_stage_resources;
-   uint32_t max_per_stage_samplers;
-   uint32_t max_per_stage_uniform_buffers;
-   uint32_t max_per_stage_storage_buffers;
-   uint32_t max_per_stage_sampled_images;
-   uint32_t max_per_stage_storage_images;
-   uint32_t max_per_stage_input_attachments;
-};
 
 struct pvr_physical_device {
    struct vk_physical_device vk;
@@ -355,10 +347,24 @@ struct pvr_image_view {
    uint64_t texture_state[PVR_TEXTURE_STATE_MAX_ENUM][2];
 };
 
+union pvr_sampler_descriptor {
+   uint32_t words[PVR_SAMPLER_DESCRIPTOR_SIZE];
+
+   struct {
+      /* Packed PVRX(TEXSTATE_SAMPLER). */
+      uint64_t sampler_word;
+      uint32_t compare_op;
+      /* TODO: Figure out what this word is for and rename.
+       * Sampler state word 1?
+       */
+      uint32_t word3;
+   } data;
+};
+
 struct pvr_sampler {
    struct vk_object_base base;
 
-   uint64_t sampler_word;
+   union pvr_sampler_descriptor descriptor;
 };
 
 struct pvr_descriptor_size_info {
@@ -638,7 +644,7 @@ struct pvr_ppp_state {
 
    struct {
       /* TODO: Can we get rid of the "control" field? */
-      struct pvr_cmd_struct(TA_STATE_ISPCTL) control_struct;
+      struct PVRX(TA_STATE_ISPCTL) control_struct;
       uint32_t control;
 
       uint32_t front_a;
@@ -990,7 +996,6 @@ struct pvr_vertex_shader_state {
    struct pvr_stage_allocation_uniform_state uniform_state;
    uint32_t vertex_input_size;
    uint32_t vertex_output_size;
-   uint32_t output_selects;
    uint32_t user_clip_planes_mask;
 };
 
@@ -1021,7 +1026,10 @@ struct pvr_compute_pipeline {
    struct pvr_pipeline base;
 
    struct {
-      struct {
+      /* TODO: Change this to be an anonymous struct once the shader hardcoding
+       * is removed.
+       */
+      struct pvr_compute_pipeline_shader_state {
          /* Pointer to a buffer object that contains the shader binary. */
          struct pvr_bo *bo;
 
@@ -1237,6 +1245,11 @@ struct pvr_load_op {
    uint32_t temps_count;
 };
 
+uint32_t pvr_calc_fscommon_size_and_tiles_in_flight(
+   const struct pvr_device_info *dev_info,
+   uint32_t fs_common_size,
+   uint32_t min_tiles_in_flight);
+
 VkResult pvr_wsi_init(struct pvr_physical_device *pdevice);
 void pvr_wsi_finish(struct pvr_physical_device *pdevice);
 
@@ -1296,24 +1309,6 @@ to_pvr_graphics_pipeline(struct pvr_pipeline *pipeline)
 {
    assert(pipeline->type == PVR_PIPELINE_TYPE_GRAPHICS);
    return container_of(pipeline, struct pvr_graphics_pipeline, base);
-}
-
-/* FIXME: Place this in USC specific header? */
-/* clang-format off */
-static inline enum PVRX(PDSINST_DOUTU_SAMPLE_RATE)
-pvr_sample_rate_from_usc_msaa_mode(enum rogue_msaa_mode msaa_mode)
-/* clang-format on */
-{
-   switch (msaa_mode) {
-   case ROGUE_MSAA_MODE_PIXEL:
-      return PVRX(PDSINST_DOUTU_SAMPLE_RATE_INSTANCE);
-   case ROGUE_MSAA_MODE_SELECTIVE:
-      return PVRX(PDSINST_DOUTU_SAMPLE_RATE_SELECTIVE);
-   case ROGUE_MSAA_MODE_FULL:
-      return PVRX(PDSINST_DOUTU_SAMPLE_RATE_FULL);
-   default:
-      unreachable("Undefined MSAA mode.");
-   }
 }
 
 VkResult pvr_pds_fragment_program_create_and_upload(

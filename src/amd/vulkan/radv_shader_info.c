@@ -158,10 +158,10 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
       break;
    }
    case nir_intrinsic_load_frag_coord:
-      info->ps.reads_frag_coord_mask = nir_ssa_def_components_read(&instr->dest.ssa);
+      info->ps.reads_frag_coord_mask |= nir_ssa_def_components_read(&instr->dest.ssa);
       break;
    case nir_intrinsic_load_sample_pos:
-      info->ps.reads_sample_pos_mask = nir_ssa_def_components_read(&instr->dest.ssa);
+      info->ps.reads_sample_pos_mask |= nir_ssa_def_components_read(&instr->dest.ssa);
       break;
    case nir_intrinsic_load_push_constant:
       gather_push_constant_info(nir, instr, info);
@@ -197,7 +197,7 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
    case nir_intrinsic_store_output:
       gather_intrinsic_store_output_info(nir, instr, info);
       break;
-   case nir_intrinsic_load_sbt_amd:
+   case nir_intrinsic_load_sbt_base_amd:
       info->cs.uses_sbt = true;
       break;
    case nir_intrinsic_load_force_vrs_rates_amd:
@@ -399,13 +399,13 @@ gather_info_output_decl(const nir_shader *nir, const nir_variable *var,
 static void
 gather_xfb_info(const nir_shader *nir, struct radv_shader_info *info)
 {
-   nir_xfb_info *xfb = nir_gather_xfb_info(nir, NULL);
    struct radv_streamout_info *so = &info->so;
 
-   if (!xfb)
+   if (!nir->xfb_info)
       return;
 
-   assert(xfb->output_count < MAX_SO_OUTPUTS);
+   const nir_xfb_info *xfb = nir->xfb_info;
+   assert(xfb->output_count <= MAX_SO_OUTPUTS);
    so->num_outputs = xfb->output_count;
 
    for (unsigned i = 0; i < xfb->output_count; i++) {
@@ -423,8 +423,6 @@ gather_xfb_info(const nir_shader *nir, struct radv_shader_info *info)
    for (unsigned i = 0; i < NIR_MAX_XFB_BUFFERS; i++) {
       so->strides[i] = xfb->buffers[i].stride / 4;
    }
-
-   ralloc_free(xfb);
 }
 
 static void
@@ -502,12 +500,20 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
 
    struct radv_vs_output_info *outinfo = get_vs_output_info(nir, info);
    if (outinfo) {
+      /* These are not compiled into neither output param nor position exports. */
       uint64_t special_mask = BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_COUNT) |
-                              BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_INDICES);
+                              BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_INDICES) |
+                              BITFIELD64_BIT(VARYING_SLOT_CULL_PRIMITIVE);
       uint64_t per_prim_mask =
          nir->info.outputs_written & nir->info.per_primitive_outputs & ~special_mask;
       uint64_t per_vtx_mask =
          nir->info.outputs_written & ~nir->info.per_primitive_outputs & ~special_mask;
+
+      /* Mesh multivew is only lowered in ac_nir_lower_ngg, so we have to fake it here. */
+      if (nir->info.stage == MESA_SHADER_MESH && pipeline_key->has_multiview_view_index) {
+         per_prim_mask |= VARYING_BIT_LAYER;
+         info->uses_view_index = true;
+      }
 
       /* Per vertex outputs. */
       outinfo->writes_pointsize = per_vtx_mask & VARYING_BIT_PSIZ;
@@ -603,6 +609,9 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
 
          /* Needed to address the task draw/payload rings. */
          info->cs.uses_block_id[0] = true;
+         info->cs.uses_block_id[1] = true;
+         info->cs.uses_block_id[2] = true;
+         info->cs.uses_grid_size = true;
 
          /* Needed for storing draw ready only on the 1st thread. */
          info->cs.uses_local_invocation_idx = true;

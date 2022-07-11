@@ -279,7 +279,6 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
 	case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
 	case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-	case PIPE_CAP_VERTEX_SHADER_SATURATE:
 	case PIPE_CAP_SEAMLESS_CUBE_MAP:
 	case PIPE_CAP_PRIMITIVE_RESTART:
 	case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
@@ -313,7 +312,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
 	case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
 	case PIPE_CAP_CLEAR_TEXTURE:
-	case PIPE_CAP_TGSI_MUL_ZERO_WINS:
+	case PIPE_CAP_LEGACY_MATH_RULES:
 	case PIPE_CAP_CAN_BIND_CONST_BUFFER_AS_VERTEX:
 	case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
 	case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
@@ -348,8 +347,8 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_FAKE_SW_MSAA:
 		return 0;
 
-	case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
-		return MIN2(rscreen->b.info.max_alloc_size, INT_MAX);
+	case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
+		return MIN2(rscreen->b.info.max_heap_size_kb * 1024ull / 4, INT_MAX);
 
         case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
                 return R600_MAP_BUFFER_ALIGNMENT;
@@ -406,7 +405,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 		return 32;
 
 	/* shader buffer objects */
-	case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
+	case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT:
 		return 1 << 27;
 	case PIPE_CAP_MAX_COMBINED_SHADER_BUFFERS:
 		return 8;
@@ -421,11 +420,14 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
                 if (is_nir_enabled(&rscreen->b))
                    return 1;
 		return 0;
-        case PIPE_CAP_INT64_DIVMOD:
-           /* it is actually not supported, but the nir lowering hdanles this corectly wheras
-            * the glsl lowering path seems to not initialize the buildins correctly.
-            */
-           return is_nir_enabled(&rscreen->b);
+
+	case PIPE_CAP_TWO_SIDED_COLOR:
+		return !is_nir_enabled(&rscreen->b);
+	case PIPE_CAP_INT64_DIVMOD:
+		/* it is actually not supported, but the nir lowering handles this corectly wheras
+		 * the glsl lowering path seems to not initialize the buildins correctly.
+		 */
+		return is_nir_enabled(&rscreen->b);
 	case PIPE_CAP_CULL_DISTANCE:
 		return 1;
 
@@ -590,7 +592,7 @@ static int r600_get_shader_param(struct pipe_screen* pscreen,
 		return shader == PIPE_SHADER_FRAGMENT ? 8 : 32;
 	case PIPE_SHADER_CAP_MAX_TEMPS:
 		return 256; /* Max native temporaries. */
-	case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+	case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
 		if (shader == PIPE_SHADER_COMPUTE) {
 			uint64_t max_const_buffer_size;
 			enum pipe_shader_ir ir_type = is_nir_enabled(&rscreen->b) ?
@@ -642,7 +644,6 @@ static int r600_get_shader_param(struct pipe_screen* pscreen,
 		}
 		return ir;
 	}
-	case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
 	case PIPE_SHADER_CAP_DROUND_SUPPORTED:
 	case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
 	case PIPE_SHADER_CAP_LDEXP_SUPPORTED:

@@ -42,7 +42,7 @@
 
 #include <vulkan/vulkan.h>
 
-
+#ifdef VK_USE_PLATFORM_XCB_KHR
 #include <xcb/xcb.h>
 #include <xcb/dri3.h>
 #include <xcb/present.h>
@@ -50,6 +50,7 @@
 #include "util/libsync.h"
 #include <X11/Xlib-xcb.h>
 #include "drm-uapi/drm_fourcc.h"
+#endif
 
 struct kopper_drawable {
    struct dri_drawable base;
@@ -679,7 +680,8 @@ kopper_update_drawable_info(struct dri_drawable *drawable)
                                 drawable->textures[ST_ATTACHMENT_BACK_LEFT] :
                                 drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
 
-   if (is_window && ptex && kscreen->base.fd == -1)
+   bool do_kopper_update = is_window && ptex && kscreen->base.fd == -1;
+   if (cdraw->info.bos.sType == VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR && do_kopper_update)
       zink_kopper_update(screen, ptex, &dPriv->w, &dPriv->h);
    else
       get_drawable_info(dPriv, &x, &y, &dPriv->w, &dPriv->h);

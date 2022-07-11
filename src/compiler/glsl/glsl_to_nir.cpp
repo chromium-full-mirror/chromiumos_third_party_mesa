@@ -212,8 +212,7 @@ glsl_to_nir(const struct gl_constants *consts,
     * TODO: add missing glsl ir to nir support and remove this loop.
     */
    while (has_unsupported_function_param(sh->ir)) {
-      do_common_optimization(sh->ir, true, true, gl_options,
-                             consts->NativeIntegers);
+      do_common_optimization(sh->ir, true, gl_options, consts->NativeIntegers);
    }
 
    nir_shader *shader = nir_shader_create(NULL, stage, options,
@@ -253,6 +252,8 @@ glsl_to_nir(const struct gl_constants *consts,
    shader->info.name = ralloc_asprintf(shader, "GLSL%d", shader_prog->Name);
    if (shader_prog->Label)
       shader->info.label = ralloc_strdup(shader, shader_prog->Label);
+
+   shader->info.subgroup_size = SUBGROUP_SIZE_UNIFORM;
 
    if (shader->info.stage == MESA_SHADER_FRAGMENT) {
       shader->info.fs.pixel_center_integer = sh->Program->info.fs.pixel_center_integer;
@@ -1973,8 +1974,8 @@ nir_visitor::visit(ir_expression *ir)
    case ir_unop_rcp:  result = nir_frcp(&b, srcs[0]);  break;
    case ir_unop_rsq:  result = nir_frsq(&b, srcs[0]);  break;
    case ir_unop_sqrt: result = nir_fsqrt(&b, srcs[0]); break;
-   case ir_unop_exp:  unreachable("ir_unop_exp should have been lowered");
-   case ir_unop_log:  unreachable("ir_unop_log should have been lowered");
+   case ir_unop_exp:  result = nir_fexp2(&b, nir_fmul_imm(&b, srcs[0], M_LOG2E)); break;
+   case ir_unop_log:  result = nir_fmul_imm(&b, nir_flog2(&b, srcs[0]), 1.0 / M_LOG2E); break;
    case ir_unop_exp2: result = nir_fexp2(&b, srcs[0]); break;
    case ir_unop_log2: result = nir_flog2(&b, srcs[0]); break;
    case ir_unop_i2f:

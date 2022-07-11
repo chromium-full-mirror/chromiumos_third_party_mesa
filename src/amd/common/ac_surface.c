@@ -358,12 +358,6 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
               AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
 
       if (info->gfx_level >= GFX10_3) {
-         if (info->max_render_backends == 1) {
-            ADD_MOD(AMD_FMT_MOD | common_dcc |
-                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
-                    AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B))
-         }
-
          ADD_MOD(AMD_FMT_MOD | common_dcc |
                  AMD_FMT_MOD_SET(DCC_RETILE, 1) |
                  AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
@@ -372,13 +366,6 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
 
       if (info->family == CHIP_NAVI12 || info->family == CHIP_NAVI14 || info->gfx_level >= GFX10_3) {
          bool independent_128b = info->gfx_level >= GFX10_3;
-
-         if (info->max_render_backends == 1) {
-            ADD_MOD(AMD_FMT_MOD | common_dcc |
-                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
-                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, independent_128b) |
-                    AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B))
-         }
 
          ADD_MOD(AMD_FMT_MOD | common_dcc |
                  AMD_FMT_MOD_SET(DCC_RETILE, 1) |
@@ -418,54 +405,56 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
       unsigned num_pipes = 1 << pipe_xor_bits;
 
       /* R_X swizzle modes are the best for rendering and DCC requires them. */
-      unsigned swizzle_r_x = num_pipes > 16 ? AMD_FMT_MOD_TILE_GFX11_256K_R_X :
-                                              AMD_FMT_MOD_TILE_GFX9_64K_R_X;
-      uint64_t modifier_r_x = AMD_FMT_MOD |
-                              AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX11) |
-                              AMD_FMT_MOD_SET(TILE, swizzle_r_x) |
-                              AMD_FMT_MOD_SET(PIPE_XOR_BITS, pipe_xor_bits) |
-                              AMD_FMT_MOD_SET(PACKERS, pkrs);
+      for (unsigned i = 0; i < 2; i++) {
+         unsigned swizzle_r_x;
 
-      /* DCC_CONSTANT_ENCODE is not set because it can't vary with gfx11 (it's implied to be 1). */
-      uint64_t modifier_dcc_best = modifier_r_x |
-                                   AMD_FMT_MOD_SET(DCC, 1) |
-                                   AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 0) |
-                                   AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
-                                   AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B);
+         /* Insert the best one first. */
+         if (num_pipes > 16)
+            swizzle_r_x = !i ? AMD_FMT_MOD_TILE_GFX11_256K_R_X : AMD_FMT_MOD_TILE_GFX9_64K_R_X;
+         else
+            swizzle_r_x = !i ? AMD_FMT_MOD_TILE_GFX9_64K_R_X : AMD_FMT_MOD_TILE_GFX11_256K_R_X;
 
-      /* DCC settings for 4K and greater resolutions. (required by display hw) */
-      uint64_t modifier_dcc_4k = modifier_r_x |
-                                 AMD_FMT_MOD_SET(DCC, 1) |
-                                 AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
-                                 AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
-                                 AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B);
+         uint64_t modifier_r_x = AMD_FMT_MOD |
+                                 AMD_FMT_MOD_SET(TILE_VERSION, AMD_FMT_MOD_TILE_VER_GFX11) |
+                                 AMD_FMT_MOD_SET(TILE, swizzle_r_x) |
+                                 AMD_FMT_MOD_SET(PIPE_XOR_BITS, pipe_xor_bits) |
+                                 AMD_FMT_MOD_SET(PACKERS, pkrs);
 
-      /* Modifiers have to be sorted from best to worst.
-       *
-       * Top level order:
-       *   1. The best chip-specific modifiers with DCC, potentially non-displayable.
-       *   2. Chip-specific displayable modifiers with DCC.
-       *   3. Chip-specific displayable modifiers without DCC.
-       *   4. Chip-independent modifiers without DCC.
-       *   5. Linear.
-       */
+         /* DCC_CONSTANT_ENCODE is not set because it can't vary with gfx11 (it's implied to be 1). */
+         uint64_t modifier_dcc_best = modifier_r_x |
+                                      AMD_FMT_MOD_SET(DCC, 1) |
+                                      AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 0) |
+                                      AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
+                                      AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_128B);
 
-      /* Add the best non-displayable modifier first. */
-      ADD_MOD(modifier_dcc_best | AMD_FMT_MOD_SET(DCC_PIPE_ALIGN, 1));
+         /* DCC settings for 4K and greater resolutions. (required by display hw) */
+         uint64_t modifier_dcc_4k = modifier_r_x |
+                                    AMD_FMT_MOD_SET(DCC, 1) |
+                                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_64B, 1) |
+                                    AMD_FMT_MOD_SET(DCC_INDEPENDENT_128B, 1) |
+                                    AMD_FMT_MOD_SET(DCC_MAX_COMPRESSED_BLOCK, AMD_FMT_MOD_DCC_BLOCK_64B);
 
-      /* Displayable modifiers are next. */
-      /* These two will only be used by chips with 1 RB, and they are the best choice there. */
-      if (info->max_render_backends == 1) {
-         ADD_MOD(modifier_dcc_best)
-         ADD_MOD(modifier_dcc_4k)
+         /* Modifiers have to be sorted from best to worst.
+          *
+          * Top level order:
+          *   1. The best chip-specific modifiers with DCC, potentially non-displayable.
+          *   2. Chip-specific displayable modifiers with DCC.
+          *   3. Chip-specific displayable modifiers without DCC.
+          *   4. Chip-independent modifiers without DCC.
+          *   5. Linear.
+          */
+
+         /* Add the best non-displayable modifier first. */
+         ADD_MOD(modifier_dcc_best | AMD_FMT_MOD_SET(DCC_PIPE_ALIGN, 1));
+
+         /* Displayable modifiers are next. */
+         /* Add other displayable DCC settings. (DCC_RETILE implies displayable on all chips) */
+         ADD_MOD(modifier_dcc_best | AMD_FMT_MOD_SET(DCC_RETILE, 1))
+         ADD_MOD(modifier_dcc_4k | AMD_FMT_MOD_SET(DCC_RETILE, 1))
+
+         /* Add one without DCC that is displayable (it's also optimal for non-displayable cases). */
+         ADD_MOD(modifier_r_x)
       }
-
-      /* Add other displayable DCC settings. (DCC_RETILE implies displayable on all chips) */
-      ADD_MOD(modifier_dcc_best | AMD_FMT_MOD_SET(DCC_RETILE, 1))
-      ADD_MOD(modifier_dcc_4k | AMD_FMT_MOD_SET(DCC_RETILE, 1))
-
-      /* Add one without DCC that is displayable (it's also optimal for non-displayable cases). */
-      ADD_MOD(modifier_r_x)
 
       /* Add one that is compatible with other gfx11 chips. */
       ADD_MOD(AMD_FMT_MOD |
@@ -2276,12 +2265,12 @@ static int gfx9_compute_surface(struct ac_addrlib *addrlib, const struct radeon_
                surf->u.gfx9.color.dcc.max_compressed_block_size = V_028C78_MAX_BLOCK_SIZE_64B;
             }
 
-            if ((info->gfx_level >= GFX10_3 && info->family <= CHIP_YELLOW_CARP) ||
+            if ((info->gfx_level >= GFX10_3 && info->family <= CHIP_REMBRANDT) ||
                 /* Newer chips will skip this when possible to get better performance.
                  * This is also possible for other gfx10.3 chips, but is disabled for
                  * interoperability between different Mesa versions.
                  */
-                (info->family > CHIP_YELLOW_CARP &&
+                (info->family > CHIP_REMBRANDT &&
                  gfx10_DCN_requires_independent_64B_blocks(info, config))) {
                surf->u.gfx9.color.dcc.independent_64B_blocks = 1;
                surf->u.gfx9.color.dcc.independent_128B_blocks = 1;

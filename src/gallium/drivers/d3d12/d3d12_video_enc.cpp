@@ -21,12 +21,7 @@
  * IN THE SOFTWARE.
  */
 
-#ifndef _WIN32
-#include <wsl/winadapter.h>
-#endif
-
-#define D3D12_IGNORE_SDK_LAYERS
-#include <directx/d3d12.h>
+#include "d3d12_common.h"
 
 #include "d3d12_util.h"
 #include "d3d12_context.h"
@@ -47,6 +42,8 @@
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_video.h"
+
+#include <cmath>
 
 /**
  * flush any outstanding command buffers to the hardware
@@ -648,7 +645,7 @@ bool d3d12_video_encoder_negotiate_requested_features_and_d3d12_driver_caps(stru
          bool isClientRequestingVBVSizes = ((pD3D12Enc->m_currentEncodeConfig.m_encoderRateControlDesc.m_Flags & D3D12_VIDEO_ENCODER_RATE_CONTROL_FLAG_ENABLE_VBV_SIZES) != 0);
          
          if(isClientRequestingVBVSizes && !isRequestingVBVSizesSupported) {
-            debug_printf("[d3d12_video_encoder] WARNING: Requested D3D12_VIDEO_ENCODER_RATE_CONTROL_FLAG_ENABLE_VBV_SIZES with VBVCapacity (bits): %ld and InitialVBVFullness (bits) %ld is not supported, will continue encoding unsetting this feature as fallback.\n",
+            debug_printf("[d3d12_video_encoder] WARNING: Requested D3D12_VIDEO_ENCODER_RATE_CONTROL_FLAG_ENABLE_VBV_SIZES with VBVCapacity (bits): %" PRIu64 " and InitialVBVFullness (bits) %" PRIu64 " is not supported, will continue encoding unsetting this feature as fallback.\n",
                   pD3D12Enc->m_currentEncodeConfig.m_encoderRateControlDesc.m_Config.m_Configuration_CBR.VBVCapacity,
                   pD3D12Enc->m_currentEncodeConfig.m_encoderRateControlDesc.m_Config.m_Configuration_CBR.InitialVBVFullness);
 
@@ -661,7 +658,7 @@ bool d3d12_video_encoder_negotiate_requested_features_and_d3d12_driver_caps(stru
          bool isClientRequestingPeakFrameSize = ((pD3D12Enc->m_currentEncodeConfig.m_encoderRateControlDesc.m_Flags & D3D12_VIDEO_ENCODER_RATE_CONTROL_FLAG_ENABLE_MAX_FRAME_SIZE) != 0);
 
          if(isClientRequestingPeakFrameSize && !isRequestingPeakFrameSizeSupported) {
-            debug_printf("[d3d12_video_encoder] WARNING: Requested D3D12_VIDEO_ENCODER_RATE_CONTROL_FLAG_ENABLE_MAX_FRAME_SIZE with MaxFrameBitSize %ld but the feature is not supported, will continue encoding unsetting this feature as fallback.\n",
+            debug_printf("[d3d12_video_encoder] WARNING: Requested D3D12_VIDEO_ENCODER_RATE_CONTROL_FLAG_ENABLE_MAX_FRAME_SIZE with MaxFrameBitSize %" PRIu64 " but the feature is not supported, will continue encoding unsetting this feature as fallback.\n",
                pD3D12Enc->m_currentEncodeConfig.m_encoderRateControlDesc.m_Config.m_Configuration_VBR.MaxFrameBitSize);
 
             pD3D12Enc->m_currentEncodeConfig.m_encoderRateControlDesc.m_Flags &= ~D3D12_VIDEO_ENCODER_RATE_CONTROL_FLAG_ENABLE_MAX_FRAME_SIZE;
@@ -1309,6 +1306,15 @@ d3d12_video_encoder_encode_bitstream(struct pipe_video_codec * codec,
 
    uint32_t prefixGeneratedHeadersByteSize = d3d12_video_encoder_build_codec_headers(pD3D12Enc);
 
+   // If driver needs offset alignment for bitstream resource, we will pad zeroes on the codec header to this end.
+   if (
+      (pD3D12Enc->m_currentEncodeCapabilities.m_ResourceRequirementsCaps.CompressedBitstreamBufferAccessAlignment > 1)
+      && ((prefixGeneratedHeadersByteSize % pD3D12Enc->m_currentEncodeCapabilities.m_ResourceRequirementsCaps.CompressedBitstreamBufferAccessAlignment) != 0)
+   ) {
+      prefixGeneratedHeadersByteSize = ALIGN(prefixGeneratedHeadersByteSize, pD3D12Enc->m_currentEncodeCapabilities.m_ResourceRequirementsCaps.CompressedBitstreamBufferAccessAlignment);
+      pD3D12Enc->m_BitstreamHeadersBuffer.resize(prefixGeneratedHeadersByteSize, 0);
+   }
+
    const D3D12_VIDEO_ENCODER_ENCODEFRAME_INPUT_ARGUMENTS inputStreamArguments = {
       // D3D12_VIDEO_ENCODER_SEQUENCE_CONTROL_DESC
       { // D3D12_VIDEO_ENCODER_SEQUENCE_CONTROL_FLAGS
@@ -1400,6 +1406,7 @@ d3d12_video_encoder_encode_bitstream(struct pipe_video_codec * codec,
    };
 
    const D3D12_VIDEO_ENCODER_RESOLVE_METADATA_OUTPUT_ARGUMENTS outputMetadataCmd = {
+      /*If offset were to change, has to be aligned to pD3D12Enc->m_currentEncodeCapabilities.m_ResourceRequirementsCaps.EncoderMetadataBufferAccessAlignment*/
       { pD3D12Enc->m_spResolvedMetadataBuffer.Get(), 0 }
    };
    pD3D12Enc->m_spEncodeCommandList->ResolveEncoderOutputMetadata(&inputMetadataCmd, &outputMetadataCmd);
@@ -1454,7 +1461,7 @@ d3d12_video_encoder_get_feedback(struct pipe_video_codec *codec, void *feedback,
 
    // Read metadata from encoderMetadata
    if (encoderMetadata.EncodeErrorFlags != D3D12_VIDEO_ENCODER_ENCODE_ERROR_FLAG_NO_ERROR) {
-      debug_printf("[d3d12_video_encoder] Encode GPU command failed - EncodeErrorFlags: %ld\n",
+      debug_printf("[d3d12_video_encoder] Encode GPU command failed - EncodeErrorFlags: %" PRIu64 "\n",
                       encoderMetadata.EncodeErrorFlags);
       *size = 0;
    }

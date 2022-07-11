@@ -117,6 +117,45 @@ gl_nir_opts(nir_shader *nir)
    } while (progress);
 }
 
+static void
+gl_nir_link_opts(nir_shader *producer, nir_shader *consumer)
+{
+   if (producer->options->lower_to_scalar) {
+      NIR_PASS_V(producer, nir_lower_io_to_scalar_early, nir_var_shader_out);
+      NIR_PASS_V(consumer, nir_lower_io_to_scalar_early, nir_var_shader_in);
+   }
+
+   nir_lower_io_arrays_to_elements(producer, consumer);
+
+   gl_nir_opts(producer);
+   gl_nir_opts(consumer);
+
+   if (nir_link_opt_varyings(producer, consumer))
+      gl_nir_opts(consumer);
+
+   NIR_PASS_V(producer, nir_remove_dead_variables, nir_var_shader_out, NULL);
+   NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
+
+   if (nir_remove_unused_varyings(producer, consumer)) {
+      NIR_PASS_V(producer, nir_lower_global_vars_to_local);
+      NIR_PASS_V(consumer, nir_lower_global_vars_to_local);
+
+      gl_nir_opts(producer);
+      gl_nir_opts(consumer);
+
+      /* Optimizations can cause varyings to become unused.
+       * nir_compact_varyings() depends on all dead varyings being removed so
+       * we need to call nir_remove_dead_variables() again here.
+       */
+      NIR_PASS_V(producer, nir_remove_dead_variables, nir_var_shader_out,
+                 NULL);
+      NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in,
+                 NULL);
+   }
+
+   nir_link_varying_precision(producer, consumer);
+}
+
 static bool
 can_remove_uniform(nir_variable *var, UNUSED void *data)
 {
@@ -142,8 +181,11 @@ can_remove_uniform(nir_variable *var, UNUSED void *data)
        GLSL_TYPE_SUBROUTINE)
       return false;
 
-   /* Uniform initializers could get used by another stage */
-   if (var->constant_initializer)
+   /* Uniform initializers could get used by another stage. However if its a
+    * hidden uniform then it should be safe to remove as this was a constant
+    * variable that has been lowered to a uniform.
+    */
+   if (var->constant_initializer && var->data.how_declared != nir_var_hidden)
       return false;
 
    return true;
@@ -714,6 +756,24 @@ gl_nir_link_spirv(const struct gl_constants *consts,
                   struct gl_shader_program *prog,
                   const struct gl_nir_linker_options *options)
 {
+   struct gl_linked_shader *linked_shader[MESA_SHADER_STAGES];
+   unsigned num_shaders = 0;
+
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      if (prog->_LinkedShaders[i])
+         linked_shader[num_shaders++] = prog->_LinkedShaders[i];
+   }
+
+   /* Linking the stages in the opposite order (from fragment to vertex)
+    * ensures that inter-shader outputs written to in an earlier stage
+    * are eliminated if they are (transitively) not used in a later
+    * stage.
+    */
+   for (int i = num_shaders - 2; i >= 0; i--) {
+      gl_nir_link_opts(linked_shader[i]->Program->nir,
+                       linked_shader[i + 1]->Program->nir);
+   }
+
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       struct gl_linked_shader *shader = prog->_LinkedShaders[i];
       if (shader) {
@@ -877,9 +937,42 @@ gl_nir_link_glsl(const struct gl_constants *consts,
          return false;
    }
 
+   if (prog->data->LinkStatus == LINKING_FAILURE)
+      return false;
+
+   struct gl_linked_shader *linked_shader[MESA_SHADER_STAGES];
+   unsigned num_shaders = 0;
+
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      if (prog->_LinkedShaders[i])
+         linked_shader[num_shaders++] = prog->_LinkedShaders[i];
+   }
+
+   /* Linking the stages in the opposite order (from fragment to vertex)
+    * ensures that inter-shader outputs written to in an earlier stage
+    * are eliminated if they are (transitively) not used in a later
+    * stage.
+    */
+   for (int i = num_shaders - 2; i >= 0; i--) {
+      gl_nir_link_opts(linked_shader[i]->Program->nir,
+                       linked_shader[i + 1]->Program->nir);
+   }
+
+   /* Tidy up any left overs from the linking process for single shaders.
+    * For example varying arrays that get packed may have dead elements that
+    * can be now be eliminated now that array access has been lowered.
+    */
+   if (num_shaders == 1)
+      gl_nir_opts(linked_shader[0]->Program->nir);
+
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       struct gl_linked_shader *shader = prog->_LinkedShaders[i];
       if (shader) {
+         if (consts->GLSLLowerConstArrays) {
+            nir_lower_const_arrays_to_uniforms(shader->Program->nir,
+                                               consts->Program[i].MaxUniformComponents);
+         }
+
          const nir_remove_dead_variables_options opts = {
             .can_remove_var = can_remove_uniform,
          };

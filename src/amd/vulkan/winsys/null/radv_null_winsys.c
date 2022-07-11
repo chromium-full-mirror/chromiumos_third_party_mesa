@@ -64,10 +64,10 @@ static const struct {
    [CHIP_NAVI10] = {0x7310, 16, true},
    [CHIP_NAVI12] = {0x7360, 8, true},
    [CHIP_NAVI14] = {0x7340, 8, true},
-   [CHIP_SIENNA_CICHLID] = {0x73A0, 16, true},
+   [CHIP_NAVI21] = {0x73A0, 16, true},
    [CHIP_VANGOGH] = {0x163F, 8, false},
-   [CHIP_NAVY_FLOUNDER] = {0x73C0, 8, true},
-   [CHIP_DIMGREY_CAVEFISH] = {0x73E0, 8, true},
+   [CHIP_NAVI22] = {0x73C0, 8, true},
+   [CHIP_NAVI23] = {0x73E0, 8, true},
    [CHIP_GFX1100] = {0xdead, 8, true}, /* TODO: fill with real info. */
 };
 
@@ -88,7 +88,7 @@ radv_null_winsys_query_info(struct radeon_winsys *rws, struct radeon_info *info)
 
          if (info->family >= CHIP_GFX1100)
             info->gfx_level = GFX11;
-         else if (i >= CHIP_SIENNA_CICHLID)
+         else if (i >= CHIP_NAVI21)
             info->gfx_level = GFX10_3;
          else if (i >= CHIP_NAVI10)
             info->gfx_level = GFX10;
@@ -139,7 +139,7 @@ radv_null_winsys_query_info(struct radeon_winsys *rws, struct radeon_info *info)
    info->has_packed_math_16bit = info->gfx_level >= GFX9;
 
    info->has_image_load_dcc_bug =
-      info->family == CHIP_DIMGREY_CAVEFISH || info->family == CHIP_VANGOGH;
+      info->family == CHIP_NAVI23 || info->family == CHIP_VANGOGH;
 
    info->has_accelerated_dot_product =
       info->family == CHIP_ARCTURUS || info->family == CHIP_ALDEBARAN ||
@@ -153,6 +153,12 @@ radv_null_winsys_query_info(struct radeon_winsys *rws, struct radeon_info *info)
       (info->family == CHIP_STONEY || info->family == CHIP_VEGA12 || info->family == CHIP_RAVEN ||
        info->family == CHIP_RAVEN2 || info->family == CHIP_RENOIR || info->gfx_level >= GFX10_3);
 
+}
+
+static const char *
+radv_null_winsys_get_chip_name(struct radeon_winsys *rws)
+{
+   return "Null hardware";
 }
 
 static void
@@ -186,6 +192,7 @@ radv_null_winsys_create()
    ws->base.query_info = radv_null_winsys_query_info;
    ws->base.get_fd = radv_null_winsys_get_fd;
    ws->base.get_sync_types = radv_null_winsys_get_sync_types;
+   ws->base.get_chip_name = radv_null_winsys_get_chip_name;
    radv_null_bo_init_functions(ws);
    radv_null_cs_init_functions(ws);
 

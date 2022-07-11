@@ -261,6 +261,9 @@
 #define DRI_CONF_FORCE_GL_NAMES_REUSE(def) \
    DRI_CONF_OPT_B(force_gl_names_reuse, def, "Force GL names reuse")
 
+#define DRI_CONF_FORCE_GL_MAP_BUFFER_SYNCHRONIZED(def) \
+   DRI_CONF_OPT_B(force_gl_map_buffer_synchronized, def, "Override GL_MAP_UNSYNCHRONIZED_BIT.")
+
 #define DRI_CONF_TRANSCODE_ETC(def) \
    DRI_CONF_OPT_B(transcode_etc, def, "Transcode ETC formats to DXTC if unsupported")
 
@@ -505,6 +508,13 @@
                   "Force-enable reading back L8_SRGB textures")
 
 /**
+ * \brief venus specific configuration options
+ */
+#define DRI_CONF_VENUS_IMPLICIT_FENCING(def) \
+   DRI_CONF_OPT_B(venus_implicit_fencing, def, \
+                  "Assume the virtio-gpu kernel driver supports implicit fencing")
+
+/**
  * \brief RADV specific configuration options
  */
 
@@ -556,17 +566,9 @@
    DRI_CONF_OPT_B(radv_disable_dcc, def, \
                   "Disable DCC for color images")
 
-#define DRI_CONF_RADV_REPORT_APU_AS_DGPU(def) \
-   DRI_CONF_OPT_B(radv_report_apu_as_dgpu, def, \
-                  "Report APUs as discrete GPUs instead of integrated GPUs")
-
 #define DRI_CONF_RADV_REQUIRE_ETC2(def)                                        \
   DRI_CONF_OPT_B(radv_require_etc2, def,                                       \
                  "Implement emulated ETC2 on HW that does not support it")
-
-#define DRI_CONF_RADV_DISABLE_HTILE_LAYERS(def) \
-   DRI_CONF_OPT_B(radv_disable_htile_layers, def, \
-                  "Disable HTILE for layered depth/stencil formats")
 
 #define DRI_CONF_RADV_DISABLE_ANISO_SINGLE_LEVEL(def) \
   DRI_CONF_OPT_B(radv_disable_aniso_single_level, def, \
@@ -583,5 +585,9 @@
 #define DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(def) \
    DRI_CONF_OPT_B(anv_assume_full_subgroups, def, \
                   "Allow assuming full subgroups requirement even when it's not specified explicitly")
+
+#define DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(def) \
+   DRI_CONF_OPT_B(anv_sample_mask_out_opengl_behaviour, def, \
+                  "Ignore sample mask out when having single sampled target")
 
 #endif

@@ -91,7 +91,7 @@ enum ir3_bary {
    IJ_PERSP_PIXEL,
    IJ_PERSP_SAMPLE,
    IJ_PERSP_CENTROID,
-   IJ_PERSP_SIZE,
+   IJ_PERSP_CENTER_RHW,
    IJ_LINEAR_PIXEL,
    IJ_LINEAR_CENTROID,
    IJ_LINEAR_SAMPLE,
@@ -625,8 +625,9 @@ struct ir3_shader_variant {
    /* Map from location to offset in per-primitive storage. In dwords for
     * HS, where varyings are read in the next stage via ldg with a dword
     * offset, and in bytes for all other stages.
+    * +POSITION, +PSIZE, ... - see shader_io_get_unique_index
     */
-   unsigned output_loc[32 + 4]; /* +POSITION +PSIZE +CLIP_DIST0 +CLIP_DIST1 */
+   unsigned output_loc[32 + 11];
 
    /* attributes (VS) / varyings (FS):
     * Note that sysval's should come *after* normal inputs.
@@ -1043,7 +1044,7 @@ ir3_link_add(struct ir3_shader_linkage *l, uint8_t slot, uint8_t regid_,
 
    if (regid_ != regid(63, 0)) {
       int i = l->cnt++;
-      debug_assert(i < ARRAY_SIZE(l->var));
+      assert(i < ARRAY_SIZE(l->var));
 
       l->var[i].slot = slot;
       l->var[i].regid = regid_;

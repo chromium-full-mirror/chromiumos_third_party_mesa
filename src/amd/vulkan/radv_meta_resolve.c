@@ -402,9 +402,8 @@ radv_meta_resolve_hardware_image(struct radv_cmd_buffer *cmd_buffer, struct radv
     *    height and depth. 1D images use only x and width. 2D images use x, y,
     *    width and height. 3D images use x, y, z, width, height and depth.
     */
-   const struct VkExtent3D extent = radv_sanitize_image_extent(src_image->vk.image_type, region->extent);
-   const struct VkOffset3D dstOffset =
-      radv_sanitize_image_offset(dst_image->vk.image_type, region->dstOffset);
+   const struct VkExtent3D extent = vk_image_sanitize_extent(&src_image->vk, region->extent);
+   const struct VkOffset3D dstOffset = vk_image_sanitize_offset(&dst_image->vk, region->dstOffset);
 
    uint32_t queue_mask = radv_image_queue_family_mask(dst_image, cmd_buffer->qf,
                                                       cmd_buffer->qf);
@@ -548,7 +547,10 @@ radv_CmdResolveImage2(VkCommandBuffer commandBuffer,
    RADV_FROM_HANDLE(radv_image, dst_image, pResolveImageInfo->dstImage);
    VkImageLayout src_image_layout = pResolveImageInfo->srcImageLayout;
    VkImageLayout dst_image_layout = pResolveImageInfo->dstImageLayout;
-   enum radv_resolve_method resolve_method = RESOLVE_HW;
+   const struct radv_physical_device *pdevice = cmd_buffer->device->physical_device;
+   enum radv_resolve_method resolve_method =
+      pdevice->rad_info.gfx_level >= GFX11 ? RESOLVE_FRAGMENT : RESOLVE_HW;
+
    /* we can use the hw resolve only for single full resolves */
    if (pResolveImageInfo->regionCount == 1) {
       if (pResolveImageInfo->pRegions[0].srcOffset.x ||
@@ -648,8 +650,10 @@ radv_cmd_buffer_resolve_subpass_hw(struct radv_cmd_buffer *cmd_buffer)
 void
 radv_cmd_buffer_resolve_subpass(struct radv_cmd_buffer *cmd_buffer)
 {
+   const struct radv_physical_device *pdevice = cmd_buffer->device->physical_device;
    const struct radv_subpass *subpass = cmd_buffer->state.subpass;
-   enum radv_resolve_method resolve_method = RESOLVE_HW;
+   enum radv_resolve_method resolve_method =
+      pdevice->rad_info.gfx_level >= GFX11 ? RESOLVE_FRAGMENT : RESOLVE_HW;
 
    if (!subpass->has_color_resolve && !subpass->ds_resolve_attachment)
       return;

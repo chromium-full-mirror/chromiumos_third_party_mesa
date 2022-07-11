@@ -444,7 +444,15 @@ zink_clear_texture(struct pipe_context *pctx,
             flags |= PIPE_CLEAR_STENCIL;
          surf = create_clear_surface(pctx, pres, level, box);
          zink_blit_begin(ctx, ZINK_BLIT_SAVE_FB | ZINK_BLIT_SAVE_FS);
-         util_blitter_clear_depth_stencil(ctx->blitter, surf, flags, depth, stencil, box->x, box->y, box->width, box->height);
+         /* Vulkan requires depth to be in the range of [0.0, 1.0], while GL uses
+          * the viewport range of [-1.0, 1.0], creating a mismatch during u_blitter rendering;
+          * to account for this, de-convert depth back to GL for viewport transform:
+
+            depth = (depth * 2) - 1
+
+          * this yields the correct result after the viewport has been clamped
+          */
+         util_blitter_clear_depth_stencil(ctx->blitter, surf, flags, (depth * 2) - 1, stencil, box->x, box->y, box->width, box->height);
       }
    }
    /* this will never destroy the surface */
@@ -533,7 +541,7 @@ zink_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
       if (fb_changed) {
          ctx->fb_state.width = dstx + width;
          ctx->fb_state.height = dsty + height;
-         zink_update_framebuffer_state(ctx, orig_width, orig_height);
+         ctx->fb_changed = true;
          zink_batch_no_rp(ctx);
       }
       zink_clear(pctx, clear_flags, &scissor, NULL, depth, stencil);
@@ -541,7 +549,7 @@ zink_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
       if (fb_changed) {
          ctx->fb_state.width = orig_width;
          ctx->fb_state.height = orig_height;
-         zink_update_framebuffer_state(ctx, dstx + width, dsty + height);
+         ctx->fb_changed = true;
          zink_batch_no_rp(ctx);
       }
    } else {

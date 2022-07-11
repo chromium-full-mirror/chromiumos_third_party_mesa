@@ -28,7 +28,6 @@
 #include "radeon_vcn_dec.h"
 
 #include "pipe/p_video_codec.h"
-#include "radeon_video.h"
 #include "radeonsi/si_pipe.h"
 #include "util/u_memory.h"
 #include "util/u_video.h"
@@ -385,7 +384,7 @@ static rvcn_dec_message_hevc_t get_h265_msg(struct radeon_decoder *dec,
    result.curr_poc = pic->CurrPicOrderCntVal;
 
    for (i = 0; i < ARRAY_SIZE(dec->render_pic_list); i++) {
-      for (j = 0; 
+      for (j = 0;
            (pic->ref[j] != NULL) && (j < ARRAY_SIZE(dec->render_pic_list));
            j++) {
          if (dec->render_pic_list[i] == pic->ref[j])
@@ -1914,7 +1913,7 @@ static struct pb_buffer *rvcn_dec_message_decode(struct radeon_decoder *dec,
    decode->sw_ctxt_size = RDECODE_SESSION_CONTEXT_SIZE;
    decode->db_pitch = align(dec->base.width, dec->db_alignment);
 
-   if (((struct si_screen*)dec->screen)->info.family >= CHIP_SIENNA_CICHLID &&
+   if (((struct si_screen*)dec->screen)->info.family >= CHIP_NAVI21 &&
        (dec->stream_type == RDECODE_CODEC_VP9 || dec->stream_type == RDECODE_CODEC_AV1 ||
         dec->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10))
       decode->db_aligned_height = align(dec->base.height, 64);
@@ -2124,9 +2123,18 @@ static void rvcn_dec_message_feedback(struct radeon_decoder *dec)
    header->num_buffers = 0;
 }
 
+static void rvcn_dec_sq_tail(struct radeon_decoder *dec)
+{
+   if (dec->vcn_dec_sw_ring == false)
+      return;
+
+   rvcn_sq_tail(&dec->cs, &dec->sq);
+}
 /* flush IB to the hardware */
 static int flush(struct radeon_decoder *dec, unsigned flags)
 {
+   rvcn_dec_sq_tail(dec);
+
    return dec->ws->cs_flush(&dec->cs, flags, NULL);
 }
 
@@ -2155,6 +2163,7 @@ static void send_cmd(struct radeon_decoder *dec, unsigned cmd, struct pb_buffer 
    }
 
    if (!dec->cs.current.cdw) {
+      rvcn_sq_header(&dec->cs, &dec->sq, false);
       rvcn_decode_ib_package_t *ib_header =
          (rvcn_decode_ib_package_t *)&(dec->cs.current.buf[dec->cs.current.cdw]);
 
@@ -2770,8 +2779,13 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
    dec->ws = ws;
 
    if (u_reduce_video_profile(templ->profile) != PIPE_VIDEO_FORMAT_JPEG &&
-       sctx->gfx_level >= GFX11)
+       sctx->gfx_level >= GFX11) {
       dec->vcn_dec_sw_ring = true;
+      ring = AMD_IP_VCN_UNIFIED;
+   }
+
+   dec->sq.ib_total_size_in_dw = NULL;
+   dec->sq.ib_checksum = NULL;
 
    if (!ws->cs_create(&dec->cs, sctx->ctx, ring, NULL, NULL, false)) {
       RVID_ERR("Can't get command submission context.\n");
@@ -2792,7 +2806,7 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
          goto err;
       for (i = 0; i < dec->njctx; i++) {
       /* Initialize the context handle and the command stream. */
-         dec->jctx[i] = dec->ws->ctx_create(dec->ws);
+         dec->jctx[i] = dec->ws->ctx_create(dec->ws, RADEON_CTX_PRIORITY_MEDIUM);
          if (!sctx->ctx)
             goto error;
          if (!dec->ws->cs_create(&dec->jcs[i], dec->jctx[i], ring, NULL, NULL, false)) {
@@ -2807,7 +2821,7 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
    for (i = 0; i < ARRAY_SIZE(dec->render_pic_list); i++)
       dec->render_pic_list[i] = NULL;
 
-   if (sctx->family >= CHIP_SIENNA_CICHLID && (stream_type == RDECODE_CODEC_H264_PERF)) {
+   if (sctx->family >= CHIP_NAVI21 && (stream_type == RDECODE_CODEC_H264_PERF)) {
       for (i = 0; i < ARRAY_SIZE(dec->h264_valid_ref_num); i++)
          dec->h264_valid_ref_num[i] = (unsigned) -1;
       for (i = 0; i < ARRAY_SIZE(dec->h264_valid_poc_num); i++)
@@ -2853,7 +2867,7 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
       }
    }
 
-   if (sctx->family >= CHIP_SIENNA_CICHLID &&
+   if (sctx->family >= CHIP_NAVI21 &&
          (stream_type == RDECODE_CODEC_VP9 ||
           stream_type == RDECODE_CODEC_AV1 ||
         ((stream_type == RDECODE_CODEC_H265) && templ->expect_chunked_decode) ||
@@ -2902,12 +2916,12 @@ struct pipe_video_codec *radeon_create_decoder(struct pipe_context *context,
       break;
    case CHIP_ARCTURUS:
    case CHIP_ALDEBARAN:
-   case CHIP_SIENNA_CICHLID:
-   case CHIP_NAVY_FLOUNDER:
-   case CHIP_DIMGREY_CAVEFISH:
-   case CHIP_BEIGE_GOBY:
+   case CHIP_NAVI21:
+   case CHIP_NAVI22:
+   case CHIP_NAVI23:
+   case CHIP_NAVI24:
    case CHIP_VANGOGH:
-   case CHIP_YELLOW_CARP:
+   case CHIP_REMBRANDT:
    case CHIP_GFX1036:
       dec->reg.data0 = RDECODE_VCN2_5_GPCOM_VCPU_DATA0;
       dec->reg.data1 = RDECODE_VCN2_5_GPCOM_VCPU_DATA1;

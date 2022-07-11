@@ -177,6 +177,7 @@ zink_batch_state_destroy(struct zink_screen *screen, struct zink_batch_state *bs
    util_dynarray_fini(&bs->bindless_releases[0]);
    util_dynarray_fini(&bs->bindless_releases[1]);
    util_dynarray_fini(&bs->acquires);
+   util_dynarray_fini(&bs->acquire_flags);
    util_dynarray_fini(&bs->dead_swapchains);
    _mesa_set_destroy(bs->surfaces, NULL);
    _mesa_set_destroy(bs->bufferviews, NULL);
@@ -228,6 +229,7 @@ create_batch_state(struct zink_context *ctx)
    util_dynarray_init(&bs->persistent_resources, NULL);
    util_dynarray_init(&bs->unref_resources, NULL);
    util_dynarray_init(&bs->acquires, NULL);
+   util_dynarray_init(&bs->acquire_flags, NULL);
    util_dynarray_init(&bs->dead_swapchains, NULL);
    util_dynarray_init(&bs->bindless_releases[0], NULL);
    util_dynarray_init(&bs->bindless_releases[1], NULL);
@@ -239,7 +241,6 @@ create_batch_state(struct zink_context *ctx)
       goto fail;
 
    util_queue_fence_init(&bs->flush_completed);
-   bs->queue = screen->threaded ? screen->thread_queue : screen->queue;
 
    return bs;
 fail:
@@ -346,26 +347,21 @@ submit_queue(void *data, void *gdata, int thread_index)
    VkSubmitInfo si[2] = {0};
    int num_si = 2;
    while (!bs->fence.batch_id)
-      bs->fence.batch_id = p_atomic_inc_return(&screen->curr_batch);
+      bs->fence.batch_id = (uint32_t)p_atomic_inc_return(&screen->curr_batch);
    bs->usage.usage = bs->fence.batch_id;
    bs->usage.unflushed = false;
-
-   if (screen->last_finished > bs->fence.batch_id && bs->fence.batch_id == 1) {
-      if (!zink_screen_init_semaphore(screen)) {
-         debug_printf("timeline init failed, things are about to go dramatically wrong.");
-      }
-   }
 
    uint64_t batch_id = bs->fence.batch_id;
    /* first submit is just for acquire waits since they have a separate array */
    si[0].sType = si[1].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
    si[0].waitSemaphoreCount = util_dynarray_num_elements(&bs->acquires, VkSemaphore);
    si[0].pWaitSemaphores = bs->acquires.data;
-   VkPipelineStageFlags mask[32]; //can't imagine having more dumbass than this
-   assert(util_dynarray_num_elements(&bs->acquires, VkSemaphore) < ARRAY_SIZE(mask));
-   for (unsigned i = 0; i < ARRAY_SIZE(mask); i++)
-      mask[i] = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-   si[0].pWaitDstStageMask = mask;
+   while (util_dynarray_num_elements(&bs->acquire_flags, VkPipelineStageFlags) < si[0].waitSemaphoreCount) {
+      VkPipelineStageFlags mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+      util_dynarray_append(&bs->acquire_flags, VkPipelineStageFlags, mask);
+   }
+   assert(util_dynarray_num_elements(&bs->acquires, VkSemaphore) <= util_dynarray_num_elements(&bs->acquire_flags, VkPipelineStageFlags));
+   si[0].pWaitDstStageMask = bs->acquire_flags.data;
 
    if (si[0].waitSemaphoreCount == 0)
      num_si--;
@@ -420,7 +416,7 @@ submit_queue(void *data, void *gdata, int thread_index)
    }
 
    simple_mtx_lock(&screen->queue_lock);
-   if (VKSCR(QueueSubmit)(bs->queue, num_si, num_si == 2 ? si : &si[1], VK_NULL_HANDLE) != VK_SUCCESS) {
+   if (VKSCR(QueueSubmit)(screen->queue, num_si, num_si == 2 ? si : &si[1], VK_NULL_HANDLE) != VK_SUCCESS) {
       mesa_loge("ZINK: vkQueueSubmit failed");
       bs->is_device_lost = true;
    }
@@ -473,7 +469,7 @@ zink_end_batch(struct zink_context *ctx, struct zink_batch *batch)
    batch->work_count = 0;
 
    if (batch->swapchain) {
-      if (batch->swapchain->obj->acquired && !batch->swapchain->obj->present) {
+      if (zink_kopper_acquired(batch->swapchain->obj->dt, batch->swapchain->obj->dt_idx) && !batch->swapchain->obj->present) {
          batch->state->present = zink_kopper_present(screen, batch->swapchain);
          batch->state->swapchain = batch->swapchain;
       }
@@ -497,10 +493,13 @@ zink_batch_resource_usage_set(struct zink_batch *batch, struct zink_resource *re
 {
    if (res->obj->dt) {
       VkSemaphore acquire = zink_kopper_acquire_submit(zink_screen(batch->state->ctx->base.screen), res);
-      if (acquire) {
+      if (acquire)
          util_dynarray_append(&batch->state->acquires, VkSemaphore, acquire);
-         res->obj->dt_has_data = true;
-      }
+   }
+   if (write && !res->obj->is_buffer) {
+      if (!res->valid && res->fb_binds)
+         batch->state->ctx->rp_changed = true;
+      res->valid = true;
    }
    zink_resource_usage_set(res, batch->state, write);
    /* multiple array entries are fine */
@@ -520,6 +519,12 @@ zink_batch_reference_resource_rw(struct zink_batch *batch, struct zink_resource 
       /* then it already has a batch ref and doesn't need one here */
       zink_batch_reference_resource(batch, res);
    zink_batch_resource_usage_set(batch, res, write);
+}
+
+void
+zink_batch_add_wait_semaphore(struct zink_batch *batch, VkSemaphore sem)
+{
+   util_dynarray_append(&batch->state->acquires, VkSemaphore, sem);
 }
 
 bool

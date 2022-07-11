@@ -37,8 +37,6 @@
 #include "util/u_suballoc.h"
 #include "util/u_threaded_context.h"
 
-#include <directx/d3d12.h>
-
 #define D3D12_GFX_SHADER_STAGES (PIPE_SHADER_TYPES - 1)
 
 enum d3d12_dirty_flags
@@ -355,8 +353,9 @@ d3d12_need_zero_one_depth_range(struct d3d12_context *ctx);
 void
 d3d12_init_sampler_view_descriptor(struct d3d12_sampler_view *sampler_view);
 
-
+#ifdef HAVE_GALLIUM_D3D12_VIDEO
 struct pipe_video_codec* d3d12_video_create_codec( struct pipe_context *context,
                                                 const struct pipe_video_codec *t);
+#endif
 
 #endif

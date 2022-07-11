@@ -54,8 +54,7 @@ static nir_ssa_def *
 nggc_bool_setting(nir_builder *b, unsigned mask, lower_abi_state *s)
 {
    nir_ssa_def *settings = ac_nir_load_arg(b, &s->args->ac, s->args->ngg_culling_settings);
-   nir_ssa_def *x = nir_iand_imm(b, settings, mask);
-   return nir_ine(b, x, nir_imm_int(b, 0));
+   return nir_test_mask(b, settings, mask);
 }
 
 static nir_ssa_def *
@@ -127,7 +126,7 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
       return ac_nir_load_arg(b, &s->args->ac, s->args->ac.gs_vtx_offset[0]);
 
    case nir_intrinsic_load_shader_query_enabled_amd:
-      return nir_ieq_imm(b, ac_nir_load_arg(b, &s->args->ac, s->args->ngg_gs_state), 1);
+      return nir_ieq_imm(b, ac_nir_load_arg(b, &s->args->ac, s->args->ngg_query_state), 1);
 
    case nir_intrinsic_load_cull_any_enabled_amd:
       return nggc_bool_setting(b, radv_nggc_front_face | radv_nggc_back_face | radv_nggc_small_primitives, s);
@@ -173,6 +172,14 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
    case nir_intrinsic_load_ring_task_payload_amd:
       return load_ring(b, RING_TS_PAYLOAD, s);
 
+   case nir_intrinsic_load_ring_mesh_scratch_amd:
+      return load_ring(b, RING_MS_SCRATCH, s);
+
+   case nir_intrinsic_load_ring_mesh_scratch_offset_amd:
+      /* gs_tg_info[0:11] is ordered_wave_id. Multiply by the ring entry size. */
+      return nir_imul_imm(b, nir_iand_imm(b, ac_nir_load_arg(b, &s->args->ac, s->args->ac.gs_tg_info), 0xfff),
+                                          RADV_MESH_SCRATCH_ENTRY_BYTES);
+
    case nir_intrinsic_load_task_ring_entry_amd:
       return ac_nir_load_arg(b, &s->args->ac, s->args->ac.task_ring_entry);
 
@@ -181,6 +188,22 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
 
    case nir_intrinsic_load_task_ib_stride:
       return ac_nir_load_arg(b, &s->args->ac, s->args->task_ib_stride);
+
+   case nir_intrinsic_load_lshs_vertex_stride_amd: {
+      unsigned io_num = stage == MESA_SHADER_VERTEX ?
+         s->info->vs.num_linked_outputs :
+         s->info->tcs.num_linked_inputs;
+      return nir_imm_int(b, io_num * 16);
+   }
+
+   case nir_intrinsic_load_hs_out_patch_data_offset_amd: {
+      unsigned num_patches = s->info->num_tess_patches;
+      unsigned out_vertices_per_patch = b->shader->info.tess.tcs_vertices_out;
+      unsigned num_tcs_outputs = stage == MESA_SHADER_TESS_CTRL ?
+         s->info->tcs.num_linked_outputs : s->info->tes.num_linked_inputs;
+      int per_vertex_output_patch_size = out_vertices_per_patch * num_tcs_outputs * 16u;
+      return nir_imm_int(b, num_patches * per_vertex_output_patch_size);
+   }
 
    default:
       unreachable("invalid NIR RADV ABI intrinsic.");
@@ -223,9 +246,13 @@ filter_abi_instr(const nir_instr *instr,
           intrin->intrinsic == nir_intrinsic_load_viewport_y_offset ||
           intrin->intrinsic == nir_intrinsic_load_ring_task_draw_amd ||
           intrin->intrinsic == nir_intrinsic_load_ring_task_payload_amd ||
+          intrin->intrinsic == nir_intrinsic_load_ring_mesh_scratch_amd ||
+          intrin->intrinsic == nir_intrinsic_load_ring_mesh_scratch_offset_amd ||
           intrin->intrinsic == nir_intrinsic_load_task_ring_entry_amd ||
           intrin->intrinsic == nir_intrinsic_load_task_ib_addr ||
-          intrin->intrinsic == nir_intrinsic_load_task_ib_stride;
+          intrin->intrinsic == nir_intrinsic_load_task_ib_stride ||
+          intrin->intrinsic == nir_intrinsic_load_lshs_vertex_stride_amd ||
+          intrin->intrinsic == nir_intrinsic_load_hs_out_patch_data_offset_amd;
 }
 
 void

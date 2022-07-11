@@ -655,9 +655,13 @@ static bool si_check_blend_dst_sampler_noop(struct si_context *sctx)
 {
    if (sctx->framebuffer.state.nr_cbufs == 1) {
       struct si_shader_selector *sel = sctx->shader.ps.cso;
-      bool free_nir;
+
       if (unlikely(sel->info.writes_1_if_tex_is_1 == 0xff)) {
-         struct nir_shader *nir = si_get_nir_shader(sel, &sctx->shader.ps.key, &free_nir);
+         /* Wait for the shader to be ready. */
+         util_queue_fence_wait(&sel->ready);
+         assert(sel->nir_binary);
+
+         struct nir_shader *nir = si_deserialize_shader(sel);
 
          /* Determine if this fragment shader always writes vec4(1) if a specific texture
           * is all 1s.
@@ -672,8 +676,7 @@ static bool si_check_blend_dst_sampler_noop(struct si_context *sctx)
             sel->info.writes_1_if_tex_is_1 = 0;
          }
 
-         if (free_nir)
-            ralloc_free(nir);
+         ralloc_free(nir);
       }
 
       if (sel->info.writes_1_if_tex_is_1 &&
@@ -1162,8 +1165,7 @@ static void si_bind_rs_state(struct pipe_context *ctx, void *state)
         old_rs->line_width != rs->line_width))
       si_mark_atom_dirty(sctx, &sctx->atoms.s.ngg_cull_state);
 
-   sctx->current_vs_state &= C_VS_STATE_CLAMP_VERTEX_COLOR;
-   sctx->current_vs_state |= S_VS_STATE_CLAMP_VERTEX_COLOR(rs->clamp_vertex_color);
+   SET_FIELD(sctx->current_vs_state, VS_STATE_CLAMP_VERTEX_COLOR, rs->clamp_vertex_color);
 
    si_pm4_bind_state(sctx, rasterizer, rs);
    si_update_poly_offset_state(sctx);
@@ -1420,7 +1422,6 @@ static void si_bind_dsa_state(struct pipe_context *ctx, void *state)
    if (old_dsa->alpha_func != dsa->alpha_func) {
       si_ps_key_update_dsa(sctx);
       si_update_ps_inputs_read_or_disabled(sctx);
-      si_update_ps_kill_enable(sctx);
       sctx->do_update_shaders = true;
    }
 
@@ -2971,6 +2972,9 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
     * - FB write -> shader read
     * - shader write -> FB read
     *
+    * Wait for draws because of possible transitions:
+    * - texture -> render (eg: glBlitFramebuffer(with src=dst) then glDraw*)
+    *
     * DB caches are flushed on demand (using si_decompress_textures).
     *
     * When MSAA is enabled, CB and TC caches are flushed on demand
@@ -2986,7 +2990,7 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
                                  sctx->framebuffer.all_DCC_pipe_aligned);
    }
 
-   sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH;
+   sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH | SI_CONTEXT_PS_PARTIAL_FLUSH;
 
    /* u_blitter doesn't invoke depth decompression when it does multiple
     * blits in a row, but the only case when it matters for DB is when
@@ -3757,7 +3761,8 @@ static void si_emit_msaa_config(struct si_context *sctx)
       S_028A4C_TILE_WALK_ORDER_ENABLE(1) | S_028A4C_MULTI_SHADER_ENGINE_PRIM_DISCARD_ENABLE(1) |
       S_028A4C_FORCE_EOV_CNTDWN_ENABLE(1) | S_028A4C_FORCE_EOV_REZ_ENABLE(1);
    unsigned db_eqaa = S_028804_HIGH_QUALITY_INTERSECTIONS(1) | S_028804_INCOHERENT_EQAA_READS(1) |
-                      S_028804_INTERPOLATE_COMP_Z(1) | S_028804_STATIC_ANCHOR_ASSOCIATIONS(1);
+                      S_028804_INTERPOLATE_COMP_Z(sctx->gfx_level < GFX11) |
+                      S_028804_STATIC_ANCHOR_ASSOCIATIONS(1);
    unsigned coverage_samples, color_samples, z_samples;
    struct si_state_rasterizer *rs = sctx->queued.named.rasterizer;
 
@@ -3905,7 +3910,7 @@ static void si_set_min_samples(struct pipe_context *ctx, unsigned min_samples)
  * @param state 256-bit descriptor; only the high 128 bits are filled in
  */
 void si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf,
-                               enum pipe_format format, unsigned offset, unsigned size,
+                               enum pipe_format format, unsigned offset, unsigned num_elements,
                                uint32_t *state)
 {
    const struct util_format_description *desc;
@@ -3915,7 +3920,7 @@ void si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf
    desc = util_format_description(format);
    stride = desc->block.bits / 8;
 
-   num_records = size / stride;
+   num_records = num_elements;
    num_records = MIN2(num_records, (buf->b.b.width0 - offset) / stride);
 
    /* The NUM_RECORDS field has a different meaning depending on the chip,
@@ -4556,11 +4561,11 @@ static struct pipe_sampler_view *si_create_sampler_view(struct pipe_context *ctx
 
    /* Buffer resource. */
    if (texture->target == PIPE_BUFFER) {
-      uint32_t size = si_clamp_texture_texel_count(sctx->screen->max_texture_buffer_size,
-                                                   state->format, state->u.buf.size);
+      uint32_t elements = si_clamp_texture_texel_count(sctx->screen->max_texel_buffer_elements,
+                                                       state->format, state->u.buf.size);
 
       si_make_buffer_descriptor(sctx->screen, si_resource(texture), state->format,
-                                state->u.buf.offset, size, view->state);
+                                state->u.buf.offset, elements, view->state);
       return &view->base;
    }
 
@@ -5575,6 +5580,11 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
       si_pm4_cmd_add(pm4, CC0_UPDATE_LOAD_ENABLES(1));
       si_pm4_cmd_add(pm4, CC1_UPDATE_SHADOW_ENABLES(1));
 
+      if (sscreen->dpbb_allowed) {
+         si_pm4_cmd_add(pm4, PKT3(PKT3_EVENT_WRITE, 0, 0));
+         si_pm4_cmd_add(pm4, EVENT_TYPE(V_028A90_BREAK_BATCH) | EVENT_INDEX(0));
+      }
+
       if (has_clear_state) {
          si_pm4_cmd_add(pm4, PKT3(PKT3_CLEAR_STATE, 0, 0));
          si_pm4_cmd_add(pm4, 0);
@@ -5885,12 +5895,32 @@ void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing)
       si_pm4_set_reg(pm4, R_028620_PA_RATE_CNTL,
                      S_028620_VERTEX_RATE(2) | S_028620_PRIM_RATE(1));
 
-      /* We must wait for idle before changing the SPI attribute ring registers. */
-      /* TODO: Find a more reliable way to wait for idle. */
-      for (unsigned i = 0; i < 4; i++) {
-         si_pm4_cmd_add(pm4, PKT3(PKT3_EVENT_WRITE, 0, 0));
-         si_pm4_cmd_add(pm4, EVENT_TYPE(V_028A90_PS_PARTIAL_FLUSH) | EVENT_INDEX(4));
-      }
+      /* We must wait for idle using an EOP event before changing the attribute ring registers.
+       * Use the bottom-of-pipe EOP event, but increment the PWS counter instead of writing memory.
+       */
+      si_pm4_cmd_add(pm4, PKT3(PKT3_RELEASE_MEM, 6, 0));
+      si_pm4_cmd_add(pm4, S_490_EVENT_TYPE(V_028A90_BOTTOM_OF_PIPE_TS) |
+                          S_490_EVENT_INDEX(5) |
+                          S_490_PWS_ENABLE(1));
+      si_pm4_cmd_add(pm4, 0); /* DST_SEL, INT_SEL, DATA_SEL */
+      si_pm4_cmd_add(pm4, 0); /* ADDRESS_LO */
+      si_pm4_cmd_add(pm4, 0); /* ADDRESS_HI */
+      si_pm4_cmd_add(pm4, 0); /* DATA_LO */
+      si_pm4_cmd_add(pm4, 0); /* DATA_HI */
+      si_pm4_cmd_add(pm4, 0); /* INT_CTXID */
+
+      /* Wait for the PWS counter. */
+      si_pm4_cmd_add(pm4, PKT3(PKT3_ACQUIRE_MEM, 6, 0));
+      si_pm4_cmd_add(pm4, S_580_PWS_STAGE_SEL(V_580_CP_ME) |
+                          S_580_PWS_COUNTER_SEL(V_580_TS_SELECT) |
+                          S_580_PWS_ENA2(1) |
+                          S_580_PWS_COUNT(0));
+      si_pm4_cmd_add(pm4, 0xffffffff); /* GCR_SIZE */
+      si_pm4_cmd_add(pm4, 0x01ffffff); /* GCR_SIZE_HI */
+      si_pm4_cmd_add(pm4, 0); /* GCR_BASE_LO */
+      si_pm4_cmd_add(pm4, 0); /* GCR_BASE_HI */
+      si_pm4_cmd_add(pm4, S_585_PWS_ENA(1));
+      si_pm4_cmd_add(pm4, 0); /* GCR_CNTL */
 
       si_pm4_set_reg(pm4, R_031110_SPI_GS_THROTTLE_CNTL1, 0x12355123);
       si_pm4_set_reg(pm4, R_031114_SPI_GS_THROTTLE_CNTL2, 0x1544D);

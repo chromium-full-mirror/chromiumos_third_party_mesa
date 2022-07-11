@@ -216,7 +216,7 @@ setup_stream_out(struct fd_context *ctx, struct fd6_program_state *state,
          if (l->var[idx].slot == v->outputs[k].slot)
             break;
 
-      debug_assert(idx < l->cnt);
+      assert(idx < l->cnt);
 
       for (unsigned j = 0; j < out->num_components; j++) {
          unsigned c = j + out->start_component;
@@ -302,7 +302,7 @@ setup_config_stateobj(struct fd_context *ctx, struct fd6_program_state *state)
                                           .fs_state = true, .cs_state = true,
                                           .gfx_ibo = true, .cs_ibo = true, ));
 
-   debug_assert(state->vs->constlen >= state->bs->constlen);
+   assert(state->vs->constlen >= state->bs->constlen);
 
    OUT_PKT4(ring, REG_A6XX_HLSQ_VS_CNTL, 4);
    OUT_RING(ring, A6XX_HLSQ_VS_CNTL_CONSTLEN(state->vs->constlen) |
@@ -655,7 +655,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
          setup_stream_out_disable(ctx);
    }
 
-   debug_assert(l.cnt <= 32);
+   assert(l.cnt <= 32);
    if (gs)
       OUT_PKT4(ring, REG_A6XX_SP_GS_OUT_REG(0), DIV_ROUND_UP(l.cnt, 2));
    else if (ds)
@@ -840,7 +840,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    OUT_RING(ring, A6XX_HLSQ_CONTROL_2_REG_FACEREGID(face_regid) |
                      A6XX_HLSQ_CONTROL_2_REG_SAMPLEID(samp_id_regid) |
                      A6XX_HLSQ_CONTROL_2_REG_SAMPLEMASK(smask_in_regid) |
-                     A6XX_HLSQ_CONTROL_2_REG_SIZE(ij_regid[IJ_PERSP_SIZE]));
+                     A6XX_HLSQ_CONTROL_2_REG_CENTERRHW(ij_regid[IJ_PERSP_CENTER_RHW]));
    OUT_RING(
       ring,
       A6XX_HLSQ_CONTROL_3_REG_IJ_PERSP_PIXEL(ij_regid[IJ_PERSP_PIXEL]) |
@@ -878,7 +878,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
    bool need_size = fs->frag_face || fs->fragcoord_compmask != 0;
    bool need_size_persamp = false;
-   if (VALIDREG(ij_regid[IJ_PERSP_SIZE])) {
+   if (VALIDREG(ij_regid[IJ_PERSP_CENTER_RHW])) {
       if (sample_shading)
          need_size_persamp = true;
       else
@@ -925,7 +925,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    OUT_RING(ring,
             CONDREG(smask_in_regid, A6XX_RB_RENDER_CONTROL1_SAMPLEMASK) |
                CONDREG(samp_id_regid, A6XX_RB_RENDER_CONTROL1_SAMPLEID) |
-               CONDREG(ij_regid[IJ_PERSP_SIZE], A6XX_RB_RENDER_CONTROL1_SIZE) |
+               CONDREG(ij_regid[IJ_PERSP_CENTER_RHW], A6XX_RB_RENDER_CONTROL1_CENTERRHW) |
                COND(fs->frag_face, A6XX_RB_RENDER_CONTROL1_FACENESS));
 
    OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_CNTL, 1);
@@ -990,6 +990,9 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
       uint32_t flags_regid =
          ir3_find_output_regid(gs, VARYING_SLOT_GS_VERTEX_FLAGS_IR3);
+
+      /* if vertex_flags somehow gets optimized out, your gonna have a bad time: */
+      assert(flags_regid != INVALID_REG);
 
       OUT_PKT4(ring, REG_A6XX_SP_GS_PRIMITIVE_CNTL, 1);
       OUT_RING(ring, A6XX_SP_GS_PRIMITIVE_CNTL_OUT(l.cnt) |
@@ -1260,7 +1263,7 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
       for (unsigned i = 0; i < bs->inputs_count; i++) {
          if (vs->inputs[i].sysval)
             continue;
-         debug_assert(bs->inputs[i].regid == vs->inputs[i].regid);
+         assert(bs->inputs[i].regid == vs->inputs[i].regid);
       }
    }
 #endif

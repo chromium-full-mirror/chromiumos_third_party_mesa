@@ -62,6 +62,9 @@ void ac_llvm_context_init(struct ac_llvm_context *ctx, struct ac_llvm_compiler *
                           unsigned ballot_mask_bits)
 {
    ctx->context = LLVMContextCreate();
+   #if LLVM_VERSION_MAJOR >= 15
+   LLVMContextSetOpaquePointers(ctx->context, false);
+   #endif
 
    ctx->gfx_level = gfx_level;
    ctx->family = family;
@@ -1996,9 +1999,15 @@ void ac_build_export(struct ac_llvm_context *ctx, struct ac_export_args *a)
    }
 }
 
-void ac_build_export_null(struct ac_llvm_context *ctx)
+void ac_build_export_null(struct ac_llvm_context *ctx, bool uses_discard)
 {
    struct ac_export_args args;
+
+   /* Gfx10+ doesn't need to export anything if we don't need to export the EXEC mask
+    * for discard.
+    */
+   if (ctx->gfx_level >= GFX10 && !uses_discard)
+      return;
 
    args.enabled_channels = 0x0; /* enabled channels */
    args.valid_mask = 1;         /* whether the EXEC mask is valid */
@@ -4382,7 +4391,8 @@ void ac_build_sendmsg_gs_alloc_req(struct ac_llvm_context *ctx, LLVMValueRef wav
       export_dummy_prim = true;
    }
 
-   ac_build_ifcc(ctx, LLVMBuildICmp(builder, LLVMIntEQ, wave_id, ctx->i32_0, ""), 5020);
+   if (wave_id)
+      ac_build_ifcc(ctx, LLVMBuildICmp(builder, LLVMIntEQ, wave_id, ctx->i32_0, ""), 5020);
 
    tmp = LLVMBuildShl(builder, prim_cnt, LLVMConstInt(ctx->i32, 12, false), "");
    tmp = LLVMBuildOr(builder, tmp, vtx_cnt, "");
@@ -4407,7 +4417,8 @@ void ac_build_sendmsg_gs_alloc_req(struct ac_llvm_context *ctx, LLVMValueRef wav
       ac_build_endif(ctx, 5021);
    }
 
-   ac_build_endif(ctx, 5020);
+   if (wave_id)
+      ac_build_endif(ctx, 5020);
 }
 
 

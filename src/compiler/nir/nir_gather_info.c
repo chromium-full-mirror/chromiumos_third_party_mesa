@@ -25,6 +25,8 @@
 #include "nir_deref.h"
 #include "main/menums.h"
 
+#include "util/set.h"
+
 static bool
 src_is_invocation_id(const nir_src *src)
 {
@@ -34,6 +36,17 @@ src_is_invocation_id(const nir_src *src)
 
    return nir_instr_as_intrinsic(src->ssa->parent_instr)->intrinsic ==
              nir_intrinsic_load_invocation_id;
+}
+
+static bool
+src_is_local_invocation_index(const nir_src *src)
+{
+   assert(src->is_ssa);
+   if (src->ssa->parent_instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   return nir_instr_as_intrinsic(src->ssa->parent_instr)->intrinsic ==
+             nir_intrinsic_load_local_invocation_index;
 }
 
 static void
@@ -53,7 +66,10 @@ get_deref_info(nir_shader *shader, nir_variable *var, nir_deref_instr *deref,
    /* Vertex index is the outermost array index. */
    if (is_arrayed) {
       assert((*p)->deref_type == nir_deref_type_array);
-      *cross_invocation = !src_is_invocation_id(&(*p)->arr.index);
+      if (shader->info.stage == MESA_SHADER_TESS_CTRL)
+         *cross_invocation = !src_is_invocation_id(&(*p)->arr.index);
+      else if (shader->info.stage == MESA_SHADER_MESH)
+         *cross_invocation = !src_is_local_invocation_index(&(*p)->arr.index);
       p++;
    }
 
@@ -154,6 +170,8 @@ set_io_mask(nir_shader *shader, nir_variable *var, int offset, int len,
             }
          }
 
+         if (cross_invocation && shader->info.stage == MESA_SHADER_MESH)
+            shader->info.mesh.ms_cross_invocation_output_access |= bitfield;
 
          if (var->data.fb_fetch_output) {
             shader->info.outputs_read |= bitfield;
@@ -592,6 +610,13 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
           !src_is_invocation_id(nir_get_io_arrayed_index_src(instr)))
          shader->info.tess.tcs_cross_invocation_outputs_read |= slot_mask;
 
+      /* NV_mesh_shader: mesh shaders can load their outputs. */
+      if (shader->info.stage == MESA_SHADER_MESH &&
+          (instr->intrinsic == nir_intrinsic_load_per_vertex_output ||
+           instr->intrinsic == nir_intrinsic_load_per_primitive_output) &&
+          !src_is_local_invocation_index(nir_get_io_arrayed_index_src(instr)))
+         shader->info.mesh.ms_cross_invocation_output_access |= slot_mask;
+
       if (shader->info.stage == MESA_SHADER_FRAGMENT &&
           nir_intrinsic_io_semantics(instr).fb_fetch_output)
          shader->info.fs.uses_fbfetch_output = true;
@@ -613,6 +638,12 @@ gather_intrinsic_info(nir_intrinsic_instr *instr, nir_shader *shader,
             shader->info.outputs_accessed_indirectly_16bit |= slot_mask_16bit;
          }
       }
+
+      if (shader->info.stage == MESA_SHADER_MESH &&
+          (instr->intrinsic == nir_intrinsic_store_per_vertex_output ||
+           instr->intrinsic == nir_intrinsic_store_per_primitive_output) &&
+          !src_is_local_invocation_index(nir_get_io_arrayed_index_src(instr)))
+         shader->info.mesh.ms_cross_invocation_output_access |= slot_mask;
 
       if (shader->info.stage == MESA_SHADER_FRAGMENT &&
           nir_intrinsic_io_semantics(instr).dual_source_blend_index)
@@ -859,24 +890,37 @@ gather_alu_info(nir_alu_instr *instr, nir_shader *shader)
 }
 
 static void
-gather_info_block(nir_block *block, nir_shader *shader, void *dead_ctx)
+gather_func_info(nir_function_impl *func, nir_shader *shader,
+                 struct set *visited_funcs, void *dead_ctx)
 {
-   nir_foreach_instr(instr, block) {
-      switch (instr->type) {
-      case nir_instr_type_alu:
-         gather_alu_info(nir_instr_as_alu(instr), shader);
-         break;
-      case nir_instr_type_intrinsic:
-         gather_intrinsic_info(nir_instr_as_intrinsic(instr), shader, dead_ctx);
-         break;
-      case nir_instr_type_tex:
-         gather_tex_info(nir_instr_as_tex(instr), shader);
-         break;
-      case nir_instr_type_call:
-         assert(!"nir_shader_gather_info only works if functions are inlined");
-         break;
-      default:
-         break;
+   if (_mesa_set_search(visited_funcs, func))
+      return;
+
+   _mesa_set_add(visited_funcs, func);
+
+   nir_foreach_block(block, func) {
+      nir_foreach_instr(instr, block) {
+         switch (instr->type) {
+         case nir_instr_type_alu:
+            gather_alu_info(nir_instr_as_alu(instr), shader);
+            break;
+         case nir_instr_type_intrinsic:
+            gather_intrinsic_info(nir_instr_as_intrinsic(instr), shader, dead_ctx);
+            break;
+         case nir_instr_type_tex:
+            gather_tex_info(nir_instr_as_tex(instr), shader);
+            break;
+         case nir_instr_type_call: {
+            nir_call_instr *call = nir_instr_as_call(instr);
+            nir_function_impl *impl = call->callee->impl;
+
+            assert(impl || !"nir_shader_gather_info only works with linked shaders");
+            gather_func_info(impl, shader, visited_funcs, dead_ctx);
+            break;
+         }
+         default:
+            break;
+         }
       }
    }
 }
@@ -939,9 +983,8 @@ nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint)
       shader->info.writes_memory = shader->info.has_transform_feedback_varyings;
 
    void *dead_ctx = ralloc_context(NULL);
-   nir_foreach_block(block, entrypoint) {
-      gather_info_block(block, shader, dead_ctx);
-   }
+   struct set *visited_funcs = _mesa_pointer_set_create(dead_ctx);
+   gather_func_info(entrypoint, shader, visited_funcs, dead_ctx);
    ralloc_free(dead_ctx);
 
    if (shader->info.stage == MESA_SHADER_FRAGMENT &&

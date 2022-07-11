@@ -18,10 +18,11 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 	<value name="WRITE_PRIMITIVE_COUNTS" value="9" varset="chip" variants="A6XX"/>
 	<value name="START_PRIMITIVE_CTRS" value="11" varset="chip" variants="A6XX"/>
 	<value name="STOP_PRIMITIVE_CTRS" value="12" varset="chip" variants="A6XX"/>
-	<value name="RST_PIX_CNT" value="13"/>
-	<value name="RST_VTX_CNT" value="14"/>
-	<value name="TILE_FLUSH" value="15"/>
-	<value name="STAT_EVENT" value="16"/>
+	<!-- Not sure that these 4 events don't have the same meaning as on A5XX+ -->
+	<value name="RST_PIX_CNT" value="13" varset="chip" variants="A2XX-A4XX"/>
+	<value name="RST_VTX_CNT" value="14" varset="chip" variants="A2XX-A4XX"/>
+	<value name="TILE_FLUSH" value="15" varset="chip" variants="A2XX-A4XX"/>
+	<value name="STAT_EVENT" value="16" varset="chip" variants="A2XX-A4XX"/>
 	<value name="CACHE_FLUSH_AND_INV_TS_EVENT" value="20" varset="chip" variants="A2XX-A4XX"/>
 	<value name="ZPASS_DONE" value="21"/>
 	<value name="CACHE_FLUSH_AND_INV_EVENT" value="22" varset="chip" variants="A2XX"/>
@@ -33,6 +34,10 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 
 	<!-- a5xx events -->
 	<value name="WT_DONE_TS" value="8" varset="chip" variants="A5XX-"/>
+	<value name="START_FRAGMENT_CTRS" value="13" varset="chip" variants="A5XX-"/>
+	<value name="STOP_FRAGMENT_CTRS" value="14" varset="chip" variants="A5XX-"/>
+	<value name="START_COMPUTE_CTRS" value="15" varset="chip" variants="A5XX-"/>
+	<value name="STOP_COMPUTE_CTRS" value="16" varset="chip" variants="A5XX-"/>
 	<value name="FLUSH_SO_0" value="17" varset="chip" variants="A5XX-"/>
 	<value name="FLUSH_SO_1" value="18" varset="chip" variants="A5XX-"/>
 	<value name="FLUSH_SO_2" value="19" varset="chip" variants="A5XX-"/>
@@ -43,7 +48,18 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 	<value name="PC_CCU_FLUSH_DEPTH_TS" value="28" varset="chip" variants="A5XX-"/>
 	<value name="PC_CCU_FLUSH_COLOR_TS" value="29" varset="chip" variants="A5XX-"/>
 	<value name="BLIT" value="30" varset="chip" variants="A5XX-"/>
-	<value name="UNK_25" value="37" varset="chip" variants="A5XX"/>
+	<doc>
+		Clears based on GRAS_LRZ_CNTL configuration, could clear
+		fast-clear buffer or LRZ direction.
+		LRZ direction is stored at lrz_fc_offset + 0x200, has 1 byte which
+		could be expressed by enum:
+			CUR_DIR_DISABLED = 0x0
+			CUR_DIR_GE = 0x1
+			CUR_DIR_LE = 0x2
+			CUR_DIR_UNSET = 0x3
+		Clear of direction means setting the direction to CUR_DIR_UNSET.
+	</doc>
+	<value name="LRZ_CLEAR" value="37" varset="chip" variants="A5XX-"/>
 	<value name="LRZ_FLUSH" value="38" varset="chip" variants="A5XX-"/>
 	<value name="BLIT_OP_FILL_2D" value="39" varset="chip" variants="A5XX-"/>
 	<value name="BLIT_OP_COPY_2D" value="40" varset="chip" variants="A5XX-"/>
@@ -54,6 +70,22 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 
 	<!-- a6xx events -->
 	<value name="CACHE_INVALIDATE" value="49" varset="chip" variants="A6XX"/>
+
+	<!-- note, some of these are the same as a6xx, just named differently -->
+	<value name="CCU_INVALIDATE_DEPTH" value="24" varset="chip" variants="A7XX"/>
+	<value name="CCU_INVALIDATE_COLOR" value="25" varset="chip" variants="A7XX"/>
+	<value name="CCU_RESOLVE_CLEAN" value="26" varset="chip" variants="A7XX"/>
+	<value name="CCU_FLUSH_DEPTH" value="28" varset="chip" variants="A7XX"/>
+	<value name="CCU_FLUSH_COLOR" value="29" varset="chip" variants="A7XX"/>
+	<value name="CCU_RESOLVE" value="30" varset="chip" variants="A7XX"/>
+	<value name="CCU_END_RESOLVE_GROUP" value="31" varset="chip" variants="A7XX"/>
+	<value name="CCU_CLEAN_DEPTH" value="32" varset="chip" variants="A7XX"/>
+	<value name="CCU_CLEAN_COLOR" value="33" varset="chip" variants="A7XX"/>
+	<value name="CACHE_RESET" value="48" varset="chip" variants="A7XX"/>
+	<value name="CACHE_CLEAN" value="49" varset="chip" variants="A7XX"/>
+	<!-- TODO: deal with name conflicts with other gens -->
+	<value name="CACHE_FLUSH7" value="50" varset="chip" variants="A7XX"/>
+	<value name="CACHE_INVALIDATE7" value="51" varset="chip" variants="A7XX"/>
 </enum>
 
 <enum name="pc_di_primtype">
@@ -493,6 +525,9 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 	</doc>
 	<value name="CP_START_BIN" value="0x50" varset="chip" variants="A6XX"/>
 	<value name="CP_END_BIN" value="0x51" varset="chip" variants="A6XX"/>
+
+	<value name="CP_WAIT_TIMESTAMP" value="0x14" varset="chip" variants="A7XX-"/>
+	<value name="CP_THREAD_CONTROL" value="0x17" varset="chip" variants="A7XX-"/>
 </enum>
 
 
@@ -1764,9 +1799,22 @@ opcode: CP_LOAD_STATE4 (30) (4 dwords)
 			register(s) like the others.
 		</doc>
 		<value name="UNK_EVENT_WRITE" value="0x4"/>
+		<doc>
+			Tracks GRAS_LRZ_CNTL::GREATER, GRAS_LRZ_CNTL::DIR, and
+			GRAS_LRZ_DEPTH_VIEW with previous values, and if one of
+			the following is true:
+			- GRAS_LRZ_CNTL::GREATER has changed
+			- GRAS_LRZ_CNTL::DIR has changed, the old value is not
+			  CUR_DIR_GE, and the new value is not CUR_DIR_DISABLED
+			- GRAS_LRZ_DEPTH_VIEW has changed
+			then it does a LRZ_FLUSH with GRAS_LRZ_CNTL::ENABLE
+			forced to 1.
+			Only exists in a650_sqe.fw.
+		</doc>
+		<value name="TRACK_LRZ" value="0x8"/>
 	</enum>
 	<reg32 offset="0" name="0">
-		<bitfield name="TRACKER" low="0" high="2" type="reg_tracker"/>
+		<bitfield name="TRACKER" low="0" high="3" type="reg_tracker"/>
 	</reg32>
 </domain>
 
@@ -1805,6 +1853,19 @@ opcode: CP_LOAD_STATE4 (30) (4 dwords)
 	</reg32>
 	<reg32 offset="4" name="BODY_DWORDS">
 		<doc>Number of dwords after this packet until CP_END_BIN</doc>
+	</reg32>
+</domain>
+
+<domain name="CP_THREAD_CONTROL" width="32">
+	<enum name="cp_thread">
+		<value name="CP_SET_THREAD_BR" value="1"/>
+		<value name="CP_SET_THREAD_BV" value="2"/>
+		<value name="CP_SET_THREAD_BOTH" value="3"/>
+	</enum>
+	<reg32 offset="0" name="0">
+		<bitfield low="0" high="1" name="THREAD" type="cp_thread"/>
+		<bitfield pos="27" name="CONCURRENT_BIN_DISABLE" type="boolean"/>
+		<bitfield pos="31" name="SYNC_THREADS" type="boolean"/>
 	</reg32>
 </domain>
 

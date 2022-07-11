@@ -106,7 +106,7 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
    }
    if (ctx && zs->nir->info.num_inlinable_uniforms &&
        ctx->inlinable_uniforms_valid_mask & BITFIELD64_BIT(pstage)) {
-      if (screen->is_cpu || prog->inlined_variant_count[pstage] < ZINK_MAX_INLINED_VARIANTS)
+      if (zs->can_inline && (screen->is_cpu || prog->inlined_variant_count[pstage] < ZINK_MAX_INLINED_VARIANTS))
          inline_size = zs->nir->info.num_inlinable_uniforms;
       else
          key->inline_uniforms = false;
@@ -128,9 +128,10 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
       if (!zm) {
          return NULL;
       }
-      if (zs->is_generated && zs->spirv) {
+      unsigned patch_vertices = state->shader_keys.key[PIPE_SHADER_TESS_CTRL ].key.tcs.patch_vertices;
+      if (pstage == PIPE_SHADER_TESS_CTRL && zs->is_generated && zs->spirv) {
          assert(ctx); //TODO async
-         mod = zink_shader_tcs_compile(screen, zs, zink_get_tcs_key(ctx)->patch_vertices);
+         mod = zink_shader_tcs_compile(screen, zs, patch_vertices);
       } else {
          mod = zink_shader_compile(screen, zs, prog->nir[stage], key);
       }
@@ -155,8 +156,8 @@ get_shader_module_for_stage(struct zink_context *ctx, struct zink_screen *screen
       zm->has_nonseamless = !!nonseamless_size;
       if (inline_size)
          memcpy(zm->key + key->size + nonseamless_size, key->base.inlined_uniform_values, inline_size * sizeof(uint32_t));
-      if (zs->is_generated)
-         zm->hash = zink_get_tcs_key(ctx)->patch_vertices;
+      if (pstage == PIPE_SHADER_TESS_CTRL && zs->is_generated)
+         zm->hash = patch_vertices;
       else
          zm->hash = shader_module_hash(zm);
       zm->default_variant = !inline_size && list_is_empty(&prog->shader_cache[pstage][0][0]);
@@ -242,6 +243,9 @@ equals_gfx_pipeline_state(const void *a, const void *b)
    const struct zink_gfx_pipeline_state *sb = b;
    if (sa->uses_dynamic_stride != sb->uses_dynamic_stride)
       return false;
+   /* dynamic vs rp */
+   if (!!sa->render_pass != !!sb->render_pass)
+      return false;
    if (!sa->have_EXT_extended_dynamic_state || !sa->uses_dynamic_stride) {
       if (sa->vertex_buffers_enabled_mask != sb->vertex_buffers_enabled_mask)
          return false;
@@ -256,7 +260,7 @@ equals_gfx_pipeline_state(const void *a, const void *b)
       }
    }
    if (!sa->have_EXT_extended_dynamic_state) {
-      if (sa->dyn_state1.front_face != sb->dyn_state1.front_face)
+      if (memcmp(&sa->dyn_state1, &sb->dyn_state1, offsetof(struct zink_pipeline_dynamic_state1, depth_stencil_alpha_state)))
          return false;
       if (!!sa->dyn_state1.depth_stencil_alpha_state != !!sb->dyn_state1.depth_stencil_alpha_state ||
           (sa->dyn_state1.depth_stencil_alpha_state &&
@@ -265,7 +269,10 @@ equals_gfx_pipeline_state(const void *a, const void *b)
          return false;
    }
    if (!sa->have_EXT_extended_dynamic_state2) {
-      if (sa->dyn_state2.primitive_restart != sb->dyn_state2.primitive_restart)
+      if (memcmp(&sa->dyn_state2, &sb->dyn_state2, sizeof(sa->dyn_state2)))
+         return false;
+   } else if (!sa->extendedDynamicState2PatchControlPoints) {
+      if (sa->dyn_state2.vertices_per_patch != sb->dyn_state2.vertices_per_patch)
          return false;
    }
    return !memcmp(sa->modules, sb->modules, sizeof(sa->modules)) &&

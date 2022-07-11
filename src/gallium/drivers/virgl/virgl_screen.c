@@ -83,7 +83,6 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
       return 1;
    case PIPE_CAP_ANISOTROPIC_FILTER:
       return vscreen->caps.caps.v2.max_anisotropy > 1.0;
@@ -219,7 +218,7 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return vscreen->caps.caps.v1.bset.texture_multisample;
    case PIPE_CAP_MAX_VIEWPORTS:
       return vscreen->caps.caps.v1.max_viewports;
-   case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
       return vscreen->caps.caps.v1.max_tbo_size;
    case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
@@ -323,14 +322,14 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_CLIP_HALFZ;
    case PIPE_CAP_MAX_GS_INVOCATIONS:
       return 32;
-   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
+   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT:
       return 1 << 27;
    case PIPE_CAP_VENDOR_ID:
       return 0x1af4;
    case PIPE_CAP_DEVICE_ID:
       return 0x1010;
    case PIPE_CAP_ACCELERATED:
-      return 1;
+      return -1; /* -1 means unknown */
    case PIPE_CAP_UMA:
    case PIPE_CAP_VIDEO_MEMORY:
       if (vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_VIDEO_MEMORY)
@@ -421,8 +420,10 @@ virgl_get_shader_param(struct pipe_screen *screen,
          return vscreen->caps.caps.v1.glsl_level >= 130;
       case PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH:
          return 32;
-      case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
-         return 4096 * sizeof(float[4]);
+      case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
+         if (vscreen->caps.caps.v2.host_feature_check_version < 12)
+            return 4096 * sizeof(float[4]);
+         return vscreen->caps.caps.v2.max_const_buffer_size[shader];
       case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
          if (shader == PIPE_SHADER_FRAGMENT || shader == PIPE_SHADER_COMPUTE)
             return vscreen->caps.caps.v2.max_shader_buffer_frag_compute;

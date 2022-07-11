@@ -88,8 +88,7 @@ etna_screen_destroy(struct pipe_screen *pscreen)
    if (screen->perfmon)
       etna_perfmon_del(screen->perfmon);
 
-   if (screen->compiler)
-      etna_compiler_destroy(screen->compiler);
+   etna_shader_screen_fini(pscreen);
 
    if (screen->pipe)
       etna_pipe_del(screen->pipe);
@@ -143,7 +142,6 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_TEXTURE_BARRIER:
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
@@ -168,7 +166,7 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 256;
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
-      return 4; /* XXX could easily be supported */
+      return 4096;
 
    case PIPE_CAP_NPOT_TEXTURES:
       return true; /* VIV_FEATURE(priv->dev, chipMinorFeatures1,
@@ -185,7 +183,6 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    /* Unsupported features. */
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
-   case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
    case PIPE_CAP_TEXRECT:
       return 0;
 
@@ -400,7 +397,7 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
                 : screen->specs.vertex_sampler_count;
    case PIPE_SHADER_CAP_PREFERRED_IR:
       return PIPE_SHADER_IR_NIR;
-   case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+   case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
       if (ubo_enable)
          return 16384; /* 16384 so state tracker enables UBOs */
       return shader == PIPE_SHADER_FRAGMENT
@@ -414,7 +411,6 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
       return (1 << PIPE_SHADER_IR_TGSI) |
              (1 << PIPE_SHADER_IR_NIR);
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -1117,6 +1113,7 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
       .lower_uniforms_to_ubo = screen->specs.halti >= 2,
       .force_indirect_unrolling = nir_var_all,
       .max_unroll_iterations = 32,
+      .vectorize_io = true,
    };
 
    /* apply debug options that disable individual features */
@@ -1148,8 +1145,7 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
    pscreen->query_dmabuf_modifiers = etna_screen_query_dmabuf_modifiers;
    pscreen->is_dmabuf_modifier_supported = etna_screen_is_dmabuf_modifier_supported;
 
-   screen->compiler = etna_compiler_create(etna_screen_get_name(pscreen));
-   if (!screen->compiler)
+   if (!etna_shader_screen_init(pscreen))
       goto fail;
 
    etna_fence_screen_init(pscreen);

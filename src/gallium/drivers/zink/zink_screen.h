@@ -67,6 +67,7 @@ enum zink_descriptor_type;
 #define ZINK_DEBUG_TGSI 0x4
 #define ZINK_DEBUG_VALIDATION 0x8
 #define ZINK_DEBUG_SYNC 0x10
+#define ZINK_DEBUG_COMPACT (1<<5)
 
 #define NUM_SLAB_ALLOCATORS 3
 #define MIN_SLAB_ORDER 8
@@ -78,7 +79,11 @@ enum zink_descriptor_mode {
    ZINK_DESCRIPTOR_MODE_LAZY,
    ZINK_DESCRIPTOR_MODE_NOFALLBACK,
    ZINK_DESCRIPTOR_MODE_NOTEMPLATES,
+   ZINK_DESCRIPTOR_MODE_COMPACT,
 };
+
+//keep in sync with zink_descriptor_type since headers can't be cross-included
+#define ZINK_MAX_DESCRIPTOR_SETS 6
 
 struct zink_modifier_prop {
     uint32_t                             drmFormatModifierCount;
@@ -94,19 +99,21 @@ struct zink_screen {
 
    bool threaded;
    bool is_cpu;
-   uint32_t curr_batch; //the current batch id
-   uint32_t last_finished; //this is racy but ultimately doesn't matter
+   uint64_t curr_batch; //the current batch id
+   uint32_t last_finished;
    VkSemaphore sem;
-   VkSemaphore prev_sem;
+   VkFence fence;
    struct util_queue flush_queue;
    struct zink_context *copy_context;
 
    unsigned buffer_rebind_counter;
+   unsigned image_rebind_counter;
 
    struct hash_table dts;
    simple_mtx_t dt_lock;
 
    bool device_lost;
+   int drm_fd;
 
    struct hash_table framebuffer_cache;
 
@@ -121,11 +128,10 @@ struct zink_screen {
       struct pb_cache bo_cache;
       struct pb_slabs bo_slabs[NUM_SLAB_ALLOCATORS];
       unsigned min_alloc_size;
-      struct hash_table *bo_export_table;
-      simple_mtx_t bo_export_table_lock;
       uint32_t next_bo_unique_id;
    } pb;
    uint8_t heap_map[VK_MAX_MEMORY_TYPES];
+   VkMemoryPropertyFlags heap_flags[VK_MAX_MEMORY_TYPES];
    bool resizable_bar;
 
    uint64_t total_video_mem;
@@ -151,11 +157,12 @@ struct zink_screen {
    bool faked_e5sparse; //drivers may not expose R9G9B9E5 but cts requires it
 
    uint32_t gfx_queue;
+   uint32_t sparse_queue;
    uint32_t max_queues;
    uint32_t timestamp_valid_bits;
    VkDevice dev;
    VkQueue queue; //gfx+compute
-   VkQueue thread_queue; //gfx+compute
+   VkQueue queue_sparse;
    simple_mtx_t queue_lock;
    VkDebugUtilsMessengerEXT debugUtilsCallbackHandle;
 
@@ -163,6 +170,8 @@ struct zink_screen {
 
    struct vk_dispatch_table vk;
 
+   bool compact_descriptors;
+   uint8_t desc_set_id[ZINK_MAX_DESCRIPTOR_SETS];
    bool (*descriptor_program_init)(struct zink_context *ctx, struct zink_program *pg);
    void (*descriptor_program_deinit)(struct zink_context *ctx, struct zink_program *pg);
    void (*descriptors_update)(struct zink_context *ctx, bool is_compute);
@@ -194,41 +203,44 @@ struct zink_screen {
    struct {
       bool color_write_missing;
       bool depth_clip_control_missing;
+      bool implicit_sync;
    } driver_workarounds;
 };
 
 /* update last_finished to account for batch_id wrapping */
 static inline void
-zink_screen_update_last_finished(struct zink_screen *screen, uint32_t batch_id)
+zink_screen_update_last_finished(struct zink_screen *screen, uint64_t batch_id)
 {
+   const uint32_t check_id = (uint32_t)batch_id;
    /* last_finished may have wrapped */
    if (screen->last_finished < UINT_MAX / 2) {
       /* last_finished has wrapped, batch_id has not */
-      if (batch_id > UINT_MAX / 2)
+      if (check_id > UINT_MAX / 2)
          return;
-   } else if (batch_id < UINT_MAX / 2) {
+   } else if (check_id < UINT_MAX / 2) {
       /* batch_id has wrapped, last_finished has not */
-      screen->last_finished = batch_id;
+      screen->last_finished = check_id;
       return;
    }
    /* neither have wrapped */
-   screen->last_finished = MAX2(batch_id, screen->last_finished);
+   screen->last_finished = MAX2(check_id, screen->last_finished);
 }
 
 /* check a batch_id against last_finished while accounting for wrapping */
 static inline bool
 zink_screen_check_last_finished(struct zink_screen *screen, uint32_t batch_id)
 {
+   const uint32_t check_id = (uint32_t)batch_id;
    /* last_finished may have wrapped */
    if (screen->last_finished < UINT_MAX / 2) {
       /* last_finished has wrapped, batch_id has not */
-      if (batch_id > UINT_MAX / 2)
+      if (check_id > UINT_MAX / 2)
          return true;
-   } else if (batch_id < UINT_MAX / 2) {
+   } else if (check_id < UINT_MAX / 2) {
       /* batch_id has wrapped, last_finished has not */
       return false;
    }
-   return screen->last_finished >= batch_id;
+   return screen->last_finished >= check_id;
 }
 
 bool
@@ -272,7 +284,7 @@ VkFormat
 zink_get_format(struct zink_screen *screen, enum pipe_format format);
 
 bool
-zink_screen_timeline_wait(struct zink_screen *screen, uint32_t batch_id, uint64_t timeout);
+zink_screen_timeline_wait(struct zink_screen *screen, uint64_t batch_id, uint64_t timeout);
 
 bool
 zink_is_depth_format_supported(struct zink_screen *screen, VkFormat format);

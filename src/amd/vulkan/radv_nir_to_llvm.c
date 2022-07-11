@@ -1046,7 +1046,7 @@ handle_vs_outputs_post(struct radv_shader_context *ctx, bool export_prim_id, boo
    }
 
    /* Allocate a temporary array for the output values. */
-   unsigned num_outputs = util_bitcount64(ctx->output_mask) + export_prim_id;
+   unsigned num_outputs = util_bitcount64(ctx->output_mask);
    outputs = malloc(num_outputs * sizeof(outputs[0]));
 
    for (unsigned i = 0; i < AC_LLVM_MAX_OUTPUTS; ++i) {
@@ -1069,20 +1069,6 @@ handle_vs_outputs_post(struct radv_shader_context *ctx, bool export_prim_id, boo
          outputs[noutput].values[j] = ac_to_float(&ctx->ac, radv_load_output(ctx, i, j));
       }
 
-      noutput++;
-   }
-
-   /* Export PrimitiveID. */
-   if (export_prim_id) {
-      outputs[noutput].slot_name = VARYING_SLOT_PRIMITIVE_ID;
-      outputs[noutput].slot_index = 0;
-      outputs[noutput].usage_mask = 0x1;
-      if (ctx->stage == MESA_SHADER_TESS_EVAL)
-         outputs[noutput].values[0] = ac_get_arg(&ctx->ac, ctx->args->ac.tes_patch_id);
-      else
-         outputs[noutput].values[0] = ac_get_arg(&ctx->ac, ctx->args->ac.vs_prim_id);
-      for (unsigned j = 1; j < 4; j++)
-         outputs[noutput].values[j] = ctx->ac.f32_0;
       noutput++;
    }
 
@@ -1292,8 +1278,10 @@ handle_ngg_outputs_post_2(struct radv_shader_context *ctx)
 
    /* TODO: primitive culling */
 
-   ac_build_sendmsg_gs_alloc_req(&ctx->ac, get_wave_id_in_tg(ctx), ngg_get_vtx_cnt(ctx),
-                                 ngg_get_prim_cnt(ctx));
+   /* Newer chips can use PRIMGEN_PASSTHRU_NO_MSG to skip gs_alloc_req for NGG passthrough. */
+   if (!(ctx->shader_info->is_ngg_passthrough && ctx->ac.family >= CHIP_NAVI23))
+      ac_build_sendmsg_gs_alloc_req(&ctx->ac, get_wave_id_in_tg(ctx), ngg_get_vtx_cnt(ctx),
+                                    ngg_get_prim_cnt(ctx));
 
    /* TODO: streamout queries */
    /* Export primitive data to the index buffer.
@@ -1468,7 +1456,7 @@ gfx10_ngg_gs_emit_epilogue_2(struct radv_shader_context *ctx)
    LLVMValueRef num_emit_threads = ngg_get_prim_cnt(ctx);
 
    /* Write shader query data. */
-   tmp = ac_get_arg(&ctx->ac, ctx->args->ngg_gs_state);
+   tmp = ac_get_arg(&ctx->ac, ctx->args->ngg_query_state);
    tmp = LLVMBuildTrunc(builder, tmp, ctx->ac.i1, "");
    ac_build_ifcc(&ctx->ac, tmp, 5109);
    tmp = LLVMBuildICmp(builder, LLVMIntULT, tid, LLVMConstInt(ctx->ac.i32, 4, false), "");
@@ -1811,7 +1799,7 @@ handle_fs_outputs_post(struct radv_shader_context *ctx)
    if (depth || stencil || samplemask)
       radv_export_mrt_z(ctx, depth, stencil, samplemask);
    else if (!index)
-      ac_build_export_null(&ctx->ac);
+      ac_build_export_null(&ctx->ac, true);
 }
 
 static void

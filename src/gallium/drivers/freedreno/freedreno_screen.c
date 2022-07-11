@@ -131,7 +131,7 @@ fd_screen_get_timestamp(struct pipe_screen *pscreen)
    if (screen->has_timestamp) {
       uint64_t n;
       fd_pipe_get_param(screen->pipe, FD_TIMESTAMP, &n);
-      debug_assert(screen->max_freq > 0);
+      assert(screen->max_freq > 0);
       return n * 1000000000 / screen->max_freq;
    } else {
       int64_t cpu_time = os_time_get() * 1000;
@@ -248,7 +248,6 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_PRIMITIVE_RESTART:
    case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_VS_INSTANCEID:
@@ -292,7 +291,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen))
          return 64;
       return 0;
-   case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
       /* We could possibly emulate more by pretending 2d/rect textures and
        * splitting high bits of index into 2nd dimension..
        */
@@ -427,6 +426,14 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return is_a2xx(screen);
 
    case PIPE_CAP_CLIP_PLANES:
+      /* Gens that support GS, have GS lowered into a quasi-VS which confuses
+       * the frontend clip-plane lowering.  So we handle this in the backend
+       *
+       */
+      if (pscreen->get_shader_param(pscreen, PIPE_SHADER_GEOMETRY,
+                                    PIPE_SHADER_CAP_MAX_INSTRUCTIONS))
+         return 1;
+
       /* On a3xx, there is HW support for GL user clip planes that
        * occasionally has to fall back to shader key-based lowering to clip
        * distances in the VS, and we don't support clip distances so that is
@@ -440,8 +447,10 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
        * On a5xx-a6xx, we have the HW clip distances hooked up, so we just let
        * mesa/st lower desktop GL's clip planes to clip distances in the last
        * vertex shader stage.
+       *
+       * NOTE: but see comment above about geometry shaders
        */
-      return !is_a5xx(screen) && !is_a6xx(screen);
+      return !is_a5xx(screen);
 
    /* Stream output. */
    case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
@@ -622,7 +631,7 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
       return is_a6xx(screen) ? 32 : 16;
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return 64; /* Max native temporaries. */
-   case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+   case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
       /* NOTE: seems to be limit for a3xx is actually 512 but
        * split between VS and FS.  Use lower limit of 256 to
        * avoid getting into impossible situations:
@@ -675,8 +684,6 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
              COND(has_compute(screen) && (shader == PIPE_SHADER_COMPUTE),
                   (1 << PIPE_SHADER_IR_NIR_SERIALIZED)) |
              (1 << PIPE_SHADER_IR_TGSI);
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-      return 32;
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
       if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen)) {

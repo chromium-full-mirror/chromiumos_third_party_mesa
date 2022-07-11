@@ -126,7 +126,8 @@ class Format(Enum):
                  ('bool', 'slc', 'false'),
                  ('bool', 'tfe', 'false'),
                  ('bool', 'lwe', 'false'),
-                 ('bool', 'r128_a16', 'false', 'r128'),
+                 ('bool', 'r128', 'false'),
+                 ('bool', 'a16', 'false'),
                  ('bool', 'd16', 'false')]
          return [('unsigned', 'attribute', None),
                  ('unsigned', 'component', None)]
@@ -157,7 +158,7 @@ class Format(Enum):
          return [('uint8_t', 'opsel_lo', None),
                  ('uint8_t', 'opsel_hi', None)]
       elif self in [Format.FLAT, Format.GLOBAL, Format.SCRATCH]:
-         return [('uint16_t', 'offset', 0),
+         return [('int16_t', 'offset', 0),
                  ('memory_sync_info', 'sync', 'memory_sync_info()'),
                  ('bool', 'glc', 'false'),
                  ('bool', 'slc', 'false'),
@@ -316,6 +317,8 @@ opcode("p_constaddr")
 opcode("p_extract") # src1=index, src2=bits, src3=signext
 # (src0 & ((1 << bits) - 1)) << (index * bits)
 opcode("p_insert") # src1=index, src2=bits
+
+opcode("p_init_scratch")
 
 
 # SOP2 instructions: 2 scalar inputs, 1 scalar output (+optional scc)
@@ -972,7 +975,7 @@ opcode("v_dot4_i32_i8", -1, 0x28, 0x16, Format.VOP3P, InstrClass.Valu32)
 opcode("v_dot4_u32_u8", -1, 0x29, 0x17, Format.VOP3P, InstrClass.Valu32)
 
 
-# VINTERP instructions: 
+# VINTERP instructions:
 VINTRP = {
    (0x00, "v_interp_p1_f32"),
    (0x01, "v_interp_p2_f32"),

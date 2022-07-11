@@ -34,6 +34,19 @@
 uint64_t pan_best_modifiers[PAN_MODIFIER_COUNT] = {
         DRM_FORMAT_MOD_ARM_AFBC(
                 AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
+                AFBC_FORMAT_MOD_TILED |
+                AFBC_FORMAT_MOD_SC |
+                AFBC_FORMAT_MOD_SPARSE |
+                AFBC_FORMAT_MOD_YTR),
+
+        DRM_FORMAT_MOD_ARM_AFBC(
+                AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
+                AFBC_FORMAT_MOD_TILED |
+                AFBC_FORMAT_MOD_SC |
+                AFBC_FORMAT_MOD_SPARSE),
+
+        DRM_FORMAT_MOD_ARM_AFBC(
+                AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
                 AFBC_FORMAT_MOD_SPARSE |
                 AFBC_FORMAT_MOD_YTR),
 
@@ -94,7 +107,7 @@ panfrost_afbc_superblock_height(uint64_t modifier)
  * defined as superblocks wider than 16 pixels, the minimum (and default) super
  * block width.
  */
-unsigned
+bool
 panfrost_afbc_is_wide(uint64_t modifier)
 {
         return panfrost_afbc_superblock_width(modifier) > 16;
@@ -128,6 +141,56 @@ panfrost_block_size(uint64_t modifier, enum pipe_format format)
                 return panfrost_afbc_superblock_size(modifier);
         else
                 return (struct pan_block_size) { 1, 1 };
+}
+
+/*
+ * Determine the tile size used by AFBC. This tiles superblocks themselves.
+ * Current GPUs support either 8x8 tiling or no tiling (1x1)
+ */
+static inline unsigned
+pan_afbc_tile_size(uint64_t modifier)
+{
+        return (modifier & AFBC_FORMAT_MOD_TILED) ? 8 : 1;
+}
+
+/*
+ * Determine the number of bytes between header rows for an AFBC image. For an
+ * image with linear headers, this is simply the number of header blocks
+ * (=superblocks) per row times the numbers of bytes per header block. For an
+ * image with linear headers, this is multipled by the number of rows of
+ * header blocks are in a tile together.
+ */
+uint32_t
+pan_afbc_row_stride(uint64_t modifier, uint32_t width)
+{
+        unsigned block_width = panfrost_afbc_superblock_width(modifier);
+
+        return (width / block_width) * pan_afbc_tile_size(modifier) *
+                AFBC_HEADER_BYTES_PER_TILE;
+}
+
+/*
+ * Determine the number of header blocks between header rows. This is equal to
+ * the number of bytes between header rows divided by the bytes per blocks of a
+ * header tile. This is also divided by the tile size to give a "line stride" in
+ * blocks, rather than a real row stride. This is required by Bifrost.
+ */
+uint32_t
+pan_afbc_stride_blocks(uint64_t modifier, uint32_t row_stride_bytes)
+{
+        return row_stride_bytes /
+               (AFBC_HEADER_BYTES_PER_TILE * pan_afbc_tile_size(modifier));
+}
+
+/*
+ * Determine the required alignment for the body offset of an AFBC image. For
+ * now, this depends only on whether tiling is in use. These minimum alignments
+ * are required on all current GPUs.
+ */
+static inline uint32_t
+pan_afbc_body_align(uint64_t modifier)
+{
+        return (modifier & AFBC_FORMAT_MOD_TILED) ? 4096 : 64;
 }
 
 /* Computes sizes for checksumming, which is 8 bytes per 16x16 tile.
@@ -193,7 +256,7 @@ panfrost_from_legacy_stride(unsigned legacy_stride,
         if (drm_is_afbc(modifier)) {
                 unsigned width = legacy_stride / util_format_get_blocksize(format);
 
-                return (width / block_size.width) * AFBC_HEADER_BYTES_PER_TILE;
+                return pan_afbc_row_stride(modifier, width);
         } else {
                 return legacy_stride * block_size.height;
         }
@@ -249,11 +312,20 @@ pan_image_layout_init(struct pan_image_layout *layout,
         unsigned height = layout->height;
         unsigned depth = layout->depth;
 
+        unsigned align_w = block_size.width;
+        unsigned align_h = block_size.height;
+
+        /* For tiled AFBC, align to tiles of superblocks (this can be large) */
+        if (afbc) {
+                align_w *= pan_afbc_tile_size(layout->modifier);
+                align_h *= pan_afbc_tile_size(layout->modifier);
+        }
+
         for (unsigned l = 0; l < layout->nr_slices; ++l) {
                 struct pan_image_slice_layout *slice = &layout->slices[l];
 
-                unsigned effective_width = ALIGN_POT(util_format_get_nblocksx(layout->format, width), block_size.width);
-                unsigned effective_height = ALIGN_POT(util_format_get_nblocksy(layout->format, height), block_size.height);
+                unsigned effective_width = ALIGN_POT(util_format_get_nblocksx(layout->format, width), align_w);
+                unsigned effective_height = ALIGN_POT(util_format_get_nblocksy(layout->format, height), align_h);
 
                 /* Align levels to cache-line as a performance improvement for
                  * linear/tiled and as a requirement for AFBC */
@@ -279,13 +351,11 @@ pan_image_layout_init(struct pan_image_layout *layout,
 
                 /* Compute AFBC sizes if necessary */
                 if (afbc) {
-                        slice->afbc.header_size =
-                                panfrost_afbc_header_size(width, height);
-
-                        /* Stride between two rows of AFBC headers */
                         slice->row_stride =
-                                (effective_width / block_size.width) *
-                                AFBC_HEADER_BYTES_PER_TILE;
+                                pan_afbc_row_stride(layout->modifier, effective_width);
+                        slice->afbc.header_size =
+                                ALIGN_POT(slice->row_stride * (effective_height / align_h),
+                                          pan_afbc_body_align(layout->modifier));
 
                         if (explicit_layout && explicit_layout->row_stride < slice->row_stride)
                                 return false;

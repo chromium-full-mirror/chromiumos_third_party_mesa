@@ -28,6 +28,7 @@
 #include "d3d12_nir_passes.h"
 #include "nir_to_dxil.h"
 #include "dxil_nir.h"
+#include "dxil_nir_lower_int_cubemaps.h"
 
 #include "pipe/p_state.h"
 
@@ -44,7 +45,6 @@
 #include "util/u_simple_shaders.h"
 #include "util/u_dl.h"
 
-#include <directx/d3d12.h>
 #include <dxguids/dxguids.h>
 
 extern "C" {
@@ -113,7 +113,7 @@ compile_nir(struct d3d12_context *ctx, struct d3d12_shader_selector *sel,
                  screen->base.get_paramf(&screen->base, PIPE_CAPF_MAX_TEXTURE_LOD_BIAS));
 
    if (key->vs.needs_format_emulation)
-      d3d12_nir_lower_vs_vertex_conversion(nir, key->vs.format_conversion);
+      dxil_nir_lower_vs_vertex_conversion(nir, key->vs.format_conversion);
 
    uint32_t num_ubos_before_lower_to_ubo = nir->info.num_ubos;
    uint32_t num_uniforms_before_lower_to_ubo = nir->num_uniforms;
@@ -702,11 +702,13 @@ d3d12_compare_shader_keys(const d3d12_shader_key *expect, const d3d12_shader_key
     * and outputs. */
 
    if (!d3d12_compare_varying_info(&expect->required_varying_inputs,
-                                   &have->required_varying_inputs))
+                                   &have->required_varying_inputs) ||
+       expect->next_varying_inputs != have->next_varying_inputs)
       return false;
 
    if (!d3d12_compare_varying_info(&expect->required_varying_outputs,
-                                   &have->required_varying_outputs))
+                                   &have->required_varying_outputs) ||
+       expect->prev_varying_outputs != have->prev_varying_outputs)
       return false;
 
    if (expect->stage == PIPE_SHADER_GEOMETRY) {
@@ -742,6 +744,7 @@ d3d12_compare_shader_keys(const d3d12_shader_key *expect, const d3d12_shader_key
           expect->hs.ccw != have->hs.ccw ||
           expect->hs.point_mode != have->hs.point_mode ||
           expect->hs.spacing != have->hs.spacing ||
+          expect->hs.patch_vertices_in != have->hs.patch_vertices_in ||
           memcmp(&expect->hs.required_patch_outputs, &have->hs.required_patch_outputs,
                  sizeof(struct d3d12_varying_info)) ||
           expect->hs.next_patch_inputs != have->hs.next_patch_inputs)
@@ -873,7 +876,7 @@ d3d12_fill_shader_key(struct d3d12_selection_context *sel_ctx,
       if (stage == PIPE_SHADER_FRAGMENT || stage == PIPE_SHADER_GEOMETRY)
          system_out_values |= VARYING_BIT_POS;
       if (stage == PIPE_SHADER_FRAGMENT)
-         system_out_values |= VARYING_BIT_PSIZ | VARYING_BIT_VIEWPORT;
+         system_out_values |= VARYING_BIT_PSIZ | VARYING_BIT_VIEWPORT | VARYING_BIT_LAYER;
       uint64_t mask = prev->current->nir->info.outputs_written & ~system_out_values;
       fill_varyings(&key->required_varying_inputs, prev->current->nir,
                     nir_var_shader_out, mask, false);
@@ -977,6 +980,7 @@ d3d12_fill_shader_key(struct d3d12_selection_context *sel_ctx,
          key->hs.point_mode = false;
          key->hs.spacing = TESS_SPACING_EQUAL;
       }
+      key->hs.patch_vertices_in = MAX2(sel_ctx->ctx->patch_vertices, 1);
    } else if (stage == PIPE_SHADER_TESS_EVAL) {
       if (prev && prev->current->nir->info.stage == MESA_SHADER_TESS_CTRL)
          key->ds.tcs_vertices_out = prev->current->nir->info.tess.tcs_vertices_out;
@@ -1146,6 +1150,8 @@ select_shader_variant(struct d3d12_selection_context *sel_ctx, d3d12_shader_sele
       new_nir_variant->info.tess.ccw = key.hs.ccw;
       new_nir_variant->info.tess.point_mode = key.hs.point_mode;
       new_nir_variant->info.tess.spacing = key.hs.spacing;
+
+      NIR_PASS_V(new_nir_variant, dxil_nir_set_tcs_patches_in, key.hs.patch_vertices_in);
    } else if (new_nir_variant->info.stage == MESA_SHADER_TESS_EVAL) {
       new_nir_variant->info.tess.tcs_vertices_out = key.ds.tcs_vertices_out;
    }
@@ -1341,7 +1347,7 @@ d3d12_create_shader_impl(struct d3d12_context *ctx,
    /* Integer cube maps are not supported in DirectX because sampling is not supported
     * on integer textures and TextureLoad is not supported for cube maps, so we have to
     * lower integer cube maps to be handled like 2D textures arrays*/
-   NIR_PASS_V(nir, d3d12_lower_int_cubmap_to_array);
+   NIR_PASS_V(nir, dxil_nir_lower_int_cubemaps, true);
 
    /* Keep this initial shader as the blue print for possible variants */
    sel->initial = nir;
@@ -1400,14 +1406,6 @@ d3d12_create_shader(struct d3d12_context *ctx,
    d3d12_shader_selector *prev = get_prev_shader(ctx, sel->stage);
    d3d12_shader_selector *next = get_next_shader(ctx, sel->stage);
 
-   uint64_t in_mask = nir->info.stage == MESA_SHADER_VERTEX ?
-                         0 : (VARYING_BIT_PRIMITIVE_ID | VARYING_BIT_VIEWPORT);
-
-   uint64_t out_mask = nir->info.stage == MESA_SHADER_FRAGMENT ?
-                          (1ull << FRAG_RESULT_STENCIL) | (1ull << FRAG_RESULT_SAMPLE_MASK) :
-                          (VARYING_BIT_PRIMITIVE_ID | VARYING_BIT_VIEWPORT);
-
-   d3d12_fix_io_uint_type(nir, in_mask, out_mask);
    NIR_PASS_V(nir, dxil_nir_split_clip_cull_distance);
    NIR_PASS_V(nir, d3d12_split_multistream_varyings);
 

@@ -135,6 +135,8 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
    struct compiled_framebuffer_state *cs = &ctx->framebuffer;
    int nr_samples_color = -1;
    int nr_samples_depth = -1;
+   bool target_16bpp = false;
+   bool target_linear = false;
 
    /* Set up TS as well. Warning: this state is used by both the RS and PE */
    uint32_t ts_mem_config = 0;
@@ -147,14 +149,21 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
       bool color_supertiled = (res->layout & ETNA_LAYOUT_BIT_SUPER) != 0;
       uint32_t fmt = translate_pe_format(cbuf->base.format);
 
-      assert(res->layout & ETNA_LAYOUT_BIT_TILE); /* Cannot render to linear surfaces */
+      assert((res->layout & ETNA_LAYOUT_BIT_TILE) ||
+             VIV_FEATURE(screen, chipMinorFeatures2, LINEAR_PE));
       etna_update_render_resource(pctx, etna_resource(cbuf->prsc));
+
+      if (res->layout == ETNA_LAYOUT_LINEAR)
+         target_linear = true;
 
       if (fmt >= PE_FORMAT_R16F)
           cs->PE_COLOR_FORMAT = VIVS_PE_COLOR_FORMAT_FORMAT_EXT(fmt) |
                                 VIVS_PE_COLOR_FORMAT_FORMAT_MASK;
       else
           cs->PE_COLOR_FORMAT = VIVS_PE_COLOR_FORMAT_FORMAT(fmt);
+
+      if (util_format_get_blocksize(cbuf->base.format) <= 2)
+         target_16bpp = true;
 
       cs->PE_COLOR_FORMAT |=
          VIVS_PE_COLOR_FORMAT_COMPONENTS__MASK |
@@ -250,6 +259,9 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
       unsigned depth_bits =
          depth_format == VIVS_PE_DEPTH_CONFIG_DEPTH_FORMAT_D16 ? 16 : 24;
       bool depth_supertiled = (res->layout & ETNA_LAYOUT_BIT_SUPER) != 0;
+
+      if (depth_bits == 16)
+         target_16bpp = true;
 
       cs->PE_DEPTH_CONFIG =
          depth_format |
@@ -358,9 +370,11 @@ etna_set_framebuffer_state(struct pipe_context *pctx,
    /* Single buffer setup. There is only one switch for this, not a separate
     * one per color buffer / depth buffer. To keep the logic simple always use
     * single buffer when this feature is available.
-    * note: the blob will use 2 in some situations, figure out why?
     */
-   pe_logic_op |= VIVS_PE_LOGIC_OP_SINGLE_BUFFER(screen->specs.single_buffer ? 3 : 0);
+   if (unlikely(target_linear))
+      pe_logic_op |= VIVS_PE_LOGIC_OP_SINGLE_BUFFER(1);
+   else if (screen->specs.single_buffer)
+      pe_logic_op |= VIVS_PE_LOGIC_OP_SINGLE_BUFFER(target_16bpp ? 3 : 2);
    cs->PE_LOGIC_OP = pe_logic_op;
 
    /* keep copy of original structure */
@@ -724,6 +738,20 @@ etna_update_zsa(struct etna_context *ctx)
          late_z_test = true;
    }
 
+   /* Linear PE breaks the combination of early test with late write, as it
+    * seems RA and PE disagree about the cache layout in this mode. Switch to
+    * late test to work around this issue.
+    */
+   if (ctx->framebuffer_s.nr_cbufs > 0) {
+      struct etna_surface *cbuf = etna_surface(ctx->framebuffer_s.cbufs[0]);
+      struct etna_resource *res = etna_resource(cbuf->base.texture);
+
+      if (res->layout == ETNA_LAYOUT_LINEAR && early_z_test && late_z_write) {
+         early_z_test = false;
+         late_z_test = true;
+      }
+   }
+
    new_pe_depth = VIVS_PE_DEPTH_CONFIG_DEPTH_FUNC(zsa->z_test_enabled ?
                      /* compare funcs have 1 to 1 mapping */
                      zsa_state->depth_func : PIPE_FUNC_ALWAYS) |
@@ -798,7 +826,8 @@ static const struct etna_state_updater etna_state_updates[] = {
                             ETNA_DIRTY_RASTERIZER | ETNA_DIRTY_VIEWPORT,
    },
    {
-      etna_update_zsa, ETNA_DIRTY_ZSA | ETNA_DIRTY_SHADER,
+      etna_update_zsa, ETNA_DIRTY_ZSA | ETNA_DIRTY_SHADER |
+                       ETNA_DIRTY_FRAMEBUFFER,
    },
    {
       etna_record_flush_resources, ETNA_DIRTY_FRAMEBUFFER,

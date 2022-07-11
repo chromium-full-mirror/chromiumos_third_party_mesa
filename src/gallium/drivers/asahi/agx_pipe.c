@@ -388,10 +388,21 @@ agx_clear(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor
           const union pipe_color_union *color, double depth, unsigned stencil)
 {
    struct agx_context *ctx = agx_context(pctx);
+
+   /* TODO: support partial clears */
+   if (ctx->batch->clear | ctx->batch->draw)
+      pctx->flush(pctx, NULL, 0);
+
    ctx->batch->clear |= buffers;
 
    if (buffers & PIPE_CLEAR_COLOR0)
       memcpy(ctx->batch->clear_color, color->f, sizeof(color->f));
+
+   if (buffers & PIPE_CLEAR_DEPTH)
+      ctx->batch->clear_depth = depth;
+
+   if (buffers & PIPE_CLEAR_STENCIL)
+      ctx->batch->clear_stencil = stencil;
 }
 
 
@@ -423,44 +434,46 @@ agx_flush(struct pipe_context *pctx,
    memcpy(ctx->batch->encoder_current, stop, sizeof(stop));
 
    /* Emit the commandbuffer */
-   uint64_t pipeline_clear = 0;
+   uint64_t pipeline_clear = 0, pipeline_reload = 0;
    bool clear_pipeline_textures = false;
 
    struct agx_device *dev = agx_device(pctx->screen);
 
-   if ((ctx->batch->clear & PIPE_CLEAR_COLOR0) || !ctx->batch->cbufs[0]) {
-      uint16_t clear_colour[4] = {
-         _mesa_float_to_half(ctx->batch->clear_color[0]),
-         _mesa_float_to_half(ctx->batch->clear_color[1]),
-         _mesa_float_to_half(ctx->batch->clear_color[2]),
-         _mesa_float_to_half(ctx->batch->clear_color[3])
-      };
+   uint16_t clear_colour[4] = {
+      _mesa_float_to_half(ctx->batch->clear_color[0]),
+      _mesa_float_to_half(ctx->batch->clear_color[1]),
+      _mesa_float_to_half(ctx->batch->clear_color[2]),
+      _mesa_float_to_half(ctx->batch->clear_color[3])
+   };
 
+   pipeline_clear = agx_build_clear_pipeline(ctx,
+         dev->internal.clear,
+         agx_pool_upload(&ctx->batch->pool, clear_colour, sizeof(clear_colour)));
 
-      pipeline_clear = agx_build_clear_pipeline(ctx,
-                               dev->internal.clear,
-                               agx_pool_upload(&ctx->batch->pool, clear_colour, sizeof(clear_colour)));
-   } else {
+   if (ctx->batch->cbufs[0]) {
       enum pipe_format fmt = ctx->batch->cbufs[0]->format;
       enum agx_format internal = agx_pixel_format[fmt].internal;
       uint32_t shader = dev->reload.format[internal];
 
-      pipeline_clear = agx_build_reload_pipeline(ctx, shader,
+      pipeline_reload = agx_build_reload_pipeline(ctx, shader,
                                ctx->batch->cbufs[0]);
-
-      clear_pipeline_textures = true;
    }
 
-   uint64_t pipeline_store =
-      agx_build_store_pipeline(ctx,
-                               dev->internal.store,
-                               agx_pool_upload(&ctx->batch->pool, ctx->render_target[0], sizeof(ctx->render_target)));
+   if (ctx->batch->cbufs[0] && !(ctx->batch->clear & PIPE_CLEAR_COLOR0)) {
+      clear_pipeline_textures = true;
+      pipeline_clear = pipeline_reload;
+   }
+
+   uint64_t pipeline_store = 0;
+
+   if (ctx->batch->cbufs[0]) {
+      pipeline_store =
+         agx_build_store_pipeline(ctx,
+                                  dev->internal.store,
+                                  agx_pool_upload(&ctx->batch->pool, ctx->render_target[0], sizeof(ctx->render_target)));
+   }
 
    /* Pipelines must 64 aligned */
-   struct agx_ptr pipeline_null =
-      agx_pool_alloc_aligned(&ctx->batch->pipeline_pool, 64, 64);
-   memset(pipeline_null.cpu, 0, 64);
-
    for (unsigned i = 0; i < ctx->batch->nr_cbufs; ++i) {
       struct agx_resource *rt = agx_resource(ctx->batch->cbufs[i]->texture);
       BITSET_SET(rt->data_valid, 0);
@@ -487,6 +500,7 @@ agx_flush(struct pipe_context *pctx,
 
    agx_batch_add_bo(batch, batch->encoder);
    agx_batch_add_bo(batch, batch->scissor.bo);
+   agx_batch_add_bo(batch, batch->depth_bias.bo);
    agx_batch_add_bo(batch, dev->internal.bo);
    agx_batch_add_bo(batch, dev->reload.bo);
 
@@ -537,10 +551,13 @@ agx_flush(struct pipe_context *pctx,
                ctx->batch->encoder->ptr.gpu,
                encoder_id,
                ctx->batch->scissor.bo->ptr.gpu,
-               pipeline_null.gpu,
+               ctx->batch->depth_bias.bo->ptr.gpu,
                pipeline_clear,
+               pipeline_reload,
                pipeline_store,
-               clear_pipeline_textures);
+               clear_pipeline_textures,
+               ctx->batch->clear_depth,
+               ctx->batch->clear_stencil);
 
    /* Generate the mapping table from the BO list */
    demo_mem_map(dev->memmap.ptr.cpu, dev->memmap.size, handles, handle_count,
@@ -612,6 +629,7 @@ agx_create_context(struct pipe_screen *screen,
    ctx->batch->encoder = agx_bo_create(agx_device(screen), 0x80000, AGX_MEMORY_TYPE_FRAMEBUFFER);
    ctx->batch->encoder_current = ctx->batch->encoder->ptr.cpu;
    ctx->batch->scissor.bo = agx_bo_create(agx_device(screen), 0x80000, AGX_MEMORY_TYPE_FRAMEBUFFER);
+   ctx->batch->depth_bias.bo = agx_bo_create(agx_device(screen), 0x80000, AGX_MEMORY_TYPE_FRAMEBUFFER);
 
    /* Upload fixed shaders (TODO: compile them?) */
 
@@ -706,7 +724,6 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
@@ -774,7 +791,7 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 16;
 
-   case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
       return 65536;
 
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
@@ -801,6 +818,7 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
       return true;
+   case PIPE_CAP_POINT_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_FS_POINT_IS_SYSVAL:
       return false;
 
@@ -915,7 +933,7 @@ agx_get_shader_param(struct pipe_screen* pscreen,
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return 256; /* GL_MAX_PROGRAM_TEMPORARIES_ARB */
 
-   case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+   case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
       return 16 * 1024 * sizeof(float);
 
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
@@ -963,7 +981,6 @@ agx_get_shader_param(struct pipe_screen* pscreen,
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
       return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_NIR_SERIALIZED);
 
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -1040,6 +1057,24 @@ agx_is_format_supported(struct pipe_screen* pscreen,
       case PIPE_FORMAT_R32G32B32_FLOAT:
       case PIPE_FORMAT_R32G32B32A32_FLOAT:
          return true;
+      default:
+         return false;
+      }
+   }
+
+   if (usage & PIPE_BIND_DEPTH_STENCIL) {
+      switch (format) {
+      /* natively supported
+       * TODO: we could also support Z16_UNORM */
+      case PIPE_FORMAT_Z32_FLOAT:
+      case PIPE_FORMAT_S8_UINT:
+
+      /* lowered by u_transfer_helper to one of the above */
+      case PIPE_FORMAT_Z24X8_UNORM:
+      case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+      case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
+         return true;
+
       default:
          return false;
       }
@@ -1174,7 +1209,8 @@ agx_screen_create(struct sw_winsys *winsys)
    screen->resource_create = u_transfer_helper_resource_create;
    screen->resource_destroy = u_transfer_helper_resource_destroy;
    screen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
-                                                      true, true, false, true, false);
+                                                      true, true, false, true,
+                                                      true);
 
    agx_internal_shaders(&agx_screen->dev);
 

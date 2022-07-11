@@ -153,7 +153,8 @@ validate_ir(Program* program)
                      base_format == Format::VOPC,
                   "Format cannot have SDWA applied", instr.get());
 
-            check(program->gfx_level >= GFX8, "SDWA is GFX8+ only", instr.get());
+            check(program->gfx_level >= GFX8, "SDWA is GFX8 to GFX10.3 only", instr.get());
+            check(program->gfx_level < GFX11, "SDWA is GFX8 to GFX10.3 only", instr.get());
 
             SDWA_instruction& sdwa = instr->sdwa();
             check(sdwa.omod == 0 || program->gfx_level >= GFX9, "SDWA omod only supported on GFX9+",
@@ -261,7 +262,8 @@ validate_ir(Program* program)
                bool can_be_undef = is_phi(instr) || instr->isEXP() || instr->isReduction() ||
                                    instr->opcode == aco_opcode::p_create_vector ||
                                    (flat && i == 1) || (instr->isMIMG() && (i == 1 || i == 2)) ||
-                                   ((instr->isMUBUF() || instr->isMTBUF()) && i == 1);
+                                   ((instr->isMUBUF() || instr->isMTBUF()) && i == 1) ||
+                                   (instr->isScratch() && i == 0);
                check(can_be_undef, "Undefs can only be used in certain operands", instr.get());
             } else {
                check(instr->operands[i].isFixed() || instr->operands[i].isTemp() ||
@@ -378,8 +380,9 @@ validate_ir(Program* program)
             }
 
             if (instr->isSOP1() || instr->isSOP2()) {
-               check(instr->definitions[0].getTemp().type() == RegType::sgpr,
-                     "Wrong Definition type for SALU instruction", instr.get());
+               if (!instr->definitions.empty())
+                  check(instr->definitions[0].getTemp().type() == RegType::sgpr,
+                        "Wrong Definition type for SALU instruction", instr.get());
                for (const Operand& op : instr->operands) {
                   check(op.isConstant() || op.regClass().type() <= RegType::sgpr,
                         "Wrong Operand type for SALU instruction", instr.get());
@@ -656,13 +659,20 @@ validate_ir(Program* program)
                   instr.get());
             FALLTHROUGH;
          case Format::GLOBAL:
-         case Format::SCRATCH: {
             check(
                instr->operands[0].isTemp() && instr->operands[0].regClass().type() == RegType::vgpr,
-               "FLAT/GLOBAL/SCRATCH address must be vgpr", instr.get());
+               "FLAT/GLOBAL address must be vgpr", instr.get());
+            FALLTHROUGH;
+         case Format::SCRATCH: {
+            check(instr->operands[0].hasRegClass() &&
+                     instr->operands[0].regClass().type() == RegType::vgpr,
+                  "FLAT/GLOBAL/SCRATCH address must be undefined or vgpr", instr.get());
             check(instr->operands[1].hasRegClass() &&
                      instr->operands[1].regClass().type() == RegType::sgpr,
                   "FLAT/GLOBAL/SCRATCH sgpr address must be undefined or sgpr", instr.get());
+            if (instr->format == Format::SCRATCH && program->gfx_level < GFX10_3)
+               check(instr->operands[0].isTemp() || instr->operands[1].isTemp(),
+                     "SCRATCH must have either SADDR or ADDR operand", instr.get());
             if (!instr->definitions.empty())
                check(instr->definitions[0].getTemp().type() == RegType::vgpr,
                      "FLAT/GLOBAL/SCRATCH result must be vgpr", instr.get());
@@ -839,6 +849,7 @@ validate_subdword_definition(amd_gfx_level gfx_level, const aco_ptr<Instruction>
       return true;
 
    switch (instr->opcode) {
+   case aco_opcode::v_fma_mixhi_f16:
    case aco_opcode::buffer_load_ubyte_d16_hi:
    case aco_opcode::buffer_load_sbyte_d16_hi:
    case aco_opcode::buffer_load_short_d16_hi:

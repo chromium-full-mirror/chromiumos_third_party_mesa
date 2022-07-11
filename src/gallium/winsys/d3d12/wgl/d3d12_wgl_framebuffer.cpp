@@ -23,7 +23,9 @@
 
 #include "d3d12_wgl_public.h"
 
-#include <Windows.h>
+#include <new>
+
+#include <windows.h>
 #include <dxgi1_4.h>
 #include <directx/d3d12.h>
 #include <wrl.h>

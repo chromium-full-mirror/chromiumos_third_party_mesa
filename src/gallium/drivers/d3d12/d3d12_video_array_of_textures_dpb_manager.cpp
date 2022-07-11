@@ -30,12 +30,8 @@
 // Uses an std::vector with individual D3D resources as backing storage instead of an D3D12 Texture Array
 // Supports dynamic pool capacity extension (by pushing back a new D3D12Resource) of the pool
 
-#ifndef _WIN32
-#include <wsl/winadapter.h>
-#endif
+#include "d3d12_common.h"
 
-#define D3D12_IGNORE_SDK_LAYERS
-#include <directx/d3d12.h>
 #include "d3d12_util.h"
 
 void
@@ -247,10 +243,11 @@ d3d12_array_of_textures_dpb_manager::get_new_tracked_picture_allocation()
 
    if (!bAvailableResourceInPool) {
       // Expand resources pool by one
+      assert(m_ResourcesPool.size() < UINT32_MAX);
       debug_printf(
-         "[d3d12_array_of_textures_dpb_manager] ID3D12Resource Pool capacity (%ld) exceeded - extending capacity "
+         "[d3d12_array_of_textures_dpb_manager] ID3D12Resource Pool capacity (%" PRIu32 ") exceeded - extending capacity "
          "and appending new allocation at the end",
-         m_ResourcesPool.size());
+         static_cast<uint32_t>(m_ResourcesPool.size()));
       d3d12_reusable_resource newPoolEntry = {};
       newPoolEntry.isFree                  = false;
       create_reconstructed_picture_allocations(newPoolEntry.pResource.GetAddressOf());

@@ -295,8 +295,6 @@ static void pvr_srv_render_ctx_fw_static_state_init(
    struct rogue_fwif_ta_regs_cswitch *regs =
       &static_state->ctx_switch_geom_regs[0];
 
-   STATIC_ASSERT(ARRAY_SIZE(static_state->ctx_switch_geom_regs) == 1);
-
    memset(static_state, 0, sizeof(*static_state));
 
    regs->vdm_context_state_base_addr = ws_static_state->vdm_ctx_state_base_addr;
@@ -680,10 +678,19 @@ VkResult pvr_srv_winsys_render_submit(
    if (result != VK_SUCCESS)
       goto err_close_in_fds;
 
-   srv_signal_sync_geom = to_srv_sync(signal_sync_geom);
-   srv_signal_sync_frag = to_srv_sync(signal_sync_frag);
-   pvr_srv_set_sync_payload(srv_signal_sync_geom, fence_geom);
-   pvr_srv_set_sync_payload(srv_signal_sync_frag, fence_frag);
+   if (signal_sync_geom) {
+      srv_signal_sync_geom = to_srv_sync(signal_sync_geom);
+      pvr_srv_set_sync_payload(srv_signal_sync_geom, fence_geom);
+   } else if (fence_geom != -1) {
+      close(fence_geom);
+   }
+
+   if (signal_sync_frag) {
+      srv_signal_sync_frag = to_srv_sync(signal_sync_frag);
+      pvr_srv_set_sync_payload(srv_signal_sync_frag, fence_frag);
+   } else if (fence_frag != -1) {
+      close(fence_frag);
+   }
 
    return VK_SUCCESS;
 

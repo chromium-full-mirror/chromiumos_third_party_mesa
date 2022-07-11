@@ -42,6 +42,7 @@
 #include "util/os_misc.h"
 #include "util/u_atomic.h"
 #include "vk_format.h"
+#include "vk_sampler.h"
 #include "vk_util.h"
 
 /* for fd_get_driver/device_uuid() */
@@ -167,6 +168,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_spirv_1_4 = true,
       .KHR_storage_buffer_storage_class = true,
       .KHR_swapchain = TU_HAS_SURFACE,
+      .KHR_swapchain_mutable_format = TU_HAS_SURFACE,
       .KHR_uniform_buffer_standard_layout = true,
       .KHR_variable_pointers = true,
       .KHR_vulkan_memory_model = true,
@@ -176,6 +178,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .KHR_shader_integer_dot_product = true,
       .KHR_zero_initialize_workgroup_memory = true,
       .KHR_shader_non_semantic_info = true,
+      .KHR_synchronization2 = true,
 #ifndef TU_USE_KGSL
       .KHR_timeline_semaphore = true,
 #endif
@@ -188,6 +191,7 @@ get_device_extensions(const struct tu_physical_device *device,
       .EXT_sampler_filter_minmax = true,
       .EXT_transform_feedback = true,
       .EXT_4444_formats = true,
+      .EXT_border_color_swizzle = true,
       .EXT_conditional_rendering = true,
       .EXT_custom_border_color = true,
       .EXT_depth_clip_control = true,
@@ -216,6 +220,8 @@ get_device_extensions(const struct tu_physical_device *device,
       .EXT_image_robustness = true,
       .EXT_primitives_generated_query = true,
       .EXT_image_view_min_lod = true,
+      .EXT_pipeline_creation_feedback = true,
+      .EXT_pipeline_creation_cache_control = true,
 #ifndef TU_USE_KGSL
       .EXT_physical_device_drm = true,
 #endif
@@ -227,6 +233,8 @@ get_device_extensions(const struct tu_physical_device *device,
 #endif
       .IMG_filter_cubic = device->info->a6xx.has_tex_filter_cubic,
       .VALVE_mutable_descriptor_type = true,
+      .EXT_image_2d_view_of_3d = true,
+      .EXT_color_write_enable = true,
    };
 }
 
@@ -298,6 +306,8 @@ tu_physical_device_init(struct tu_physical_device *device,
    if (result != VK_SUCCESS)
       goto fail_free_name;
 
+   device->vk.supported_sync_types = device->sync_types;
+
 #if TU_HAS_SURFACE
    result = tu_wsi_init(device);
    if (result != VK_SUCCESS) {
@@ -350,6 +360,7 @@ static const struct debug_control tu_debug_options[] = {
    { "noubwc", TU_DEBUG_NOUBWC },
    { "nomultipos", TU_DEBUG_NOMULTIPOS },
    { "nolrz", TU_DEBUG_NOLRZ },
+   { "nolrzfc", TU_DEBUG_NOLRZFC },
    { "perf", TU_DEBUG_PERF },
    { "perfc", TU_DEBUG_PERFC },
    { "flushall", TU_DEBUG_FLUSHALL },
@@ -618,13 +629,13 @@ tu_get_physical_device_features_1_3(struct tu_physical_device *pdevice,
    features->robustImageAccess                   = true;
    features->inlineUniformBlock                  = false;
    features->descriptorBindingInlineUniformBlockUpdateAfterBind = false;
-   features->pipelineCreationCacheControl        = false;
+   features->pipelineCreationCacheControl        = true;
    features->privateData                         = true;
    features->shaderDemoteToHelperInvocation      = true;
    features->shaderTerminateInvocation           = true;
    features->subgroupSizeControl                 = true;
    features->computeFullSubgroups                = true;
-   features->synchronization2                    = false;
+   features->synchronization2                    = true;
    features->textureCompressionASTC_HDR          = false;
    features->shaderZeroInitializeWorkgroupMemory = true;
    features->dynamicRendering                    = false;
@@ -666,7 +677,7 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       .pipelineStatisticsQuery = true,
       .vertexPipelineStoresAndAtomics = true,
       .fragmentStoresAndAtomics = true,
-      .shaderTessellationAndGeometryPointSize = false,
+      .shaderTessellationAndGeometryPointSize = true,
       .shaderImageGatherExtended = true,
       .shaderStorageImageExtendedFormats = true,
       .shaderStorageImageMultisample = false,
@@ -750,6 +761,12 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->formatA4B4G4R4 = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BORDER_COLOR_SWIZZLE_FEATURES_EXT: {
+         VkPhysicalDeviceBorderColorSwizzleFeaturesEXT *features = (void *)ext;
+         features->borderColorSwizzle = true;
+         features->borderColorSwizzleFromImage = true;
+         break;
+      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
          VkPhysicalDeviceCustomBorderColorFeaturesEXT *features = (void *) ext;
          features->customBorderColors = true;
@@ -765,7 +782,7 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          VkPhysicalDeviceExtendedDynamicState2FeaturesEXT *features =
             (VkPhysicalDeviceExtendedDynamicState2FeaturesEXT *)ext;
          features->extendedDynamicState2 = true;
-         features->extendedDynamicState2LogicOp = false;
+         features->extendedDynamicState2LogicOp = true;
          features->extendedDynamicState2PatchControlPoints = false;
          break;
       }
@@ -870,6 +887,19 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          VkPhysicalDeviceImageViewMinLodFeaturesEXT *features =
             (VkPhysicalDeviceImageViewMinLodFeaturesEXT *)ext;
          features->minLod = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_2D_VIEW_OF_3D_FEATURES_EXT: {
+         VkPhysicalDeviceImage2DViewOf3DFeaturesEXT *features =
+            (VkPhysicalDeviceImage2DViewOf3DFeaturesEXT *)ext;
+         features->image2DViewOf3D = true;
+         features->sampler2DViewOf3D = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
+         VkPhysicalDeviceColorWriteEnableFeaturesEXT *features =
+            (VkPhysicalDeviceColorWriteEnableFeaturesEXT *)ext;
+         features->colorWriteEnable = true;
          break;
       }
 
@@ -1704,12 +1734,15 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    bool custom_border_colors = false;
    bool perf_query_pools = false;
    bool robust_buffer_access2 = false;
+   bool border_color_without_format = false;
 
    vk_foreach_struct_const(ext, pCreateInfo->pNext) {
       switch (ext->sType) {
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT: {
          const VkPhysicalDeviceCustomBorderColorFeaturesEXT *border_color_features = (const void *)ext;
          custom_border_colors = border_color_features->customBorderColors;
+         border_color_without_format =
+            border_color_features->customBorderColorWithoutFormat;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR: {
@@ -1792,7 +1825,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    device->compiler =
       ir3_compiler_create(NULL, &physical_device->dev_id,
                           &(struct ir3_compiler_options) {
-                              .robust_ubo_access = robust_buffer_access2,
+                              .robust_buffer_access2 = robust_buffer_access2,
                               .push_ubo_with_preamble = true,
                               .disable_cache = true,
                            });
@@ -1835,23 +1868,17 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    struct tu6_global *global = device->global_bo->map;
    tu_init_clear_blit_shaders(device);
    global->predicate = 0;
+   global->vtx_stats_query_not_running = 1;
    global->dbg_one = (uint32_t)-1;
    global->dbg_gmem_total_loads = 0;
    global->dbg_gmem_taken_loads = 0;
    global->dbg_gmem_total_stores = 0;
    global->dbg_gmem_taken_stores = 0;
-   tu6_pack_border_color(&global->bcolor_builtin[VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK],
-                         &(VkClearColorValue) {}, false);
-   tu6_pack_border_color(&global->bcolor_builtin[VK_BORDER_COLOR_INT_TRANSPARENT_BLACK],
-                         &(VkClearColorValue) {}, true);
-   tu6_pack_border_color(&global->bcolor_builtin[VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK],
-                         &(VkClearColorValue) { .float32[3] = 1.0f }, false);
-   tu6_pack_border_color(&global->bcolor_builtin[VK_BORDER_COLOR_INT_OPAQUE_BLACK],
-                         &(VkClearColorValue) { .int32[3] = 1 }, true);
-   tu6_pack_border_color(&global->bcolor_builtin[VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE],
-                         &(VkClearColorValue) { .float32[0 ... 3] = 1.0f }, false);
-   tu6_pack_border_color(&global->bcolor_builtin[VK_BORDER_COLOR_INT_OPAQUE_WHITE],
-                         &(VkClearColorValue) { .int32[0 ... 3] = 1 }, true);
+   for (int i = 0; i < TU_BORDER_COLOR_BUILTIN; i++) {
+      VkClearColorValue border_color = vk_border_color_value(i);
+      tu6_pack_border_color(&global->bcolor_builtin[i], &border_color,
+                            vk_border_color_is_int(i));
+   }
 
    /* initialize to ones so ffs can be used to find unused slots */
    BITSET_ONES(device->custom_border_color);
@@ -1938,6 +1965,10 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
       mtx_init(&device->scratch_bos[i].construct_mtx, mtx_plain);
 
    mtx_init(&device->mutex, mtx_plain);
+
+   device->use_z24uint_s8uint =
+      physical_device->info->a6xx.has_z24uint_s8uint &&
+      !border_color_without_format;
 
    device->submit_count = 0;
    u_trace_context_init(&device->trace_context, device,
@@ -2615,8 +2646,22 @@ tu_init_sampler(struct tu_device *device,
       assert(border_color < TU_BORDER_COLOR_COUNT);
       BITSET_CLEAR(device->custom_border_color, border_color);
       mtx_unlock(&device->mutex);
+
+      VkClearColorValue color = custom_border_color->customBorderColor;
+      if (custom_border_color->format == VK_FORMAT_D24_UNORM_S8_UINT &&
+          pCreateInfo->borderColor == VK_BORDER_COLOR_INT_CUSTOM_EXT &&
+          device->use_z24uint_s8uint) {
+         /* When sampling stencil using the special Z24UINT_S8UINT format, the
+          * border color is in the second component. Note: if
+          * customBorderColorWithoutFormat is enabled, we may miss doing this
+          * here if the format isn't specified, which is why we don't use that
+          * format.
+          */
+         color.uint32[1] = color.uint32[0];
+      }
+
       tu6_pack_border_color(device->global_bo->map + gb_offset(bcolor[border_color]),
-                            &custom_border_color->customBorderColor,
+                            &color,
                             pCreateInfo->borderColor == VK_BORDER_COLOR_INT_CUSTOM_EXT);
       border_color += TU_BORDER_COLOR_BUILTIN;
    }

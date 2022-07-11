@@ -765,7 +765,6 @@ tu_drm_device_init(struct tu_physical_device *device,
    device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
 
    result = tu_physical_device_init(device, instance);
-   device->vk.supported_sync_types = device->sync_types;
 
    if (result == VK_SUCCESS)
        return result;
@@ -1196,25 +1195,6 @@ tu_queue_submit(struct vk_queue *vk_queue, struct vk_queue_submit *submit)
    u_trace_context_process(&queue->device->trace_context, true);
 
    return VK_SUCCESS;
-}
-
-VkResult
-tu_signal_syncs(struct tu_device *device,
-                struct vk_sync *sync1, struct vk_sync *sync2)
-{
-   VkResult ret = VK_SUCCESS;
-
-   if (sync1) {
-      ret = vk_sync_signal(&device->vk, sync1, 0);
-
-      if (ret != VK_SUCCESS)
-         return ret;
-   }
-
-   if (sync2)
-      ret = vk_sync_signal(&device->vk, sync2, 0);
-
-   return ret;
 }
 
 int

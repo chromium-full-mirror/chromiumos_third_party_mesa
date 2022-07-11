@@ -127,7 +127,6 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_VS_INSTANCEID:
         case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
         case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-        case PIPE_CAP_VERTEX_SHADER_SATURATE:
         case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
         case PIPE_CAP_EMULATE_NONFIXED_PRIMITIVE_RESTART:
         case PIPE_CAP_PRIMITIVE_RESTART:
@@ -148,7 +147,11 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_SAMPLER_VIEW_TARGET:
         case PIPE_CAP_ANISOTROPIC_FILTER:
         case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+        case PIPE_CAP_INDEP_BLEND_FUNC:
                 return 1;
+
+        case PIPE_CAP_POLYGON_OFFSET_CLAMP:
+                return screen->devinfo.ver >= 41;
 
         case PIPE_CAP_TEXTURE_QUERY_LOD:
                 return screen->devinfo.ver >= 42;
@@ -393,7 +396,7 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
                         return V3D_MAX_FS_INPUTS / 4;
         case PIPE_SHADER_CAP_MAX_TEMPS:
                 return 256; /* GL_MAX_PROGRAM_TEMPORARIES_ARB */
-        case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+        case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
                 /* Note: Limited by the offset size in
                  * v3d_unit_data_create().
                  */
@@ -465,9 +468,6 @@ v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
                 return PIPE_SHADER_IR_NIR;
         case PIPE_SHADER_CAP_SUPPORTED_IRS:
                 return 1 << PIPE_SHADER_IR_NIR;
-        case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-                /* We use NIR's loop unrolling */
-                return 0;
         default:
                 fprintf(stderr, "unknown shader param %d\n", param);
                 return 0;
@@ -728,6 +728,7 @@ static const nir_shader_compiler_options v3d_nir_options = {
         .lower_wpos_pntc = true,
         .lower_rotate = true,
         .lower_to_scalar = true,
+        .lower_int64_options = nir_lower_imul_2x32_64,
         .has_fsub = true,
         .has_isub = true,
         .divergence_analysis_options =

@@ -31,6 +31,7 @@
 #include "lvp_lower_vulkan_resource.h"
 #include "pipe/p_state.h"
 #include "pipe/p_context.h"
+#include "tgsi/tgsi_from_mesa.h"
 #include "nir/nir_xfb_info.h"
 
 #define SPIR_V_MAGIC_NUMBER 0x07230203
@@ -62,7 +63,7 @@ lvp_pipeline_destroy(struct lvp_device *device, struct lvp_pipeline *pipeline)
       ralloc_free(pipeline->pipeline_nir[i]);
 
    if (pipeline->layout)
-      lvp_pipeline_layout_unref(device, pipeline->layout);
+      vk_pipeline_layout_unref(&device->vk, &pipeline->layout->vk);
 
    ralloc_free(pipeline->mem_ctx);
    vk_object_base_finish(&pipeline->base);
@@ -167,6 +168,7 @@ deep_copy_vertex_input_state(void *mem_ctx,
             break;
          }
          default:
+            unreachable("unhandled pNext!");
             break;
          }
       }
@@ -221,6 +223,24 @@ deep_copy_viewport_state(void *mem_ctx,
       dst->scissorCount = src->scissorCount;
    else
       dst->scissorCount = 0;
+
+   if (src->pNext) {
+      vk_foreach_struct(ext, src->pNext) {
+         switch (ext->sType) {
+         case VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT: {
+            VkPipelineViewportDepthClipControlCreateInfoEXT *ext_src = (VkPipelineViewportDepthClipControlCreateInfoEXT *)ext;
+            VkPipelineViewportDepthClipControlCreateInfoEXT *ext_dst = ralloc(mem_ctx, VkPipelineViewportDepthClipControlCreateInfoEXT);
+            memcpy(ext_dst, ext_src, sizeof(*ext_dst));
+            ext_dst->pNext = dst->pNext;
+            dst->pNext = ext_dst;
+            break;
+         }
+         default:
+            unreachable("unhandled pNext!");
+            break;
+         }
+      }
+   }
 
    return VK_SUCCESS;
 }
@@ -332,12 +352,33 @@ deep_copy_rasterization_state(void *mem_ctx,
             VkPipelineRasterizationDepthClipStateCreateInfoEXT *ext_src = (VkPipelineRasterizationDepthClipStateCreateInfoEXT *)ext;
             VkPipelineRasterizationDepthClipStateCreateInfoEXT *ext_dst = ralloc(mem_ctx, VkPipelineRasterizationDepthClipStateCreateInfoEXT);
             ext_dst->sType = ext_src->sType;
+            ext_dst->pNext = dst->pNext;
             ext_dst->flags = ext_src->flags;
             ext_dst->depthClipEnable = ext_src->depthClipEnable;
             dst->pNext = ext_dst;
             break;
          }
+         case VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_PROVOKING_VERTEX_STATE_CREATE_INFO_EXT: {
+            VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *ext_src = (VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *)ext;
+            VkPipelineRasterizationProvokingVertexStateCreateInfoEXT *ext_dst = ralloc(mem_ctx, VkPipelineRasterizationProvokingVertexStateCreateInfoEXT);
+            memcpy(ext_dst, ext_src, sizeof(*ext_dst));
+            ext_dst->pNext = dst->pNext;
+            dst->pNext = ext_dst;
+            break;
+         }
+         case VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_LINE_STATE_CREATE_INFO_EXT: {
+            VkPipelineRasterizationLineStateCreateInfoEXT *ext_src = (VkPipelineRasterizationLineStateCreateInfoEXT *)ext;
+            VkPipelineRasterizationLineStateCreateInfoEXT *ext_dst = ralloc(mem_ctx, VkPipelineRasterizationLineStateCreateInfoEXT);
+            memcpy(ext_dst, ext_src, sizeof(*ext_dst));
+            ext_dst->pNext = dst->pNext;
+            dst->pNext = ext_dst;
+            break;
+         }
+         case VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_STREAM_CREATE_INFO_EXT:
+            /* do nothing */
+            break;
          default:
+            unreachable("unhandled pNext!");
             break;
          }
       }
@@ -362,18 +403,32 @@ deep_copy_graphics_create_info(void *mem_ctx,
    dst->pNext = NULL;
    dst->flags = src->flags;
    dst->layout = src->layout;
-   if (shaders & (VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT | VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT)) {
+   if (shaders & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT) {
       assert(!dst->renderPass || !src->renderPass || dst->renderPass == src->renderPass);
       assert(!dst->subpass || !src->subpass || dst->subpass == src->subpass);
       dst->subpass = src->subpass;
       dst->renderPass = src->renderPass;
       rp_info = vk_get_pipeline_rendering_create_info(src);
+      if (rp_info && !src->renderPass) {
+         VkPipelineRenderingCreateInfoKHR *r = ralloc(mem_ctx, VkPipelineRenderingCreateInfoKHR);
+         memcpy(r, rp_info, sizeof(VkPipelineRenderingCreateInfoKHR));
+         r->pNext = NULL;
+         dst->pNext = r;
+      }
    }
    bool has_depth = false;
    bool has_stencil = false;
    if (rp_info) {
       has_depth = rp_info->depthAttachmentFormat != VK_FORMAT_UNDEFINED;
       has_stencil = rp_info->stencilAttachmentFormat != VK_FORMAT_UNDEFINED;
+   } else if ((shaders & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) &&
+              (shaders ^ VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT)) {
+      /* if this is a fragment stage without a fragment output,
+       * assume both of these exist so the dynamic states are covered,
+       * then let them be naturally pruned in the final pipeline
+       */
+      has_depth = true;
+      has_stencil = true;
    }
    dst->basePipelineHandle = src->basePipelineHandle;
    dst->basePipelineIndex = src->basePipelineIndex;
@@ -457,8 +512,6 @@ deep_copy_graphics_create_info(void *mem_ctx,
    }
 
    if (shaders & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT) {
-      assert(rp_info);
-      bool have_output = (shaders & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT) > 0;
       /* pDepthStencilState */
       if (src->pDepthStencilState && !rasterization_disabled &&
           /*
@@ -476,7 +529,7 @@ deep_copy_graphics_create_info(void *mem_ctx,
                state but not fragment output interface state, pDepthStencilState must be a valid pointer
                to a valid VkPipelineDepthStencilStateCreateInfo structure
           */
-          (!have_output || has_depth || has_stencil)) {
+          (has_depth || has_stencil)) {
          LVP_PIPELINE_DUP(dst->pDepthStencilState,
                           src->pDepthStencilState,
                           VkPipelineDepthStencilStateCreateInfo,
@@ -855,6 +908,22 @@ optimize(nir_shader *nir)
    } while (progress);
 }
 
+void
+lvp_shader_optimize(nir_shader *nir)
+{
+   optimize(nir);
+   NIR_PASS_V(nir, nir_lower_var_copies);
+   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
+   NIR_PASS_V(nir, nir_opt_dce);
+   nir_sweep(nir);
+}
+
+static bool
+can_remove_var(nir_variable *var, void *data)
+{
+   return var->data.mode != nir_var_shader_out || (!var->data.explicit_xfb_buffer && !var->data.explicit_xfb_stride);
+}
+
 static void
 lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
                          uint32_t size,
@@ -960,8 +1029,10 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    NIR_PASS_V(nir, nir_split_var_copies);
    NIR_PASS_V(nir, nir_split_per_member_structs);
 
+   nir_remove_dead_variables_options var_opts = {0};
+   var_opts.can_remove_var = can_remove_var;
    NIR_PASS_V(nir, nir_remove_dead_variables,
-              nir_var_shader_in | nir_var_shader_out | nir_var_system_value, NULL);
+              nir_var_shader_in | nir_var_shader_out | nir_var_system_value, &var_opts);
 
    if (stage == MESA_SHADER_FRAGMENT)
       lvp_lower_input_attachments(nir, false);
@@ -1013,14 +1084,14 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    if (!nir_has_any_rounding_mode_enabled(nir->info.float_controls_execution_mode))
       NIR_PASS_V(nir, nir_fold_16bit_sampler_conversions, 0, UINT32_MAX);
 
-   optimize(nir);
-
-   NIR_PASS_V(nir, nir_lower_var_copies);
-   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
-   NIR_PASS_V(nir, nir_opt_dce);
-   nir_sweep(nir);
+   lvp_shader_optimize(nir);
 
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+
+   if (nir->info.stage == MESA_SHADER_VERTEX ||
+       nir->info.stage == MESA_SHADER_GEOMETRY ||
+       nir->info.stage == MESA_SHADER_TESS_EVAL)
+      nir_shader_gather_xfb_info(nir);
 
    if (nir->info.stage != MESA_SHADER_VERTEX)
       nir_assign_io_var_locations(nir, nir_var_shader_in, &nir->num_inputs, nir->info.stage);
@@ -1032,13 +1103,8 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    }
    nir_assign_io_var_locations(nir, nir_var_shader_out, &nir->num_outputs,
                                nir->info.stage);
-   pipeline->pipeline_nir[stage] = nir;
-}
 
-static void fill_shader_prog(struct pipe_shader_state *state, gl_shader_stage stage, struct lvp_pipeline *pipeline)
-{
-   state->type = PIPE_SHADER_IR_NIR;
-   state->ir.nir = nir_shader_clone(NULL, pipeline->pipeline_nir[stage]);
+   pipeline->pipeline_nir[stage] = nir;
 }
 
 static void
@@ -1102,77 +1168,90 @@ lvp_shader_stage(VkShaderStageFlagBits stage)
    }
 }
 
+static void
+lvp_pipeline_xfb_init(struct lvp_pipeline *pipeline)
+{
+   gl_shader_stage stage = MESA_SHADER_VERTEX;
+   if (pipeline->pipeline_nir[MESA_SHADER_GEOMETRY])
+      stage = MESA_SHADER_GEOMETRY;
+   else if (pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL])
+      stage = MESA_SHADER_TESS_EVAL;
+   pipeline->last_vertex = stage;
+
+   nir_xfb_info *xfb_info = pipeline->pipeline_nir[stage]->xfb_info;
+   if (xfb_info) {
+      uint8_t output_mapping[VARYING_SLOT_TESS_MAX];
+      memset(output_mapping, 0, sizeof(output_mapping));
+
+      nir_foreach_shader_out_variable(var, pipeline->pipeline_nir[stage]) {
+         unsigned slots = var->data.compact ? DIV_ROUND_UP(glsl_get_length(var->type), 4)
+                                            : glsl_count_attribute_slots(var->type, false);
+         for (unsigned i = 0; i < slots; i++)
+            output_mapping[var->data.location + i] = var->data.driver_location + i;
+      }
+
+      pipeline->stream_output.num_outputs = xfb_info->output_count;
+      for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
+         if (xfb_info->buffers_written & (1 << i)) {
+            pipeline->stream_output.stride[i] = xfb_info->buffers[i].stride / 4;
+         }
+      }
+      for (unsigned i = 0; i < xfb_info->output_count; i++) {
+         pipeline->stream_output.output[i].output_buffer = xfb_info->outputs[i].buffer;
+         pipeline->stream_output.output[i].dst_offset = xfb_info->outputs[i].offset / 4;
+         pipeline->stream_output.output[i].register_index = output_mapping[xfb_info->outputs[i].location];
+         pipeline->stream_output.output[i].num_components = util_bitcount(xfb_info->outputs[i].component_mask);
+         pipeline->stream_output.output[i].start_component = ffs(xfb_info->outputs[i].component_mask) - 1;
+         pipeline->stream_output.output[i].stream = xfb_info->buffer_to_stream[xfb_info->outputs[i].buffer];
+      }
+
+   }
+}
+
+void *
+lvp_pipeline_compile_stage(struct lvp_pipeline *pipeline, nir_shader *nir)
+{
+   struct lvp_device *device = pipeline->device;
+   if (nir->info.stage == MESA_SHADER_COMPUTE) {
+      struct pipe_compute_state shstate = {0};
+      shstate.prog = nir;
+      shstate.ir_type = PIPE_SHADER_IR_NIR;
+      shstate.req_local_mem = nir->info.shared_size;
+      return device->queue.ctx->create_compute_state(device->queue.ctx, &shstate);
+   } else {
+      struct pipe_shader_state shstate = {0};
+      shstate.type = PIPE_SHADER_IR_NIR;
+      shstate.ir.nir = nir;
+      if (nir->info.stage == pipeline->last_vertex)
+         memcpy(&shstate.stream_output, &pipeline->stream_output, sizeof(shstate.stream_output));
+
+      switch (nir->info.stage) {
+      case MESA_SHADER_FRAGMENT:
+         return device->queue.ctx->create_fs_state(device->queue.ctx, &shstate);
+      case MESA_SHADER_VERTEX:
+         return device->queue.ctx->create_vs_state(device->queue.ctx, &shstate);
+      case MESA_SHADER_GEOMETRY:
+         return device->queue.ctx->create_gs_state(device->queue.ctx, &shstate);
+      case MESA_SHADER_TESS_CTRL:
+         return device->queue.ctx->create_tcs_state(device->queue.ctx, &shstate);
+      case MESA_SHADER_TESS_EVAL:
+         return device->queue.ctx->create_tes_state(device->queue.ctx, &shstate);
+      default:
+         unreachable("illegal shader");
+         break;
+      }
+   }
+   return NULL;
+}
+
 static VkResult
 lvp_pipeline_compile(struct lvp_pipeline *pipeline,
                      gl_shader_stage stage)
 {
    struct lvp_device *device = pipeline->device;
    device->physical_device->pscreen->finalize_nir(device->physical_device->pscreen, pipeline->pipeline_nir[stage]);
-   if (stage == MESA_SHADER_COMPUTE) {
-      struct pipe_compute_state shstate = {0};
-      shstate.prog = (void *)nir_shader_clone(NULL, pipeline->pipeline_nir[MESA_SHADER_COMPUTE]);
-      shstate.ir_type = PIPE_SHADER_IR_NIR;
-      shstate.req_local_mem = pipeline->pipeline_nir[MESA_SHADER_COMPUTE]->info.shared_size;
-      pipeline->shader_cso[PIPE_SHADER_COMPUTE] = device->queue.ctx->create_compute_state(device->queue.ctx, &shstate);
-   } else {
-      struct pipe_shader_state shstate = {0};
-      fill_shader_prog(&shstate, stage, pipeline);
-
-      if (stage == MESA_SHADER_VERTEX ||
-          stage == MESA_SHADER_GEOMETRY ||
-          stage == MESA_SHADER_TESS_EVAL) {
-         nir_xfb_info *xfb_info = nir_gather_xfb_info(pipeline->pipeline_nir[stage], NULL);
-         if (xfb_info) {
-            uint8_t output_mapping[VARYING_SLOT_TESS_MAX];
-            memset(output_mapping, 0, sizeof(output_mapping));
-
-            nir_foreach_shader_out_variable(var, pipeline->pipeline_nir[stage]) {
-               unsigned slots = var->data.compact ? DIV_ROUND_UP(glsl_get_length(var->type), 4)
-                                                  : glsl_count_attribute_slots(var->type, false);
-               for (unsigned i = 0; i < slots; i++)
-                  output_mapping[var->data.location + i] = var->data.driver_location + i;
-            }
-
-            shstate.stream_output.num_outputs = xfb_info->output_count;
-            for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
-               if (xfb_info->buffers_written & (1 << i)) {
-                  shstate.stream_output.stride[i] = xfb_info->buffers[i].stride / 4;
-               }
-            }
-            for (unsigned i = 0; i < xfb_info->output_count; i++) {
-               shstate.stream_output.output[i].output_buffer = xfb_info->outputs[i].buffer;
-               shstate.stream_output.output[i].dst_offset = xfb_info->outputs[i].offset / 4;
-               shstate.stream_output.output[i].register_index = output_mapping[xfb_info->outputs[i].location];
-               shstate.stream_output.output[i].num_components = util_bitcount(xfb_info->outputs[i].component_mask);
-               shstate.stream_output.output[i].start_component = ffs(xfb_info->outputs[i].component_mask) - 1;
-               shstate.stream_output.output[i].stream = xfb_info->buffer_to_stream[xfb_info->outputs[i].buffer];
-            }
-
-            ralloc_free(xfb_info);
-         }
-      }
-
-      switch (stage) {
-      case MESA_SHADER_FRAGMENT:
-         pipeline->shader_cso[PIPE_SHADER_FRAGMENT] = device->queue.ctx->create_fs_state(device->queue.ctx, &shstate);
-         break;
-      case MESA_SHADER_VERTEX:
-         pipeline->shader_cso[PIPE_SHADER_VERTEX] = device->queue.ctx->create_vs_state(device->queue.ctx, &shstate);
-         break;
-      case MESA_SHADER_GEOMETRY:
-         pipeline->shader_cso[PIPE_SHADER_GEOMETRY] = device->queue.ctx->create_gs_state(device->queue.ctx, &shstate);
-         break;
-      case MESA_SHADER_TESS_CTRL:
-         pipeline->shader_cso[PIPE_SHADER_TESS_CTRL] = device->queue.ctx->create_tcs_state(device->queue.ctx, &shstate);
-         break;
-      case MESA_SHADER_TESS_EVAL:
-         pipeline->shader_cso[PIPE_SHADER_TESS_EVAL] = device->queue.ctx->create_tes_state(device->queue.ctx, &shstate);
-         break;
-      default:
-         unreachable("illegal shader");
-         break;
-      }
-   }
+   nir_shader *nir = nir_shader_clone(NULL, pipeline->pipeline_nir[stage]);
+   pipeline->shader_cso[pipe_shader_type_from_mesa(stage)] = lvp_pipeline_compile_stage(pipeline, nir);
    return VK_SUCCESS;
 }
 
@@ -1181,7 +1260,7 @@ static bool
 layouts_equal(const struct lvp_descriptor_set_layout *a, const struct lvp_descriptor_set_layout *b)
 {
    const uint8_t *pa = (const uint8_t*)a, *pb = (const uint8_t*)b;
-   uint32_t hash_start_offset = offsetof(struct lvp_descriptor_set_layout, ref_cnt) + sizeof(uint32_t);
+   uint32_t hash_start_offset = sizeof(struct vk_descriptor_set_layout);
    uint32_t binding_offset = offsetof(struct lvp_descriptor_set_layout, binding);
    /* base equal */
    if (memcmp(pa + hash_start_offset, pb + hash_start_offset, binding_offset - hash_start_offset))
@@ -1231,20 +1310,29 @@ merge_layouts(struct lvp_pipeline *dst, struct lvp_pipeline_layout *src)
    }
 #ifndef NDEBUG
    /* verify that layouts match */
-   const struct lvp_pipeline_layout *smaller = dst->layout->num_sets < src->num_sets ? dst->layout : src;
+   const struct lvp_pipeline_layout *smaller = dst->layout->vk.set_count < src->vk.set_count ? dst->layout : src;
    const struct lvp_pipeline_layout *bigger = smaller == dst->layout ? src : dst->layout;
-   for (unsigned i = 0; i < smaller->num_sets; i++) {
-      assert(!smaller->set[i].layout || !bigger->set[i].layout ||
-             !smaller->set[i].layout->binding_count || !bigger->set[i].layout->binding_count ||
-             smaller->set[i].layout == bigger->set[i].layout ||
-             layouts_equal(smaller->set[i].layout, bigger->set[i].layout));
+   for (unsigned i = 0; i < smaller->vk.set_count; i++) {
+      if (!smaller->vk.set_layouts[i] || !bigger->vk.set_layouts[i] ||
+          smaller->vk.set_layouts[i] == bigger->vk.set_layouts[i])
+         continue;
+
+      const struct lvp_descriptor_set_layout *smaller_set_layout =
+         vk_to_lvp_descriptor_set_layout(smaller->vk.set_layouts[i]);
+      const struct lvp_descriptor_set_layout *bigger_set_layout =
+         vk_to_lvp_descriptor_set_layout(bigger->vk.set_layouts[i]);
+
+      assert(!smaller_set_layout->binding_count ||
+             !bigger_set_layout->binding_count ||
+             layouts_equal(smaller_set_layout, bigger_set_layout));
    }
 #endif
-   for (unsigned i = 0; i < src->num_sets; i++) {
-      if (!dst->layout->set[i].layout)
-         dst->layout->set[i].layout = src->set[i].layout;
+   for (unsigned i = 0; i < src->vk.set_count; i++) {
+      if (!dst->layout->vk.set_layouts[i])
+         dst->layout->vk.set_layouts[i] = src->vk.set_layouts[i];
    }
-   dst->layout->num_sets = MAX2(dst->layout->num_sets, src->num_sets);
+   dst->layout->vk.set_count = MAX2(dst->layout->vk.set_count,
+                                    src->vk.set_count);
    dst->layout->push_constant_size += src->push_constant_size;
    dst->layout->push_constant_stages |= src->push_constant_stages;
 }
@@ -1275,9 +1363,9 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
 
    struct lvp_pipeline_layout *layout = lvp_pipeline_layout_from_handle(pCreateInfo->layout);
    if (layout)
-      lvp_pipeline_layout_ref(layout);
+      vk_pipeline_layout_ref(&layout->vk);
 
-   if (!layout || !layout->independent_sets)
+   if (!layout || !(layout->vk.create_flags & VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT))
       /* this is a regular pipeline with no partials: directly reuse */
       pipeline->layout = layout;
    else if (pipeline->stages & layout_stages) {
@@ -1310,12 +1398,17 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
          if (p->stages & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT)
             pipeline->force_min_sample = p->force_min_sample;
          if (p->stages & layout_stages) {
-            if (!layout || layout->independent_sets)
+            if (!layout || (layout->vk.create_flags & VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT))
                merge_layouts(pipeline, p->layout);
          }
          pipeline->stages |= p->stages;
       }
    }
+
+   assert(pipeline->library || pipeline->stages == (VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT |
+                                                    VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT |
+                                                    VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT |
+                                                    VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT));
 
    pipeline->device = device;
 
@@ -1383,9 +1476,8 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
              }
           }
        }
-   }
-
-   if (pipeline->stages & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT) {
+   } else if (pipeline->stages & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT) {
+      /* composite pipelines should have these values set above */
       if (pipeline->graphics_create_info.pViewportState) {
          /* if pViewportState is null, it means rasterization is discarded,
           * so this is ignored
@@ -1422,6 +1514,7 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
          }
       } else
          pipeline->line_rectangular = true;
+      lvp_pipeline_xfb_init(pipeline);
    }
 
    if (!pipeline->library) {
@@ -1531,7 +1624,7 @@ lvp_compute_pipeline_init(struct lvp_pipeline *pipeline,
                    pCreateInfo->stage.module);
    pipeline->device = device;
    pipeline->layout = lvp_pipeline_layout_from_handle(pCreateInfo->layout);
-   lvp_pipeline_layout_ref(pipeline->layout);
+   vk_pipeline_layout_ref(&pipeline->layout->vk);
    pipeline->force_min_sample = false;
 
    pipeline->mem_ctx = ralloc_context(NULL);

@@ -31,7 +31,7 @@
 #define SPIR_V_MAGIC_NUMBER 0x07230203
 
 uint32_t
-vk_spirv_version(uint32_t *spirv_data, size_t spirv_size_B)
+vk_spirv_version(const uint32_t *spirv_data, size_t spirv_size_B)
 {
    assert(spirv_size_B >= 8);
    assert(spirv_data[0] == SPIR_V_MAGIC_NUMBER);
@@ -66,8 +66,9 @@ spirv_nir_debug(void *private_data,
 
 nir_shader *
 vk_spirv_to_nir(struct vk_device *device,
-                uint32_t *spirv_data, size_t spirv_size_B,
+                const uint32_t *spirv_data, size_t spirv_size_B,
                 gl_shader_stage stage, const char *entrypoint_name,
+                enum gl_subgroup_size subgroup_size,
                 const VkSpecializationInfo *spec_info,
                 const struct spirv_to_nir_options *spirv_options,
                 const struct nir_shader_compiler_options *nir_options,
@@ -79,6 +80,7 @@ vk_spirv_to_nir(struct vk_device *device,
    struct spirv_to_nir_options spirv_options_local = *spirv_options;
    spirv_options_local.debug.func = spirv_nir_debug;
    spirv_options_local.debug.private_data = (void *)device;
+   spirv_options_local.subgroup_size = subgroup_size;
 
    uint32_t num_spec_entries = 0;
    struct nir_spirv_specialization *spec_entries =

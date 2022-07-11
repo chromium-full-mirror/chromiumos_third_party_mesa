@@ -420,8 +420,10 @@ print_instr_format_specific(const Instruction* instr, FILE* output)
          fprintf(output, " da");
       if (mimg.lwe)
          fprintf(output, " lwe");
-      if (mimg.r128 || mimg.a16)
-         fprintf(output, " r128/a16");
+      if (mimg.r128)
+        fprintf(output, " r128");
+      if (mimg.a16)
+         fprintf(output, " a16");
       if (mimg.d16)
          fprintf(output, " d16");
       if (mimg.disable_wqm)
@@ -482,7 +484,7 @@ print_instr_format_specific(const Instruction* instr, FILE* output)
    case Format::SCRATCH: {
       const FLAT_instruction& flat = instr->flatlike();
       if (flat.offset)
-         fprintf(output, " offset:%u", flat.offset);
+         fprintf(output, " offset:%d", flat.offset);
       if (flat.glc)
          fprintf(output, " glc");
       if (flat.dlc)

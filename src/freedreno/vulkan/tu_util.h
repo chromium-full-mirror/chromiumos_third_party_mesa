@@ -99,6 +99,12 @@ tu6_primtype_line(enum pc_di_primtype type)
     }
 }
 
+static inline bool
+tu6_primtype_patches(enum pc_di_primtype type)
+{
+   return type >= DI_PT_PATCHES0 && type <= DI_PT_PATCHES31;
+}
+
 static inline enum pc_di_primtype
 tu6_primtype(VkPrimitiveTopology topology)
 {
@@ -320,7 +326,7 @@ tu6_pack_border_color(struct bcolor_entry *bcolor, const VkClearColorValue *val,
    PACK_F(ui8, r8g8b8a8_unorm);
    PACK_F(si8, r8g8b8a8_snorm);
    PACK_F(rgb10a2, r10g10b10a2_unorm);
-   util_format_x8z24_unorm_pack_z_float((uint8_t*) &bcolor->z24,
+   util_format_z24x8_unorm_pack_z_float((uint8_t*) &bcolor->z24,
                                         0, val->float32, 0, 1, 1);
    PACK_F(srgb, r16g16b16a16_float); /* TODO: clamp? */
 #undef PACK_F

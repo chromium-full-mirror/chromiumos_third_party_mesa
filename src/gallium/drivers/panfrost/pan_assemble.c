@@ -47,6 +47,19 @@ panfrost_shader_compile(struct pipe_screen *pscreen,
 
         nir_shader *s = nir_shader_clone(NULL, ir);
 
+        if (dev->arch >= 6 && s->xfb_info && !s->info.internal) {
+                /* Create compute shader doing transform feedback */
+                nir_shader *xfb = nir_shader_clone(NULL, s);
+                xfb->info.name = ralloc_asprintf(xfb, "%s@xfb", xfb->info.name);
+                xfb->info.internal = true;
+
+                state->xfb = calloc(1, sizeof(struct panfrost_shader_state));
+                panfrost_shader_compile(pscreen, shader_pool, desc_pool, xfb, state->xfb);
+
+                /* Main shader no longer uses XFB */
+                s->info.has_transform_feedback_varyings = false;
+        }
+
         /* Lower this early so the backends don't have to worry about it */
         if (s->info.stage == MESA_SHADER_FRAGMENT) {
                 NIR_PASS_V(s, nir_lower_fragcolor, state->key.fs.nr_cbufs);
@@ -72,6 +85,10 @@ panfrost_shader_compile(struct pipe_screen *pscreen,
                 .fixed_sysval_ubo = -1,
                 .fixed_varying_mask = state->key.fixed_varying_mask
         };
+
+        /* No IDVS for internal XFB shaders */
+        if (s->info.stage == MESA_SHADER_VERTEX && s->info.has_transform_feedback_varyings)
+                inputs.no_idvs = true;
 
         memcpy(inputs.rt_formats, state->key.fs.rt_formats, sizeof(inputs.rt_formats));
 

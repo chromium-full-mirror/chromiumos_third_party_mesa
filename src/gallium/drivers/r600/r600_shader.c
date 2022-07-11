@@ -179,8 +179,8 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 		pipe_shader_type_from_mesa(sel->nir->info.stage);
 	
 	bool dump = r600_can_dump_shader(&rctx->screen->b, processor);
-	unsigned use_sb = !(rctx->screen->b.debug_flags & (DBG_NO_SB | DBG_NIR)) ||
-                          (rctx->screen->b.debug_flags & DBG_NIR_SB);
+	unsigned use_sb = !(rctx->screen->b.debug_flags & DBG_NO_SB) ||
+                     (rctx->screen->b.debug_flags & DBG_NIR_SB);
 	unsigned sb_disasm;
 	unsigned export_shader;
 	
@@ -263,6 +263,7 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 	 * with NTT)
 	 */
 	use_sb &= !(shader->shader.indirect_files & (1 << TGSI_FILE_TEMPORARY));
+	use_sb &= !(shader->shader.indirect_files & (1 << TGSI_FILE_CONSTANT));
 
 	/* sb has scheduling assertion fails with interpolate_at. */
 	use_sb &= !shader->shader.uses_interpolate_at_sample;
@@ -382,10 +383,11 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 		goto error;
 	}
 
-	util_debug_message(&rctx->b.debug, SHADER_INFO, "%s shader: %d dw, %d gprs, %d loops, %d cf, %d stack",
+	util_debug_message(&rctx->b.debug, SHADER_INFO, "%s shader: %d dw, %d gprs, %d alu_groups, %d loops, %d cf, %d stack",
 		           _mesa_shader_stage_to_abbrev(tgsi_processor_to_shader_stage(processor)),
 	                   shader->shader.bc.ndw,
 	                   shader->shader.bc.ngpr,
+			   shader->shader.bc.nalu_groups,
 			   shader->shader.num_loops,
 			   shader->shader.bc.ncf,
 			   shader->shader.bc.nstack);
@@ -4721,7 +4723,7 @@ static int tgsi_op2_s(struct r600_shader_ctx *ctx, int swap, int trans_only)
 	unsigned op = ctx->inst_info->op;
 
 	if (op == ALU_OP2_MUL_IEEE &&
-	    ctx->info.properties[TGSI_PROPERTY_MUL_ZERO_WINS])
+	    ctx->info.properties[TGSI_PROPERTY_LEGACY_MATH_RULES])
 		op = ALU_OP2_MUL;
 
 	/* nir_to_tgsi lowers nir_op_isub to UADD + negate, since r600 doesn't support
@@ -7305,7 +7307,7 @@ static int tgsi_op3_dst(struct r600_shader_ctx *ctx, int dst)
 	unsigned op = ctx->inst_info->op;
 
 	if (op == ALU_OP3_MULADD_IEEE &&
-	    ctx->info.properties[TGSI_PROPERTY_MUL_ZERO_WINS])
+	    ctx->info.properties[TGSI_PROPERTY_LEGACY_MATH_RULES])
 		op = ALU_OP3_MULADD;
 
 	for (j = 0; j < inst->Instruction.NumSrcRegs; j++) {
@@ -7355,7 +7357,7 @@ static int tgsi_dp(struct r600_shader_ctx *ctx)
 	int i, j, r;
 	unsigned op = ctx->inst_info->op;
 	if (op == ALU_OP2_DOT4_IEEE &&
-	    ctx->info.properties[TGSI_PROPERTY_MUL_ZERO_WINS])
+	    ctx->info.properties[TGSI_PROPERTY_LEGACY_MATH_RULES])
 		op = ALU_OP2_DOT4;
 
 	for (i = 0; i < 4; i++) {

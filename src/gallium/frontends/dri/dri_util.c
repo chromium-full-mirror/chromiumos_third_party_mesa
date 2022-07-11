@@ -122,8 +122,10 @@ driCreateNewScreen2(int scrn, int fd,
 
     setupLoaderExtensions(psp, extensions);
     // dri2 drivers require working invalidate
-    if (fd != -1 && !psp->dri2.useInvalidate)
+    if (fd != -1 && !psp->dri2.useInvalidate) {
+       free(psp);
        return NULL;
+    }
 
     psp->loaderPrivate = data;
 
@@ -189,7 +191,7 @@ swkmsCreateNewScreen(int scrn, int fd,
 		     const __DRIconfig ***driver_configs, void *data)
 {
    return driCreateNewScreen2(scrn, fd, extensions,
-                              dri_kms_driver_extensions,
+                              dri_swrast_kms_driver_extensions,
                               driver_configs, data);
 }
 

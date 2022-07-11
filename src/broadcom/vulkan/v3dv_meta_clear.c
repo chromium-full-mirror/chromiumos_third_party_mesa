@@ -160,11 +160,15 @@ v3dv_CmdClearColorImage(VkCommandBuffer commandBuffer,
       .color = *pColor,
    };
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < rangeCount; i++) {
       if (clear_image_tlb(cmd_buffer, image, &clear_value, &pRanges[i]))
          continue;
       unreachable("Unsupported color clear.");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -182,11 +186,15 @@ v3dv_CmdClearDepthStencilImage(VkCommandBuffer commandBuffer,
       .depthStencil = *pDepthStencil,
    };
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < rangeCount; i++) {
       if (clear_image_tlb(cmd_buffer, image, &clear_value, &pRanges[i]))
          continue;
       unreachable("Unsupported depth/stencil clear.");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 static void
@@ -474,12 +482,11 @@ create_pipeline(struct v3dv_device *device,
                 VkPipeline *pipeline)
 {
    VkPipelineShaderStageCreateInfo stages[3] = { 0 };
-   struct vk_shader_module vs_m;
+   struct vk_shader_module vs_m = vk_shader_module_from_nir(vs_nir);
    struct vk_shader_module gs_m;
    struct vk_shader_module fs_m;
 
    uint32_t stage_count = 0;
-   v3dv_shader_module_internal_init(device, &vs_m, vs_nir);
    stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
    stages[stage_count].stage = VK_SHADER_STAGE_VERTEX_BIT;
    stages[stage_count].module = vk_shader_module_to_handle(&vs_m);
@@ -487,7 +494,7 @@ create_pipeline(struct v3dv_device *device,
    stage_count++;
 
    if (gs_nir) {
-      v3dv_shader_module_internal_init(device, &gs_m, gs_nir);
+      gs_m = vk_shader_module_from_nir(gs_nir);
       stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
       stages[stage_count].stage = VK_SHADER_STAGE_GEOMETRY_BIT;
       stages[stage_count].module = vk_shader_module_to_handle(&gs_m);
@@ -496,7 +503,7 @@ create_pipeline(struct v3dv_device *device,
    }
 
    if (fs_nir) {
-      v3dv_shader_module_internal_init(device, &fs_m, fs_nir);
+      fs_m = vk_shader_module_from_nir(fs_nir);
       stages[stage_count].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
       stages[stage_count].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
       stages[stage_count].module = vk_shader_module_to_handle(&fs_m);
@@ -580,6 +587,7 @@ create_pipeline(struct v3dv_device *device,
                                    pipeline);
 
    ralloc_free(vs_nir);
+   ralloc_free(gs_nir);
    ralloc_free(fs_nir);
 
    return result;

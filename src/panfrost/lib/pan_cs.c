@@ -42,8 +42,12 @@ mod_to_block_fmt(uint64_t mod)
                 return MALI_BLOCK_FORMAT_TILED_U_INTERLEAVED;
         default:
 #if PAN_ARCH >= 5
-                if (drm_is_afbc(mod))
+                if (drm_is_afbc(mod) && !(mod & AFBC_FORMAT_MOD_TILED))
                         return MALI_BLOCK_FORMAT_AFBC;
+#endif
+#if PAN_ARCH >= 7
+                if (drm_is_afbc(mod) && (mod & AFBC_FORMAT_MOD_TILED))
+                        return MALI_BLOCK_FORMAT_AFBC_TILED;
 #endif
 
                 unreachable("Unsupported modifer");
@@ -83,8 +87,22 @@ pan_sample_pattern(unsigned samples)
 }
 
 int
-GENX(pan_select_crc_rt)(const struct pan_fb_info *fb)
+GENX(pan_select_crc_rt)(const struct pan_fb_info *fb, unsigned tile_size)
 {
+        /* Disable CRC when the tile size is not 16x16. In the hardware, CRC
+         * tiles are the same size as the tiles of the framebuffer. However,
+         * our code only handles 16x16 tiles. Therefore under the current
+         * implementation, we must disable CRC when 16x16 tiles are not used.
+         *
+         * This may hurt performance. However, smaller tile sizes are rare, and
+         * CRCs are more expensive at smaller tile sizes, reducing the benefit.
+         * Restricting CRC to 16x16 should work in practice.
+         */
+        if (tile_size != 16 * 16) {
+                assert(tile_size < 16 * 16);
+                return -1;
+        }
+
 #if PAN_ARCH <= 6
         if (fb->rt_count == 1 && fb->rts[0].view && !fb->rts[0].discard &&
             fb->rts[0].view->image->layout.crc_mode != PAN_IMAGE_CRC_NONE)
@@ -200,14 +218,19 @@ pan_prepare_zs(const struct pan_fb_info *fb,
 
         struct pan_surface surf;
         pan_iview_get_surface(zs, 0, 0, 0, &surf);
+        UNUSED const struct pan_image_slice_layout *slice = &zs->image->layout.slices[level];
 
         if (drm_is_afbc(zs->image->layout.modifier)) {
-#if PAN_ARCH <= 8
-#if PAN_ARCH >= 6
-                const struct pan_image_slice_layout *slice = &zs->image->layout.slices[level];
+#if PAN_ARCH >= 9
+                ext->zs_writeback_base = surf.afbc.header;
+                ext->zs_writeback_row_stride = slice->row_stride;
+                /* TODO: surface stride? */
+                ext->zs_afbc_body_offset = surf.afbc.body - surf.afbc.header;
 
-                ext->zs_afbc_row_stride = slice->row_stride /
-                                          AFBC_HEADER_BYTES_PER_TILE;
+                /* TODO: stencil AFBC? */
+#else
+#if PAN_ARCH >= 6
+                ext->zs_afbc_row_stride = pan_afbc_stride_blocks(zs->image->layout.modifier, slice->row_stride);
 #else
                 ext->zs_block_format = MALI_BLOCK_FORMAT_AFBC;
                 ext->zs_afbc_body_size = 0x1000;
@@ -394,6 +417,32 @@ pan_rt_init_format(const struct pan_image_view *rt,
         cfg->swizzle = panfrost_translate_swizzle_4(swizzle);
 }
 
+#if PAN_ARCH >= 9
+enum mali_afbc_compression_mode
+pan_afbc_compression_mode(enum pipe_format format)
+{
+        /* There's a special case for texturing the stencil part from a combined
+         * depth/stencil texture, handle it separately.
+         */
+        if (format == PIPE_FORMAT_X24S8_UINT)
+                return MALI_AFBC_COMPRESSION_MODE_X24S8;
+
+        /* Otherwise, map canonical formats to the hardware enum. This only
+         * needs to handle the subset of formats returned by
+         * panfrost_afbc_format.
+         */
+        switch (panfrost_afbc_format(PAN_ARCH, format)) {
+        case PIPE_FORMAT_R8G8_UNORM: return MALI_AFBC_COMPRESSION_MODE_R8G8;
+        case PIPE_FORMAT_R8G8B8_UNORM: return MALI_AFBC_COMPRESSION_MODE_R8G8B8;
+        case PIPE_FORMAT_R8G8B8A8_UNORM: return MALI_AFBC_COMPRESSION_MODE_R8G8B8A8;
+        case PIPE_FORMAT_R5G6B5_UNORM: return MALI_AFBC_COMPRESSION_MODE_R5G6B5;
+        case PIPE_FORMAT_S8_UINT: return MALI_AFBC_COMPRESSION_MODE_S8;
+        case PIPE_FORMAT_NONE: unreachable("invalid format for AFBC");
+        default: unreachable("unknown canonical AFBC format");
+        }
+}
+#endif
+
 static void
 pan_prepare_rt(const struct pan_fb_info *fb, unsigned idx,
                unsigned cbuf_offset,
@@ -444,12 +493,22 @@ pan_prepare_rt(const struct pan_fb_info *fb, unsigned idx,
         pan_iview_get_surface(rt, 0, 0, 0, &surf);
 
         if (drm_is_afbc(rt->image->layout.modifier)) {
-#if PAN_ARCH <= 8
+#if PAN_ARCH >= 9
+                if (rt->image->layout.modifier & AFBC_FORMAT_MOD_YTR)
+                        cfg->afbc.yuv_transform = true;
+
+                cfg->afbc.wide_block = panfrost_afbc_is_wide(rt->image->layout.modifier);
+                cfg->afbc.header = surf.afbc.header;
+                cfg->afbc.body_offset = surf.afbc.body - surf.afbc.header;
+                assert(surf.afbc.body >= surf.afbc.header);
+
+                cfg->afbc.compression_mode = pan_afbc_compression_mode(rt->format);
+                cfg->afbc.row_stride = row_stride;
+#else
                 const struct pan_image_slice_layout *slice = &rt->image->layout.slices[level];
 
 #if PAN_ARCH >= 6
-                cfg->afbc.row_stride = slice->row_stride /
-                                       AFBC_HEADER_BYTES_PER_TILE;
+                cfg->afbc.row_stride = pan_afbc_stride_blocks(rt->image->layout.modifier, slice->row_stride);
                 cfg->afbc.afbc_wide_block_enable =
                         panfrost_afbc_is_wide(rt->image->layout.modifier);
 #else
@@ -648,8 +707,8 @@ GENX(pan_emit_fbd)(const struct panfrost_device *dev,
 
         unsigned tile_size;
         unsigned internal_cbuf_size = pan_internal_cbuf_size(fb, &tile_size);
-        int crc_rt = GENX(pan_select_crc_rt)(fb);
-        bool has_zs_crc_ext = pan_fbd_has_zs_crc_ext(fb);
+        int crc_rt = GENX(pan_select_crc_rt)(fb, tile_size);
+        bool has_zs_crc_ext = (fb->zs.view.zs || fb->zs.view.s || crc_rt >= 0);
 
         pan_section_pack(fbd, FRAMEBUFFER, PARAMETERS, cfg) {
 #if PAN_ARCH >= 6
@@ -705,6 +764,7 @@ GENX(pan_emit_fbd)(const struct panfrost_device *dev,
 
 #if PAN_ARCH >= 9
                 cfg.point_sprite_coord_origin_max_y = fb->sprite_coord_origin;
+                cfg.first_provoking_vertex = fb->first_provoking_vertex;
 #endif
         }
 
@@ -878,6 +938,7 @@ void
 GENX(pan_emit_tiler_ctx)(const struct panfrost_device *dev,
                          unsigned fb_width, unsigned fb_height,
                          unsigned nr_samples,
+                         bool first_provoking_vertex,
                          mali_ptr heap,
                          void *out)
 {
@@ -900,6 +961,9 @@ GENX(pan_emit_tiler_ctx)(const struct panfrost_device *dev,
                 tiler.fb_height = fb_height;
                 tiler.heap = heap;
                 tiler.sample_pattern = pan_sample_pattern(nr_samples);
+#if PAN_ARCH >= 9
+                tiler.first_provoking_vertex = first_provoking_vertex;
+#endif
         }
 }
 #endif

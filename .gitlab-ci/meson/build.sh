@@ -48,6 +48,8 @@ case $CI_JOB_NAME in
         if test -f /usr/bin/time; then
             MESON_TEST_ARGS+=--wrapper=$PWD/.gitlab-ci/meson/time.sh
         fi
+        Xvfb :0 -screen 0 1024x768x16 &
+        export DISPLAY=:0.0
         ;;
     *)
         if test -f /usr/bin/time -a -f /usr/bin/strace; then
@@ -63,7 +65,7 @@ meson _build --native-file=native.file \
       -D prefix=`pwd`/install \
       -D libdir=lib \
       -D buildtype=${BUILDTYPE:-debug} \
-      -D build-tests=true \
+      -D build-tests=false \
       -D c_args="$(echo -n $C_ARGS)" \
       -D cpp_args="$(echo -n $CPP_ARGS)" \
       -D libunwind=${UNWIND} \

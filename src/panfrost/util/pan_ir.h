@@ -107,6 +107,8 @@ enum {
         PAN_SYSVAL_VERTEX_INSTANCE_OFFSETS = 14,
         PAN_SYSVAL_DRAWID = 15,
         PAN_SYSVAL_BLEND_CONSTANTS = 16,
+        PAN_SYSVAL_XFB = 17,
+        PAN_SYSVAL_NUM_VERTICES = 18,
 };
 
 #define PAN_TXS_SYSVAL_ID(texidx, dim, is_array)          \
@@ -256,6 +258,12 @@ struct bifrost_shader_info {
         nir_alu_type blend_src1_type;
         bool wait_6, wait_7;
         struct bifrost_message_preload messages[2];
+
+        /* Whether any flat varyings are loaded. This may disable optimizations
+         * that change the provoking vertex, since that would load incorrect
+         * values for flat varyings.
+         */
+        bool uses_flat_shading;
 };
 
 struct midgard_shader_info {
@@ -493,5 +501,23 @@ bool pan_nir_lower_64bit_intrin(nir_shader *shader);
 
 bool pan_lower_helper_invocation(nir_shader *shader);
 bool pan_lower_sample_pos(nir_shader *shader);
+
+/*
+ * Helper returning the subgroup size. Generally, this is equal to the number of
+ * threads in a warp. For Midgard (including warping models), this returns 1, as
+ * subgroups are not supported.
+ */
+static inline unsigned
+pan_subgroup_size(unsigned arch)
+{
+        if (arch >= 9)
+                return 16;
+        else if (arch >= 7)
+                return 8;
+        else if (arch >= 6)
+                return 4;
+        else
+                return 1;
+}
 
 #endif

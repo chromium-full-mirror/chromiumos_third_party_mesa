@@ -43,6 +43,18 @@ static bool si_alu_to_scalar_filter(const nir_instr *instr, const void *data)
    return true;
 }
 
+static uint8_t si_vectorize_callback(const nir_instr *instr, const void *data)
+{
+   if (instr->type != nir_instr_type_alu)
+      return 0;
+
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   if (nir_dest_bit_size(alu->dest.dest) == 16)
+      return 2;
+
+   return 1;
+}
+
 void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
 {
    bool progress;
@@ -114,7 +126,7 @@ void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first)
          NIR_PASS_V(nir, nir_opt_move_discards_to_top);
 
       if (sscreen->options.fp16)
-         NIR_PASS(progress, nir, nir_opt_vectorize, NULL, NULL);
+         NIR_PASS(progress, nir, nir_opt_vectorize, si_vectorize_callback, NULL);
    } while (progress);
 
    NIR_PASS_V(nir, nir_lower_var_copies);
@@ -205,6 +217,8 @@ lower_intrinsic_instr(nir_builder *b, nir_instr *instr, void *dummy)
    case nir_intrinsic_is_sparse_texels_resident:
       /* code==0 means sparse texels are resident */
       return nir_ieq_imm(b, intrin->src[0].ssa, 0);
+   case nir_intrinsic_sparse_residency_code_and:
+      return nir_ior(b, intrin->src[0].ssa, intrin->src[1].ssa);
    default:
       return NULL;
    }
@@ -259,7 +273,7 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
 
    NIR_PASS_V(nir, nir_lower_discard_or_demote,
               (sscreen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL)) ||
-               nir->info.is_arb_asm);
+               nir->info.use_legacy_math_rules);
 
    /* Lower load constants to scalar and then clean up the mess */
    NIR_PASS_V(nir, nir_lower_load_const_to_scalar);
@@ -317,7 +331,7 @@ char *si_finalize_nir(struct pipe_screen *screen, void *nirptr)
    struct si_screen *sscreen = (struct si_screen *)screen;
    struct nir_shader *nir = (struct nir_shader *)nirptr;
 
-   nir_lower_io_passes(nir, NULL);
+   nir_lower_io_passes(nir);
 
    /* Remove dead derefs, so that we can remove uniforms. */
    NIR_PASS_V(nir, nir_opt_dce);

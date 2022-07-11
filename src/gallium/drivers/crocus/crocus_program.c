@@ -44,12 +44,12 @@
 #include "compiler/nir/nir_serialize.h"
 #include "intel/compiler/brw_compiler.h"
 #include "intel/compiler/brw_nir.h"
+#include "intel/compiler/brw_prim.h"
 #include "crocus_context.h"
 #include "nir/tgsi_to_nir.h"
 
 #define KEY_INIT_NO_ID()                              \
-   .base.subgroup_size_type = BRW_SUBGROUP_SIZE_UNIFORM, \
-   .base.tex.swizzles[0 ... MAX_SAMPLERS - 1] = 0x688,   \
+   .base.tex.swizzles[0 ... BRW_MAX_SAMPLERS - 1] = 0x688,   \
    .base.tex.compressed_multisample_layout_mask = ~0
 #define KEY_INIT()                                                        \
    .base.program_string_id = ish->program_id,                             \
@@ -60,7 +60,7 @@ static void
 crocus_sanitize_tex_key(struct brw_sampler_prog_key_data *key)
 {
    key->gather_channel_quirk_mask = 0;
-   for (unsigned s = 0; s < MAX_SAMPLERS; s++) {
+   for (unsigned s = 0; s < BRW_MAX_SAMPLERS; s++) {
       key->swizzles[s] = SWIZZLE_NOOP;
       key->gfx6_gather_wa[s] = 0;
    }
@@ -1208,7 +1208,7 @@ crocus_compile_vs(struct crocus_context *ice,
    if (key->clamp_pointsize)
       nir_lower_point_size(nir, 1.0, 255.0);
 
-   prog_data->use_alt_mode = nir->info.is_arb_asm;
+   prog_data->use_alt_mode = nir->info.use_legacy_math_rules;
 
    crocus_setup_uniforms(compiler, mem_ctx, nir, prog_data, &system_values,
                          &num_system_values, &num_cbufs);
@@ -1858,7 +1858,7 @@ crocus_compile_fs(struct crocus_context *ice,
 
    nir_shader *nir = nir_shader_clone(mem_ctx, ish->nir);
 
-   prog_data->use_alt_mode = nir->info.is_arb_asm;
+   prog_data->use_alt_mode = nir->info.use_legacy_math_rules;
 
    crocus_setup_uniforms(compiler, mem_ctx, nir, prog_data, &system_values,
                          &num_system_values, &num_cbufs);

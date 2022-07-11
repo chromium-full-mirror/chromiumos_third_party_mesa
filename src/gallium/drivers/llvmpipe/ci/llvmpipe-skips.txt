@@ -13,6 +13,7 @@ KHR-GL45.texture_size_promotion.functional
 KHR-GL45.texture_swizzle.functional
 KHR-GL45.texture_swizzle.smoke
 KHR-GLES31.core.arrays_of_arrays.InteractionFunctionCalls2
+dEQP-GLES31.functional.ssbo.layout.random.all_shared_buffer.36
 arb_pipeline_statistics_query-comp
 gl-1.0-blend-func
 
@@ -30,3 +31,7 @@ longprim
 # Unreliable on shared runners due to timing
 ext_timer_query@time-elapsed
 spec@arb_timer_query@query gl_timestamp
+
+# These tests started hitting timeouts when we upgraded LLVM from v11 to 13
+spec@arb_texture_rg@fbo-blending-formats
+spec@ext_framebuffer_object@fbo-blending-formats

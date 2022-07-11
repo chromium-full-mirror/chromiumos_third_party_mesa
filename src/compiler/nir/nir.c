@@ -2507,6 +2507,8 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_ray_geometry_index;
    case SYSTEM_VALUE_RAY_INSTANCE_CUSTOM_INDEX:
       return nir_intrinsic_load_ray_instance_custom_index;
+   case SYSTEM_VALUE_CULL_MASK:
+      return nir_intrinsic_load_cull_mask;
    case SYSTEM_VALUE_MESH_VIEW_COUNT:
       return nir_intrinsic_load_mesh_view_count;
    case SYSTEM_VALUE_FRAG_SHADING_RATE:
@@ -2652,6 +2654,8 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_RAY_GEOMETRY_INDEX;
    case nir_intrinsic_load_ray_instance_custom_index:
       return SYSTEM_VALUE_RAY_INSTANCE_CUSTOM_INDEX;
+   case nir_intrinsic_load_cull_mask:
+      return SYSTEM_VALUE_CULL_MASK;
    case nir_intrinsic_load_frag_shading_rate:
       return SYSTEM_VALUE_FRAG_SHADING_RATE;
    case nir_intrinsic_load_mesh_view_count:
@@ -2857,7 +2861,11 @@ nir_binding nir_chase_binding(nir_src rsrc)
    if (nir_src_is_const(rsrc)) {
       /* GL binding model after deref lowering */
       res.success = true;
-      res.binding = nir_src_as_uint(rsrc);
+      /* Can't use just nir_src_as_uint. Vulkan resource index produces a
+       * vec2. Some drivers lower it to vec1 (to handle get_ssbo_size for
+       * example) but others just keep it around as a vec2 (v3dv).
+       */
+      res.binding = nir_src_comp_as_uint(rsrc, 0);
       return res;
    }
 
@@ -3467,6 +3475,7 @@ nir_slot_is_varying(gl_varying_slot slot)
           slot == VARYING_SLOT_BFC1 ||
           slot == VARYING_SLOT_FOGC ||
           (slot >= VARYING_SLOT_TEX0 && slot <= VARYING_SLOT_TEX7) ||
+          slot == VARYING_SLOT_PNTC ||
           slot == VARYING_SLOT_CLIP_DIST0 ||
           slot == VARYING_SLOT_CLIP_DIST1 ||
           slot == VARYING_SLOT_CULL_DIST0 ||

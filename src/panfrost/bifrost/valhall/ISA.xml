@@ -735,9 +735,12 @@
   <enum name="Source format">
     <desc>
       In-memory format of varyings.
+
+      Note: src_flat32 is only valid with 32-bit varying instructions and
+      src_flat16 is only valid with 16-bit varying instructions.
     </desc>
     <value desc="Uninterpreted 32-bit values">src_flat32</value>
-    <reserved/>
+    <value desc="Uninterpreted 16-bit values">src_flat16</value>
     <value desc="Interpolated 32-bit floats">src_f32</value>
     <value desc="Interpolated 16-bit floats">src_f16</value>
   </enum>
@@ -805,14 +808,12 @@
     <mod name="eq" start="36" size="1"/>
   </ins>
 
-  <ins name="DISCARD.f32" title="Discard fragment" opcode="0x20" unit="CVT">
+  <ins name="DISCARD.f32" title="Discard fragment" dests="0" opcode="0x20" unit="CVT">
     <desc>
       Evaluates the given condition, and if it passes, discards the current
-      fragment and terminates the thread. The destination should be set to R60.
-      Only valid in a **fragment** shader.
+      fragment and terminates the thread. Only valid in a **fragment** shader.
     </desc>
     <cmp/>
-    <dest>Updated coverage mask (set to R60)</dest>
     <src absneg="true" swizzle="true">Left value to compare</src>
     <src absneg="true" swizzle="true">Right value to compare</src>
   </ins>
@@ -1121,8 +1122,8 @@
     <mod name="load_lane_8_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Address to load from after adding offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LD_BUFFER.i16" title="Global memory load" opcode="0x6a" opcode2="1" unit="LS">
@@ -1138,8 +1139,8 @@
     <mod name="load_lane_16_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Byte offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Byte offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LD_BUFFER.i24" title="Global memory load" opcode="0x6a" opcode2="2" unit="LS">
@@ -1155,8 +1156,8 @@
     <mod name="load_lane_24_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Byte offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Byte offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LD_BUFFER.i32" title="Global memory load" opcode="0x6a" opcode2="3" unit="LS">
@@ -1172,8 +1173,8 @@
     <mod name="load_lane_32_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Byte offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Byte offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LD_BUFFER.i48" title="Global memory load" opcode="0x6a" opcode2="4" unit="LS">
@@ -1189,8 +1190,8 @@
     <mod name="load_lane_48_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Byte offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Byte offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LD_BUFFER.i64" title="Global memory load" opcode="0x6a" opcode2="5" unit="LS">
@@ -1206,8 +1207,8 @@
     <mod name="load_lane_64_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Byte offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Byte offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LD_BUFFER.i96" title="Global memory load" opcode="0x6a" opcode2="6" unit="LS">
@@ -1223,8 +1224,8 @@
     <mod name="load_lane_96_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Byte offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Byte offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LD_BUFFER.i128" title="Global memory load" opcode="0x6a" opcode2="7" unit="LS">
@@ -1240,8 +1241,8 @@
     <mod name="load_lane_128_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Byte offset</src>
-    <src>Mode descriptor</src>
+    <src size="32">Byte offset</src>
+    <src size="32">Mode descriptor</src>
   </ins>
 
   <ins name="LEA_BUF_IMM" title="Load buffer effective address" opcode="0x5E" unit="LS">
@@ -1264,7 +1265,7 @@
     <mod name="load_lane_8_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1276,7 +1277,7 @@
     <mod name="load_lane_16_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1288,7 +1289,7 @@
     <mod name="load_lane_24_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1300,7 +1301,7 @@
     <mod name="load_lane_32_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1312,7 +1313,7 @@
     <mod name="load_lane_48_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1324,7 +1325,7 @@
     <mod name="load_lane_64_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1336,7 +1337,7 @@
     <mod name="load_lane_96_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1348,7 +1349,7 @@
     <mod name="load_lane_128_bit" start="36" size="3"/>
     <mod name="unsigned" start="39" size="1"/>
     <slot/>
-    <src>Address to load from after adding offset</src>
+    <src size="64">Address to load from after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </ins>
 
@@ -1366,7 +1367,7 @@
     <sr_count/>
     <memory_access/>
     <slot/>
-    <src>Address to store to after adding offset</src>
+    <src size="64">Address to store to after adding offset</src>
     <imm name="offset" start="8" size="16" signed="true"/>
   </group>
 
@@ -1758,22 +1759,24 @@
       a 32-bit destination.
     </desc>
     <clamp/>
+    <roundmode/>
     <src absneg="true">A</src>
     <src absneg="true">B</src>
   </group>
 
-  <group name="FRSCALE" title="Floating-point rescaling" dests="1" opcode2="6" unit="FMA">
-    <ins name="FRSCALE.f32" opcode="0xA4"/>
-    <ins name="FRSCALE.v2f16" opcode="0xA5"/>
+  <group name="LDEXP" title="Floating-point rescaling" dests="1" opcode2="6" unit="FMA">
+    <ins name="LDEXP.f32" opcode="0xA4"/>
+    <ins name="LDEXP.v2f16" opcode="0xA5"/>
     <desc>
       Computes $A \cdot 2^B$ by adding B to the exponent of A. Used to calculate
       various special functions, particularly base-2 exponents. Special case
       handling differs from an actual floating-point multiply, so this should
       not be used outside fixed instruction sequences.
     </desc>
-    <clamp/>
     <src absneg="true" swizzle="true">A</src>
-    <src absneg="true" swizzle="true">B</src>
+    <src/>
+    <roundmode/> <!-- Also has rtna -->
+    <!-- Also has infinity handling for arctan -->
   </group>
 
   <ins name="FEXP.f32" title="Floating-point exponent" dests="1" opcode="0xA4" opcode2="8" unit="SFU">
@@ -2108,15 +2111,15 @@
     <src>Cube face index</src>
   </ins>
 
-  <ins name="MKVEC.v4i8" title="Make 8-bit vector" dests="1" opcode="0xBD" unit="CVT">
+  <ins name="MKVEC.v2i8" title="Make 8-bit vector" dests="1" opcode="0xBD" unit="CVT">
     <desc>
       Calculates $A | (B \ll 8) | (CD \ll 16)$ for 8-bit A and B and 16-bit CD.
 
       To implement `(uchar4) (A, B, C, D)` in full generality, use the sequence
-      `MKVEC.v4i8 CD, C, D, #0; MKVEC.v4i8 out, A, B, CD`
+      `MKVEC.v2i8 CD, C, D, #0; MKVEC.v2i8 out, A, B, CD`
 
-      `MKVEC.v4i8` also allows zero extending arbitrary 8-bit lanes. For
-      example, to extend `r0.b3` to `r1`, use `MKVEC.v4i8 r1, r0.b3, 0x0.b0, 0x0`.
+      `MKVEC.v2i8` also allows zero extending arbitrary 8-bit lanes. For
+      example, to extend `r0.b3` to `r1`, use `MKVEC.v2i8 r1, r0.b3, 0x0.b0, 0x0`.
     </desc>
     <src lane="true">A</src>
     <src lane="true">B</src>
@@ -2388,7 +2391,7 @@
 
     <sr write="true" flags="false"/>
     <sr read="true" flags="false"/>
-    <src>Image to read from</src>
+    <src size="64">Image to read from</src>
   </ins>
 
   <ins name="TEX_SINGLE" title="Texture load" opcode="0x128" unit="T">
@@ -2411,7 +2414,7 @@
 
     <sr write="true" flags="false"/>
     <sr read="true" flags="false"/>
-    <src>Image to read from</src>
+    <src size="64">Image to read from</src>
   </ins>
 
   <ins name="TEX_GATHER" title="Texel gather" opcode="0x129" unit="T">
@@ -2435,7 +2438,7 @@
 
     <sr write="true" flags="false"/>
     <sr read="true" flags="false"/>
-    <src>Image to read from</src>
+    <src size="64">Image to read from</src>
   </ins>
 
   <ins name="TEX_DUAL" title="Dual texture" opcode="0x12F" unit="T">
@@ -2458,7 +2461,7 @@
 
     <sr write="true" flags="false"/>
     <sr read="true" flags="false"/>
-    <src>Image to read from</src>
+    <src size="64">Image to read from</src>
   </ins>
 
   <ins name="VAR_TEX_BUF_SINGLE" title="Fused varying-texturing" opcode="0x130" unit="VT">
@@ -2647,7 +2650,7 @@
       special transcendental function sequences. It should not be used for
       general code as its special case handling differs from two back-to-back
       `FMA.f32` operations. Equivalent to `FMA.f32` back-to-back with
-      `RSCALE.f32`
+      `LDEXP.f32`
     </desc>
     <clamp/>
     <src absneg="true">A</src>
@@ -2663,7 +2666,7 @@
       ordinary multiply would return NaN. Used in special transcendental
       function sequences. It should not be used for general code as its special
       case handling differs from two back-to-back `FMA.f32` operations.
-      Equivalent to `FMA.f32` back-to-back with `RSCALE.f32`
+      Equivalent to `FMA.f32` back-to-back with `LDEXP.f32`
     </desc>
     <clamp/>
     <src absneg="true">A</src>
@@ -2679,7 +2682,7 @@
       ordinary multiply would return NaN. Used in special transcendental
       function sequences. It should not be used for general code as its special
       case handling differs from two back-to-back `FMA.f32` operations.
-      Equivalent to `FMA.f32` back-to-back with `RSCALE.f32`
+      Equivalent to `FMA.f32` back-to-back with `LDEXP.f32`
     </desc>
     <clamp/>
     <src absneg="true">A</src>
@@ -2694,7 +2697,7 @@
       interpreted as a 16-bit value. Used in special transcendental function
       sequences. It should not be used for general code as its special case
       handling differs from two back-to-back `FMA.f32` operations.  Equivalent
-      to `FMA.f32` back-to-back with `RSCALE.f32`
+      to `FMA.f32` back-to-back with `LDEXP.f32`
     </desc>
     <clamp/>
     <src absneg="true">A</src>

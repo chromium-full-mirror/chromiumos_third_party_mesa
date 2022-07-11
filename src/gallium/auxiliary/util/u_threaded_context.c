@@ -1048,7 +1048,12 @@ tc_bind_sampler_states(struct pipe_context *_pipe,
    memcpy(p->slot, states, count * sizeof(states[0]));
 }
 
-
+static void
+tc_link_shader(struct pipe_context *_pipe, void **shaders)
+{
+   struct threaded_context *tc = threaded_context(_pipe);
+   tc->pipe->link_shader(tc->pipe, shaders);
+}
 /********************************************************************
  * immediate states
  */
@@ -2836,27 +2841,14 @@ tc_fence_server_sync(struct pipe_context *_pipe,
    screen->fence_reference(screen, &call->fence, fence);
 }
 
-static uint16_t
-tc_call_fence_server_signal(struct pipe_context *pipe, void *call, uint64_t *last)
-{
-   struct pipe_fence_handle *fence = to_call(call, tc_fence_call)->fence;
-
-   pipe->fence_server_signal(pipe, fence);
-   pipe->screen->fence_reference(pipe->screen, &fence, NULL);
-   return call_size(tc_fence_call);
-}
-
 static void
 tc_fence_server_signal(struct pipe_context *_pipe,
                            struct pipe_fence_handle *fence)
 {
    struct threaded_context *tc = threaded_context(_pipe);
-   struct pipe_screen *screen = tc->pipe->screen;
-   struct tc_fence_call *call = tc_add_call(tc, TC_CALL_fence_server_signal,
-                                            tc_fence_call);
-
-   call->fence = NULL;
-   screen->fence_reference(screen, &call->fence, fence);
+   struct pipe_context *pipe = tc->pipe;
+   tc_sync(tc);
+   pipe->fence_server_signal(pipe, fence);
 }
 
 static struct pipe_video_codec *
@@ -3228,9 +3220,6 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
    unsigned index_size = info->index_size;
    bool has_user_indices = info->has_user_indices;
 
-   if (unlikely(tc->add_all_gfx_bindings_to_buffer_list))
-      tc_add_all_gfx_bindings_to_buffer_list(tc);
-
    if (unlikely(indirect)) {
       assert(!has_user_indices);
       assert(num_draws == 1);
@@ -3264,6 +3253,10 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
 
       memcpy(&p->indirect, indirect, sizeof(*indirect));
       p->draw.start = draws[0].start;
+
+      /* This must be after tc_add_call, which can flush the batch. */
+      if (unlikely(tc->add_all_gfx_bindings_to_buffer_list))
+         tc_add_all_gfx_bindings_to_buffer_list(tc);
       return;
    }
 
@@ -3318,6 +3311,10 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
          p->info.max_index = draws[0].count;
          p->index_bias = draws[0].index_bias;
       }
+
+      /* This must be after tc_add_call, which can flush the batch. */
+      if (unlikely(tc->add_all_gfx_bindings_to_buffer_list))
+         tc_add_all_gfx_bindings_to_buffer_list(tc);
       return;
    }
 
@@ -3430,6 +3427,10 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
          total_offset += dr;
       }
    }
+
+   /* This must be after tc_add_*call, which can flush the batch. */
+   if (unlikely(tc->add_all_gfx_bindings_to_buffer_list))
+      tc_add_all_gfx_bindings_to_buffer_list(tc);
 }
 
 struct tc_draw_vstate_single {
@@ -3528,9 +3529,6 @@ tc_draw_vertex_state(struct pipe_context *_pipe,
 {
    struct threaded_context *tc = threaded_context(_pipe);
 
-   if (unlikely(tc->add_all_gfx_bindings_to_buffer_list))
-      tc_add_all_gfx_bindings_to_buffer_list(tc);
-
    if (num_draws == 1) {
       /* Single draw. */
       struct tc_draw_vstate_single *p =
@@ -3549,6 +3547,11 @@ tc_draw_vertex_state(struct pipe_context *_pipe,
          tc_set_vertex_state_reference(&p->state, state);
       else
          p->state = state;
+
+
+      /* This must be after tc_add_*call, which can flush the batch. */
+      if (unlikely(tc->add_all_gfx_bindings_to_buffer_list))
+         tc_add_all_gfx_bindings_to_buffer_list(tc);
       return;
    }
 
@@ -3590,6 +3593,11 @@ tc_draw_vertex_state(struct pipe_context *_pipe,
 
       total_offset += dr;
    }
+
+
+   /* This must be after tc_add_*call, which can flush the batch. */
+   if (unlikely(tc->add_all_gfx_bindings_to_buffer_list))
+      tc_add_all_gfx_bindings_to_buffer_list(tc);
 }
 
 struct tc_launch_grid_call {
@@ -3616,14 +3624,15 @@ tc_launch_grid(struct pipe_context *_pipe,
                                                tc_launch_grid_call);
    assert(info->input == NULL);
 
-   if (unlikely(tc->add_all_compute_bindings_to_buffer_list))
-      tc_add_all_compute_bindings_to_buffer_list(tc);
-
    tc_set_resource_reference(&p->info.indirect, info->indirect);
    memcpy(&p->info, info, sizeof(*info));
 
    if (info->indirect)
       tc_add_to_buffer_list(&tc->buffer_lists[tc->next_buf_list], info->indirect);
+
+   /* This must be after tc_add_*call, which can flush the batch. */
+   if (unlikely(tc->add_all_compute_bindings_to_buffer_list))
+      tc_add_all_compute_bindings_to_buffer_list(tc);
 }
 
 static uint16_t
@@ -4416,6 +4425,7 @@ threaded_context_create(struct pipe_context *pipe,
    CTX_INIT(create_depth_stencil_alpha_state);
    CTX_INIT(bind_depth_stencil_alpha_state);
    CTX_INIT(delete_depth_stencil_alpha_state);
+   CTX_INIT(link_shader);
    CTX_INIT(create_fs_state);
    CTX_INIT(bind_fs_state);
    CTX_INIT(delete_fs_state);

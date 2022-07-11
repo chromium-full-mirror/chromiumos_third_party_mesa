@@ -70,7 +70,7 @@ struct fd_dev_info {
          bool supports_multiview_mask;
 
          /* info for setting RB_CCU_CNTL */
-         bool ccu_cntl_gmem_unk2;
+         bool concurrent_resolve;
          bool has_z24uint_s8uint;
 
          bool tess_use_shared;
@@ -132,6 +132,10 @@ struct fd_dev_info {
 
          bool has_dp2acc;
          bool has_dp4acc;
+
+         bool enable_lrz_fast_clear;
+         bool has_lrz_dir_tracking;
+         bool lrz_track_quirk;
 
          struct {
             uint32_t RB_UNKNOWN_8E04_blit;

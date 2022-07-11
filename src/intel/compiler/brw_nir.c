@@ -959,8 +959,8 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
    const bool c_is_scalar = compiler->scalar_stage[consumer->info.stage];
 
    if (p_is_scalar && c_is_scalar) {
-      NIR_PASS_V(producer, nir_lower_io_to_scalar_early, nir_var_shader_out);
-      NIR_PASS_V(consumer, nir_lower_io_to_scalar_early, nir_var_shader_in);
+      NIR_PASS(_, producer, nir_lower_io_to_scalar_early, nir_var_shader_out);
+      NIR_PASS(_, consumer, nir_lower_io_to_scalar_early, nir_var_shader_in);
       brw_nir_optimize(producer, compiler, p_is_scalar, false);
       brw_nir_optimize(consumer, compiler, c_is_scalar, false);
    }
@@ -968,31 +968,31 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
    if (nir_link_opt_varyings(producer, consumer))
       brw_nir_optimize(consumer, compiler, c_is_scalar, false);
 
-   NIR_PASS_V(producer, nir_remove_dead_variables, nir_var_shader_out, NULL);
-   NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
+   NIR_PASS(_, producer, nir_remove_dead_variables, nir_var_shader_out, NULL);
+   NIR_PASS(_, consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
 
    if (nir_remove_unused_varyings(producer, consumer)) {
-      NIR_PASS_V(producer, nir_lower_global_vars_to_local);
-      NIR_PASS_V(consumer, nir_lower_global_vars_to_local);
+      NIR_PASS(_, producer, nir_lower_global_vars_to_local);
+      NIR_PASS(_, consumer, nir_lower_global_vars_to_local);
 
       /* The backend might not be able to handle indirects on
        * temporaries so we need to lower indirects on any of the
        * varyings we have demoted here.
        */
-      NIR_PASS_V(producer, nir_lower_indirect_derefs,
-                 brw_nir_no_indirect_mask(compiler, producer->info.stage),
-                 UINT32_MAX);
-      NIR_PASS_V(consumer, nir_lower_indirect_derefs,
-                 brw_nir_no_indirect_mask(compiler, consumer->info.stage),
-                 UINT32_MAX);
+      NIR_PASS(_, producer, nir_lower_indirect_derefs,
+                  brw_nir_no_indirect_mask(compiler, producer->info.stage),
+                  UINT32_MAX);
+      NIR_PASS(_, consumer, nir_lower_indirect_derefs,
+                  brw_nir_no_indirect_mask(compiler, consumer->info.stage),
+                  UINT32_MAX);
 
       brw_nir_optimize(producer, compiler, p_is_scalar, false);
       brw_nir_optimize(consumer, compiler, c_is_scalar, false);
    }
 
-   NIR_PASS_V(producer, nir_lower_io_to_vector, nir_var_shader_out);
-   NIR_PASS_V(producer, nir_opt_combine_stores, nir_var_shader_out);
-   NIR_PASS_V(consumer, nir_lower_io_to_vector, nir_var_shader_in);
+   NIR_PASS(_, producer, nir_lower_io_to_vector, nir_var_shader_out);
+   NIR_PASS(_, producer, nir_opt_combine_stores, nir_var_shader_out);
+   NIR_PASS(_, consumer, nir_lower_io_to_vector, nir_var_shader_in);
 
    if (producer->info.stage != MESA_SHADER_TESS_CTRL &&
        producer->info.stage != MESA_SHADER_MESH &&
@@ -1009,9 +1009,9 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
        */
       NIR_PASS_V(producer, nir_lower_io_to_temporaries,
                  nir_shader_get_entrypoint(producer), true, false);
-      NIR_PASS_V(producer, nir_lower_global_vars_to_local);
-      NIR_PASS_V(producer, nir_split_var_copies);
-      NIR_PASS_V(producer, nir_lower_var_copies);
+      NIR_PASS(_, producer, nir_lower_global_vars_to_local);
+      NIR_PASS(_, producer, nir_split_var_copies);
+      NIR_PASS(_, producer, nir_lower_var_copies);
    }
 }
 
@@ -1081,7 +1081,8 @@ brw_vectorize_lower_mem_access(nir_shader *nir,
    if (is_scalar) {
       nir_load_store_vectorize_options options = {
          .modes = nir_var_mem_ubo | nir_var_mem_ssbo |
-                  nir_var_mem_global | nir_var_mem_shared,
+                  nir_var_mem_global | nir_var_mem_shared |
+                  nir_var_mem_task_payload,
          .callback = brw_nir_should_vectorize_mem,
          .robust_modes = (nir_variable_mode)0,
       };
@@ -1235,8 +1236,17 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    /* TODO: Enable nir_opt_uniform_atomics on Gfx7.x too.
     * It currently fails Vulkan tests on Haswell for an unknown reason.
+    *
+    * TODO: Using this optimization on RT/OpenCL kernels also seems to cause
+    *       issues. Until we can understand those issues, disable it.
     */
-   if (devinfo->ver >= 8 && OPT(nir_opt_uniform_atomics)) {
+   bool opt_uniform_atomic_stage_allowed =
+      devinfo->ver >= 8 &&
+      nir->info.stage != MESA_SHADER_KERNEL &&
+      nir->info.stage != MESA_SHADER_RAYGEN &&
+      !gl_shader_stage_is_callable(nir->info.stage);
+
+   if (opt_uniform_atomic_stage_allowed && OPT(nir_opt_uniform_atomics)) {
       const nir_lower_subgroups_options subgroups_options = {
          .ballot_bit_size = 32,
          .ballot_components = 1,
@@ -1343,16 +1353,14 @@ brw_nir_apply_sampler_key(nir_shader *nir,
 }
 
 static unsigned
-get_subgroup_size(gl_shader_stage stage,
-                  const struct brw_base_prog_key *key,
-                  unsigned max_subgroup_size)
+get_subgroup_size(const struct shader_info *info, unsigned max_subgroup_size)
 {
-   switch (key->subgroup_size_type) {
-   case BRW_SUBGROUP_SIZE_API_CONSTANT:
+   switch (info->subgroup_size) {
+   case SUBGROUP_SIZE_API_CONSTANT:
       /* We have to use the global constant size. */
       return BRW_SUBGROUP_SIZE;
 
-   case BRW_SUBGROUP_SIZE_UNIFORM:
+   case SUBGROUP_SIZE_UNIFORM:
       /* It has to be uniform across all invocations but can vary per stage
        * if we want.  This gives us a bit more freedom.
        *
@@ -1363,7 +1371,7 @@ get_subgroup_size(gl_shader_stage stage,
        */
       return max_subgroup_size;
 
-   case BRW_SUBGROUP_SIZE_VARYING:
+   case SUBGROUP_SIZE_VARYING:
       /* The subgroup size is allowed to be fully varying.  For geometry
        * stages, we know it's always 8 which is max_subgroup_size so we can
        * return that.  For compute, brw_nir_apply_key is called once per
@@ -1374,16 +1382,21 @@ get_subgroup_size(gl_shader_stage stage,
        * that's a risk the client took when it asked for a varying subgroup
        * size.
        */
-      return stage == MESA_SHADER_FRAGMENT ? 0 : max_subgroup_size;
+      return info->stage == MESA_SHADER_FRAGMENT ? 0 : max_subgroup_size;
 
-   case BRW_SUBGROUP_SIZE_REQUIRE_8:
-   case BRW_SUBGROUP_SIZE_REQUIRE_16:
-   case BRW_SUBGROUP_SIZE_REQUIRE_32:
-      assert(gl_shader_stage_uses_workgroup(stage));
+   case SUBGROUP_SIZE_REQUIRE_8:
+   case SUBGROUP_SIZE_REQUIRE_16:
+   case SUBGROUP_SIZE_REQUIRE_32:
+      assert(gl_shader_stage_uses_workgroup(info->stage));
       /* These enum values are expressly chosen to be equal to the subgroup
        * size that they require.
        */
-      return key->subgroup_size_type;
+      return info->subgroup_size;
+
+   case SUBGROUP_SIZE_FULL_SUBGROUPS:
+   case SUBGROUP_SIZE_REQUIRE_64:
+   case SUBGROUP_SIZE_REQUIRE_128:
+      break;
    }
 
    unreachable("Invalid subgroup size type");
@@ -1401,8 +1414,7 @@ brw_nir_apply_key(nir_shader *nir,
    OPT(brw_nir_apply_sampler_key, compiler, &key->tex);
 
    const nir_lower_subgroups_options subgroups_options = {
-      .subgroup_size = get_subgroup_size(nir->info.stage, key,
-                                         max_subgroup_size),
+      .subgroup_size = get_subgroup_size(&nir->info, max_subgroup_size),
       .ballot_bit_size = 32,
       .ballot_components = 1,
       .lower_subgroup_masks = true,

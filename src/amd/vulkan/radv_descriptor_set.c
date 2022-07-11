@@ -625,6 +625,9 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
                            struct radv_descriptor_set_layout *layout, const uint32_t *variable_count,
                            struct radv_descriptor_set **out_set)
 {
+   if (pool->entry_count == pool->max_entry_count)
+      return VK_ERROR_OUT_OF_POOL_MEMORY;
+
    struct radv_descriptor_set *set;
    uint32_t buffer_count = layout->buffer_count;
    if (variable_count) {
@@ -648,7 +651,6 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
 
       set = (struct radv_descriptor_set *)pool->host_memory_ptr;
       pool->host_memory_ptr += mem_size;
-      memset(set->descriptors, 0, sizeof(struct radeon_winsys_bo *) * buffer_count);
    } else {
       set = vk_alloc2(&device->vk.alloc, NULL, mem_size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
@@ -678,14 +680,6 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
    }
    layout_size = align_u32(layout_size, 32);
    set->header.size = layout_size;
-
-   if (pool->entry_count == pool->max_entry_count) {
-      if (!pool->host_memory_base) {
-         vk_free2(&device->vk.alloc, NULL, set);
-      }
-
-      return VK_ERROR_OUT_OF_POOL_MEMORY;
-   }
 
    /* try to allocate linearly first, so that we don't spend
     * time looking for gaps if the app only allocates &
@@ -1062,11 +1056,9 @@ write_buffer_descriptor(struct radv_device *device, struct radv_cmd_buffer *cmd_
    }
 
    uint64_t va = radv_buffer_get_va(buffer->bo);
-   uint32_t range = buffer_info->range;
 
-   if (buffer_info->range == VK_WHOLE_SIZE)
-      range = buffer->size - buffer_info->offset;
-   assert(buffer->size > 0 && range > 0);
+   uint32_t range = vk_buffer_range(&buffer->vk, buffer_info->offset, buffer_info->range);
+   assert(buffer->vk.size > 0 && range > 0);
 
    /* robustBufferAccess is relaxed enough to allow this (in combination
     * with the alignment/size we return from vkGetBufferMemoryRequirements)
@@ -1128,11 +1120,9 @@ write_dynamic_buffer_descriptor(struct radv_device *device, struct radv_descript
    }
 
    va = radv_buffer_get_va(buffer->bo);
-   size = buffer_info->range;
 
-   if (buffer_info->range == VK_WHOLE_SIZE)
-      size = buffer->size - buffer_info->offset;
-   assert(buffer->size > 0 && size > 0);
+   size = vk_buffer_range(&buffer->vk, buffer_info->offset, buffer_info->range);
+   assert(buffer->vk.size > 0 && size > 0);
 
    /* robustBufferAccess is relaxed enough to allow this (in combination
     * with the alignment/size we return from vkGetBufferMemoryRequirements)
@@ -1576,7 +1566,7 @@ radv_update_descriptor_set_with_template_impl(struct radv_device *device,
                device, cmd_buffer, templ->entry[i].sampler_offset, pDst, buffer_list,
                templ->entry[i].descriptor_type, (struct VkDescriptorImageInfo *)pSrc,
                templ->entry[i].has_sampler);
-            if (templ->entry[i].immutable_samplers) {
+            if (cmd_buffer && templ->entry[i].immutable_samplers) {
                memcpy((char *)pDst + templ->entry[i].sampler_offset,
                       templ->entry[i].immutable_samplers + 4 * j, 16);
             }
@@ -1584,7 +1574,7 @@ radv_update_descriptor_set_with_template_impl(struct radv_device *device,
          case VK_DESCRIPTOR_TYPE_SAMPLER:
             if (templ->entry[i].has_sampler)
                write_sampler_descriptor(device, pDst, (struct VkDescriptorImageInfo *)pSrc);
-            else if (templ->entry[i].immutable_samplers)
+            else if (cmd_buffer && templ->entry[i].immutable_samplers)
                memcpy(pDst, templ->entry[i].immutable_samplers + 4 * j, 16);
             break;
          case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:

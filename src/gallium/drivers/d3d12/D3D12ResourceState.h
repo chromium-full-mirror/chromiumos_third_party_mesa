@@ -24,15 +24,12 @@
 #ifndef D3D12_RESOURCE_STATE_H
 #define D3D12_RESOURCE_STATE_H
 
-#ifndef _WIN32
-#include <wsl/winadapter.h>
-#endif
-
 #include <vector>
 #include <assert.h>
-#include <directx/d3d12.h>
 
 #include "util/list.h"
+
+#include "d3d12_common.h"
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic ignored "-Winvalid-offsetof"
@@ -41,7 +38,7 @@
 #define UNKNOWN_RESOURCE_STATE (D3D12_RESOURCE_STATES)0x8000u
 #define RESOURCE_STATE_VALID_BITS 0x2f3fff
 #define RESOURCE_STATE_VALID_INTERNAL_BITS 0x2fffff
-constexpr D3D12_RESOURCE_STATES RESOURCE_STATE_ALL_WRITE_BITS =
+const D3D12_RESOURCE_STATES RESOURCE_STATE_ALL_WRITE_BITS =
 D3D12_RESOURCE_STATE_RENDER_TARGET          |
 D3D12_RESOURCE_STATE_UNORDERED_ACCESS       |
 D3D12_RESOURCE_STATE_DEPTH_WRITE            |

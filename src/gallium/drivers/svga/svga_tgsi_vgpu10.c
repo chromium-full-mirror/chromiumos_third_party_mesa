@@ -6388,12 +6388,10 @@ emit_memory_declarations(struct svga_shader_emitter_v10 *emit)
       emit_dword(emit, opcode0.value);
       emit_dword(emit, operand0.value);
 
-      /* In current state tracker, TGSI shader declares only one shared memory
-       * TODO: To fix TGSI shader in state tracker to get all shared memory
-       * declarations and then fix following indexing. For now, default index
-       * is 1 as per translated TGSI shader
+      /* Current state tracker only declares one shared memory for GLSL.
+       * Use index 0 for this shared memory.
        */
-      emit_dword(emit, 1);
+      emit_dword(emit, 0);
       emit_dword(emit, emit->key.cs.mem_size); /* byte Count */
       end_emit_instruction(emit);
    }
@@ -10157,13 +10155,17 @@ emit_uav_addr_offset(struct svga_shader_emitter_v10 *emit,
    struct tgsi_full_dst_register addr_dst;
    struct tgsi_full_src_register addr_src;
    struct tgsi_full_src_register two = make_immediate_reg_int(emit, 2);
+   struct tgsi_full_src_register zero = make_immediate_reg_int(emit, 0);
 
    addr_tmp = get_temp_index(emit);
    addr_dst = make_dst_temp_reg(addr_tmp);
    addr_src = make_src_temp_reg(addr_tmp);
 
    /* specified address offset */
-   emit_instruction_op1(emit, VGPU10_OPCODE_MOV, &addr_dst, addr_reg);
+   if (addr_reg)
+      emit_instruction_op1(emit, VGPU10_OPCODE_MOV, &addr_dst, addr_reg);
+   else
+      emit_instruction_op1(emit, VGPU10_OPCODE_MOV, &addr_dst, &zero);
 
    /* For HW atomic counter, we need to find the index to the
     * HW atomic buffer.
@@ -10220,7 +10222,6 @@ emit_uav_addr_offset(struct svga_shader_emitter_v10 *emit,
 
          struct tgsi_full_dst_register addr_dst_z =
             writemask_dst(&addr_dst, TGSI_WRITEMASK_Z);
-         struct tgsi_full_src_register zero = make_immediate_reg_int(emit, 0);
 
          /* For non-layered 3D texture image view, we have to make sure the z
           * component of the address offset is set to 0.
@@ -10625,13 +10626,17 @@ emit_atomic_instruction(struct svga_shader_emitter_v10 *emit,
    enum tgsi_file_type resourceType = inst->Src[0].Register.File;
    struct tgsi_full_src_register addr_src;
    VGPU10_OPCODE_TYPE opcode = emit->cur_atomic_opcode;
+   const struct tgsi_full_src_register *offset;
+
+   /* ntt does not specify offset for HWATOMIC. So just set offset to NULL. */
+   offset = resourceType == TGSI_FILE_HW_ATOMIC ? NULL : &inst->Src[1];
 
    /* Resolve the resource address */
    addr_src = emit_uav_addr_offset(emit, resourceType,
                                    inst->Src[0].Register.Index,
                                    inst->Src[0].Register.Indirect,
                                    inst->Src[0].Indirect.Index,
-                                   &inst->Src[1]);
+                                   offset);
 
    /* Emit the atomic operation */
    begin_emit_instruction(emit);
@@ -12694,14 +12699,18 @@ transform_fs_pstipple(struct svga_shader_emitter_v10 *emit,
  * Modify the FS to support anti-aliasing point.
  */
 static const struct tgsi_token *
-transform_fs_aapoint(const struct tgsi_token *tokens,
+transform_fs_aapoint(struct svga_context *svga,
+		     const struct tgsi_token *tokens,
                      int aa_coord_index)
 {
+   bool need_texcoord_semantic =
+      svga->pipe.screen->get_param(svga->pipe.screen, PIPE_CAP_TGSI_TEXCOORD);
+
    if (0) {
       debug_printf("Before tgsi_add_aa_point ------------------\n");
       tgsi_dump(tokens,0);
    }
-   tokens = tgsi_add_aa_point(tokens, aa_coord_index);
+   tokens = tgsi_add_aa_point(tokens, aa_coord_index, need_texcoord_semantic);
    if (0) {
       debug_printf("After tgsi_add_aa_point ------------------\n");
       tgsi_dump(tokens, 0);
@@ -12961,7 +12970,8 @@ svga_tgsi_vgpu10_translate(struct svga_context *svga,
          tokens = new_tokens;
       }
       if (key->fs.aa_point) {
-         tokens = transform_fs_aapoint(tokens, key->fs.aa_point_coord_index);
+         tokens = transform_fs_aapoint(svga, tokens,
+			               key->fs.aa_point_coord_index);
       }
    }
 

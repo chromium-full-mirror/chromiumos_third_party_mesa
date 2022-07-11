@@ -28,7 +28,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "hwdef/rogue_hw_defs.h"
 #include "pvr_rogue_fwif_shared.h"
+#include "pvr_winsys.h"
 
 /**
  * \name Frag DM command flags.
@@ -152,25 +154,37 @@ struct rogue_fwif_ta_regs {
    uint64_t vdm_ctrl_stream_base;
    uint64_t tpu_border_colour_table;
 
+   /* Only used when feature VDM_DRAWINDIRECT present. */
+   uint64_t vdm_draw_indirect0;
+   /* Only used when feature VDM_DRAWINDIRECT present. */
+   uint32_t vdm_draw_indirect1;
+
    uint32_t ppp_ctrl;
    uint32_t te_psg;
-   /* FIXME: HIGH: FIX_HW_BRN_49927 changes the structure's layout, given we
-    * are supporting Features/ERNs/BRNs at runtime, we need to look into this
-    * and find a solution to keep layout intact.
-    */
-   /* Available if FIX_HW_BRN_49927 is present. */
+   /* Only used when BRN 49927 present. */
    uint32_t tpu;
 
    uint32_t vdm_context_resume_task0_size;
+   /* Only used when feature VDM_OBJECT_LEVEL_LLS present. */
+   uint32_t vdm_context_resume_task3_size;
 
-   /* FIXME: HIGH: FIX_HW_BRN_56279 changes the structure's layout, given we
-    * are supporting Features/ERNs/BRNs at runtime, we need to look into this
-    * and find a solution to keep layout intact.
-    */
-   /* Available if FIX_HW_BRN_56279 is present. */
+   /* Only used when BRN 56279 or BRN 67381 present. */
    uint32_t pds_ctrl;
 
    uint32_t view_idx;
+
+   /* Only used when feature TESSELLATION present */
+   uint32_t pds_coeff_free_prog;
+
+   uint32_t padding;
+};
+
+/**
+ * \brief Dummy region header registers.
+ */
+/* Only used when BRN 44455 or BRN 63027 present. */
+struct rogue_fwif_dummy_rgnhdr_init_geom_regs {
+   uint64_t te_psgregion_addr;
 };
 
 /**
@@ -194,13 +208,22 @@ struct rogue_fwif_cmd_ta {
     */
    struct rogue_fwif_cmd_ta_3d_shared cmd_shared;
 
-   struct rogue_fwif_ta_regs ALIGN(8) geom_regs;
-   uint32_t ALIGN(8) flags;
+   struct rogue_fwif_ta_regs ALIGN_ATTR(8) geom_regs;
+   uint32_t ALIGN_ATTR(8) flags;
    /**
     * Holds the TA/3D fence value to allow the 3D partial render command
     * to go through.
     */
    struct rogue_fwif_ufo partial_render_ta_3d_fence;
+
+   /* Only used when BRN 44455 or BRN 63027 present. */
+   struct rogue_fwif_dummy_rgnhdr_init_geom_regs
+      ALIGN_ATTR(8) dummy_rgnhdr_init_geom_regs;
+
+   /* Only used when BRN 61484 or BRN 66333 present. */
+   uint32_t brn61484_66333_live_rt;
+
+   uint32_t padding;
 };
 
 static_assert(
@@ -218,66 +241,80 @@ static_assert(
 struct rogue_fwif_3d_regs {
    /**
     * All 32 bit values should be added in the top section. This then requires
-    * only a single ALIGN(8) to align all the 64 bit values in the second
+    * only a single ALIGN_ATTR(8) to align all the 64 bit values in the second
     * section.
     */
    uint32_t usc_pixel_output_ctrl;
-   /* FIXME: HIGH: RGX_MAXIMUM_OUTPUT_REGISTERS_PER_PIXEL changes the
-    * structure's layout.
-    */
+
 #define ROGUE_MAXIMUM_OUTPUT_REGISTERS_PER_PIXEL 8U
    uint32_t usc_clear_register[ROGUE_MAXIMUM_OUTPUT_REGISTERS_PER_PIXEL];
 
    uint32_t isp_bgobjdepth;
    uint32_t isp_bgobjvals;
    uint32_t isp_aa;
+   /* Only used when feature S7_TOP_INFRASTRUCTURE present. */
+   uint32_t isp_xtp_pipe_enable;
+
    uint32_t isp_ctl;
 
-   /* FIXME: HIGH: FIX_HW_BRN_49927 changes the structure's layout, given we
-    * are supporting Features/ERNs/BRNs at runtime, we need to look into this
-    * and find a solution to keep layout intact.
-    */
-   /* Available if FIX_HW_BRN_49927 is present. */
+   /* Only used when feature CLUSTER_GROUPING present. */
    uint32_t tpu;
 
    uint32_t event_pixel_pds_info;
 
-   /* FIXME: HIGH: RGX_FEATURE_CLUSTER_GROUPING changes the structure's
-    * layout.
-    */
    uint32_t pixel_phantom;
 
    uint32_t view_idx;
 
    uint32_t event_pixel_pds_data;
-   /* FIXME: HIGH: MULTIBUFFER_OCLQRY changes the structure's layout.
-    * Commenting out for now as it's not supported by 4.V.2.51.
-    */
-   /* uint32_t isp_oclqry_stride; */
 
-   /* All values below the ALIGN(8) must be 64 bit. */
-   uint64_t ALIGN(8) isp_scissor_base;
+   /* Only used when BRN 65101 present. */
+   uint32_t brn65101_event_pixel_pds_data;
+
+   /* Only used when feature GPU_MULTICORE_SUPPORT or BRN 47217 present. */
+   uint32_t isp_oclqry_stride;
+
+   /* All values below the ALIGN_ATTR(8) must be 64 bit. */
+   uint64_t ALIGN_ATTR(8) isp_scissor_base;
    uint64_t isp_dbias_base;
    uint64_t isp_oclqry_base;
    uint64_t isp_zlsctl;
    uint64_t isp_zload_store_base;
    uint64_t isp_stencil_load_store_base;
-   /* FIXME: HIGH: RGX_FEATURE_ZLS_SUBTILE changes the structure's layout. */
+
+   /* Only used when feature ZLS_SUBTILE present. */
    uint64_t isp_zls_pixels;
 
-   /* FIXME: HIGH: RGX_HW_REQUIRES_FB_CDC_ZLS_SETUP changes the structure's
-    * layout.
+   /*
+    * Only used when feature FBCDC_ALGORITHM present and value < 3 or feature
+    * FB_CDC_V4 present. Additionally, BRNs 48754, 60227, 72310 and 72311 must
+    * not be present.
     */
-   uint64_t deprecated;
+   uint64_t fb_cdc_zls;
 
-   /* FIXME: HIGH: RGX_PBE_WORDS_REQUIRED_FOR_RENDERS changes the structure's
-    * layout.
-    */
-#define ROGUE_PBE_WORDS_REQUIRED_FOR_RENDERS 2U
+#define ROGUE_PBE_WORDS_REQUIRED_FOR_RENDERS 3U
    uint64_t pbe_word[8U][ROGUE_PBE_WORDS_REQUIRED_FOR_RENDERS];
    uint64_t tpu_border_colour_table;
    uint64_t pds_bgnd[3U];
+
+   /* Only used when BRN 65101 present. */
+   uint64_t pds_bgnd_brn65101[3U];
+
    uint64_t pds_pr_bgnd[3U];
+
+   /* Only used when feature ISP_ZLS_D24_S8_PACKING_OGL_MODE present. */
+   uint64_t rgx_cr_blackpearl_fix;
+
+   /* Only used when BRN 62850 or 62865 present. */
+   uint64_t isp_dummy_stencil_store_base;
+
+   /* Only used when BRN 66193 present. */
+   uint64_t isp_dummy_depth_store_base;
+
+   /* Only used when BRN 67182 present. */
+   uint32_t rgnhdr_single_rt_size;
+   /* Only used when BRN 67182 present. */
+   uint32_t rgnhdr_scratch_offset;
 };
 
 /**
@@ -293,9 +330,9 @@ struct rogue_fwif_cmd_3d {
     * This region must be the first member so Kernel can easily access it.
     * For more info, see rogue_fwif_cmd_ta_3d_shared definition.
     */
-   struct rogue_fwif_cmd_ta_3d_shared ALIGN(8) cmd_shared;
+   struct rogue_fwif_cmd_ta_3d_shared ALIGN_ATTR(8) cmd_shared;
 
-   struct rogue_fwif_3d_regs ALIGN(8) regs;
+   struct rogue_fwif_3d_regs ALIGN_ATTR(8) regs;
    /** command control flags. */
    uint32_t flags;
    /** Stride IN BYTES for Z-Buffer in case of RTAs. */
@@ -303,11 +340,17 @@ struct rogue_fwif_cmd_3d {
    /** Stride IN BYTES for S-Buffer in case of RTAs. */
    uint32_t sls_stride;
 
-   /* FIXME: HIGH: RGX_FEATURE_GPU_MULTICORE_SUPPORT changes the structure's
-    * layout. Commenting out for now as it's not supported by 4.V.2.51.
-    */
+   /* Only used when SUPPORT_STRIP_RENDERING present. */
+   uint8_t ui8FrameStripBuffer;
+   /* Only used when SUPPORT_STRIP_RENDERING present. */
+   uint8_t ui8FrameStripIndex;
+   /* Only used when SUPPORT_STRIP_RENDERING present. */
+   uint8_t ui8FrameStripMode;
+
    /* Number of tiles to submit to GPU<N> before moving to GPU<N+1>. */
-   /* uint32_t execute_count; */
+   uint32_t execute_count;
+
+   uint32_t padding;
 };
 
 static_assert(
@@ -321,7 +364,7 @@ static_assert(
 struct rogue_fwif_transfer_regs {
    /**
     * All 32 bit values should be added in the top section. This then requires
-    * only a single ALIGN(8) to align all the 8 byte values in the second
+    * only a single ALIGN_ATTR(8) to align all the 8 byte values in the second
     * section.
     */
    uint32_t isp_bgobjvals;
@@ -349,8 +392,8 @@ struct rogue_fwif_transfer_regs {
     * layout. Commenting out for now as it's not supported by 4.V.2.51.
     */
    /* uint32_t frag_screen; */
-   /** All values below the RGXFW_ALIGN must be 64 bit. */
-   uint64_t ALIGN(8) pds_bgnd0_base;
+   /** All values below the ALIGN_ATTR must be 64 bit. */
+   uint64_t ALIGN_ATTR(8) pds_bgnd0_base;
    uint64_t pds_bgnd1_base;
    uint64_t pds_bgnd3_sizeinfo;
 
@@ -358,9 +401,9 @@ struct rogue_fwif_transfer_regs {
    /* FIXME: HIGH: RGX_PBE_WORDS_REQUIRED_FOR_TQS changes the structure's
     * layout.
     */
-#define ROGUE_PBE_WORDS_REQUIRED_FOR_TRANSFER 3
    /* TQ_MAX_RENDER_TARGETS * PBE_STATE_SIZE */
-   uint64_t pbe_wordx_mrty[3U * ROGUE_PBE_WORDS_REQUIRED_FOR_TRANSFER];
+   uint64_t pbe_wordx_mrty[PVR_TRANSFER_MAX_RENDER_TARGETS *
+                           ROGUE_NUM_PBESTATE_REG_WORDS];
 };
 
 /**
@@ -368,8 +411,8 @@ struct rogue_fwif_transfer_regs {
  * ROGUE_FWIF_CCB_CMD_TYPE_TQ_3D type client CCB command.
  */
 struct rogue_fwif_cmd_transfer {
-   struct rogue_fwif_cmd_common ALIGN(8) cmn;
-   struct rogue_fwif_transfer_regs ALIGN(8) regs;
+   struct rogue_fwif_cmd_common ALIGN_ATTR(8) cmn;
+   struct rogue_fwif_transfer_regs ALIGN_ATTR(8) regs;
 
    uint32_t flags;
 };
@@ -394,8 +437,8 @@ struct rogue_fwif_2d_regs {
 };
 
 struct rogue_fwif_cmd_2d {
-   struct rogue_fwif_cmd_common ALIGN(8) cmn;
-   struct rogue_fwif_2d_regs ALIGN(8) regs;
+   struct rogue_fwif_cmd_common ALIGN_ATTR(8) cmn;
+   struct rogue_fwif_2d_regs ALIGN_ATTR(8) regs;
 
    uint32_t flags;
 };
@@ -410,7 +453,7 @@ static_assert(
 
 /** Command to handle aborts. */
 struct rogue_fwif_cmd_abort {
-   struct rogue_fwif_cmd_ta_3d_shared ALIGN(8) cmd_shared;
+   struct rogue_fwif_cmd_ta_3d_shared ALIGN_ATTR(8) cmd_shared;
 };
 
 /***********************************************
@@ -424,26 +467,36 @@ struct rogue_fwif_cmd_abort {
 struct rogue_fwif_cdm_regs {
    uint64_t tpu_border_colour_table;
 
-   /* FIXME: HIGH: RGX_FEATURE_COMPUTE_MORTON_CAPABLE changes the structure's
-    * layout.
-    */
+   /* Only used when feature COMPUTE_MORTON_CAPABLE present. */
    uint64_t cdm_item;
-   /* FIXME: HIGH: RGX_FEATURE_CLUSTER_GROUPING changes the structure's layout.
-    */
+
+   /* Only used when feature CLUSTER_GROUPING present. */
    uint64_t compute_cluster;
 
-   /* FIXME: HIGH: RGX_FEATURE_TPU_DM_GLOBAL_REGISTERS changes the structure's
-    * layout. Commenting out for now as it's not supported by 4.V.2.51.
-    */
-   /* uint64_t tpu_tag_cdm_ctrl; */
-   uint64_t cdm_ctrl_stream_base;
-   uint64_t cdm_contex_state_base_addr;
+   /* Only used when feature TPU_DM_GLOBAL_REGISTERS present. */
+   uint64_t tpu_tag_cdm_ctrl;
 
-   /* FIXME: HIGH: FIX_HW_BRN_49927 changes the structure's layout, given we
-    * are supporting Features/ERNs/BRNs at runtime, we need to look into this
-    * and find a solution to keep layout intact.
+   /* Only used when feature CDM_USER_MODE_QUEUE present. */
+   uint64_t cdm_cb_queue;
+
+   /*
+    * Only used when feature CDM_USER_MODE_QUEUE is present and
+    * SUPPORT_TRUSTED_DEVICE is present and SUPPORT_SECURE_ALLOC_KM is not
+    * present.
     */
-   /* Available if FIX_HW_BRN_49927 is present. */
+   uint64_t cdm_cb_secure_queue;
+
+   /* Only used when feature CDM_USER_MODE_QUEUE present. */
+   uint64_t cdm_cb_base;
+   /* Only used when feature CDM_USER_MODE_QUEUE present. */
+   uint64_t cdm_cb;
+
+   /* Only used when feature CDM_USER_MODE_QUEUE is not present. */
+   uint64_t cdm_ctrl_stream_base;
+
+   uint64_t cdm_context_state_base_addr;
+
+   /* Only used when BRN 49927 is present. */
    uint32_t tpu;
 
    uint32_t cdm_resume_pds1;
@@ -456,15 +509,19 @@ struct rogue_fwif_cdm_regs {
  * Rouge Compute command.
  */
 struct rogue_fwif_cmd_compute {
-   struct rogue_fwif_cmd_common ALIGN(8) cmn;
-   struct rogue_fwif_cdm_regs ALIGN(8) regs;
-   uint32_t ALIGN(8) flags;
+   struct rogue_fwif_cmd_common ALIGN_ATTR(8) cmn;
+   struct rogue_fwif_cdm_regs ALIGN_ATTR(8) regs;
+   uint32_t ALIGN_ATTR(8) flags;
 
-   /* FIXME: HIGH: RGX_FEATURE_GPU_MULTICORE_SUPPORT changes the structure's
-    * layout. Commenting out for now as it's not supported by 4.V.2.51.
-    */
+   /* Only used when feature UNIFIED_STORE_VIRTUAL_PARTITIONING present. */
+   uint32_t num_temp_regions;
+
+   /* Only used when feature CDM_USER_MODE_QUEUE present. */
+   uint32_t stream_start_offset;
+
    /* Number of tiles to submit to GPU<N> before moving to GPU<N+1>. */
-   /* uint32_t execute_count; */
+   /* Only used when feature GPU_MULTICORE_SUPPORT present. */
+   uint32_t execute_count;
 };
 
 static_assert(

@@ -43,6 +43,29 @@ struct aco_compiler_statistic_info {
    char desc[64];
 };
 
+typedef void (aco_callback)(void **priv_ptr,
+                            gl_shader_stage stage,
+                            bool is_gs_copy_shader,
+                            const struct ac_shader_config *config,
+                            const char *llvm_ir_str,
+                            unsigned llvm_ir_size,
+                            const char *disasm_str,
+                            unsigned disasm_size,
+                            uint32_t *statistics,
+                            uint32_t stats_size,
+                            uint32_t exec_size,
+                            const uint32_t *code,
+                            uint32_t code_dw);
+
+typedef void (aco_prolog_callback)(void **priv_ptr,
+                                   uint32_t num_sgprs,
+                                   uint32_t num_vgprs,
+                                   uint32_t num_preserved_sgprs,
+                                   const uint32_t *code,
+                                   uint32_t code_size,
+                                   const char *disasm_str,
+                                   uint32_t disasm_size);
+
 extern const unsigned aco_num_statistics;
 extern const struct aco_compiler_statistic_info* aco_statistic_infos;
 
@@ -50,13 +73,17 @@ void aco_compile_shader(const struct aco_compiler_options* options,
                         const struct aco_shader_info* info,
                         unsigned shader_count, struct nir_shader* const* shaders,
                         const struct radv_shader_args *args,
-                        struct radv_shader_binary** binary);
+                        aco_callback *build_binary,
+                        void **binary);
 
 void aco_compile_vs_prolog(const struct aco_compiler_options* options,
                            const struct aco_shader_info* info,
                            const struct aco_vs_prolog_key* key,
                            const struct radv_shader_args* args,
-                           struct radv_prolog_binary** binary);
+                           aco_prolog_callback *build_prolog,
+                           void **binary);
+
+uint64_t aco_get_codegen_flags();
 
 #ifdef __cplusplus
 }

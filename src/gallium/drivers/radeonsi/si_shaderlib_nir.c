@@ -26,15 +26,33 @@
 #include "ac_surface.h"
 #include "si_pipe.h"
 
-static void *create_nir_cs(struct si_context *sctx, nir_builder *b)
+static void *create_shader_state(struct si_context *sctx, nir_shader *nir)
 {
-   nir_shader_gather_info(b->shader, nir_shader_get_entrypoint(b->shader));
+   sctx->b.screen->finalize_nir(sctx->b.screen, (void*)nir);
 
-   struct pipe_compute_state state = {0};
-   state.ir_type = PIPE_SHADER_IR_NIR;
-   state.prog = b->shader;
-   sctx->b.screen->finalize_nir(sctx->b.screen, (void*)state.prog);
-   return sctx->b.create_compute_state(&sctx->b, &state);
+   struct pipe_shader_state state = {0};
+   state.type = PIPE_SHADER_IR_NIR;
+   state.ir.nir = nir;
+
+   switch (nir->info.stage) {
+   case MESA_SHADER_VERTEX:
+      return sctx->b.create_vs_state(&sctx->b, &state);
+   case MESA_SHADER_TESS_CTRL:
+      return sctx->b.create_tcs_state(&sctx->b, &state);
+   case MESA_SHADER_TESS_EVAL:
+      return sctx->b.create_tes_state(&sctx->b, &state);
+   case MESA_SHADER_FRAGMENT:
+      return sctx->b.create_fs_state(&sctx->b, &state);
+   case MESA_SHADER_COMPUTE: {
+      struct pipe_compute_state cs_state = {0};
+      cs_state.ir_type = PIPE_SHADER_IR_NIR;
+      cs_state.prog = nir;
+      return sctx->b.create_compute_state(&sctx->b, &cs_state);
+   }
+   default:
+      unreachable("invalid shader stage");
+      return NULL;
+   }
 }
 
 static nir_ssa_def *get_global_ids(nir_builder *b, unsigned num_components)
@@ -115,7 +133,7 @@ void *si_create_copy_image_cs(struct si_context *sctx, bool src_is_1d_array, boo
 
    nir_image_deref_store(&b, deref_ssa(&b, img_dst), coord_dst, undef32, data, zero);
 
-   return create_nir_cs(sctx, &b);
+   return create_shader_state(sctx, b.shader);
 }
 
 void *si_create_dcc_retile_cs(struct si_context *sctx, struct radeon_surf *surf)
@@ -163,7 +181,7 @@ void *si_create_dcc_retile_cs(struct si_context *sctx, struct radeon_surf *surf)
                                  zero, zero, zero); /* z, sample, pipe_xor */
    nir_store_ssbo(&b, value, zero, dst_offset, .write_mask=0x1, .align_mul=1);
 
-   return create_nir_cs(sctx, &b);
+   return create_shader_state(sctx, b.shader);
 }
 
 void *gfx9_create_clear_dcc_msaa_cs(struct si_context *sctx, struct si_texture *tex)
@@ -209,7 +227,7 @@ void *gfx9_create_clear_dcc_msaa_cs(struct si_context *sctx, struct si_texture *
     */
    nir_store_ssbo(&b, clear_value, zero, offset, .write_mask=0x1, .align_mul=2);
 
-   return create_nir_cs(sctx, &b);
+   return create_shader_state(sctx, b.shader);
 }
 
 /* Create a compute shader implementing clear_buffer or copy_buffer. */
@@ -247,6 +265,85 @@ void *si_create_clear_buffer_rmw_cs(struct si_context *sctx)
       .access = SI_COMPUTE_DST_CACHE_POLICY != L2_LRU ? ACCESS_STREAM_CACHE_POLICY : 0,
       .align_mul = 4);
 
-   return create_nir_cs(sctx, &b);
+   return create_shader_state(sctx, b.shader);
 }
 
+/* This is used when TCS is NULL in the VS->TCS->TES chain. In this case,
+ * VS passes its outputs to TES directly, so the fixed-function shader only
+ * has to write TESSOUTER and TESSINNER.
+ */
+void *si_create_passthrough_tcs(struct si_context *sctx)
+{
+   const nir_shader_compiler_options *options =
+      sctx->b.screen->get_compiler_options(sctx->b.screen, PIPE_SHADER_IR_NIR,
+                                           PIPE_SHADER_TESS_CTRL);
+
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_TESS_CTRL, options,
+                                                  "tcs passthrough");
+
+   unsigned num_inputs = 0;
+   unsigned num_outputs = 0;
+
+   nir_variable *in_inner =
+      nir_variable_create(b.shader, nir_var_system_value, glsl_vec_type(2),
+                          "tess inner default");
+   in_inner->data.location = SYSTEM_VALUE_TESS_LEVEL_INNER_DEFAULT;
+
+   nir_variable *out_inner =
+      nir_variable_create(b.shader, nir_var_shader_out, glsl_vec_type(2),
+                          "tess inner");
+   out_inner->data.location = VARYING_SLOT_TESS_LEVEL_INNER;
+   out_inner->data.driver_location = num_outputs++;
+
+   nir_ssa_def *inner = nir_load_var(&b, in_inner);
+   nir_store_var(&b, out_inner, inner, 0x3);
+
+   nir_variable *in_outer =
+      nir_variable_create(b.shader, nir_var_system_value, glsl_vec4_type(),
+                          "tess outer default");
+   in_outer->data.location = SYSTEM_VALUE_TESS_LEVEL_OUTER_DEFAULT;
+
+   nir_variable *out_outer =
+      nir_variable_create(b.shader, nir_var_shader_out, glsl_vec4_type(),
+                          "tess outer");
+   out_outer->data.location = VARYING_SLOT_TESS_LEVEL_OUTER;
+   out_outer->data.driver_location = num_outputs++;
+
+   nir_ssa_def *outer = nir_load_var(&b, in_outer);
+   nir_store_var(&b, out_outer, outer, 0xf);
+
+   nir_ssa_def *id = nir_load_invocation_id(&b);
+   struct si_shader_info *info = &sctx->shader.vs.cso->info;
+   for (unsigned i = 0; i < info->num_outputs; i++) {
+      const struct glsl_type *type;
+      unsigned semantic = info->output_semantic[i];
+      if (semantic < VARYING_SLOT_VAR31 && semantic != VARYING_SLOT_EDGE)
+         type = glsl_array_type(glsl_vec4_type(), 0, 0);
+      else if (semantic >= VARYING_SLOT_VAR0_16BIT)
+         type = glsl_array_type(glsl_vector_type(GLSL_TYPE_FLOAT16, 4), 0, 0);
+      else
+         continue;
+
+      char name[10];
+      snprintf(name, sizeof(name), "in_%u", i);
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in, type, name);
+      in->data.location = semantic;
+      in->data.driver_location = num_inputs++;
+
+      snprintf(name, sizeof(name), "out_%u", i);
+      nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out, type, name);
+      out->data.location = semantic;
+      out->data.driver_location = num_outputs++;
+
+      /* no need to use copy_var to save a lower pass */
+      nir_ssa_def *value = nir_load_array_var(&b, in, id);
+      nir_store_array_var(&b, out, id, value, 0xf);
+   }
+
+   b.shader->num_inputs = num_inputs;
+   b.shader->num_outputs = num_outputs;
+
+   b.shader->info.tess.tcs_vertices_out = sctx->patch_vertices;
+
+   return create_shader_state(sctx, b.shader);
+}

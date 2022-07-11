@@ -69,6 +69,7 @@ static const driOptionDescription anv_dri_options[] = {
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
       DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
       DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(false)
+      DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(false)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -253,6 +254,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .KHR_workgroup_memory_explicit_layout  = true,
       .KHR_zero_initialize_workgroup_memory  = true,
       .EXT_4444_formats                      = true,
+      .EXT_border_color_swizzle              = device->info.ver >= 8,
       .EXT_buffer_device_address             = device->has_a64_buffer_access,
       .EXT_calibrated_timestamps             = device->has_reg_timestamp,
       .EXT_color_write_enable                = true,
@@ -279,10 +281,12 @@ get_device_extensions(const struct anv_physical_device *device,
       .EXT_image_2d_view_of_3d               = true,
       .EXT_image_robustness                  = true,
       .EXT_image_drm_format_modifier         = true,
+      .EXT_image_view_min_lod                = true,
       .EXT_index_type_uint8                  = true,
       .EXT_inline_uniform_block              = true,
       .EXT_line_rasterization                = true,
       .EXT_memory_budget                     = device->sys.available,
+      .EXT_non_seamless_cube_map             = true,
       .EXT_pci_bus_info                      = true,
       .EXT_physical_device_drm               = true,
       .EXT_pipeline_creation_cache_control   = true,
@@ -301,6 +305,7 @@ get_device_extensions(const struct anv_physical_device *device,
       .EXT_shader_atomic_float               = true,
       .EXT_shader_atomic_float2              = device->info.ver >= 9,
       .EXT_shader_demote_to_helper_invocation = true,
+      .EXT_shader_module_identifier          = true,
       .EXT_shader_stencil_export             = device->info.ver >= 9,
       .EXT_shader_subgroup_ballot            = true,
       .EXT_shader_subgroup_vote              = true,
@@ -363,91 +368,34 @@ anv_compute_sys_heap_size(struct anv_physical_device *device,
 }
 
 static VkResult MUST_CHECK
-anv_gather_meminfo(struct anv_physical_device *device, int fd, bool update)
-{
-   char sys_mem_regions[sizeof(struct drm_i915_query_memory_regions) +
-	                sizeof(struct drm_i915_memory_region_info)];
-
-   struct drm_i915_query_memory_regions *mem_regions =
-      intel_i915_query_alloc(fd, DRM_I915_QUERY_MEMORY_REGIONS, NULL);
-   if (mem_regions == NULL) {
-      if (device->info.has_local_mem) {
-         return vk_errorf(device, VK_ERROR_INCOMPATIBLE_DRIVER,
-                          "failed to memory regions: %m");
-      }
-
-      uint64_t total_phys;
-      if (!os_get_total_physical_memory(&total_phys)) {
-         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
-                          "failed to get total physical memory: %m");
-      }
-
-      uint64_t available;
-      if (!os_get_available_system_memory(&available))
-         available = 0; /* Silently disable VK_EXT_memory_budget */
-
-      /* The kernel query failed.  Fake it using OS memory queries.  This
-       * should be roughly the same for integrated GPUs.
-       */
-      mem_regions = (void *)sys_mem_regions;
-      mem_regions->num_regions = 1;
-      mem_regions->regions[0] = (struct drm_i915_memory_region_info) {
-         .region.memory_class = I915_MEMORY_CLASS_SYSTEM,
-         .probed_size = total_phys,
-         .unallocated_size = available,
-      };
-   }
-
-   for(int i = 0; i < mem_regions->num_regions; i++) {
-      struct drm_i915_memory_region_info *info = &mem_regions->regions[i];
-
-      struct anv_memregion *region;
-      switch (info->region.memory_class) {
-      case I915_MEMORY_CLASS_SYSTEM:
-         region = &device->sys;
-         break;
-      case I915_MEMORY_CLASS_DEVICE:
-         region = &device->vram;
-         break;
-      default:
-         /* We don't know what kind of memory this is */
-         continue;
-      }
-
-      uint64_t size = info->probed_size;
-      if (info->region.memory_class == I915_MEMORY_CLASS_SYSTEM)
-         size = anv_compute_sys_heap_size(device, size);
-
-      uint64_t available = MIN2(size, info->unallocated_size);
-
-      if (update) {
-         assert(region->region.memory_class == info->region.memory_class);
-         assert(region->region.memory_instance == info->region.memory_instance);
-         assert(region->size == size);
-      } else {
-         region->region = info->region;
-         region->size = size;
-      }
-      region->available = available;
-   }
-
-   if (mem_regions != (void *)sys_mem_regions)
-      free(mem_regions);
-
-   return VK_SUCCESS;
-}
-
-static VkResult MUST_CHECK
 anv_init_meminfo(struct anv_physical_device *device, int fd)
 {
-   return anv_gather_meminfo(device, fd, false);
+   const struct intel_device_info *devinfo = &device->info;
+
+   device->sys.region.memory_class = devinfo->mem.sram.mem_class;
+   device->sys.region.memory_instance = devinfo->mem.sram.mem_instance;
+   device->sys.size =
+      anv_compute_sys_heap_size(device, devinfo->mem.sram.mappable.size);
+   device->sys.available = devinfo->mem.sram.mappable.free;
+
+   device->vram.region.memory_class = devinfo->mem.vram.mem_class;
+   device->vram.region.memory_instance =
+      devinfo->mem.vram.mem_instance;
+   device->vram.size = devinfo->mem.vram.mappable.size;
+   device->vram.available = devinfo->mem.vram.mappable.free;
+
+   return VK_SUCCESS;
 }
 
 static void
 anv_update_meminfo(struct anv_physical_device *device, int fd)
 {
-   ASSERTED VkResult result = anv_gather_meminfo(device, fd, true);
-   assert(result == VK_SUCCESS);
+   if (!intel_device_info_update_memory_info(&device->info, fd))
+      return;
+
+   const struct intel_device_info *devinfo = &device->info;
+   device->sys.available = devinfo->mem.sram.mappable.free;
+   device->vram.available = devinfo->mem.vram.mappable.free;
 }
 
 
@@ -697,6 +645,11 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
                                  I915_ENGINE_CLASS_RENDER);
       int g_count = 0;
       int c_count = 0;
+      if (env_var_as_boolean("INTEL_COMPUTE_CLASS", false))
+         c_count = intel_gem_count_engines(pdevice->engine_info,
+                                           I915_ENGINE_CLASS_COMPUTE);
+      enum drm_i915_gem_engine_class compute_class =
+         c_count < 1 ? I915_ENGINE_CLASS_RENDER : I915_ENGINE_CLASS_COMPUTE;
 
       anv_override_engine_counts(&gc_count, &g_count, &c_count);
 
@@ -722,7 +675,7 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
             .queueFlags = VK_QUEUE_COMPUTE_BIT |
                           VK_QUEUE_TRANSFER_BIT,
             .queueCount = c_count,
-            .engine_class = I915_ENGINE_CLASS_RENDER,
+            .engine_class = compute_class,
          };
       }
       /* Increase count below when other families are added as a reminder to
@@ -1107,6 +1060,8 @@ anv_init_dri_options(struct anv_instance *instance)
             driQueryOptionb(&instance->dri_options, "anv_assume_full_subgroups");
     instance->limit_trig_input_range =
             driQueryOptionb(&instance->dri_options, "limit_trig_input_range");
+    instance->sample_mask_out_opengl_behaviour =
+            driQueryOptionb(&instance->dri_options, "anv_sample_mask_out_opengl_behaviour");
 }
 
 VkResult anv_CreateInstance(
@@ -1390,7 +1345,7 @@ anv_get_physical_device_features_1_2(struct anv_physical_device *pdevice,
    f->shaderInputAttachmentArrayDynamicIndexing          = false;
    f->shaderUniformTexelBufferArrayDynamicIndexing       = descIndexing;
    f->shaderStorageTexelBufferArrayDynamicIndexing       = descIndexing;
-   f->shaderUniformBufferArrayNonUniformIndexing         = descIndexing;
+   f->shaderUniformBufferArrayNonUniformIndexing         = false;
    f->shaderSampledImageArrayNonUniformIndexing          = descIndexing;
    f->shaderStorageBufferArrayNonUniformIndexing         = descIndexing;
    f->shaderStorageImageArrayNonUniformIndexing          = descIndexing;
@@ -1507,6 +1462,13 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BORDER_COLOR_SWIZZLE_FEATURES_EXT: {
+         VkPhysicalDeviceBorderColorSwizzleFeaturesEXT *features =
+            (VkPhysicalDeviceBorderColorSwizzleFeaturesEXT *)ext;
+         features->borderColorSwizzle = true;
+         features->borderColorSwizzleFromImage = true;
+         break;
+      }
 
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COLOR_WRITE_ENABLE_FEATURES_EXT: {
          VkPhysicalDeviceColorWriteEnableFeaturesEXT *features =
@@ -1554,13 +1516,6 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR: {
-         VkPhysicalDeviceDynamicRenderingFeaturesKHR *features =
-            (VkPhysicalDeviceDynamicRenderingFeaturesKHR *)ext;
-         features->dynamicRendering = true;
-         break;
-      }
-
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT: {
          VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT *features =
             (VkPhysicalDeviceFragmentShaderInterlockFeaturesEXT *)ext;
@@ -1586,6 +1541,13 @@ void anv_GetPhysicalDeviceFeatures2(
             pdevice->info.has_coarse_pixel_primitive_and_cb;
          features->attachmentFragmentShadingRate =
             pdevice->info.has_coarse_pixel_primitive_and_cb;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_MIN_LOD_FEATURES_EXT: {
+         VkPhysicalDeviceImageViewMinLodFeaturesEXT *features =
+            (VkPhysicalDeviceImageViewMinLodFeaturesEXT *)ext;
+         features->minLod = true;
          break;
       }
 
@@ -1617,13 +1579,6 @@ void anv_GetPhysicalDeviceFeatures2(
          features->stippledRectangularLines = false;
          features->stippledBresenhamLines = true;
          features->stippledSmoothLines = false;
-         break;
-      }
-
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_FEATURES_KHR: {
-         VkPhysicalDeviceMaintenance4FeaturesKHR *features =
-            (VkPhysicalDeviceMaintenance4FeaturesKHR *)ext;
-         features->maintenance4 = true;
          break;
       }
 
@@ -1740,6 +1695,13 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MODULE_IDENTIFIER_FEATURES_EXT: {
+         VkPhysicalDeviceShaderModuleIdentifierFeaturesEXT *features =
+            (VkPhysicalDeviceShaderModuleIdentifierFeaturesEXT *)ext;
+         features->shaderModuleIdentifier = true;
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_UNIFORM_CONTROL_FLOW_FEATURES_KHR: {
          VkPhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR *features =
             (VkPhysicalDeviceShaderSubgroupUniformControlFlowFeaturesKHR *)ext;
@@ -1806,6 +1768,13 @@ void anv_GetPhysicalDeviceFeatures2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTI_DRAW_FEATURES_EXT: {
          VkPhysicalDeviceMultiDrawFeaturesEXT *features = (VkPhysicalDeviceMultiDrawFeaturesEXT *)ext;
          features->multiDraw = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_NON_SEAMLESS_CUBE_MAP_FEATURES_EXT : {
+         VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT *features =
+            (VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT *)ext;
+         features->nonSeamlessCubeMap = true;
          break;
       }
 
@@ -1992,7 +1961,7 @@ void anv_GetPhysicalDeviceProperties(
        * Since the Windows driver does the same, it's probably fair to assume
        * that no one needs more than this.
        */
-      .lineWidthRange                           = { 0.0, 7.9921875 },
+      .lineWidthRange                           = { 0.0, devinfo->ver >= 9 ? 8.0 : 7.9921875 },
       .pointSizeGranularity                     = (1.0 / 8.0),
       .lineWidthGranularity                     = (1.0 / 128.0),
       .strictLines                              = false,
@@ -2600,6 +2569,17 @@ void anv_GetPhysicalDeviceProperties2(
          break;
       }
 
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MODULE_IDENTIFIER_PROPERTIES_EXT: {
+         VkPhysicalDeviceShaderModuleIdentifierPropertiesEXT *props =
+            (VkPhysicalDeviceShaderModuleIdentifierPropertiesEXT *)ext;
+         STATIC_ASSERT(sizeof(vk_shaderModuleIdentifierAlgorithmUUID) ==
+                       sizeof(props->shaderModuleIdentifierAlgorithmUUID));
+         memcpy(props->shaderModuleIdentifierAlgorithmUUID,
+                vk_shaderModuleIdentifierAlgorithmUUID,
+                sizeof(props->shaderModuleIdentifierAlgorithmUUID));
+         break;
+      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TRANSFORM_FEEDBACK_PROPERTIES_EXT: {
          VkPhysicalDeviceTransformFeedbackPropertiesEXT *props =
             (VkPhysicalDeviceTransformFeedbackPropertiesEXT *)ext;
@@ -3125,6 +3105,7 @@ VkResult anv_CreateDevice(
          INTEL_BATCH_DECODE_FLOATS;
 
       intel_batch_decode_ctx_init(&device->decoder_ctx,
+                                  &physical_device->compiler->isa,
                                   &physical_device->info,
                                   stderr, decode_flags, NULL,
                                   decode_get_bo, NULL, device);
@@ -3459,14 +3440,26 @@ VkResult anv_CreateDevice(
       goto fail_trivial_batch_bo_and_scratch_pool;
    }
 
-   result = anv_device_init_rt_shaders(device);
-   if (result != VK_SUCCESS)
-      goto fail_default_pipeline_cache;
-
-   if (!anv_device_init_blorp(device)) {
+   /* Internal shaders need their own pipeline cache because, unlike the rest
+    * of ANV, it won't work at all without the cache. It depends on it for
+    * shaders to remain resident while it runs. Therefore, we need a special
+    * cache just for BLORP/RT that's forced to always be enabled.
+    */
+   pcc_info.force_enable = true;
+   device->internal_cache =
+      vk_pipeline_cache_create(&device->vk, &pcc_info, NULL);
+   if (device->internal_cache == NULL) {
       result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-      goto fail_rt_shaders;
+      goto fail_default_pipeline_cache;
    }
+
+   result = anv_device_init_rt_shaders(device);
+   if (result != VK_SUCCESS) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto fail_internal_cache;
+   }
+
+   anv_device_init_blorp(device);
 
    anv_device_init_border_colors(device);
 
@@ -3478,8 +3471,8 @@ VkResult anv_CreateDevice(
 
    return VK_SUCCESS;
 
- fail_rt_shaders:
-   anv_device_finish_rt_shaders(device);
+ fail_internal_cache:
+   vk_pipeline_cache_destroy(device->internal_cache, NULL);
  fail_default_pipeline_cache:
    vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
  fail_trivial_batch_bo_and_scratch_pool:
@@ -3553,6 +3546,7 @@ void anv_DestroyDevice(
 
    anv_device_finish_rt_shaders(device);
 
+   vk_pipeline_cache_destroy(device->internal_cache, NULL);
    vk_pipeline_cache_destroy(device->default_pipeline_cache, NULL);
 
 #ifdef HAVE_VALGRIND
@@ -4189,25 +4183,6 @@ void anv_UnmapMemory(
    mem->map_delta = 0;
 }
 
-static void
-clflush_mapped_ranges(struct anv_device         *device,
-                      uint32_t                   count,
-                      const VkMappedMemoryRange *ranges)
-{
-   for (uint32_t i = 0; i < count; i++) {
-      ANV_FROM_HANDLE(anv_device_memory, mem, ranges[i].memory);
-      uint64_t map_offset = ranges[i].offset + mem->map_delta;
-      if (map_offset >= mem->map_size)
-         continue;
-
-      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-         continue;
-
-      intel_clflush_range(mem->map + map_offset,
-                          MIN2(ranges[i].size, mem->map_size - map_offset));
-   }
-}
-
 VkResult anv_FlushMappedMemoryRanges(
     VkDevice                                    _device,
     uint32_t                                    memoryRangeCount,
@@ -4221,7 +4196,19 @@ VkResult anv_FlushMappedMemoryRanges(
    /* Make sure the writes we're flushing have landed. */
    __builtin_ia32_mfence();
 
-   clflush_mapped_ranges(device, memoryRangeCount, pMemoryRanges);
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      ANV_FROM_HANDLE(anv_device_memory, mem, pMemoryRanges[i].memory);
+      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
+      if (map_offset >= mem->map_size)
+         continue;
+
+      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+         continue;
+
+      intel_clflush_range(mem->map + map_offset,
+                          MIN2(pMemoryRanges[i].size,
+                               mem->map_size - map_offset));
+   }
 
    return VK_SUCCESS;
 }
@@ -4236,7 +4223,19 @@ VkResult anv_InvalidateMappedMemoryRanges(
    if (!device->physical->memory.need_clflush)
       return VK_SUCCESS;
 
-   clflush_mapped_ranges(device, memoryRangeCount, pMemoryRanges);
+   for (uint32_t i = 0; i < memoryRangeCount; i++) {
+      ANV_FROM_HANDLE(anv_device_memory, mem, pMemoryRanges[i].memory);
+      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
+      if (map_offset >= mem->map_size)
+         continue;
+
+      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+         continue;
+
+      intel_invalidate_range(mem->map + map_offset,
+                             MIN2(pMemoryRanges[i].size,
+                                  mem->map_size - map_offset));
+   }
 
    /* Make sure no reads get moved up above the invalidate. */
    __builtin_ia32_mfence();
@@ -4262,7 +4261,7 @@ anv_bind_buffer_memory(const VkBindBufferMemoryInfo *pBindInfo)
 
    if (mem) {
       assert(pBindInfo->memoryOffset < mem->bo->size);
-      assert(mem->bo->size - pBindInfo->memoryOffset >= buffer->size);
+      assert(mem->bo->size - pBindInfo->memoryOffset >= buffer->vk.size);
       buffer->address = (struct anv_address) {
          .bo = mem->bo,
          .offset = pBindInfo->memoryOffset,
@@ -4437,8 +4436,8 @@ void anv_GetBufferMemoryRequirements2(
    ANV_FROM_HANDLE(anv_buffer, buffer, pInfo->buffer);
 
    anv_get_buffer_memory_requirements(device,
-                                      buffer->size,
-                                      buffer->usage,
+                                      buffer->vk.size,
+                                      buffer->vk.usage,
                                       pMemoryRequirements);
 }
 
@@ -4472,16 +4471,11 @@ VkResult anv_CreateBuffer(
    if (pCreateInfo->size > device->physical->gtt_size)
       return vk_error(device, VK_ERROR_OUT_OF_DEVICE_MEMORY);
 
-   assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
-
-   buffer = vk_object_alloc(&device->vk, pAllocator, sizeof(*buffer),
-                            VK_OBJECT_TYPE_BUFFER);
+   buffer = vk_buffer_create(&device->vk, pCreateInfo,
+                             pAllocator, sizeof(*buffer));
    if (buffer == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   buffer->create_flags = pCreateInfo->flags;
-   buffer->size = pCreateInfo->size;
-   buffer->usage = pCreateInfo->usage;
    buffer->address = ANV_NULL_ADDRESS;
 
    *pBuffer = anv_buffer_to_handle(buffer);
@@ -4500,7 +4494,7 @@ void anv_DestroyBuffer(
    if (!buffer)
       return;
 
-   vk_object_free(&device->vk, pAllocator, buffer);
+   vk_buffer_destroy(&device->vk, pAllocator, &buffer->vk);
 }
 
 VkDeviceAddress anv_GetBufferDeviceAddress(
@@ -4679,7 +4673,7 @@ VkResult anv_GetCalibratedTimestampsEXT(
      * clock edges is when the sampled clock with the largest period is
      * sampled at the end of that period but right at the beginning of the
      * sampling interval and some other clock is sampled right at the
-     * begining of its sampling period and right at the end of the
+     * beginning of its sampling period and right at the end of the
      * sampling interval. Let's assume the GPU has the longest clock
      * period and that the application is sampling GPU and monotonic:
      *

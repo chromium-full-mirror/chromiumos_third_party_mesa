@@ -38,7 +38,6 @@
 
 #include "frontend/sw_winsys.h"
 
-#include <directx/d3d12.h>
 #include <dxguids/dxguids.h>
 #include <memory>
 
@@ -722,6 +721,8 @@ void d3d12_resource_get_planes_info(pipe_resource *pres,
    }
 }
 
+static constexpr unsigned d3d12_max_planes = 3;
+
 /**
  * Get stride and offset for the given pipe resource without the need to get
  * a winsys_handle.
@@ -736,10 +737,10 @@ d3d12_resource_get_info(struct pipe_screen *pscreen,
    struct d3d12_resource* res = d3d12_resource(pres);
    unsigned num_planes = util_format_get_num_planes(res->overall_format);
 
-   pipe_resource* planes[num_planes];
-   unsigned int strides[num_planes];
-   unsigned int layer_strides[num_planes];
-   unsigned int offsets[num_planes];
+   pipe_resource *planes[d3d12_max_planes];
+   unsigned int strides[d3d12_max_planes];
+   unsigned int layer_strides[d3d12_max_planes];
+   unsigned int offsets[d3d12_max_planes];
    unsigned staging_res_size = 0;
    d3d12_resource_get_planes_info(
       pres,
@@ -1444,10 +1445,10 @@ d3d12_transfer_map(struct pipe_context *pctx,
       /* Get planes information*/
 
       unsigned num_planes = util_format_get_num_planes(res->overall_format);
-      pipe_resource* planes[num_planes];
-      unsigned int strides[num_planes];
-      unsigned int layer_strides[num_planes];
-      unsigned int offsets[num_planes];
+      pipe_resource *planes[d3d12_max_planes];
+      unsigned int strides[d3d12_max_planes];
+      unsigned int layer_strides[d3d12_max_planes];
+      unsigned int offsets[d3d12_max_planes];
       unsigned staging_res_size = 0;
 
       d3d12_resource_get_planes_info(
@@ -1597,10 +1598,10 @@ d3d12_transfer_unmap(struct pipe_context *pctx,
 
          /* Get planes information*/
          unsigned num_planes = util_format_get_num_planes(res->overall_format);
-         pipe_resource* planes[num_planes];
-         unsigned int strides[num_planes];
-         unsigned int layer_strides[num_planes];
-         unsigned int offsets[num_planes];
+         pipe_resource *planes[d3d12_max_planes];
+         unsigned int strides[d3d12_max_planes];
+         unsigned int layer_strides[d3d12_max_planes];
+         unsigned int offsets[d3d12_max_planes];
          unsigned staging_res_size = 0;
 
          d3d12_resource_get_planes_info(

@@ -24,16 +24,21 @@
 #ifndef DZN_PRIVATE_H
 #define DZN_PRIVATE_H
 
+#define COBJMACROS
+
 #include "vk_command_pool.h"
 #include "vk_command_buffer.h"
 #include "vk_cmd_queue.h"
 #include "vk_debug_report.h"
+#include "vk_descriptor_set_layout.h"
 #include "vk_device.h"
 #include "vk_image.h"
 #include "vk_log.h"
 #include "vk_physical_device.h"
+#include "vk_pipeline_layout.h"
 #include "vk_render_pass.h"
 #include "vk_sync.h"
+#include "vk_sync_binary.h"
 #include "vk_queue.h"
 #include "vk_shader_module.h"
 #include "wsi_common.h"
@@ -48,16 +53,17 @@
 
 #include "dzn_entrypoints.h"
 #include "dzn_nir.h"
+#include "dzn_physical_device_enum.h"
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_icd.h>
 
 #define D3D12_IGNORE_SDK_LAYERS
-#define COBJMACROS
-#include <dxgi1_4.h>
+#include <unknwn.h>
 #include <directx/d3d12.h>
 
 #include "spirv_to_dxil.h"
+#include "dzn_abi_helper.h"
 
 #define DZN_SWAP(t, a, b) \
    do { \
@@ -82,6 +88,8 @@ enum dzn_index_type {
    DZN_NO_INDEX,
    DZN_INDEX_2B,
    DZN_INDEX_4B,
+   DZN_INDEX_2B_WITH_PRIM_RESTART,
+   DZN_INDEX_4B_WITH_PRIM_RESTART,
    DZN_NUM_INDEX_TYPE,
 };
 
@@ -97,12 +105,14 @@ dzn_index_type_from_size(uint8_t index_size)
 }
 
 static inline enum dzn_index_type
-dzn_index_type_from_dxgi_format(DXGI_FORMAT format)
+dzn_index_type_from_dxgi_format(DXGI_FORMAT format, bool prim_restart)
 {
    switch (format) {
    case DXGI_FORMAT_UNKNOWN: return DZN_NO_INDEX;
-   case DXGI_FORMAT_R16_UINT: return DZN_INDEX_2B;
-   case DXGI_FORMAT_R32_UINT: return DZN_INDEX_4B;
+   case DXGI_FORMAT_R16_UINT:
+      return prim_restart ? DZN_INDEX_2B_WITH_PRIM_RESTART : DZN_INDEX_2B;
+   case DXGI_FORMAT_R32_UINT:
+      return prim_restart ? DZN_INDEX_4B_WITH_PRIM_RESTART : DZN_INDEX_4B;
    default: unreachable("Invalid index format");
    }
 }
@@ -111,9 +121,14 @@ static inline uint8_t
 dzn_index_size(enum dzn_index_type type)
 {
    switch (type) {
-   case DZN_NO_INDEX: return 0;
-   case DZN_INDEX_2B: return 2;
-   case DZN_INDEX_4B: return 4;
+   case DZN_NO_INDEX:
+      return 0;
+   case DZN_INDEX_2B_WITH_PRIM_RESTART:
+   case DZN_INDEX_2B:
+      return 2;
+   case DZN_INDEX_4B_WITH_PRIM_RESTART:
+   case DZN_INDEX_4B:
+      return 4;
    default: unreachable("Invalid index type");
    }
 }
@@ -158,7 +173,7 @@ const struct dzn_meta_blit *
 dzn_meta_blits_get_context(struct dzn_device *device,
                            const struct dzn_meta_blit_key *key);
 
-#define MAX_SYNC_TYPES 2
+#define MAX_SYNC_TYPES 3
 #define MAX_QUEUE_FAMILIES 3
 
 struct dzn_physical_device {
@@ -168,8 +183,8 @@ struct dzn_physical_device {
    struct vk_device_extension_table supported_extensions;
    struct vk_physical_device_dispatch_table dispatch;
 
-   IDXGIAdapter1 *adapter;
-   DXGI_ADAPTER_DESC1 adapter_desc;
+   IUnknown *adapter;
+   struct dzn_physical_device_desc desc;
 
    uint32_t queue_family_count;
    struct dzn_queue_family {
@@ -184,10 +199,12 @@ struct dzn_physical_device {
    struct wsi_device wsi_device;
 
    mtx_t dev_lock;
-   ID3D12Device1 *dev;
+   ID3D12Device2 *dev;
    D3D_FEATURE_LEVEL feature_level;
    D3D12_FEATURE_DATA_ARCHITECTURE1 architecture;
    D3D12_FEATURE_DATA_D3D12_OPTIONS options;
+   D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2;
+   D3D12_FEATURE_DATA_D3D12_OPTIONS3 options3;
    VkPhysicalDeviceMemoryProperties memory;
    D3D12_HEAP_FLAGS heap_flags_for_mem_type[VK_MAX_MEMORY_TYPES];
    const struct vk_sync_type *sync_types[MAX_SYNC_TYPES + 1];
@@ -205,20 +222,17 @@ dzn_physical_device_get_mem_type_mask_for_resource(const struct dzn_physical_dev
 #define dzn_debug_ignored_stype(sType) \
    mesa_logd("%s: ignored VkStructureType %u\n", __func__, (sType))
 
-IDXGIFactory4 *
-dxgi_get_factory(bool debug);
-
 PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE
 d3d12_get_serialize_root_sig(void);
 
 void
-d3d12_enable_debug_layer();
+d3d12_enable_debug_layer(void);
 
 void
-d3d12_enable_gpu_validation();
+d3d12_enable_gpu_validation(void);
 
-ID3D12Device1 *
-d3d12_create_device(IDXGIAdapter1 *adapter, bool experimental_features);
+ID3D12Device2 *
+d3d12_create_device(IUnknown *adapter, bool experimental_features);
 
 struct dzn_queue {
    struct vk_queue vk;
@@ -233,7 +247,7 @@ struct dzn_device {
    struct vk_device_extension_table enabled_extensions;
    struct vk_device_dispatch_table cmd_dispatch;
 
-   ID3D12Device1 *dev;
+   ID3D12Device2 *dev;
 
    struct dzn_meta_indirect_draw indirect_draws[DZN_NUM_INDIRECT_DRAW_TYPES];
    struct dzn_meta_triangle_fan_rewrite_index triangle_fan[DZN_NUM_INDEX_TYPE];
@@ -290,6 +304,7 @@ enum dzn_cmd_dirty {
    DZN_CMD_DIRTY_STENCIL_COMPARE_MASK = 1 << 4,
    DZN_CMD_DIRTY_STENCIL_WRITE_MASK = 1 << 5,
    DZN_CMD_DIRTY_BLEND_CONSTANTS = 1 << 6,
+   DZN_CMD_DIRTY_DEPTH_BOUNDS = 1 << 7,
 };
 
 #define MAX_VBS 16
@@ -339,7 +354,7 @@ struct dzn_buffer_desc {
 #define MAX_DESCS_PER_CBV_SRV_UAV_HEAP 1000000u
 
 struct dzn_descriptor_heap {
-   ID3D12Device1 *dev;
+   ID3D12Device2 *dev;
    ID3D12DescriptorHeap *heap;
    D3D12_DESCRIPTOR_HEAP_TYPE type;
    SIZE_T cpu_base;
@@ -443,11 +458,31 @@ struct dzn_rendering_attachment {
    VkAttachmentStoreOp store_op;
 };
 
+struct dzn_graphics_pipeline_variant_key {
+   D3D12_INDEX_BUFFER_STRIP_CUT_VALUE ib_strip_cut;
+   struct {
+      int constant_factor;
+      float slope_factor;
+      float clamp;
+   } depth_bias;
+   struct {
+      struct {
+         uint32_t ref, compare_mask, write_mask;
+      } front, back;
+   } stencil_test;
+};
+
+struct dzn_graphics_pipeline_variant {
+   struct dzn_graphics_pipeline_variant_key key;
+   ID3D12PipelineState *state;
+};
+
 #define MAX_RTS D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT
 
 struct dzn_cmd_buffer_state {
    const struct dzn_pipeline *pipeline;
    struct dzn_descriptor_heap *heaps[NUM_POOL_TYPES];
+   struct dzn_graphics_pipeline_variant_key pipeline_variant;
    struct {
       VkRenderingFlags flags;
       D3D12_RECT area;
@@ -472,6 +507,9 @@ struct dzn_cmd_buffer_state {
             uint32_t ref, compare_mask, write_mask;
          } front, back;
       } stencil_test;
+      struct {
+         float min, max;
+      } depth_bounds;
    } zsa;
    struct {
       float constants[4];
@@ -536,7 +574,10 @@ struct dzn_cmd_buffer {
       struct dzn_descriptor_heap_pool pool;
    } rtvs, dsvs;
 
+   struct hash_table *transition_barriers;
+
    struct dzn_descriptor_heap_pool cbv_srv_uav_pool, sampler_pool;
+   D3D12_CPU_DESCRIPTOR_HANDLE null_rtv;
 
    struct list_head internal_bufs;
 
@@ -562,6 +603,7 @@ struct dzn_descriptor_pool {
 
 struct dzn_descriptor_set_layout_binding {
    VkDescriptorType type;
+   uint32_t stages;
    D3D12_SHADER_VISIBILITY visibility;
    uint32_t base_shader_register;
    uint32_t range_idx[NUM_POOL_TYPES];
@@ -575,7 +617,7 @@ struct dzn_descriptor_set_layout_binding {
 };
 
 struct dzn_descriptor_set_layout {
-   struct vk_object_base base;
+   struct vk_descriptor_set_layout vk;
    uint32_t range_count[MAX_SHADER_VISIBILITIES][NUM_POOL_TYPES];
    const D3D12_DESCRIPTOR_RANGE1 *ranges[MAX_SHADER_VISIBILITIES][NUM_POOL_TYPES];
    uint32_t range_desc_count[NUM_POOL_TYPES];
@@ -589,6 +631,7 @@ struct dzn_descriptor_set_layout {
       uint32_t desc_count;
       uint32_t range_offset;
    } dynamic_buffers;
+   uint32_t stages;
    uint32_t binding_count;
    const struct dzn_descriptor_set_layout_binding *bindings;
 };
@@ -603,8 +646,7 @@ struct dzn_descriptor_set {
 };
 
 struct dzn_pipeline_layout {
-   struct vk_object_base base;
-   int32_t refcount;
+   struct vk_pipeline_layout vk;
    struct {
       uint32_t heap_offsets[NUM_POOL_TYPES];
       struct {
@@ -613,7 +655,10 @@ struct dzn_pipeline_layout {
       uint32_t dynamic_buffer_count;
       uint32_t range_desc_count[NUM_POOL_TYPES];
    } sets[MAX_SETS];
-   struct dxil_spirv_vulkan_descriptor_set binding_translation[MAX_SETS];
+   struct {
+      uint32_t binding_count;
+      uint32_t *base_reg;
+   } binding_translation[MAX_SETS];
    uint32_t set_count;
    uint32_t desc_count[NUM_POOL_TYPES];
    struct {
@@ -624,13 +669,10 @@ struct dzn_pipeline_layout {
       D3D12_DESCRIPTOR_HEAP_TYPE type[MAX_SHADER_VISIBILITIES];
       ID3D12RootSignature *sig;
    } root;
+   struct {
+      uint8_t hash[SHA1_DIGEST_LENGTH];
+   } stages[MESA_VULKAN_SHADER_STAGES];
 };
-
-struct dzn_pipeline_layout *
-dzn_pipeline_layout_ref(struct dzn_pipeline_layout *layout);
-
-void
-dzn_pipeline_layout_unref(struct dzn_pipeline_layout *layout);
 
 struct dzn_descriptor_update_template_entry {
    VkDescriptorType type;
@@ -656,14 +698,37 @@ struct dzn_descriptor_update_template {
    const struct dzn_descriptor_update_template_entry *entries;
 };
 
-struct dzn_pipeline_cache {
-   struct vk_object_base base;
-};
-
 enum dzn_register_space {
    DZN_REGISTER_SPACE_SYSVALS = MAX_SETS,
    DZN_REGISTER_SPACE_PUSH_CONSTANT,
 };
+
+#define D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(__type) \
+   ALIGN_POT(ALIGN_POT(sizeof(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE), alignof(__type)) + sizeof(__type), alignof(void *))
+
+#define MAX_GFX_PIPELINE_STATE_STREAM_SIZE \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(ID3D12RootSignature *) + \
+   (D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_SHADER_BYTECODE) * 5) + /* VS, PS, DS, HS, GS */ \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_STREAM_OUTPUT_DESC) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_BLEND_DESC) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(UINT) + /* SampleMask */ \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_RASTERIZER_DESC) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_INPUT_LAYOUT_DESC) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_INDEX_BUFFER_STRIP_CUT_VALUE) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_PRIMITIVE_TOPOLOGY_TYPE) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(struct D3D12_RT_FORMAT_ARRAY) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(DXGI_FORMAT) + /* DS format */ \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(DXGI_SAMPLE_DESC) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_NODE_MASK) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_CACHED_PIPELINE_STATE) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_PIPELINE_STATE_FLAGS) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_DEPTH_STENCIL_DESC1) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_VIEW_INSTANCING_DESC)
+
+#define MAX_COMPUTE_PIPELINE_STATE_STREAM_SIZE \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(ID3D12RootSignature *) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_SHADER_BYTECODE) + \
+   D3D12_PIPELINE_STATE_STREAM_DESC_SIZE(D3D12_CACHED_PIPELINE_STATE)
 
 struct dzn_pipeline {
    struct vk_object_base base;
@@ -687,6 +752,8 @@ struct dzn_pipeline {
    uint32_t desc_count[NUM_POOL_TYPES];
    ID3D12PipelineState *state;
 };
+
+extern const struct vk_pipeline_cache_object_ops dzn_cached_blob_ops;
 
 enum dzn_indirect_draw_cmd_sig_type {
    DZN_INDIRECT_DRAW_CMD_SIG,
@@ -733,6 +800,12 @@ struct dzn_graphics_pipeline {
             bool uses_ref;
         } front, back;
       } stencil_test;
+      struct {
+         bool enable;
+         bool dynamic;
+         float min, max;
+      } depth_bounds;
+      bool dynamic_depth_bias;
    } zsa;
 
    struct {
@@ -740,12 +813,42 @@ struct dzn_graphics_pipeline {
       float constants[4];
    } blend;
 
+   struct {
+      uintptr_t stream_buf[MAX_GFX_PIPELINE_STATE_STREAM_SIZE / sizeof(uintptr_t)];
+      D3D12_PIPELINE_STATE_STREAM_DESC stream_desc;
+      struct {
+         uint32_t ib_strip_cut;
+         uint32_t rast;
+         uint32_t ds;
+      } desc_offsets;
+      D3D12_INPUT_ELEMENT_DESC inputs[D3D12_VS_INPUT_REGISTER_COUNT];
+      struct {
+         D3D12_SHADER_BYTECODE *bc;
+         nir_shader *nir;
+      } shaders[MESA_VULKAN_SHADER_STAGES];
+   } templates;
+
+   struct hash_table *variants;
+
    ID3D12CommandSignature *indirect_cmd_sigs[DZN_NUM_INDIRECT_DRAW_CMD_SIGS];
 };
+
+#define dzn_graphics_pipeline_get_desc(pipeline, streambuf, name) \
+   (void *)(pipeline->templates.desc_offsets.name == 0 ? NULL : \
+            (uint8_t *)streambuf + pipeline->templates.desc_offsets.name)
+
+#define dzn_graphics_pipeline_get_desc_template(pipeline, name) \
+   (const void *)dzn_graphics_pipeline_get_desc(pipeline, pipeline->templates.stream_buf, name)
+
+ID3D12PipelineState *
+dzn_graphics_pipeline_get_state(struct dzn_graphics_pipeline *pipeline,
+                                const struct dzn_graphics_pipeline_variant_key *key);
 
 ID3D12CommandSignature *
 dzn_graphics_pipeline_get_indirect_cmd_sig(struct dzn_graphics_pipeline *pipeline,
                                            enum dzn_indirect_draw_cmd_sig_type cmd_sig_type);
+
+VkFormat dzn_graphics_pipeline_patch_vi_format(VkFormat format);
 
 struct dzn_compute_pipeline {
    struct dzn_pipeline base;
@@ -774,6 +877,16 @@ struct dzn_image {
    VkDeviceSize mem_offset;
 };
 
+bool
+dzn_image_formats_are_compatible(const struct dzn_device *device,
+                                 VkFormat orig_fmt, VkFormat new_fmt,
+                                 VkImageUsageFlags usage,
+                                 VkImageAspectFlagBits aspect);
+
+void
+dzn_image_align_extent(const struct dzn_image *image,
+                       VkExtent3D *extent);
+
 DXGI_FORMAT
 dzn_image_get_dxgi_format(VkFormat format,
                           VkImageUsageFlags usage,
@@ -796,7 +909,9 @@ dzn_image_get_rtv_desc(const struct dzn_image *image,
                        uint32_t level);
 
 D3D12_RESOURCE_STATES
-dzn_image_layout_to_state(VkImageLayout layout, VkImageAspectFlagBits aspect);
+dzn_image_layout_to_state(const struct dzn_image *image,
+                          VkImageLayout layout,
+                          VkImageAspectFlagBits aspect);
 
 uint32_t
 dzn_image_layers_get_subresource_index(const struct dzn_image *image,
@@ -888,6 +1003,7 @@ struct dzn_sampler {
     (_image)->vk.mip_levels - (_range)->baseMipLevel : (_range)->levelCount)
 
 DXGI_FORMAT dzn_pipe_to_dxgi_format(enum pipe_format in);
+DXGI_FORMAT dzn_get_typeless_dxgi_format(DXGI_FORMAT in);
 D3D12_FILTER dzn_translate_sampler_filter(const VkSamplerCreateInfo *create_info);
 D3D12_COMPARISON_FUNC dzn_translate_compare_op(VkCompareOp in);
 void dzn_translate_viewport(D3D12_VIEWPORT *out, const VkViewport *in);
@@ -919,6 +1035,8 @@ enum dzn_debug_flags {
    DZN_DEBUG_SIG = 1 << 5,
    DZN_DEBUG_GBV = 1 << 6,
    DZN_DEBUG_D3D12 = 1 << 7,
+   DZN_DEBUG_DEBUGGER = 1 << 8,
+   DZN_DEBUG_REDIRECTS = 1 << 9,
 };
 
 struct dzn_instance {
@@ -930,6 +1048,8 @@ struct dzn_instance {
    } d3d12;
    bool physical_devices_enumerated;
    uint32_t debug_flags;
+
+   struct vk_sync_binary_type sync_binary_type;
 
    struct list_head physical_devices;
 };
@@ -990,7 +1110,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_buffer_view, base, VkBufferView, VK_OBJECT_TY
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_device_memory, base, VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_descriptor_pool, base, VkDescriptorPool, VK_OBJECT_TYPE_DESCRIPTOR_POOL)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_descriptor_set, base, VkDescriptorSet, VK_OBJECT_TYPE_DESCRIPTOR_SET)
-VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_descriptor_set_layout, base, VkDescriptorSetLayout, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_descriptor_set_layout, vk.base, VkDescriptorSetLayout, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_descriptor_update_template, base, VkDescriptorUpdateTemplate, VK_OBJECT_TYPE_DESCRIPTOR_UPDATE_TEMPLATE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_image, vk.base, VkImage, VK_OBJECT_TYPE_IMAGE)
@@ -998,8 +1118,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_image_view, vk.base, VkImageView, VK_OBJECT_T
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_pipeline, base, VkPipeline, VK_OBJECT_TYPE_PIPELINE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_graphics_pipeline, base.base, VkPipeline, VK_OBJECT_TYPE_PIPELINE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_compute_pipeline, base.base, VkPipeline, VK_OBJECT_TYPE_PIPELINE)
-VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_pipeline_cache, base, VkPipelineCache, VK_OBJECT_TYPE_PIPELINE_CACHE)
-VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_pipeline_layout, base, VkPipelineLayout, VK_OBJECT_TYPE_PIPELINE_LAYOUT)
+VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_pipeline_layout, vk.base, VkPipelineLayout, VK_OBJECT_TYPE_PIPELINE_LAYOUT)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_query_pool, base, VkQueryPool, VK_OBJECT_TYPE_QUERY_POOL)
 VK_DEFINE_NONDISP_HANDLE_CASTS(dzn_sampler, base, VkSampler, VK_OBJECT_TYPE_SAMPLER)
 

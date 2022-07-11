@@ -299,7 +299,7 @@ ir3_shader_compute_state_create(struct pipe_context *pctx,
 
       ir3_finalize_nir(compiler, nir);
    } else {
-      debug_assert(cso->ir_type == PIPE_SHADER_IR_TGSI);
+      assert(cso->ir_type == PIPE_SHADER_IR_TGSI);
       if (ir3_shader_debug & IR3_DBG_DISASM) {
          tgsi_dump(cso->prog, 0);
       }
@@ -357,7 +357,7 @@ ir3_shader_state_create(struct pipe_context *pctx,
       /* we take ownership of the reference: */
       nir = cso->ir.nir;
    } else {
-      debug_assert(cso->type == PIPE_SHADER_IR_TGSI);
+      assert(cso->type == PIPE_SHADER_IR_TGSI);
       if (ir3_shader_debug & IR3_DBG_DISASM) {
          tgsi_dump(cso->tokens, 0);
       }
@@ -557,6 +557,9 @@ ir3_screen_init(struct pipe_screen *pscreen)
     * use them?
     */
    unsigned num_threads = sysconf(_SC_NPROCESSORS_ONLN) - 1;
+
+   /* Create at least one thread - even on single core CPU systems. */
+   num_threads = MAX2(1, num_threads);
 
    util_queue_init(&screen->compile_queue, "ir3q", 64, num_threads,
                    UTIL_QUEUE_INIT_RESIZE_IF_FULL |

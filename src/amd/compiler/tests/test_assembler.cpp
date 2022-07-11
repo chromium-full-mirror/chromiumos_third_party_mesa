@@ -65,8 +65,7 @@ BEGIN_TEST(assembler.long_jump.unconditional_forwards)
 
    //!BB0:
    //! s_getpc_b64 s[0:1]                                          ; be801f00
-   //! s_addc_u32 s0, s0, 0x20018                                  ; 8200ff00 00020018
-   //! s_addc_u32 s1, s1, 0                                        ; 82018001
+   //! s_addc_u32 s0, s0, 0x20014                                  ; 8200ff00 00020014
    //! s_bitcmp1_b32 s0, 0                                         ; bf0d8000
    //! s_bitset0_b32 s0, 0                                         ; be801b80
    //! s_setpc_b64 s[0:1]                                          ; be802000
@@ -94,10 +93,9 @@ BEGIN_TEST(assembler.long_jump.conditional_forwards)
       return;
 
    //! BB0:
-   //! s_cbranch_scc1 BB1                                          ; bf850007
+   //! s_cbranch_scc1 BB1                                          ; bf850006
    //! s_getpc_b64 s[0:1]                                          ; be801f00
-   //! s_addc_u32 s0, s0, 0x20018                                  ; 8200ff00 00020018
-   //! s_addc_u32 s1, s1, 0                                        ; 82018001
+   //! s_addc_u32 s0, s0, 0x20014                                  ; 8200ff00 00020014
    //! s_bitcmp1_b32 s0, 0                                         ; bf0d8000
    //! s_bitset0_b32 s0, 0                                         ; be801b80
    //! s_setpc_b64 s[0:1]                                          ; be802000
@@ -134,7 +132,6 @@ BEGIN_TEST(assembler.long_jump.unconditional_backwards)
 
    //! s_getpc_b64 s[0:1]                                          ; be801f00
    //! s_addc_u32 s0, s0, 0xfffdfffc                               ; 8200ff00 fffdfffc
-   //! s_addc_u32 s1, s1, -1                                       ; 8201c101
    //! s_bitcmp1_b32 s0, 0                                         ; bf0d8000
    //! s_bitset0_b32 s0, 0                                         ; be801b80
    //! s_setpc_b64 s[0:1]                                          ; be802000
@@ -160,10 +157,9 @@ BEGIN_TEST(assembler.long_jump.conditional_backwards)
    for (unsigned i = 0; i < INT16_MAX + 1; i++)
       bld.sopp(aco_opcode::s_nop, -1, 0);
 
-   //! s_cbranch_execz BB1                                         ; bf880007
+   //! s_cbranch_execz BB1                                         ; bf880006
    //! s_getpc_b64 s[0:1]                                          ; be801f00
    //! s_addc_u32 s0, s0, 0xfffdfff8                               ; 8200ff00 fffdfff8
-   //! s_addc_u32 s1, s1, -1                                       ; 8201c101
    //! s_bitcmp1_b32 s0, 0                                         ; bf0d8000
    //! s_bitset0_b32 s0, 0                                         ; be801b80
    //! s_setpc_b64 s[0:1]                                          ; be802000
@@ -188,7 +184,7 @@ BEGIN_TEST(assembler.long_jump.3f)
    //! s_nop 0                                                     ; bf800000
    bld.sopp(aco_opcode::s_branch, Definition(PhysReg(0), s2), 1);
 
-   for (unsigned i = 0; i < 0x3f - 7; i++) // a unconditional long jump is 7 dwords
+   for (unsigned i = 0; i < 0x3f - 6; i++) // a unconditional long jump is 6 dwords
       bld.vop1(aco_opcode::v_nop);
    bld.sopp(aco_opcode::s_branch, Definition(PhysReg(0), s2), 2);
 
@@ -219,10 +215,10 @@ BEGIN_TEST(assembler.long_jump.constaddr)
    bld.reset(program->create_and_insert_block());
 
    //>> s_getpc_b64 s[0:1]                                          ; be801f00
-   //! s_add_u32 s0, s0, 0xe0                                      ; 8000ff00 000000e0
+   //! s_add_u32 s0, s0, 0xe4                                      ; 8000ff00 000000e4
    bld.sop1(aco_opcode::p_constaddr_getpc, Definition(PhysReg(0), s2), Operand::zero());
    bld.sop2(aco_opcode::p_constaddr_addlo, Definition(PhysReg(0), s1), bld.def(s1, scc),
-            Operand(PhysReg(0), s1), Operand::zero());
+            Operand(PhysReg(0), s1), Operand::zero(), Operand::zero());
 
    program->blocks[2].linear_preds.push_back(0u);
    program->blocks[2].linear_preds.push_back(1u);
@@ -283,11 +279,32 @@ BEGIN_TEST(assembler.smem_offset)
       //~gfx10! s_load_dword s7, s[6:7], 0x42 ; f40001c3 fa000042
       bld.smem(aco_opcode::s_load_dword, dst, sbase, Operand::c32(0x42));
       if (i >= GFX9) {
-         //~gfx9! s_load_dword s7, s[6:7], 0x42, s5 ; c00241c3 0a000042
-         //~gfx10! s_load_dword s7, s[6:7], s5, 0x42 ; f40001c3 0a000042
+         //~gfx9! s_load_dword s7, s[6:7], s5 offset:0x42 ; c00241c3 0a000042
+         //~gfx10! s_load_dword s7, s[6:7], s5 offset:0x42 ; f40001c3 0a000042
          bld.smem(aco_opcode::s_load_dword, dst, sbase, Operand::c32(0x42), offset);
       }
 
       finish_assembler_test();
    }
+END_TEST
+
+BEGIN_TEST(assembler.p_constaddr)
+   if (!setup_cs(NULL, GFX9))
+      return;
+
+   Definition dst0 = bld.def(s2);
+   Definition dst1 = bld.def(s2);
+   dst0.setFixed(PhysReg(0));
+   dst1.setFixed(PhysReg(2));
+
+   //>> s_getpc_b64 s[0:1] ; be801c00
+   //! s_add_u32 s0, s0, 24 ; 8000ff00 00000018
+   bld.pseudo(aco_opcode::p_constaddr, dst0, Operand::zero());
+
+   //! s_getpc_b64 s[2:3] ; be821c00
+   //! s_add_u32 s2, s2, 44 ; 8002ff02 0000002c
+   bld.pseudo(aco_opcode::p_constaddr, dst1, Operand::c32(32));
+
+   aco::lower_to_hw_instr(program.get());
+   finish_assembler_test();
 END_TEST

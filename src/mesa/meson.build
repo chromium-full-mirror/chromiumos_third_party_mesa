@@ -351,6 +351,7 @@ files_libmesa = files(
   'state_tracker/st_draw.c',
   'state_tracker/st_draw.h',
   'state_tracker/st_draw_feedback.c',
+  'state_tracker/st_draw_hw_select.c',
   'state_tracker/st_extensions.c',
   'state_tracker/st_extensions.h',
   'state_tracker/st_format.c',
@@ -451,6 +452,7 @@ files_libmesa += [
   main_api_save_h,
   main_api_save_init_h,
   main_api_vtxfmt_init_h,
+  main_api_hw_select_init_h,
   main_enums_c,
   format_fallback_c,
   get_hash_h,
@@ -464,7 +466,7 @@ files_libmesa += [
 if with_sse41
   libmesa_sse41 = static_library(
     'mesa_sse41',
-    files('main/streaming-load-memcpy.c', 'main/sse_minmax.c'),
+    files('main/sse_minmax.c'),
     c_args : [c_msvc_compat_args, sse41_args],
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
     gnu_symbol_visibility : 'hidden',

@@ -183,11 +183,7 @@ _util_queue_fence_wait_timeout(struct util_queue_fence *fence,
    if (rel > 0) {
       struct timespec ts;
 
-#if defined(HAVE_TIMESPEC_GET) || defined(_WIN32)
       timespec_get(&ts, TIME_UTC);
-#else
-      clock_gettime(CLOCK_REALTIME, &ts);
-#endif
 
       ts.tv_sec += abs_timeout / (1000*1000*1000);
       ts.tv_nsec += abs_timeout % (1000*1000*1000);
@@ -341,9 +337,7 @@ util_queue_create_thread(struct util_queue *queue, unsigned index)
    input->queue = queue;
    input->thread_index = index;
 
-   queue->threads[index] = u_thread_create(util_queue_thread_func, input);
-
-   if (!queue->threads[index]) {
+   if (thrd_success != u_thread_create(queue->threads + index, util_queue_thread_func, input)) {
       free(input);
       return false;
    }

@@ -749,6 +749,8 @@ v3dv_CmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer,
 
    assert(image->vk.samples == VK_SAMPLE_COUNT_1_BIT);
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < info->regionCount; i++) {
       if (copy_image_to_buffer_tlb(cmd_buffer, buffer, image, &info->pRegions[i]))
          continue;
@@ -756,6 +758,8 @@ v3dv_CmdCopyImageToBuffer2KHR(VkCommandBuffer commandBuffer,
          continue;
       unreachable("Unsupported image to buffer copy.");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 /**
@@ -1169,6 +1173,8 @@ v3dv_CmdCopyImage2KHR(VkCommandBuffer commandBuffer,
 
    assert(src->vk.samples == dst->vk.samples);
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < info->regionCount; i++) {
       if (copy_image_tfu(cmd_buffer, dst, src, &info->pRegions[i]))
          continue;
@@ -1178,6 +1184,8 @@ v3dv_CmdCopyImage2KHR(VkCommandBuffer commandBuffer,
          continue;
       unreachable("Image copy not supported");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1188,6 +1196,8 @@ v3dv_CmdCopyBuffer2KHR(VkCommandBuffer commandBuffer,
    V3DV_FROM_HANDLE(v3dv_buffer, src_buffer, pCopyBufferInfo->srcBuffer);
    V3DV_FROM_HANDLE(v3dv_buffer, dst_buffer, pCopyBufferInfo->dstBuffer);
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < pCopyBufferInfo->regionCount; i++) {
       v3dv_X(cmd_buffer->device, meta_copy_buffer)
          (cmd_buffer,
@@ -1195,6 +1205,8 @@ v3dv_CmdCopyBuffer2KHR(VkCommandBuffer commandBuffer,
           src_buffer->mem->bo, src_buffer->mem_offset,
           &pCopyBufferInfo->pRegions[i]);
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 static void
@@ -1230,6 +1242,8 @@ v3dv_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
       return;
    }
 
+   cmd_buffer->state.is_transfer = true;
+
    memcpy(src_bo->map, pData, dataSize);
 
    v3dv_bo_unmap(cmd_buffer->device, src_bo);
@@ -1245,11 +1259,12 @@ v3dv_CmdUpdateBuffer(VkCommandBuffer commandBuffer,
       (cmd_buffer, dst_buffer->mem->bo, dst_buffer->mem_offset,
        src_bo, 0, &region);
 
-   if (!copy_job)
-      return;
+   if (copy_job) {
+      v3dv_cmd_buffer_add_private_obj(
+         cmd_buffer, (uint64_t)(uintptr_t)src_bo, destroy_update_buffer_cb);
+   }
 
-   v3dv_cmd_buffer_add_private_obj(
-      cmd_buffer, (uint64_t)(uintptr_t)src_bo, destroy_update_buffer_cb);
+   cmd_buffer->state.is_transfer = false;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1261,6 +1276,8 @@ v3dv_CmdFillBuffer(VkCommandBuffer commandBuffer,
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
    V3DV_FROM_HANDLE(v3dv_buffer, dst_buffer, dstBuffer);
+
+   cmd_buffer->state.is_transfer = true;
 
    struct v3dv_bo *bo = dst_buffer->mem->bo;
 
@@ -1276,6 +1293,8 @@ v3dv_CmdFillBuffer(VkCommandBuffer commandBuffer,
 
    v3dv_X(cmd_buffer->device, meta_fill_buffer)
       (cmd_buffer, bo, dstOffset, size, data);
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 /**
@@ -1989,7 +2008,7 @@ texel_buffer_shader_copy(struct v3dv_cmd_buffer *cmd_buffer,
    if (!(buffer->usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT)) {
       if (v3dv_buffer_format_supports_features(
              cmd_buffer->device, src_format,
-             VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT)) {
+             VK_FORMAT_FEATURE_2_UNIFORM_TEXEL_BUFFER_BIT)) {
          buffer->usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
       } else {
          return handled;
@@ -2604,7 +2623,8 @@ copy_buffer_to_image_shader(struct v3dv_cmd_buffer *cmd_buffer,
       };
       break;
    case 2:
-      assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT);
+      assert(aspect == VK_IMAGE_ASPECT_COLOR_BIT ||
+             aspect == VK_IMAGE_ASPECT_DEPTH_BIT);
       src_format = VK_FORMAT_R16_UINT;
       dst_format = src_format;
       break;
@@ -2709,6 +2729,8 @@ v3dv_CmdCopyBufferToImage2KHR(VkCommandBuffer commandBuffer,
 
    assert(image->vk.samples == VK_SAMPLE_COUNT_1_BIT);
 
+   cmd_buffer->state.is_transfer = true;
+
    uint32_t r = 0;
    while (r < info->regionCount) {
       /* The TFU and TLB paths can only copy one region at a time and the region
@@ -2773,6 +2795,8 @@ v3dv_CmdCopyBufferToImage2KHR(VkCommandBuffer commandBuffer,
 handled:
       r += batch_size;
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 static void
@@ -3388,14 +3412,12 @@ create_pipeline(struct v3dv_device *device,
                 const VkPipelineLayout layout,
                 VkPipeline *pipeline)
 {
-   struct vk_shader_module vs_m;
+   struct vk_shader_module vs_m = vk_shader_module_from_nir(vs_nir);
+   struct vk_shader_module fs_m = vk_shader_module_from_nir(fs_nir);
    struct vk_shader_module gs_m;
-   struct vk_shader_module fs_m;
 
    uint32_t num_stages = gs_nir ? 3 : 2;
 
-   v3dv_shader_module_internal_init(device, &vs_m, vs_nir);
-   v3dv_shader_module_internal_init(device, &fs_m, fs_nir);
 
    VkPipelineShaderStageCreateInfo stages[3] = {
       {
@@ -3419,7 +3441,7 @@ create_pipeline(struct v3dv_device *device,
    };
 
    if (gs_nir) {
-      v3dv_shader_module_internal_init(device, &gs_m, gs_nir);
+      gs_m = vk_shader_module_from_nir(gs_nir);
       stages[2].module = vk_shader_module_to_handle(&gs_m);
    }
 
@@ -3492,6 +3514,7 @@ create_pipeline(struct v3dv_device *device,
                                    pipeline);
 
    ralloc_free(vs_nir);
+   ralloc_free(gs_nir);
    ralloc_free(fs_nir);
 
    return result == VK_SUCCESS;
@@ -4246,6 +4269,8 @@ v3dv_CmdBlitImage2KHR(VkCommandBuffer commandBuffer,
    /* We don't export VK_FORMAT_FEATURE_BLIT_DST_BIT on compressed formats */
    assert(!vk_format_is_compressed(dst->vk.format));
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < pBlitImageInfo->regionCount; i++) {
       if (blit_tfu(cmd_buffer, dst, src, &pBlitImageInfo->pRegions[i]))
          continue;
@@ -4259,6 +4284,8 @@ v3dv_CmdBlitImage2KHR(VkCommandBuffer commandBuffer,
       }
       unreachable("Unsupported blit operation");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }
 
 static bool
@@ -4362,6 +4389,8 @@ v3dv_CmdResolveImage2KHR(VkCommandBuffer commandBuffer,
    assert(src->vk.samples == VK_SAMPLE_COUNT_4_BIT);
    assert(dst->vk.samples == VK_SAMPLE_COUNT_1_BIT);
 
+   cmd_buffer->state.is_transfer = true;
+
    for (uint32_t i = 0; i < info->regionCount; i++) {
       if (resolve_image_tlb(cmd_buffer, dst, src, &info->pRegions[i]))
          continue;
@@ -4369,4 +4398,6 @@ v3dv_CmdResolveImage2KHR(VkCommandBuffer commandBuffer,
          continue;
       unreachable("Unsupported multismaple resolve operation");
    }
+
+   cmd_buffer->state.is_transfer = false;
 }

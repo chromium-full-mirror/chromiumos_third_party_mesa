@@ -298,7 +298,6 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
       return 1;
 
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
@@ -325,7 +324,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
       return svgascreen->ms_samples ? 1 : 0;
 
-   case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
       /* convert bytes to texels for the case of the largest texel
        * size: float[4].
        */
@@ -456,7 +455,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_MAX_GS_INVOCATIONS:
       return 32;
-   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
+   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT:
       return 1 << 27;
    /* Verify this once protocol is finalized. Setting it to minimum value. */
    case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
@@ -505,7 +504,7 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
          return 10;
       case PIPE_SHADER_CAP_MAX_OUTPUTS:
          return svgascreen->max_color_buffers;
-      case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+      case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
          return 224 * sizeof(float[4]);
       case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
          return 1;
@@ -555,8 +554,6 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
          return 0;
-      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-         return 32;
       }
       /* If we get here, we failed to handle a cap above */
       debug_printf("Unexpected fragment shader query %u\n", param);
@@ -578,7 +575,7 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
          return 16;
       case PIPE_SHADER_CAP_MAX_OUTPUTS:
          return 10;
-      case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+      case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
          return 256 * sizeof(float[4]);
       case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
          return 1;
@@ -623,8 +620,6 @@ vgpu9_get_shader_param(struct pipe_screen *screen,
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
          return 0;
-      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-         return 32;
       }
       /* If we get here, we failed to handle a cap above */
       debug_printf("Unexpected vertex shader query %u\n", param);
@@ -695,7 +690,7 @@ vgpu10_get_shader_param(struct pipe_screen *screen,
       else
          return svgascreen->max_vs_outputs;
 
-   case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+   case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
       return VGPU10_MAX_CONSTANT_BUFFER_ELEMENT_COUNT * sizeof(float[4]);
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return svgascreen->max_const_buffers;
@@ -748,8 +743,6 @@ vgpu10_get_shader_param(struct pipe_screen *screen,
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_INT64_ATOMICS:
       return 0;
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-      return 32;
    default:
       debug_printf("Unexpected vgpu10 shader query %u\n", param);
       return 0;
@@ -762,6 +755,7 @@ vgpu10_get_shader_param(struct pipe_screen *screen,
    .lower_extract_word = true,                                                \
    .lower_insert_byte = true,                                                 \
    .lower_insert_word = true,                                                 \
+   .lower_int64_options = nir_lower_imul_2x32_64,                             \
    .lower_fdph = true,                                                        \
    .lower_flrp64 = true,                                                      \
    .lower_rotate = true,                                                      \
@@ -775,9 +769,17 @@ vgpu10_get_shader_param(struct pipe_screen *screen,
    .lower_fmod = true,                                                        \
    .lower_fpow = true
 
-static const nir_shader_compiler_options svga_vgpu9_compiler_options = {
+static const nir_shader_compiler_options svga_vgpu9_fragment_compiler_options = {
    COMMON_OPTIONS,
    .lower_bitops = true,
+   .force_indirect_unrolling = nir_var_all,
+   .force_indirect_unrolling_sampler = true,
+};
+
+static const nir_shader_compiler_options svga_vgpu9_vertex_compiler_options = {
+   COMMON_OPTIONS,
+   .lower_bitops = true,
+   .force_indirect_unrolling = nir_var_function_temp,
    .force_indirect_unrolling_sampler = true,
 };
 
@@ -806,8 +808,12 @@ svga_get_compiler_options(struct pipe_screen *pscreen,
       return &svga_gl4_compiler_options;
    else if (sws->have_vgpu10)
       return &svga_vgpu10_compiler_options;
-   else
-      return &svga_vgpu9_compiler_options;
+   else {
+      if (shader == PIPE_SHADER_FRAGMENT)
+         return &svga_vgpu9_fragment_compiler_options;
+      else
+         return &svga_vgpu9_vertex_compiler_options;
+   }
 }
 
 static int

@@ -150,7 +150,7 @@ static void pvr_srv_compute_cmd_init(
    fw_regs->cdm_item = submit_info->regs.cdm_item;
    fw_regs->compute_cluster = submit_info->regs.compute_cluster;
    fw_regs->cdm_ctrl_stream_base = submit_info->regs.cdm_ctrl_stream_base;
-   fw_regs->cdm_contex_state_base_addr =
+   fw_regs->cdm_context_state_base_addr =
       submit_info->regs.cdm_ctx_state_base_addr;
    fw_regs->tpu = submit_info->regs.tpu;
    fw_regs->cdm_resume_pds1 = submit_info->regs.cdm_resume_pds1;
@@ -222,8 +222,12 @@ VkResult pvr_srv_winsys_compute_submit(
    if (result != VK_SUCCESS)
       goto err_close_in_fd;
 
-   srv_signal_sync = to_srv_sync(signal_sync);
-   pvr_srv_set_sync_payload(srv_signal_sync, fence);
+   if (signal_sync) {
+      srv_signal_sync = to_srv_sync(signal_sync);
+      pvr_srv_set_sync_payload(srv_signal_sync, fence);
+   } else if (fence != -1) {
+      close(fence);
+   }
 
    return VK_SUCCESS;
 

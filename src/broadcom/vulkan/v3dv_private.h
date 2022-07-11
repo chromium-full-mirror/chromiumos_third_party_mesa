@@ -188,6 +188,7 @@ struct v3dv_physical_device {
 
    struct {
       bool multisync;
+      bool perfmon;
    } caps;
 };
 
@@ -263,6 +264,11 @@ struct v3dv_queue {
    struct v3dv_last_job_sync last_job_syncs;
 
    struct v3dv_job *noop_job;
+
+   /* The last active perfmon ID to prevent mixing of counter results when a
+    * job is submitted with a different perfmon id.
+    */
+   uint32_t last_perfmon_id;
 };
 
 VkResult v3dv_queue_driver_submit(struct vk_queue *vk_queue,
@@ -1027,6 +1033,19 @@ struct v3dv_timestamp_query_cpu_job_info {
    uint32_t count;
 };
 
+/* Number of perfmons required to handle all supported performance counters */
+#define V3DV_MAX_PERFMONS DIV_ROUND_UP(V3D_PERFCNT_NUM, \
+                                       DRM_V3D_MAX_PERF_COUNTERS)
+
+struct v3dv_perf_query {
+   uint32_t kperfmon_ids[V3DV_MAX_PERFMONS];
+
+   /* A DRM syncobj to wait on the GPU jobs for which we are collecting
+    * performance data.
+    */
+   struct vk_sync *last_job_sync;
+};
+
 struct v3dv_job {
    struct list_head list_link;
 
@@ -1035,6 +1054,9 @@ struct v3dv_job {
     * so we want to flag them to avoid freeing resources they don't own.
     */
    bool is_clone;
+
+   /* If the job executes on the transfer stage of the pipeline */
+   bool is_transfer;
 
    enum v3dv_job_type type;
 
@@ -1079,6 +1101,9 @@ struct v3dv_job {
     */
    bool decided_global_ez_enable;
 
+   /* If the job emitted any draw calls with Early Z/S enabled */
+   bool has_ez_draws;
+
    /* If this job has been configured to use early Z/S clear */
    bool early_zs_clear;
 
@@ -1091,8 +1116,10 @@ struct v3dv_job {
     */
    bool always_flush;
 
-   /* Whether we need to serialize this job in our command stream */
-   bool serialize;
+   /* A mask of V3DV_BARRIER_* indicating the source(s) of the barrier. We
+    * can use this to select the hw queues where we need to serialize the job.
+    */
+   uint8_t serialize;
 
    /* If this is a CL job, whether we should sync before binning */
    bool needs_bcl_sync;
@@ -1119,6 +1146,9 @@ struct v3dv_job {
       uint32_t wg_base[3];
       struct drm_v3d_submit_csd submit;
    } csd;
+
+   /* Perfmons with last job sync for CSD and CL jobs */
+   struct v3dv_perf_query *perf;
 };
 
 void v3dv_job_init(struct v3dv_job *job,
@@ -1188,6 +1218,33 @@ struct v3dv_cmd_pipeline_state {
    struct v3dv_descriptor_state descriptor_state;
 };
 
+enum {
+   V3DV_BARRIER_GRAPHICS_BIT = (1 << 0),
+   V3DV_BARRIER_COMPUTE_BIT  = (1 << 1),
+   V3DV_BARRIER_TRANSFER_BIT = (1 << 2),
+};
+#define V3DV_BARRIER_ALL (V3DV_BARRIER_GRAPHICS_BIT | \
+                          V3DV_BARRIER_TRANSFER_BIT | \
+                          V3DV_BARRIER_COMPUTE_BIT);
+
+struct v3dv_barrier_state {
+   /* Mask of V3DV_BARRIER_* indicating where we consume a barrier. */
+   uint8_t dst_mask;
+
+   /* For each possible consumer of a barrier, a mask of V3DV_BARRIER_*
+    * indicating the sources of the dependency.
+    */
+   uint8_t src_mask_graphics;
+   uint8_t src_mask_transfer;
+   uint8_t src_mask_compute;
+
+   /* For graphics barriers, access masks involved. Used to decide if we need
+    * to execute a binning or render barrier.
+    */
+   VkAccessFlags bcl_buffer_access;
+   VkAccessFlags bcl_image_access;
+};
+
 struct v3dv_cmd_buffer_state {
    struct v3dv_render_pass *pass;
    struct v3dv_framebuffer *framebuffer;
@@ -1248,12 +1305,11 @@ struct v3dv_cmd_buffer_state {
    /* Used to flag OOM conditions during command buffer recording */
    bool oom;
 
-   /* Whether we have recorded a pipeline barrier that we still need to
-    * process.
-    */
-   bool has_barrier;
-   VkAccessFlags bcl_barrier_buffer_access;
-   VkAccessFlags bcl_barrier_image_access;
+   /* If we are currently recording job(s) for a transfer operation */
+   bool is_transfer;
+
+   /* Barrier state tracking */
+   struct v3dv_barrier_state barrier;
 
    /* Secondary command buffer state */
    struct {
@@ -1294,12 +1350,15 @@ struct v3dv_cmd_buffer_state {
          struct v3dv_end_query_cpu_job_info *states;
       } end;
 
-      /* This BO is not NULL if we have an active query, that is, we have
-       * called vkCmdBeginQuery but not vkCmdEndQuery.
-       */
       struct {
+         /* This BO is not NULL if we have an active occlusion query, that is,
+          * we have called vkCmdBeginQuery but not vkCmdEndQuery.
+          */
          struct v3dv_bo *bo;
          uint32_t offset;
+
+         /* This pointer is not NULL if we have an active performance query */
+         struct v3dv_perf_query *perf;
       } active_query;
    } query;
 };
@@ -1341,6 +1400,9 @@ struct v3dv_query {
       };
       /* Used by CPU queries (timestamp) */
       uint64_t value;
+
+      /* Used by performance queries */
+      struct v3dv_perf_query perf;
    };
 };
 
@@ -1349,18 +1411,32 @@ struct v3dv_query_pool {
 
    struct v3dv_bo *bo; /* Only used with GPU queries (occlusion) */
 
+   /* Only used with performance queries */
+   struct {
+      uint32_t ncounters;
+      uint8_t counters[V3D_PERFCNT_NUM];
+
+      /* V3D has a limit on the number of counters we can track in a
+       * single performance monitor, so if too many counters are requested
+       * we need to create multiple monitors to record all of them. This
+       * field represents the number of monitors required for the number
+       * of counters requested.
+       */
+      uint8_t nperfmons;
+   } perfmon;
+
    VkQueryType query_type;
    uint32_t query_count;
    struct v3dv_query *queries;
 };
 
-VkResult v3dv_get_query_pool_results_cpu(struct v3dv_device *device,
-                                         struct v3dv_query_pool *pool,
-                                         uint32_t first,
-                                         uint32_t count,
-                                         void *data,
-                                         VkDeviceSize stride,
-                                         VkQueryResultFlags flags);
+VkResult v3dv_get_query_pool_results(struct v3dv_device *device,
+                                     struct v3dv_query_pool *pool,
+                                     uint32_t first,
+                                     uint32_t count,
+                                     void *data,
+                                     VkDeviceSize stride,
+                                     VkQueryResultFlags flags);
 
 void v3dv_reset_query_pools(struct v3dv_device *device,
                             struct v3dv_query_pool *query_pool,
@@ -1477,6 +1553,9 @@ void v3dv_cmd_buffer_rewrite_indirect_csd_job(struct v3dv_csd_indirect_cpu_job_i
 void v3dv_cmd_buffer_add_private_obj(struct v3dv_cmd_buffer *cmd_buffer,
                                      uint64_t obj,
                                      v3dv_cmd_buffer_private_obj_destroy_cb destroy_cb);
+
+void v3dv_cmd_buffer_merge_barrier_state(struct v3dv_barrier_state *dst,
+                                         struct v3dv_barrier_state *src);
 
 struct v3dv_event {
    struct vk_object_base base;
@@ -1882,6 +1961,11 @@ struct v3dv_pipeline {
 
    enum v3dv_ez_state ez_state;
 
+   /* If ez_state is V3D_EZ_DISABLED, if the reason for disabling is that the
+    * pipeline selects an incompatible depth test function.
+    */
+   bool incompatible_ez_test;
+
    bool msaa;
    bool sample_rate_shading;
    uint32_t sample_mask;
@@ -2001,7 +2085,7 @@ v3dv_get_compatible_tfu_format(struct v3dv_device *device,
                                uint32_t bpp, VkFormat *out_vk_format);
 bool v3dv_buffer_format_supports_features(struct v3dv_device *device,
                                           VkFormat vk_format,
-                                          VkFormatFeatureFlags features);
+                                          VkFormatFeatureFlags2KHR features);
 
 struct v3dv_cl_reloc v3dv_write_uniforms(struct v3dv_cmd_buffer *cmd_buffer,
                                          struct v3dv_pipeline *pipeline,
@@ -2132,10 +2216,6 @@ v3dv_pipeline_cache_upload_pipeline(struct v3dv_pipeline *pipeline,
 struct v3dv_bo *
 v3dv_pipeline_create_default_attribute_values(struct v3dv_device *device,
                                               struct v3dv_pipeline *pipeline);
-
-void v3dv_shader_module_internal_init(struct v3dv_device *device,
-                                      struct vk_shader_module *module,
-                                      nir_shader *nir);
 
 #define V3DV_FROM_HANDLE(__v3dv_type, __name, __handle)			\
    VK_FROM_HANDLE(__v3dv_type, __name, __handle)

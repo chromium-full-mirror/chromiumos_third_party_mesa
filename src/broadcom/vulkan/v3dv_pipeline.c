@@ -36,6 +36,7 @@
 #include "util/u_prim.h"
 #include "util/os_time.h"
 
+#include "vk_pipeline.h"
 #include "vulkan/util/vk_format.h"
 
 static VkResult
@@ -60,31 +61,15 @@ v3dv_print_v3d_key(struct v3d_key *key,
 }
 
 static void
-pipeline_compute_sha1_from_nir(nir_shader *nir,
-                               unsigned char sha1[20])
+pipeline_compute_sha1_from_nir(struct v3dv_pipeline_stage *p_stage)
 {
-   assert(nir);
-   struct blob blob;
-   blob_init(&blob);
+   VkPipelineShaderStageCreateInfo info = {
+      .module = vk_shader_module_handle_from_nir(p_stage->nir),
+      .pName = p_stage->entrypoint,
+      .stage = mesa_to_vk_shader_stage(p_stage->nir->info.stage),
+   };
 
-   nir_serialize(&blob, nir, false);
-   if (!blob.out_of_memory)
-      _mesa_sha1_compute(blob.data, blob.size, sha1);
-
-   blob_finish(&blob);
-}
-
-void
-v3dv_shader_module_internal_init(struct v3dv_device *device,
-                                 struct vk_shader_module *module,
-                                 nir_shader *nir)
-{
-   vk_object_base_init(&device->vk, &module->base,
-                       VK_OBJECT_TYPE_SHADER_MODULE);
-   module->nir = nir;
-   module->size = 0;
-
-   pipeline_compute_sha1_from_nir(nir, module->sha1);
+   vk_pipeline_hash_shader_stage(&info, p_stage->shader_sha1);
 }
 
 void
@@ -191,6 +176,8 @@ static const struct spirv_to_nir_options default_spirv_options =  {
       .storage_16bit = true,
       .subgroup_basic = true,
       .variable_pointers = true,
+      .vk_memory_model = true,
+      .vk_memory_model_device_scope = true,
     },
    .ubo_addr_format = nir_address_format_32bit_index_offset,
    .ssbo_addr_format = nir_address_format_32bit_index_offset,
@@ -227,14 +214,6 @@ const nir_shader_compiler_options v3dv_nir_options = {
    .lower_pack_32_2x16 = true,
    .lower_pack_32_2x16_split = true,
    .lower_unpack_32_2x16_split = true,
-   /* FIXME: see if we can avoid the uadd_carry and usub_borrow lowering and
-    * get the tests to pass since it might produce slightly better code.
-    */
-   .lower_uadd_carry = true,
-   .lower_usub_borrow = true,
-   /* FIXME: check if we can use multop + umul24 to implement mul2x32_64
-    * without lowering.
-    */
    .lower_mul_2x32_64 = true,
    .lower_fdiv = true,
    .lower_find_lsb = true,
@@ -296,6 +275,13 @@ nir_optimize(nir_shader *nir, bool allow_copies)
           */
          OPT(nir_opt_find_array_copies);
       }
+
+      OPT(nir_remove_dead_variables,
+          (nir_variable_mode)(nir_var_function_temp |
+                              nir_var_shader_temp |
+                              nir_var_mem_shared),
+          NULL);
+
       OPT(nir_opt_copy_prop_vars);
       OPT(nir_opt_dead_write_vars);
       OPT(nir_opt_combine_stores, nir_var_all);
@@ -324,19 +310,48 @@ nir_optimize(nir_shader *nir, bool allow_copies)
       OPT(nir_opt_intrinsics);
       OPT(nir_opt_idiv_const, 32);
       OPT(nir_opt_algebraic);
+      OPT(nir_lower_alu);
       OPT(nir_opt_constant_folding);
 
       OPT(nir_opt_dead_cf);
-
-      OPT(nir_opt_if, false);
+      if (nir_opt_trivial_continues(nir)) {
+         progress = true;
+         OPT(nir_copy_prop);
+         OPT(nir_opt_dce);
+      }
       OPT(nir_opt_conditional_discard);
 
       OPT(nir_opt_remove_phis);
+      OPT(nir_opt_gcm, false);
+      OPT(nir_opt_if, false);
       OPT(nir_opt_undef);
       OPT(nir_lower_pack);
-   } while (progress);
 
-   OPT(nir_remove_dead_variables, nir_var_function_temp, NULL);
+      /* There are two optimizations that we don't do here, and we rely on the
+       * backend:
+       *
+       * nir_lower_flrp only needs to be called once, as nothing should
+       * rematerialize any flrps. As we are already calling it on the backend
+       * compiler, we don't call it again.
+       *
+       * nir_opt_loop_unroll: as the backend includes custom strategies in
+       * order to get the lowest spill/fills possible, and some of them
+       * include disable loop unrolling.
+       *
+       * FIXME: ideally we would like to just remove this method and
+       * v3d_optimize_nir. But:
+       *
+       *   * Using it leads to some regressions on Vulkan CTS tests, due to
+       *     some lowering use there
+       *   * We would need to move to the backend some additional
+       *     lowerings/optimizations that are used on the Vulkan
+       *     frontend. That would require to check that we are not getting any
+       *     regression or performance drop on OpenGL
+       *
+       * For now we would keep this Vulkan fronted nir_optimize
+       */
+
+   } while (progress);
 }
 
 static void
@@ -365,14 +380,6 @@ preprocess_nir(nir_shader *nir)
                        });
    }
 
-   NIR_PASS_V(nir, nir_lower_explicit_io,
-              nir_var_mem_push_const,
-              nir_address_format_32bit_offset);
-
-   NIR_PASS_V(nir, nir_lower_explicit_io,
-              nir_var_mem_ubo | nir_var_mem_ssbo,
-              nir_address_format_32bit_index_offset);
-
    NIR_PASS_V(nir, nir_lower_io_to_temporaries,
               nir_shader_get_entrypoint(nir), true, false);
 
@@ -389,6 +396,14 @@ preprocess_nir(nir_shader *nir)
    NIR_PASS_V(nir, nir_split_struct_vars, nir_var_function_temp);
 
    nir_optimize(nir, true);
+
+   NIR_PASS_V(nir, nir_lower_explicit_io,
+              nir_var_mem_push_const,
+              nir_address_format_32bit_offset);
+
+   NIR_PASS_V(nir, nir_lower_explicit_io,
+              nir_var_mem_ubo | nir_var_mem_ssbo,
+              nir_address_format_32bit_index_offset);
 
    NIR_PASS_V(nir, nir_lower_load_const_to_scalar);
 
@@ -1696,59 +1711,6 @@ pipeline_compile_shader_variant(struct v3dv_pipeline_stage *p_stage,
    return variant;
 }
 
-/* FIXME: C&P from st, common place? */
-static void
-st_nir_opts(nir_shader *nir)
-{
-   bool progress;
-
-   do {
-      progress = false;
-
-      NIR_PASS_V(nir, nir_lower_vars_to_ssa);
-
-      /* Linking deals with unused inputs/outputs, but here we can remove
-       * things local to the shader in the hopes that we can cleanup other
-       * things. This pass will also remove variables with only stores, so we
-       * might be able to make progress after it.
-       */
-      NIR_PASS(progress, nir, nir_remove_dead_variables,
-               (nir_variable_mode)(nir_var_function_temp |
-                                   nir_var_shader_temp |
-                                   nir_var_mem_shared),
-               NULL);
-
-      NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
-      NIR_PASS(progress, nir, nir_opt_dead_write_vars);
-
-      if (nir->options->lower_to_scalar) {
-         NIR_PASS_V(nir, nir_lower_alu_to_scalar, NULL, NULL);
-         NIR_PASS_V(nir, nir_lower_phis_to_scalar, false);
-      }
-
-      NIR_PASS_V(nir, nir_lower_alu);
-      NIR_PASS_V(nir, nir_lower_pack);
-      NIR_PASS(progress, nir, nir_copy_prop);
-      NIR_PASS(progress, nir, nir_opt_remove_phis);
-      NIR_PASS(progress, nir, nir_opt_dce);
-      if (nir_opt_trivial_continues(nir)) {
-         progress = true;
-         NIR_PASS(progress, nir, nir_copy_prop);
-         NIR_PASS(progress, nir, nir_opt_dce);
-      }
-      NIR_PASS(progress, nir, nir_opt_if, false);
-      NIR_PASS(progress, nir, nir_opt_dead_cf);
-      NIR_PASS(progress, nir, nir_opt_cse);
-      NIR_PASS(progress, nir, nir_opt_peephole_select, 8, true, true);
-
-      NIR_PASS(progress, nir, nir_opt_algebraic);
-      NIR_PASS(progress, nir, nir_opt_constant_folding);
-
-      NIR_PASS(progress, nir, nir_opt_undef);
-      NIR_PASS(progress, nir, nir_opt_conditional_discard);
-   } while (progress);
-}
-
 static void
 link_shaders(nir_shader *producer, nir_shader *consumer)
 {
@@ -1762,11 +1724,11 @@ link_shaders(nir_shader *producer, nir_shader *consumer)
 
    nir_lower_io_arrays_to_elements(producer, consumer);
 
-   st_nir_opts(producer);
-   st_nir_opts(consumer);
+   nir_optimize(producer, false);
+   nir_optimize(consumer, false);
 
    if (nir_link_opt_varyings(producer, consumer))
-      st_nir_opts(consumer);
+      nir_optimize(consumer, false);
 
    NIR_PASS_V(producer, nir_remove_dead_variables, nir_var_shader_out, NULL);
    NIR_PASS_V(consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
@@ -1775,8 +1737,8 @@ link_shaders(nir_shader *producer, nir_shader *consumer)
       NIR_PASS_V(producer, nir_lower_global_vars_to_local);
       NIR_PASS_V(consumer, nir_lower_global_vars_to_local);
 
-      st_nir_opts(producer);
-      st_nir_opts(consumer);
+      nir_optimize(producer, false);
+      nir_optimize(consumer, false);
 
       /* Optimizations can cause varyings to become unused.
        * nir_compact_varyings() depends on all dead varyings being removed so
@@ -1902,30 +1864,6 @@ pipeline_stage_get_nir(struct v3dv_pipeline_stage *p_stage,
 
    /* FIXME: this shouldn't happen, raise error? */
    return NULL;
-}
-
-static void
-pipeline_hash_shader(const struct vk_shader_module *module,
-                     const char *entrypoint,
-                     gl_shader_stage stage,
-                     const VkSpecializationInfo *spec_info,
-                     unsigned char *sha1_out)
-{
-   struct mesa_sha1 ctx;
-   _mesa_sha1_init(&ctx);
-
-   _mesa_sha1_update(&ctx, module->sha1, sizeof(module->sha1));
-   _mesa_sha1_update(&ctx, entrypoint, strlen(entrypoint));
-   _mesa_sha1_update(&ctx, &stage, sizeof(stage));
-   if (spec_info) {
-      _mesa_sha1_update(&ctx, spec_info->pMapEntries,
-                        spec_info->mapEntryCount *
-                        sizeof(*spec_info->pMapEntries));
-      _mesa_sha1_update(&ctx, spec_info->pData,
-                        spec_info->dataSize);
-   }
-
-   _mesa_sha1_final(&ctx, sha1_out);
 }
 
 static VkResult
@@ -2379,7 +2317,7 @@ pipeline_add_multiview_gs(struct v3dv_pipeline *pipeline,
    p_stage->entrypoint = "main";
    p_stage->module = 0;
    p_stage->nir = nir;
-   pipeline_compute_sha1_from_nir(p_stage->nir, p_stage->shader_sha1);
+   pipeline_compute_sha1_from_nir(p_stage);
    p_stage->program_id = p_atomic_inc_return(&physical_device->next_program_id);
 
    pipeline->has_gs = true;
@@ -2448,11 +2386,7 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
       p_stage->module = vk_shader_module_from_handle(sinfo->module);
       p_stage->spec_info = sinfo->pSpecializationInfo;
 
-      pipeline_hash_shader(p_stage->module,
-                           p_stage->entrypoint,
-                           stage,
-                           p_stage->spec_info,
-                           p_stage->shader_sha1);
+      vk_pipeline_hash_shader_stage(&pCreateInfo->pStages[i], p_stage->shader_sha1);
 
       pipeline->active_stages |= sinfo->stage;
 
@@ -2506,7 +2440,7 @@ pipeline_compile_graphics(struct v3dv_pipeline *pipeline,
       p_stage->entrypoint = "main";
       p_stage->module = 0;
       p_stage->nir = b.shader;
-      pipeline_compute_sha1_from_nir(p_stage->nir, p_stage->shader_sha1);
+      pipeline_compute_sha1_from_nir(p_stage);
       p_stage->program_id =
          p_atomic_inc_return(&physical_device->next_program_id);
 
@@ -2880,6 +2814,7 @@ pipeline_set_ez_state(struct v3dv_pipeline *pipeline,
       break;
    default:
       pipeline->ez_state = V3D_EZ_DISABLED;
+      pipeline->incompatible_ez_test = true;
       break;
    }
 
@@ -2888,6 +2823,14 @@ pipeline_set_ez_state(struct v3dv_pipeline *pipeline,
        (!stencil_op_is_no_op(&ds_info->front) ||
         !stencil_op_is_no_op(&ds_info->back))) {
          pipeline->ez_state = V3D_EZ_DISABLED;
+   }
+
+   /* If the FS writes Z, then it may update against the chosen EZ direction */
+   struct v3dv_shader_variant *fs_variant =
+      pipeline->shared_data->variants[BROADCOM_SHADER_FRAGMENT];
+   if (fs_variant && fs_variant->prog_data.fs->writes_z &&
+       !fs_variant->prog_data.fs->writes_z_from_fep) {
+      pipeline->ez_state = V3D_EZ_DISABLED;
    }
 }
 
@@ -3045,7 +2988,6 @@ pipeline_init(struct v3dv_pipeline *pipeline,
                                        rs_info, pv_info, ls_info,
                                        ms_info);
 
-   pipeline_set_ez_state(pipeline, ds_info);
    enable_depth_bias(pipeline, rs_info);
    pipeline_set_sample_mask(pipeline, ms_info);
    pipeline_set_sample_rate_shading(pipeline, ms_info);
@@ -3079,6 +3021,9 @@ pipeline_init(struct v3dv_pipeline *pipeline,
    } else {
       pipeline->default_attribute_values = NULL;
    }
+
+   /* This must be done after the pipeline has been compiled */
+   pipeline_set_ez_state(pipeline, ds_info);
 
    return result;
 }
@@ -3218,11 +3163,7 @@ pipeline_compile_compute(struct v3dv_pipeline *pipeline,
    p_stage->spec_info = sinfo->pSpecializationInfo;
    p_stage->feedback = (VkPipelineCreationFeedbackEXT) { 0 };
 
-   pipeline_hash_shader(p_stage->module,
-                        p_stage->entrypoint,
-                        stage,
-                        p_stage->spec_info,
-                        p_stage->shader_sha1);
+   vk_pipeline_hash_shader_stage(&info->stage, p_stage->shader_sha1);
 
    p_stage->nir = NULL;
 
@@ -3267,7 +3208,7 @@ pipeline_compile_compute(struct v3dv_pipeline *pipeline,
    p_stage->nir = pipeline_stage_get_nir(p_stage, pipeline, cache);
    assert(p_stage->nir);
 
-   st_nir_opts(p_stage->nir);
+   nir_optimize(p_stage->nir, false);
    pipeline_lower_nir(pipeline, p_stage, pipeline->layout);
    lower_cs_shared(p_stage->nir);
 

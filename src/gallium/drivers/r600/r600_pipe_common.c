@@ -632,7 +632,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	if (!rctx->b.const_uploader)
 		return false;
 
-	rctx->ctx = rctx->ws->ctx_create(rctx->ws);
+	rctx->ctx = rctx->ws->ctx_create(rctx->ws, RADEON_CTX_PRIORITY_MEDIUM);
 	if (!rctx->ctx)
 		return false;
 
@@ -991,8 +991,7 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 			 * 4 * MAX_MEM_ALLOC_SIZE.
 			 */
 			*max_global_size = MIN2(4 * max_mem_alloc_size,
-						MAX2(rscreen->info.gart_size,
-						     rscreen->info.vram_size));
+						rscreen->info.max_heap_size_kb * 1024ull);
 		}
 		return sizeof(uint64_t);
 
@@ -1016,7 +1015,7 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 		if (ret) {
 			uint64_t *max_mem_alloc_size = ret;
 
-			*max_mem_alloc_size = rscreen->info.max_alloc_size;
+			*max_mem_alloc_size = (rscreen->info.max_heap_size_kb / 4) * 1024ull;
 		}
 		return sizeof(uint64_t);
 
@@ -1187,7 +1186,10 @@ r600_get_compiler_options(struct pipe_screen *screen,
 
        struct r600_common_screen *rscreen = (struct r600_common_screen *)screen;
 
-       return &rscreen->nir_options;
+       if (shader != PIPE_SHADER_FRAGMENT)
+          return &rscreen->nir_options;
+       else
+          return &rscreen->nir_options_fs;
 }
 
 extern bool r600_lower_to_scalar_instr_filter(const nir_instr *instr, const void *);
@@ -1287,8 +1289,8 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("gart_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.gart_size, 1024*1024));
 		printf("vram_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_size, 1024*1024));
 		printf("vram_vis_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_vis_size, 1024*1024));
-		printf("max_alloc_size = %i MB\n",
-		       (int)DIV_ROUND_UP(rscreen->info.max_alloc_size, 1024*1024));
+		printf("max_heap_size = %i MB\n",
+		       (int)DIV_ROUND_UP(rscreen->info.max_heap_size_kb, 1024));
 		printf("min_alloc_size = %u\n", rscreen->info.min_alloc_size);
 		printf("has_dedicated_vram = %u\n", rscreen->info.has_dedicated_vram);
 		printf("r600_has_virtual_memory = %i\n", rscreen->info.r600_has_virtual_memory);
@@ -1356,20 +1358,17 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.lower_bitfield_insert_to_bitfield_select = true,
 		.has_fused_comp_and_csel = true,
 		.lower_find_msb_to_reverse = true,
-                .lower_to_scalar = true,
-                .lower_to_scalar_filter = r600_lower_to_scalar_instr_filter,
-                .linker_ignore_precision = true,
+		.lower_to_scalar = true,
+		.lower_to_scalar_filter = r600_lower_to_scalar_instr_filter,
+		.linker_ignore_precision = true,
+		.lower_fpow = true,
+		.lower_int64_options = ~0
 	};
 
 	rscreen->nir_options = nir_options;
 
-        /* The TGSI code path handles OPCODE_POW, but has problems with the
-         * lowered version, the NIT code path does the rightthing with the
-         * lowered code */
-        rscreen->nir_options.lower_fpow = rscreen->debug_flags & DBG_NIR_PREFERRED;
-
-        if (rscreen->info.family < CHIP_CEDAR)
-           rscreen->nir_options.force_indirect_unrolling_sampler = true;
+	if (rscreen->info.family < CHIP_CEDAR)
+		rscreen->nir_options.force_indirect_unrolling_sampler = true;
 
 	if (rscreen->info.gfx_level < EVERGREEN) {
 		/* Pre-EG doesn't have these ALU ops */
@@ -1377,21 +1376,21 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		rscreen->nir_options.lower_bitfield_reverse = true;
 	}
 
-        if (rscreen->info.gfx_level < CAYMAN) {
-           rscreen->nir_options.lower_doubles_options = nir_lower_fp64_full_software;
-           rscreen->nir_options.lower_int64_options = ~0;
-        } else {
-           rscreen->nir_options.lower_doubles_options =
-                 nir_lower_ddiv |
-                 nir_lower_dfloor |
-                 nir_lower_dceil |
-                 nir_lower_dmod |
-                 nir_lower_dsub |
-                 nir_lower_dtrunc;
-           rscreen->nir_options.lower_int64_options = ~0;
-        }
+	if (rscreen->info.gfx_level < CAYMAN) {
+		rscreen->nir_options.lower_doubles_options = nir_lower_fp64_full_software;
+	} else {
+		rscreen->nir_options.lower_doubles_options =
+			nir_lower_ddiv |
+			nir_lower_dfloor |
+			nir_lower_dceil |
+			nir_lower_dmod |
+			nir_lower_dsub |
+			nir_lower_dtrunc;
+	}
 
 	if (!(rscreen->debug_flags & DBG_NIR_PREFERRED)) {
+
+		rscreen->nir_options.lower_fpow = false;
 		/* TGSI is vector, and NIR-to-TGSI doesn't like it when the
 		 * input vars have been scalarized.
 		 */
@@ -1411,7 +1410,12 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 
 		/* TGSI's ifind is reversed from ours, keep it the TGSI way. */
 		rscreen->nir_options.lower_find_msb_to_reverse = false;
-	}
+	} else {
+      rscreen->nir_options.has_fmulz = true;
+   }
+
+	rscreen->nir_options_fs = rscreen->nir_options;
+	rscreen->nir_options_fs.lower_all_io_to_temps = true;
 
 	return true;
 }

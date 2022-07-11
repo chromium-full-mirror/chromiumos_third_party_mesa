@@ -28,7 +28,6 @@
  * SOFTWARE.
  */
 
-/* clang-format off */
 #ifndef VK_FORMAT_H
 #define VK_FORMAT_H
 
@@ -40,29 +39,22 @@
 
 #include "util/u_endian.h"
 
-static inline bool
-vk_format_is_alpha_on_msb(VkFormat vk_format)
+static inline bool vk_format_is_alpha_on_msb(VkFormat vk_format)
 {
    const struct util_format_description *desc =
       vk_format_description(vk_format);
 
    return (desc->colorspace == UTIL_FORMAT_COLORSPACE_RGB ||
            desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB) &&
-#if defined(UTIL_ARCH_BIG_ENDIAN)
-           desc->swizzle[3] == PIPE_SWIZZLE_X;
+#if UTIL_ARCH_BIG_ENDIAN
+          desc->swizzle[3] == PIPE_SWIZZLE_X;
 #else
-           desc->swizzle[3] == PIPE_SWIZZLE_W;
+          desc->swizzle[3] == PIPE_SWIZZLE_W;
 #endif
 }
 
-static inline bool
-vk_format_is_pure_integer(VkFormat vk_format)
-{
-   return util_format_is_pure_integer(vk_format_to_pipe_format(vk_format));
-}
-
-static inline uint
-vk_format_get_channel_width(VkFormat vk_format, uint32_t channel)
+static inline uint vk_format_get_channel_width(VkFormat vk_format,
+                                               uint32_t channel)
 {
    const struct util_format_description *desc =
       vk_format_description(vk_format);
@@ -70,8 +62,7 @@ vk_format_get_channel_width(VkFormat vk_format, uint32_t channel)
    return desc->channel[channel].size;
 }
 
-static inline bool
-vk_format_has_32bit_component(VkFormat vk_format)
+static inline bool vk_format_has_32bit_component(VkFormat vk_format)
 {
    const struct util_format_description *desc =
       vk_format_description(vk_format);
@@ -94,8 +85,7 @@ vk_format_get_component_bits(VkFormat vk_format,
                                          component);
 }
 
-static inline bool
-vk_format_is_normalized(VkFormat vk_format)
+static inline bool vk_format_is_normalized(VkFormat vk_format)
 {
    const struct util_format_description *desc =
       vk_format_description(vk_format);

@@ -196,6 +196,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    xcb_query_extension_reply_t *dri3_reply, *pres_reply, *randr_reply,
                                *amd_reply, *nv_reply, *shm_reply = NULL,
                                *xfixes_reply;
+   bool wants_shm = wsi_dev->sw && wsi_dev->has_import_memory_host;
    bool has_dri3_v1_2 = false;
    bool has_present_v1_2 = false;
 
@@ -211,7 +212,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    randr_cookie = xcb_query_extension(conn, 5, "RANDR");
    xfixes_cookie = xcb_query_extension(conn, 6, "XFIXES");
 
-   if (wsi_dev->sw)
+   if (wants_shm)
       shm_cookie = xcb_query_extension(conn, 7, "MIT-SHM");
 
    /* We try to be nice to users and emit a warning if they try to use a
@@ -233,7 +234,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    amd_reply = xcb_query_extension_reply(conn, amd_cookie, NULL);
    nv_reply = xcb_query_extension_reply(conn, nv_cookie, NULL);
    xfixes_reply = xcb_query_extension_reply(conn, xfixes_cookie, NULL);
-   if (wsi_dev->sw)
+   if (wants_shm)
       shm_reply = xcb_query_extension_reply(conn, shm_cookie, NULL);
    if (!dri3_reply || !pres_reply || !xfixes_reply) {
       free(dri3_reply);
@@ -242,7 +243,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
       free(randr_reply);
       free(amd_reply);
       free(nv_reply);
-      if (wsi_dev->sw)
+      if (wants_shm)
          free(shm_reply);
       vk_free(&wsi_dev->instance_alloc, wsi_conn);
       return NULL;
@@ -300,7 +301,7 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
       wsi_conn->is_proprietary_x11 = true;
 
    wsi_conn->has_mit_shm = false;
-   if (wsi_conn->has_dri3 && wsi_conn->has_present && wsi_dev->sw) {
+   if (wsi_conn->has_dri3 && wsi_conn->has_present && wants_shm) {
       bool has_mit_shm = shm_reply->present != 0;
 
       xcb_shm_query_version_cookie_t ver_cookie;
@@ -322,7 +323,6 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
             free(error);
          }
       }
-      free(shm_reply);
    }
 
    free(dri3_reply);
@@ -330,6 +330,8 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    free(randr_reply);
    free(amd_reply);
    free(nv_reply);
+   if (wants_shm)
+      free(shm_reply);
 
    return wsi_conn;
 }
@@ -1290,22 +1292,42 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index,
    struct x11_image *image = &chain->images[image_index];
 
    xcb_void_cookie_t cookie;
-   void *myptr;
-   chain->base.wsi->MapMemory(chain->base.device,
-                              image->base.memory,
-                              0, 0, 0, &myptr);
+   void *myptr = image->base.cpu_map;
+   size_t hdr_len = sizeof(xcb_put_image_request_t);
+   int stride_b = image->base.row_pitches[0];
+   size_t size = (hdr_len + stride_b * chain->extent.height) >> 2;
+   uint64_t max_req_len = xcb_get_maximum_request_length(chain->conn);
 
-   cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
-                          chain->window,
-                          chain->gc,
-			  image->base.row_pitches[0] / 4,
-                          chain->extent.height,
-                          0,0,0,24,
-                          image->base.row_pitches[0] * chain->extent.height,
-                          myptr);
+   if (size < max_req_len) {
+      cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+                             chain->window,
+                             chain->gc,
+                             image->base.row_pitches[0] / 4,
+                             chain->extent.height,
+                             0,0,0,24,
+                             image->base.row_pitches[0] * chain->extent.height,
+                             image->base.cpu_map);
+      xcb_discard_reply(chain->conn, cookie.sequence);
+   } else {
+      int num_lines = ((max_req_len << 2) - hdr_len) / stride_b;
+      int y_start = 0;
+      int y_todo = chain->extent.height;
+      while (y_todo) {
+         int this_lines = MIN2(num_lines, y_todo);
+         cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
+                                chain->window,
+                                chain->gc,
+                                image->base.row_pitches[0] / 4,
+                                this_lines,
+                                0,y_start,0,24,
+                                this_lines * stride_b,
+                                (const uint8_t *)myptr + (y_start * stride_b));
+         xcb_discard_reply(chain->conn, cookie.sequence);
+         y_start += this_lines;
+         y_todo -= this_lines;
+      }
+   }
 
-   chain->base.wsi->UnmapMemory(chain->base.device, image->base.memory);
-   xcb_discard_reply(chain->conn, cookie.sequence);
    xcb_flush(chain->conn);
    return x11_swapchain_result(chain, VK_SUCCESS);
 }
@@ -1510,9 +1532,6 @@ x11_manage_fifo_queues(void *state)
          goto fail;
 
       if (chain->has_acquire_queue) {
-        xcb_generic_event_t *event = NULL;
-        xcb_connection_t *conn = chain->conn;
-
          /* Assume this isn't a swapchain where we force 5 images, because those
           * don't end up with an acquire queue at the moment.
           */
@@ -1544,35 +1563,19 @@ x11_manage_fifo_queues(void *state)
                  * VUID-vkAcquireNextImageKHR-swapchain-01802 */
                 x11_driver_owned_images(chain) < forward_progress_guaranteed_acquired_images) {
 
-            event = xcb_poll_for_special_event(conn, chain->special_event);
-            if (event) {
-               result = x11_handle_dri3_present_event(chain, (void *)event);
-               /* Ensure that VK_SUBOPTIMAL_KHR is reported to the application */
-               result = x11_swapchain_result(chain, result);
-               free(event);
-               if (result < 0)
-                  goto fail;
-
-               continue;
-            }
-
-            if (chain->status < 0 || xcb_connection_has_error(conn)) {
+            xcb_generic_event_t *event =
+               xcb_wait_for_special_event(chain->conn, chain->special_event);
+            if (!event) {
                result = VK_ERROR_SURFACE_LOST_KHR;
                goto fail;
             }
 
-            /* poke the window to see if it got destroyed from under us, and
-             * to flush any pending special events out of the server
-             */
-            xcb_get_geometry_reply_t *geometry =
-               xcb_get_geometry_reply(conn,
-                                      xcb_get_geometry(conn, chain->window),
-                                      NULL);
-            if (geometry == NULL) {
-               result = VK_ERROR_SURFACE_LOST_KHR;
+            result = x11_handle_dri3_present_event(chain, (void *)event);
+            /* Ensure that VK_SUBOPTIMAL_KHR is reported to the application */
+            result = x11_swapchain_result(chain, result);
+            free(event);
+            if (result < 0)
                goto fail;
-            }
-            free(geometry);
          }
       }
    }
@@ -2075,7 +2078,11 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
                                  modifiers, num_modifiers, &num_tranches,
                                  pAllocator);
 
-   if (chain->base.use_buffer_blit) {
+   if (wsi_device->sw) {
+      result = wsi_configure_cpu_image(&chain->base, pCreateInfo,
+                                       chain->has_mit_shm ? &alloc_shm : NULL,
+                                       &chain->base.image_info);
+   } else if (chain->base.use_buffer_blit) {
       bool use_modifier = num_tranches > 0;
       result = wsi_configure_prime_image(&chain->base, pCreateInfo,
                                          use_modifier,
@@ -2084,7 +2091,6 @@ x11_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
       result = wsi_configure_native_image(&chain->base, pCreateInfo,
                                           num_tranches, num_modifiers,
                                           (const uint64_t *const *)modifiers,
-                                          chain->has_mit_shm ? &alloc_shm : NULL,
                                           &chain->base.image_info);
    }
    if (result != VK_SUCCESS)

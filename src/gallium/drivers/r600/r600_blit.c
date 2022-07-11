@@ -77,6 +77,8 @@ static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op
 		util_blitter_save_depth_stencil_alpha(rctx->blitter, rctx->dsa_state.cso);
 		util_blitter_save_stencil_ref(rctx->blitter, &rctx->stencil_ref.pipe_state);
                 util_blitter_save_sample_mask(rctx->blitter, rctx->sample_mask.sample_mask, rctx->ps_iter_samples);
+		util_blitter_save_fragment_constant_buffer_slot(rctx->blitter,
+								&rctx->constbuf_state[PIPE_SHADER_FRAGMENT].cb[0]);
 	}
 
 	if (op & R600_SAVE_FRAMEBUFFER)
@@ -573,19 +575,10 @@ static void r600_copy_buffer(struct pipe_context *ctx, struct pipe_resource *dst
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
 
-	if (rctx->screen->b.has_cp_dma) {
+	if (rctx->screen->b.has_cp_dma)
 		r600_cp_dma_copy_buffer(rctx, dst, dstx, src, src_box->x, src_box->width);
-	}
-	else if (rctx->screen->b.has_streamout &&
-		 /* Require 4-byte alignment. */
-		 dstx % 4 == 0 && src_box->x % 4 == 0 && src_box->width % 4 == 0) {
-
-		r600_blitter_begin(ctx, R600_COPY_BUFFER);
-		util_blitter_copy_buffer(rctx->blitter, dst, dstx, src, src_box->x, src_box->width);
-		r600_blitter_end(ctx);
-	} else {
+	else
 		util_resource_copy_region(ctx, dst, 0, dstx, 0, 0, src, 0, src_box);
-	}
 }
 
 /**

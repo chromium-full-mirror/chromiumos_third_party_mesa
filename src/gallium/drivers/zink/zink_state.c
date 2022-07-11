@@ -421,7 +421,7 @@ zink_bind_blend_state(struct pipe_context *pctx, void *cso)
       state->blend_id = blend ? blend->hash : 0;
       state->dirty = true;
       bool force_dual_color_blend = zink_screen(pctx->screen)->driconf.dual_color_blend_by_location &&
-                                    blend && blend->dual_src_blend && state->blend_state->attachments[1].blendEnable;
+                                    blend && blend->dual_src_blend && state->blend_state->attachments[0].blendEnable;
       if (force_dual_color_blend != zink_get_fs_key(ctx)->force_dual_color_blend)
          zink_set_fs_key(ctx)->force_dual_color_blend = force_dual_color_blend;
       ctx->blend_state_changed = true;
@@ -578,7 +578,7 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    state->hw_state.line_stipple_enable = rs_state->line_stipple_enable;
 
    assert(rs_state->depth_clip_far == rs_state->depth_clip_near);
-   state->hw_state.depth_clamp = rs_state->depth_clip_near == 0;
+   state->hw_state.depth_clip = rs_state->depth_clip_near;
    state->hw_state.force_persample_interp = rs_state->force_persample_interp;
    state->hw_state.pv_last = !rs_state->flatshade_first;
    state->hw_state.clip_halfz = rs_state->clip_halfz;
@@ -587,7 +587,7 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    if (rs_state->fill_back != rs_state->fill_front)
       debug_printf("BUG: vulkan doesn't support different front and back fill modes\n");
    state->hw_state.polygon_mode = rs_state->fill_front; // same values
-   state->hw_state.cull_mode = rs_state->cull_face; // same bits
+   state->cull_mode = rs_state->cull_face; // same bits
 
    state->front_face = rs_state->front_ccw ?
                        VK_FRONT_FACE_COUNTER_CLOCKWISE :
@@ -658,6 +658,10 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 
       if (ctx->gfx_pipeline_state.dyn_state1.front_face != ctx->rast_state->front_face) {
          ctx->gfx_pipeline_state.dyn_state1.front_face = ctx->rast_state->front_face;
+         ctx->gfx_pipeline_state.dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
+      }
+      if (ctx->gfx_pipeline_state.dyn_state1.cull_mode != ctx->rast_state->cull_mode) {
+         ctx->gfx_pipeline_state.dyn_state1.cull_mode = ctx->rast_state->cull_mode;
          ctx->gfx_pipeline_state.dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
       }
       if (!ctx->primitives_generated_active)

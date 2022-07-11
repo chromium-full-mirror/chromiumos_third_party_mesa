@@ -1,3 +1,29 @@
+/* -*- mesa-c++  -*-
+ *
+ * Copyright (c) 2022 Collabora LTD
+ *
+ * Author: Gert Wollny <gert.wollny@collabora.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * on the rights to use, copy, modify, merge, publish, distribute, sub
+ * license, and/or sell copies of the Software, and to permit persons to whom
+ * the Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
+ * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
+ * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+ * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+ * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 #include "sfn_nir_lower_alu.h"
 #include "sfn_nir.h"
 
@@ -83,9 +109,9 @@ nir_ssa_def *LowerSinCos::lower(nir_instr *instr)
                               nir_imm_float(b, -0.5));
 
    if (alu->op == nir_op_fsin)
-      return nir_fsin_r600(b, normalized);
+      return nir_fsin_amd(b, normalized);
    else
-      return nir_fcos_r600(b, normalized);
+      return nir_fcos_amd(b, normalized);
 }
 
 

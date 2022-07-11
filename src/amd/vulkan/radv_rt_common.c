@@ -26,17 +26,21 @@
 #include "radv_acceleration_structure.h"
 
 bool
-radv_enable_rt(const struct radv_physical_device *pdevice)
+radv_enable_rt(const struct radv_physical_device *pdevice, bool rt_pipelines)
 {
-   return (pdevice->instance->perftest_flags & RADV_PERFTEST_RT) && !pdevice->use_llvm;
+   if ((pdevice->rad_info.gfx_level < GFX10_3 && !radv_emulate_rt(pdevice)) || pdevice->use_llvm)
+      return false;
+
+   if (rt_pipelines)
+      return pdevice->instance->perftest_flags & RADV_PERFTEST_RT;
+
+   return true;
 }
 
 bool
 radv_emulate_rt(const struct radv_physical_device *pdevice)
 {
-   assert(radv_enable_rt(pdevice));
-   return pdevice->rad_info.gfx_level < GFX10_3 ||
-          (pdevice->instance->perftest_flags & RADV_PERFTEST_FORCE_EMULATE_RT);
+   return pdevice->instance->perftest_flags & RADV_PERFTEST_EMULATE_RT;
 }
 
 void
@@ -400,21 +404,18 @@ hit_is_opaque(nir_builder *b, nir_ssa_def *sbt_offset_and_flags, nir_ssa_def *fl
               nir_ssa_def *geometry_id_and_flags)
 {
    nir_ssa_def *geom_force_opaque =
-      nir_ine_imm(b, nir_iand_imm(b, geometry_id_and_flags, VK_GEOMETRY_OPAQUE_BIT_KHR << 28), 0);
-   nir_ssa_def *instance_force_opaque = nir_ine_imm(
-      b, nir_iand_imm(b, sbt_offset_and_flags, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR << 24), 0);
-   nir_ssa_def *instance_force_non_opaque = nir_ine_imm(
-      b, nir_iand_imm(b, sbt_offset_and_flags, VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR << 24),
-      0);
+      nir_test_mask(b, geometry_id_and_flags, VK_GEOMETRY_OPAQUE_BIT_KHR << 28);
+   nir_ssa_def *instance_force_opaque =
+      nir_test_mask(b, sbt_offset_and_flags, VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR << 24);
+   nir_ssa_def *instance_force_non_opaque =
+      nir_test_mask(b, sbt_offset_and_flags, VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR << 24);
 
    nir_ssa_def *opaque = geom_force_opaque;
    opaque = nir_bcsel(b, instance_force_opaque, nir_imm_bool(b, true), opaque);
    opaque = nir_bcsel(b, instance_force_non_opaque, nir_imm_bool(b, false), opaque);
 
-   nir_ssa_def *ray_force_opaque =
-      nir_ine_imm(b, nir_iand_imm(b, flags, SpvRayFlagsOpaqueKHRMask), 0);
-   nir_ssa_def *ray_force_non_opaque =
-      nir_ine_imm(b, nir_iand_imm(b, flags, SpvRayFlagsNoOpaqueKHRMask), 0);
+   nir_ssa_def *ray_force_opaque = nir_test_mask(b, flags, SpvRayFlagsOpaqueKHRMask);
+   nir_ssa_def *ray_force_non_opaque = nir_test_mask(b, flags, SpvRayFlagsNoOpaqueKHRMask);
 
    opaque = nir_bcsel(b, ray_force_opaque, nir_imm_bool(b, true), opaque);
    opaque = nir_bcsel(b, ray_force_non_opaque, nir_imm_bool(b, false), opaque);

@@ -68,6 +68,7 @@
 #include "util/vma.h"
 #include "util/xmlconfig.h"
 #include "vk_alloc.h"
+#include "vk_buffer.h"
 #include "vk_command_buffer.h"
 #include "vk_command_pool.h"
 #include "vk_debug_report.h"
@@ -475,7 +476,7 @@ struct anv_bo {
    uint32_t refcount;
 
    /* Index into the current validation list.  This is used by the
-    * validation list building alrogithm to track which buffers are already
+    * validation list building algorithm to track which buffers are already
     * in the validation list so that we can ensure uniqueness.
     */
    uint32_t exec_obj_index;
@@ -1086,6 +1087,7 @@ struct anv_instance {
      */
     bool                                        assume_full_subgroups;
     bool                                        limit_trig_input_range;
+    bool                                        sample_mask_out_opengl_behaviour;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
@@ -1168,6 +1170,7 @@ struct anv_device {
     struct list_head                            memory_objects;
 
     struct anv_bo_pool                          batch_bo_pool;
+    struct anv_bo_pool                          utrace_bo_pool;
 
     struct anv_bo_cache                         bo_cache;
 
@@ -1195,7 +1198,7 @@ struct anv_device {
     struct anv_state                            null_surface_state;
 
     struct vk_pipeline_cache *                  default_pipeline_cache;
-    struct vk_pipeline_cache *                  blorp_cache;
+    struct vk_pipeline_cache *                  internal_cache;
     struct blorp_context                        blorp;
 
     struct anv_state                            border_colors;
@@ -1316,7 +1319,7 @@ anv_mocs(const struct anv_device *device,
    return isl_mocs(&device->isl_dev, usage, bo && bo->is_external);
 }
 
-bool anv_device_init_blorp(struct anv_device *device);
+void anv_device_init_blorp(struct anv_device *device);
 void anv_device_finish_blorp(struct anv_device *device);
 
 enum anv_bo_alloc_flags {
@@ -1822,7 +1825,7 @@ struct anv_descriptor_set_binding_layout {
     */
    uint32_t array_size;
 
-   /* Index into the flattend descriptor set */
+   /* Index into the flattened descriptor set */
    uint32_t descriptor_index;
 
    /* Index into the dynamic state array for a dynamic buffer */
@@ -2189,30 +2192,11 @@ struct anv_pipeline_layout {
 };
 
 struct anv_buffer {
-   struct vk_object_base                        base;
-
-   struct anv_device *                          device;
-   VkDeviceSize                                 size;
-
-   VkBufferCreateFlags                          create_flags;
-   VkBufferUsageFlags                           usage;
+   struct vk_buffer vk;
 
    /* Set when bound */
-   struct anv_address                           address;
+   struct anv_address address;
 };
-
-static inline uint64_t
-anv_buffer_get_range(struct anv_buffer *buffer, uint64_t offset, uint64_t range)
-{
-   assert(offset <= buffer->size);
-   if (range == VK_WHOLE_SIZE) {
-      return buffer->size - offset;
-   } else {
-      assert(range + offset >= range);
-      assert(range + offset <= buffer->size);
-      return range;
-   }
-}
 
 enum anv_cmd_dirty_bits {
    ANV_CMD_DIRTY_DYNAMIC_VIEWPORT                    = 1 << 0, /* VK_DYNAMIC_STATE_VIEWPORT */
@@ -2247,7 +2231,7 @@ enum anv_cmd_dirty_bits {
    ANV_CMD_DIRTY_DYNAMIC_LOGIC_OP                    = 1 << 29, /* VK_DYNAMIC_STATE_LOGIC_OP_EXT */
    ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE    = 1 << 30, /* VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE */
 };
-typedef uint32_t anv_cmd_dirty_mask_t;
+typedef enum anv_cmd_dirty_bits anv_cmd_dirty_mask_t;
 
 #define ANV_CMD_DIRTY_DYNAMIC_ALL                       \
    (ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |                    \
@@ -2745,9 +2729,9 @@ struct anv_dynamic_state {
 extern const struct anv_dynamic_state default_dynamic_state;
 
 void anv_dynamic_state_init(struct anv_dynamic_state *state);
-uint32_t anv_dynamic_state_copy(struct anv_dynamic_state *dest,
-                                const struct anv_dynamic_state *src,
-                                uint32_t copy_mask);
+anv_cmd_dirty_mask_t anv_dynamic_state_copy(struct anv_dynamic_state *dest,
+                                            const struct anv_dynamic_state *src,
+                                            anv_cmd_dirty_mask_t copy_mask);
 
 static inline struct intel_sample_position *
 anv_dynamic_state_get_sample_locations(struct anv_dynamic_state *state,
@@ -2905,11 +2889,9 @@ struct anv_cmd_graphics_state {
 
    uint32_t primitive_topology;
 
-   struct {
-      struct anv_buffer *index_buffer;
-      uint32_t index_type; /**< 3DSTATE_INDEX_BUFFER.IndexFormat */
-      uint32_t index_offset;
-   } gfx7;
+   struct anv_buffer *index_buffer;
+   uint32_t index_type; /**< 3DSTATE_INDEX_BUFFER.IndexFormat */
+   uint32_t index_offset;
 };
 
 enum anv_depth_reg_mode {
@@ -2990,7 +2972,7 @@ struct anv_cmd_state {
     */
    bool                                         hiz_enabled;
 
-   /* We ensure the registers for the gfx12 D16 fix are initalized at the
+   /* We ensure the registers for the gfx12 D16 fix are initialized at the
     * first non-NULL depth stencil packet emission of every command buffer.
     * For secondary command buffer execution, we transfer the state from the
     * last command buffer to the primary (if known).
@@ -3563,10 +3545,7 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline, struct anv_de
 VkResult
 anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
                         struct vk_pipeline_cache *cache,
-                        const VkComputePipelineCreateInfo *info,
-                        const struct vk_shader_module *module,
-                        const char *entrypoint,
-                        const VkSpecializationInfo *spec_info);
+                        const VkComputePipelineCreateInfo *info);
 
 VkResult
 anv_ray_tracing_pipeline_init(struct anv_ray_tracing_pipeline *pipeline,
@@ -3841,6 +3820,22 @@ struct anv_image {
 
       /** Location of the fast clear state.  */
       struct anv_image_memory_range fast_clear_memory_range;
+
+      /**
+       * Whether this image can be fast cleared with non-zero clear colors.
+       * This can happen with mutable images when formats of different bit
+       * sizes per components are used.
+       *
+       * On Gfx9+, because the clear colors are stored as a 4 components 32bit
+       * values, we can clear in R16G16_UNORM (store 2 16bit values in the
+       * components 0 & 1 of the clear color) and then draw in R32_UINT which
+       * would interpret the clear color as a single component value, using
+       * only the first 16bit component of the previous written clear color.
+       *
+       * On Gfx7/7.5/8, only CC_ZERO/CC_ONE clear colors are supported, this
+       * boolean will prevent the usage of CC_ONE.
+       */
+      bool can_non_zero_fast_clear;
    } planes[3];
 };
 
@@ -4243,38 +4238,6 @@ enum isl_format
 anv_isl_format_for_descriptor_type(const struct anv_device *device,
                                    VkDescriptorType type);
 
-static inline VkExtent3D
-anv_sanitize_image_extent(const VkImageType imageType,
-                          const VkExtent3D imageExtent)
-{
-   switch (imageType) {
-   case VK_IMAGE_TYPE_1D:
-      return (VkExtent3D) { imageExtent.width, 1, 1 };
-   case VK_IMAGE_TYPE_2D:
-      return (VkExtent3D) { imageExtent.width, imageExtent.height, 1 };
-   case VK_IMAGE_TYPE_3D:
-      return imageExtent;
-   default:
-      unreachable("invalid image type");
-   }
-}
-
-static inline VkOffset3D
-anv_sanitize_image_offset(const VkImageType imageType,
-                          const VkOffset3D imageOffset)
-{
-   switch (imageType) {
-   case VK_IMAGE_TYPE_1D:
-      return (VkOffset3D) { imageOffset.x, 0, 0 };
-   case VK_IMAGE_TYPE_2D:
-      return (VkOffset3D) { imageOffset.x, imageOffset.y, 0 };
-   case VK_IMAGE_TYPE_3D:
-      return imageOffset;
-   default:
-      unreachable("invalid image type");
-   }
-}
-
 static inline uint32_t
 anv_rasterization_aa_mode(VkPolygonMode raster_mode,
                           VkLineRasterizationModeEXT line_mode)
@@ -4519,7 +4482,7 @@ VK_DEFINE_HANDLE_CASTS(anv_queue, vk.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_acceleration_structure, base,
                                VkAccelerationStructureKHR,
                                VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR)
-VK_DEFINE_NONDISP_HANDLE_CASTS(anv_buffer, base, VkBuffer,
+VK_DEFINE_NONDISP_HANDLE_CASTS(anv_buffer, vk.base, VkBuffer,
                                VK_OBJECT_TYPE_BUFFER)
 VK_DEFINE_NONDISP_HANDLE_CASTS(anv_buffer_view, base, VkBufferView,
                                VK_OBJECT_TYPE_BUFFER_VIEW)

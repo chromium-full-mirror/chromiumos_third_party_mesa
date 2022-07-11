@@ -130,12 +130,12 @@ typedef struct {
          * write mask. Identity for the full 32-bit, H00 for only caring about
          * the lower half, other values unused. */
         enum bi_swizzle swizzle : 4;
-        uint32_t offset : 2;
+        uint32_t offset : 3;
         bool reg : 1;
         enum bi_index_type type : 3;
 
         /* Must be zeroed so we can hash the whole 64-bits at a time */
-        unsigned padding : (32 - 13);
+        unsigned padding : (32 - 14);
 } bi_index;
 
 static inline bi_index
@@ -200,14 +200,6 @@ bi_passthrough(enum bifrost_packed_src value)
         };
 }
 
-/* Extracts a word from a vectored index */
-static inline bi_index
-bi_word(bi_index idx, unsigned component)
-{
-        idx.offset += component;
-        return idx;
-}
-
 /* Helps construct swizzles */
 static inline bi_index
 bi_swz_16(bi_index idx, bool x, bool y)
@@ -268,6 +260,7 @@ bi_replace_index(bi_index old, bi_index replacement)
         replacement.abs = old.abs;
         replacement.neg = old.neg;
         replacement.swizzle = old.swizzle;
+        replacement.discard = false; /* needs liveness analysis to set */
         return replacement;
 }
 
@@ -371,14 +364,17 @@ bi_is_value_equiv(bi_index left, bi_index right)
         }
 }
 
-#define BI_MAX_DESTS 2
-#define BI_MAX_SRCS 5
+#define BI_MAX_VEC 8
+#define BI_MAX_DESTS 4
+#define BI_MAX_SRCS 6
 
 typedef struct {
         /* Must be first */
         struct list_head link;
 
         enum bi_opcode op;
+        uint8_t nr_srcs;
+        uint8_t nr_dests;
 
         /* Data flow */
         bi_index dest[BI_MAX_DESTS];
@@ -393,6 +389,9 @@ typedef struct {
 
         /* Flow control associated with a Valhall instruction */
         uint8_t flow;
+
+        /* Slot associated with a message-passing instruction */
+        uint8_t slot;
 
         /* Can we spill the value written here? Used to prevent
          * useless double fills */
@@ -491,6 +490,7 @@ typedef struct {
                         enum bi_varying_name varying_name; /* LD_VAR_SPECIAL */
                         bool skip; /* VAR_TEX, TEXS, TEXC */
                         bool lod_mode; /* VAR_TEX, TEXS, implicitly for TEXC */
+                        enum bi_source_format source_format; /* LD_VAR_BUF */
 
                         /* Used for valhall texturing */
                         bool shadow;
@@ -504,7 +504,7 @@ typedef struct {
                 };
 
                 /* Maximum size, for hashing */
-                unsigned flags[11];
+                unsigned flags[14];
 
                 struct {
                         enum bi_subgroup subgroup; /* WMASK, CLPER */
@@ -542,7 +542,7 @@ typedef struct {
 } bi_instr;
 
 static inline bool
-bi_is_staging_src(bi_instr *I, unsigned s)
+bi_is_staging_src(const bi_instr *I, unsigned s)
 {
         return (s == 0 || s == 4) && bi_opcode_props[I->op].sr_read;
 }
@@ -649,6 +649,10 @@ struct bi_scoreboard_state {
         /** Bitmap of registers read/written by a slot */
         uint64_t read[BI_NUM_SLOTS];
         uint64_t write[BI_NUM_SLOTS];
+
+        /* Nonregister dependencies present by a slot */
+        uint8_t varying : BI_NUM_SLOTS;
+        uint8_t memory : BI_NUM_SLOTS;
 };
 
 typedef struct bi_block {
@@ -680,6 +684,11 @@ typedef struct bi_block {
         /* Scoreboard state at the start/end of block */
         struct bi_scoreboard_state scoreboard_in, scoreboard_out;
 
+        /* On Valhall, indicates we need a terminal NOP to implement jumps to
+         * the end of the shader.
+         */
+        bool needs_nop;
+
         /* Flags available for pass-internal use */
         uint8_t pass_flags;
 } bi_block;
@@ -704,6 +713,31 @@ bi_exit_block(struct list_head *blocks)
         bi_block *last = list_last_entry(blocks, bi_block, link);
         assert(!last->successors[0] && !last->successors[1]);
         return last;
+}
+
+static inline void
+bi_block_add_successor(bi_block *block, bi_block *successor)
+{
+        assert(block != NULL && successor != NULL);
+
+        /* Cull impossible edges */
+        if (block->unconditional_jumps)
+                return;
+
+        for (unsigned i = 0; i < ARRAY_SIZE(block->successors); ++i) {
+                if (block->successors[i]) {
+                       if (block->successors[i] == successor)
+                               return;
+                       else
+                               continue;
+                }
+
+                block->successors[i] = successor;
+                util_dynarray_append(&successor->predecessors, bi_block *, block);
+                return;
+        }
+
+        unreachable("Too many successors");
 }
 
 /* Subset of pan_shader_info needed per-variant, in order to support IDVS */
@@ -753,15 +787,28 @@ typedef struct {
        bi_block *continue_block;
        bool emitted_atest;
 
+       /* During NIR->BIR, the coverage bitmap. If this is NULL, the default
+        * coverage bitmap should be source from preloaded register r60. This is
+        * written by ATEST and ZS_EMIT
+        */
+       bi_index coverage;
+
+       /* During NIR->BIR, table of preloaded registers, or NULL if never
+        * preloaded.
+        */
+       bi_index preloaded[64];
+
        /* For creating temporaries */
        unsigned ssa_alloc;
        unsigned reg_alloc;
 
-       /* Analysis results */
-       bool has_liveness;
-
        /* Mask of UBOs that need to be uploaded */
        uint32_t ubo_mask;
+
+       /* During instruction selection, map from vector bi_index to its scalar
+        * components, populated by a split.
+        */
+       struct hash_table_u64 *allocated_vec;
 
        /* Stats for shader-db */
        unsigned instruction_count;
@@ -1023,6 +1070,9 @@ bi_clause * bi_next_clause(bi_context *ctx, bi_block *block, bi_clause *clause);
 bool bi_side_effects(const bi_instr *I);
 bool bi_reconverge_branches(bi_block *block);
 
+bool bi_can_replace_with_csel(bi_instr *I);
+void bi_replace_mux_with_csel(bi_instr *I, bool must_sign);
+
 void bi_print_instr(const bi_instr *I, FILE *fp);
 void bi_print_slots(bi_registers *regs, FILE *fp);
 void bi_print_tuple(bi_tuple *tuple, FILE *fp);
@@ -1032,7 +1082,11 @@ void bi_print_shader(bi_context *ctx, FILE *fp);
 
 /* BIR passes */
 
+bool bi_instr_uses_helpers(bi_instr *I);
+bool bi_block_terminates_helpers(bi_block *block);
 void bi_analyze_helper_terminate(bi_context *ctx);
+void bi_mark_clauses_td(bi_context *ctx);
+
 void bi_analyze_helper_requirements(bi_context *ctx);
 void bi_opt_copy_prop(bi_context *ctx);
 void bi_opt_cse(bi_context *ctx);
@@ -1049,9 +1103,11 @@ void bi_lower_fau(bi_context *ctx);
 void bi_assign_scoreboard(bi_context *ctx);
 void bi_register_allocate(bi_context *ctx);
 void va_optimize(bi_context *ctx);
+void va_lower_split_64bit(bi_context *ctx);
 
 void bi_lower_opt_instruction(bi_instr *I);
 
+void bi_pressure_schedule(bi_context *ctx);
 void bi_schedule(bi_context *ctx);
 bool bi_can_fma(bi_instr *ins);
 bool bi_can_add(bi_instr *ins);
@@ -1075,10 +1131,9 @@ bool bi_opt_constant_fold(bi_context *ctx);
 
 void bi_compute_liveness(bi_context *ctx);
 void bi_liveness_ins_update(uint8_t *live, bi_instr *ins, unsigned max);
-void bi_invalidate_liveness(bi_context *ctx);
 
 void bi_postra_liveness(bi_context *ctx);
-uint64_t bi_postra_liveness_ins(uint64_t live, bi_instr *ins);
+uint64_t MUST_CHECK bi_postra_liveness_ins(uint64_t live, bi_instr *ins);
 
 /* Layout */
 
@@ -1200,6 +1255,15 @@ bi_before_nonempty_block(bi_block *block)
         return bi_before_instr(I);
 }
 
+static inline bi_cursor
+bi_before_block(bi_block *block)
+{
+        if (list_is_empty(&block->instructions))
+                return bi_after_block(block);
+        else
+                return bi_before_nonempty_block(block);
+}
+
 /* Invariant: a tuple must be nonempty UNLESS it is the last tuple of a clause,
  * in which case there must exist a nonempty penultimate tuple */
 
@@ -1317,30 +1381,6 @@ bi_dontcare(bi_builder *b)
                return bi_zero();
         else
                return bi_passthrough(BIFROST_SRC_FAU_HI);
-}
-
-static inline unsigned
-bi_word_node(bi_index idx)
-{
-        assert(idx.type == BI_INDEX_NORMAL && !idx.reg);
-        return (idx.value << 2) | idx.offset;
-}
-
-/*
- * Vertex ID and Instance ID are preloaded registers. Where they are preloaded
- * changed from Bifrost to Valhall. Provide helpers that smooth over the
- * architectural difference.
- */
-static inline bi_index
-bi_vertex_id(bi_builder *b)
-{
-        return bi_register((b->shader->arch >= 9) ? 60 : 61);
-}
-
-static inline bi_index
-bi_instance_id(bi_builder *b)
-{
-        return bi_register((b->shader->arch >= 9) ? 61 : 62);
 }
 
 #define bi_worklist_init(ctx, w) u_worklist_init(w, ctx->num_blocks, ctx)

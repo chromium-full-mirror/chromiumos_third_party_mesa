@@ -35,14 +35,9 @@ struct gl_shader_program;
 
 /* Operations for lower_instructions() */
 #define SUB_TO_ADD_NEG     0x01
-#define FDIV_TO_MUL_RCP    0x02
-#define EXP_TO_EXP2        0x04
-#define LOG_TO_LOG2        0x10
-#define INT_DIV_TO_MUL_RCP 0x40
 #define LDEXP_TO_ARITH     0x80
 #define CARRY_TO_ARITH     0x100
 #define BORROW_TO_ARITH    0x200
-#define SAT_TO_CLAMP       0x400
 #define DOPS_TO_DFRAC      0x800
 #define DFREXP_DLDEXP_TO_ARITH    0x1000
 #define BIT_COUNT_TO_MATH         0x02000
@@ -52,10 +47,7 @@ struct gl_shader_program;
 #define FIND_LSB_TO_FLOAT_CAST    0x20000
 #define FIND_MSB_TO_FLOAT_CAST    0x40000
 #define IMUL_HIGH_TO_MUL          0x80000
-#define DDIV_TO_MUL_RCP           0x100000
-#define DIV_TO_MUL_RCP            (FDIV_TO_MUL_RCP | DDIV_TO_MUL_RCP)
 #define SQRT_TO_ABS_SQRT          0x200000
-#define MUL64_TO_MUL_AND_MUL_HIGH 0x400000
 
 /* Operations for lower_64bit_integer_instructions() */
 #define DIV64                     (1U << 0)
@@ -87,7 +79,6 @@ enum lower_packing_builtins_op {
 };
 
 bool do_common_optimization(exec_list *ir, bool linked,
-			    bool uniform_locations_assigned,
                             const struct gl_shader_compiler_options *options,
                             bool native_integers);
 
@@ -102,7 +93,7 @@ bool do_constant_variable(exec_list *instructions);
 bool do_constant_variable_unlinked(exec_list *instructions);
 bool do_copy_propagation_elements(exec_list *instructions);
 bool do_constant_propagation(exec_list *instructions);
-bool do_dead_code(exec_list *instructions, bool uniform_locations_assigned);
+bool do_dead_code(exec_list *instructions);
 bool do_dead_code_local(exec_list *instructions);
 bool do_dead_code_unlinked(exec_list *instructions);
 bool do_dead_functions(exec_list *instructions);
@@ -121,7 +112,6 @@ bool do_vec_index_to_swizzle(exec_list *instructions);
 bool lower_discard(exec_list *instructions);
 void lower_discard_flow(exec_list *instructions);
 bool lower_instructions(exec_list *instructions, unsigned what_to_lower);
-bool lower_const_arrays_to_uniforms(exec_list *instructions, unsigned stage, unsigned max_uniform_components);
 bool lower_clip_cull_distance(struct gl_shader_program *prog,
                               gl_linked_shader *shader);
 void lower_output_reads(unsigned stage, exec_list *instructions);

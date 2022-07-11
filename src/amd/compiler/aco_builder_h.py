@@ -110,6 +110,15 @@ sendmsg_gs_done(bool cut, bool emit, unsigned stream)
     return (sendmsg)((unsigned)_sendmsg_gs_done | (cut << 4) | (emit << 5) | (stream << 8));
 }
 
+enum bperm_swiz {
+   bperm_b1_sign = 8,
+   bperm_b3_sign = 9,
+   bperm_b5_sign = 10,
+   bperm_b7_sign = 11,
+   bperm_0 = 12,
+   bperm_255 = 13,
+};
+
 class Builder {
 public:
    struct Result {
@@ -532,7 +541,8 @@ formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.prod
            ("vop2_e64", [Format.VOP2, Format.VOP3], 'VOP3_instruction', itertools.product([1, 2], [2, 3])),
            ("vopc_e64", [Format.VOPC, Format.VOP3], 'VOP3_instruction', itertools.product([1, 2], [2])),
            ("flat", [Format.FLAT], 'FLAT_instruction', [(0, 3), (1, 2)]),
-           ("global", [Format.GLOBAL], 'FLAT_instruction', [(0, 3), (1, 2)])]
+           ("global", [Format.GLOBAL], 'FLAT_instruction', [(0, 3), (1, 2)]),
+           ("scratch", [Format.SCRATCH], 'FLAT_instruction', [(0, 3), (1, 2)])]
 formats = [(f if len(f) == 5 else f + ('',)) for f in formats]
 %>\\
 % for name, formats, struct, shapes, extra_field_setup in formats:

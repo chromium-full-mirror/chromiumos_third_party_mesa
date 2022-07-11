@@ -184,7 +184,15 @@ struct panfrost_device {
         unsigned arch;
         unsigned gpu_id;
         unsigned revision;
+
+        /* Number of shader cores */
         unsigned core_count;
+
+        /* Range of core IDs, equal to the maximum core ID + 1. Satisfies
+         * core_id_range >= core_count.
+         */
+        unsigned core_id_range;
+
         unsigned thread_tls_alloc;
         struct panfrost_tiler_features tiler_features;
         const struct panfrost_model *model;
@@ -271,6 +279,9 @@ panfrost_query_sample_position(
                 enum mali_sample_pattern pattern,
                 unsigned sample_idx,
                 float *out);
+
+unsigned
+panfrost_query_l2_slices(const struct panfrost_device *dev);
 
 static inline struct panfrost_bo *
 pan_lookup_bo(struct panfrost_device *dev, uint32_t gem_handle)

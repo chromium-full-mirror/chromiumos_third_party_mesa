@@ -122,7 +122,7 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 
       max_layer_index = psurf->u.tex.last_layer - psurf->u.tex.first_layer;
 
-      debug_assert((offset + slice->size0) <= fd_bo_size(rsc->bo));
+      assert((offset + slice->size0) <= fd_bo_size(rsc->bo));
 
       OUT_REG(
          ring,
@@ -200,7 +200,7 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
        * plus this CP_EVENT_WRITE at the end in it's own IB..
        */
       OUT_PKT7(ring, CP_EVENT_WRITE, 1);
-      OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(UNK_25));
+      OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(LRZ_CLEAR));
 
       if (rsc->stencil) {
          stride = fd_resource_pitch(rsc->stencil, zsbuf->u.tex.level);
@@ -270,7 +270,7 @@ patch_fb_read_gmem(struct fd_batch *batch)
    enum pipe_format format = psurf->format;
 
    uint8_t swiz[4];
-   fd6_tex_swiz(psurf->format, swiz, PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W);
+   fdl6_format_swiz(psurf->format, false, swiz);
 
    /* always TILE6_2 mode in GMEM, which also means no swap: */
    uint32_t texconst0 = A6XX_TEX_CONST_0_FMT(fd6_texture_format(format, rsc->layout.tile_mode)) |
@@ -482,8 +482,8 @@ emit_vsc_overflow_test(struct fd_batch *batch)
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
-   debug_assert((fd6_ctx->vsc_draw_strm_pitch & 0x3) == 0);
-   debug_assert((fd6_ctx->vsc_prim_strm_pitch & 0x3) == 0);
+   assert((fd6_ctx->vsc_draw_strm_pitch & 0x3) == 0);
+   assert((fd6_ctx->vsc_prim_strm_pitch & 0x3) == 0);
 
    /* Check for overflow, write vsc_scratch if detected: */
    for (int i = 0; i < gmem->num_vsc_pipes; i++) {
@@ -687,7 +687,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    struct fd_screen *screen = batch->ctx->screen;
 
-   debug_assert(!batch->tessellation);
+   assert(!batch->tessellation);
 
    set_scissor(ring, 0, 0, gmem->width - 1, gmem->height - 1);
 
@@ -762,7 +762,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
    OUT_REG(ring,
            A6XX_RB_CCU_CNTL(.color_offset = screen->ccu_offset_gmem,
                             .gmem = true,
-                            .unk2 = screen->info->a6xx.ccu_cntl_gmem_unk2));
+                            .concurrent_resolve = screen->info->a6xx.concurrent_resolve));
 }
 
 static void
@@ -830,7 +830,7 @@ fd6_emit_tile_init(struct fd_batch *batch) assert_dt
    OUT_REG(ring,
            A6XX_RB_CCU_CNTL(.color_offset = screen->ccu_offset_gmem,
                             .gmem = true,
-                            .unk2 = screen->info->a6xx.ccu_cntl_gmem_unk2));
+                            .concurrent_resolve = screen->info->a6xx.concurrent_resolve));
 
    emit_zs(ring, pfb->zsbuf, batch->gmem_state);
    emit_mrt(ring, pfb, batch->gmem_state);
@@ -988,7 +988,7 @@ emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring, uint32_t base,
    uint32_t offset;
    bool ubwc_enabled;
 
-   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    /* separate stencil case: */
    if (stencil) {
@@ -1000,7 +1000,7 @@ emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring, uint32_t base,
       fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
    ubwc_enabled = fd_resource_ubwc_enabled(rsc, psurf->u.tex.level);
 
-   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    uint32_t tile_mode = fd_resource_tile_mode(&rsc->b.b, psurf->u.tex.level);
    enum a6xx_format format = fd6_color_format(pfmt, tile_mode);

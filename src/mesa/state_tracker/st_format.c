@@ -111,19 +111,11 @@ st_mesa_format_to_pipe_format(const struct st_context *st,
 
    if (st_astc_format_fallback(st, mesaFormat)) {
       if (_mesa_is_format_srgb(mesaFormat)) {
-         if (st->transcode_astc_to_bptc)
-            return PIPE_FORMAT_BPTC_SRGBA;
-         else if (st->transcode_astc_to_dxt5)
-            return PIPE_FORMAT_DXT5_SRGBA;
-         else
-            return PIPE_FORMAT_R8G8B8A8_SRGB;
+         return st->transcode_astc ? PIPE_FORMAT_DXT5_SRGBA :
+                                     PIPE_FORMAT_R8G8B8A8_SRGB;
       } else {
-         if (st->transcode_astc_to_bptc)
-            return PIPE_FORMAT_BPTC_RGBA_UNORM;
-         else if (st->transcode_astc_to_dxt5)
-            return PIPE_FORMAT_DXT5_RGBA;
-         else
-            return PIPE_FORMAT_R8G8B8A8_UNORM;
+         return st->transcode_astc ? PIPE_FORMAT_DXT5_RGBA :
+                                     PIPE_FORMAT_R8G8B8A8_UNORM;
       }
    }
 
@@ -1565,6 +1557,8 @@ st_translate_color(union pipe_color_union *color,
       case GL_LUMINANCE_ALPHA:
          ci[1] = ci[2] = ci[0];
          break;
+      /* Stencil border is tricky on some hw. Help drivers a little here. */
+      case GL_STENCIL_INDEX:
       case GL_INTENSITY:
          ci[1] = ci[2] = ci[3] = ci[0];
          break;
@@ -1596,8 +1590,6 @@ st_translate_color(union pipe_color_union *color,
       case GL_LUMINANCE_ALPHA:
          cf[1] = cf[2] = cf[0];
          break;
-      /* Stencil border is tricky on some hw. Help drivers a little here. */
-      case GL_STENCIL_INDEX:
       case GL_INTENSITY:
          cf[1] = cf[2] = cf[3] = cf[0];
          break;

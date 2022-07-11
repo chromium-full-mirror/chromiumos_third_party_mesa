@@ -55,7 +55,9 @@
 #include "spirv.h"
 
 #ifdef USE_STATIC_OPENCL_C_H
+#if LLVM_VERSION_MAJOR < 15
 #include "opencl-c.h.h"
+#endif
 #include "opencl-c-base.h.h"
 #endif
 
@@ -102,13 +104,16 @@ public:
 
 class SPIRVKernelInfo {
 public:
-   SPIRVKernelInfo(uint32_t fid, const char *nm) : funcId(fid), name(nm), vecHint(0) { }
+   SPIRVKernelInfo(uint32_t fid, const char *nm)
+      : funcId(fid), name(nm), vecHint(0), localSize(), localSizeHint() { }
    ~SPIRVKernelInfo() { }
 
    uint32_t funcId;
    std::string name;
    std::vector<SPIRVKernelArg> args;
    unsigned vecHint;
+   unsigned localSize[3];
+   unsigned localSizeHint[3];
 };
 
 class SPIRVKernelParser {
@@ -447,14 +452,26 @@ public:
    void parseExecutionMode(const spv_parsed_instruction_t *ins)
    {
       uint32_t executionMode = ins->words[ins->operands[1].offset];
-      if (executionMode != SpvExecutionModeVecTypeHint)
-         return;
-
       uint32_t funcId = ins->words[ins->operands[0].offset];
-      uint32_t vecHint = ins->words[ins->operands[2].offset];
+
       for (auto& kernel : kernels) {
-         if (kernel.funcId == funcId)
-            kernel.vecHint = vecHint;
+         if (kernel.funcId == funcId) {
+            switch (executionMode) {
+            case SpvExecutionModeVecTypeHint:
+               kernel.vecHint = ins->words[ins->operands[2].offset];
+               break;
+            case SpvExecutionModeLocalSize:
+               kernel.localSize[0] = ins->words[ins->operands[2].offset];
+               kernel.localSize[1] = ins->words[ins->operands[3].offset];
+               kernel.localSize[2] = ins->words[ins->operands[4].offset];
+            case SpvExecutionModeLocalSizeHint:
+               kernel.localSizeHint[0] = ins->words[ins->operands[2].offset];
+               kernel.localSizeHint[1] = ins->words[ins->operands[3].offset];
+               kernel.localSizeHint[2] = ins->words[ins->operands[4].offset];
+            default:
+               return;
+            }
+         }
       }
    }
 
@@ -613,21 +630,6 @@ public:
       return SPV_SUCCESS;
    }
 
-   bool parsingComplete()
-   {
-      for (auto &kernel : kernels) {
-         if (kernel.name.empty())
-            return false;
-
-         for (auto &arg : kernel.args) {
-            if (arg.name.empty() || arg.typeName.empty())
-               return false;
-         }
-      }
-
-      return true;
-   }
-
    bool parseBinary(const struct clc_binary &spvbin, const struct clc_logger *logger)
    {
       /* 3 passes should be enough to retrieve all kernel information:
@@ -646,13 +648,9 @@ public:
                logger->error(logger->priv, diagnostic->error);
             return false;
          }
-
-         if (parsingComplete())
-            return true;
       }
 
-      assert(0);
-      return false;
+      return true;
    }
 
    std::vector<SPIRVKernelInfo> kernels;
@@ -692,6 +690,8 @@ clc_spirv_get_kernels_info(const struct clc_binary *spvbin,
       kernels[i].num_args = parser.kernels[i].args.size();
       kernels[i].vec_hint_size = parser.kernels[i].vecHint >> 16;
       kernels[i].vec_hint_type = (enum clc_vec_hint_type)(parser.kernels[i].vecHint & 0xFFFF);
+      memcpy(kernels[i].local_size, parser.kernels[i].localSize, sizeof(kernels[i].local_size));
+      memcpy(kernels[i].local_size_hint, parser.kernels[i].localSizeHint, sizeof(kernels[i].local_size_hint));
       if (!kernels[i].num_args)
          continue;
 
@@ -769,7 +769,14 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
       "-triple", "spir64-unknown-unknown",
       // By default, clang prefers to use modules to pull in the default headers,
       // which doesn't work with our technique of embedding the headers in our binary
+#if LLVM_VERSION_MAJOR >= 15
+      "-fdeclare-opencl-builtins",
+#else
       "-finclude-default-header",
+#endif
+#if LLVM_VERSION_MAJOR >= 15
+      "-no-opaque-pointers",
+#endif
       // Add a default CL compiler version. Clang will pick the last one specified
       // on the command line, so the app can override this one.
       "-cl-std=cl1.2",
@@ -829,9 +836,11 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
                                        clang::frontend::Angled,
                                        false, false);
 
+#if LLVM_VERSION_MAJOR < 15
       ::llvm::sys::path::append(system_header_path, "opencl-c.h");
       c->getPreprocessorOpts().addRemappedFile(system_header_path.str(),
          ::llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(opencl_c_source, ARRAY_SIZE(opencl_c_source) - 1)).release());
+#endif
 
       ::llvm::sys::path::remove_filename(system_header_path);
       ::llvm::sys::path::append(system_header_path, "opencl-c-base.h");
@@ -848,7 +857,47 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
                                     clang::frontend::Angled,
                                     false, false);
    // Add opencl include
+#if LLVM_VERSION_MAJOR >= 15
+   c->getPreprocessorOpts().Includes.push_back("opencl-c-base.h");
+#else
    c->getPreprocessorOpts().Includes.push_back("opencl-c.h");
+#endif
+#endif
+
+#if LLVM_VERSION_MAJOR >= 14
+   c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("-all");
+   c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_byte_addressable_store");
+   c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_global_int32_base_atomics");
+   c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_global_int32_extended_atomics");
+   c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_local_int32_base_atomics");
+   c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_local_int32_extended_atomics");
+   if (args->features.fp16) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_fp16");
+   }
+   if (args->features.fp64) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_fp64");
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_fp64");
+   }
+   if (args->features.int64) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cles_khr_int64");
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_int64");
+   }
+   if (args->features.images) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_images");
+   }
+   if (args->features.images_read_write) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_read_write_images");
+   }
+   if (args->features.images_write_3d) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_3d_image_writes");
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_3d_image_writes");
+   }
+   if (args->features.intel_subgroups) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_intel_subgroups");
+   }
+   if (args->features.subgroups) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_subgroups");
+   }
 #endif
 
    if (args->num_headers) {

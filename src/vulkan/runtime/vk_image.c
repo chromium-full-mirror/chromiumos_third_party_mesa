@@ -33,6 +33,7 @@
 #include "vk_common_entrypoints.h"
 #include "vk_device.h"
 #include "vk_format.h"
+#include "vk_render_pass.h"
 #include "vk_util.h"
 #include "vulkan/wsi/wsi_common.h"
 
@@ -250,6 +251,71 @@ vk_image_expand_aspect_mask(const struct vk_image *image,
    }
 }
 
+VkExtent3D
+vk_image_extent_to_elements(const struct vk_image *image, VkExtent3D extent)
+{
+   const struct util_format_description *fmt =
+      vk_format_description(image->format);
+
+   extent = vk_image_sanitize_extent(image, extent);
+   extent.width = DIV_ROUND_UP(extent.width, fmt->block.width);
+   extent.height = DIV_ROUND_UP(extent.height, fmt->block.height);
+   extent.depth = DIV_ROUND_UP(extent.depth, fmt->block.depth);
+
+   return extent;
+}
+
+VkOffset3D
+vk_image_offset_to_elements(const struct vk_image *image, VkOffset3D offset)
+{
+   const struct util_format_description *fmt =
+      vk_format_description(image->format);
+
+   offset = vk_image_sanitize_offset(image, offset);
+
+   assert(offset.x % fmt->block.width == 0);
+   assert(offset.y % fmt->block.height == 0);
+   assert(offset.z % fmt->block.depth == 0);
+
+   offset.x /= fmt->block.width;
+   offset.y /= fmt->block.height;
+   offset.z /= fmt->block.depth;
+
+   return offset;
+}
+
+struct vk_image_buffer_layout
+vk_image_buffer_copy_layout(const struct vk_image *image,
+                            const VkBufferImageCopy2KHR* region)
+{
+   VkExtent3D extent = vk_image_sanitize_extent(image, region->imageExtent);
+
+   const uint32_t row_length = region->bufferRowLength ?
+                               region->bufferRowLength : extent.width;
+   const uint32_t image_height = region->bufferImageHeight ?
+                                 region->bufferImageHeight : extent.height;
+
+   const VkImageAspectFlags aspect = region->imageSubresource.aspectMask;
+   VkFormat format = vk_format_get_aspect_format(image->format, aspect);
+   const struct util_format_description *fmt = vk_format_description(format);
+
+   assert(fmt->block.bits % 8 == 0);
+   const uint32_t element_size_B = fmt->block.bits / 8;
+
+   const uint32_t row_stride_B =
+      DIV_ROUND_UP(row_length, fmt->block.width) * element_size_B;
+   const uint64_t image_stride_B =
+      DIV_ROUND_UP(image_height, fmt->block.height) * (uint64_t)row_stride_B;
+
+   return (struct vk_image_buffer_layout) {
+      .row_length = row_length,
+      .image_height = image_height,
+      .element_size_B = element_size_B,
+      .row_stride_B = row_stride_B,
+      .image_stride_B = image_stride_B,
+   };
+}
+
 static VkComponentSwizzle
 remap_swizzle(VkComponentSwizzle swizzle, VkComponentSwizzle component)
 {
@@ -395,6 +461,20 @@ vk_image_view_init(struct vk_device *device,
    image_view->base_array_layer = range->baseArrayLayer;
    image_view->layer_count = vk_image_subresource_layer_count(image, range);
 
+   const VkImageViewMinLodCreateInfoEXT *min_lod_info =
+      vk_find_struct_const(pCreateInfo, IMAGE_VIEW_MIN_LOD_CREATE_INFO_EXT);
+   image_view->min_lod = min_lod_info ? min_lod_info->minLod : 0.0f;
+
+   /* From the Vulkan 1.3.215 spec:
+    *
+    *    VUID-VkImageViewMinLodCreateInfoEXT-minLod-06456
+    *
+    *    "minLod must be less or equal to the index of the last mipmap level
+    *    accessible to the view."
+    */
+   assert(image_view->min_lod <= image_view->base_mip_level +
+                                 image_view->level_count - 1);
+
    image_view->extent =
       vk_image_mip_level_extent(image, image_view->base_mip_level);
 
@@ -476,6 +556,14 @@ vk_image_layout_is_read_only(VkImageLayout layout,
    case VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL:
    case VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL:
    case VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR:
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wswitch"
+#endif
+   case VK_IMAGE_LAYOUT_SUBPASS_SELF_DEPENDENCY_MESA:
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
       return false;
 
    case VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
@@ -624,6 +712,14 @@ vk_image_layout_to_usage_flags(VkImageLayout layout,
       return 0u;
 
    case VK_IMAGE_LAYOUT_GENERAL:
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wswitch"
+#endif
+   case VK_IMAGE_LAYOUT_SUBPASS_SELF_DEPENDENCY_MESA:
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
       return ~0u;
 
    case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:

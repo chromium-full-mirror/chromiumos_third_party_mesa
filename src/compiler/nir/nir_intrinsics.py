@@ -487,6 +487,19 @@ intrinsic("end_primitive_with_counter", src_comp=[1, 1], indices=[STREAM_ID])
 # Contains the final total vertex and primitive counts in the current GS thread.
 intrinsic("set_vertex_and_primitive_count", src_comp=[1, 1], indices=[STREAM_ID])
 
+# Launches mesh shader workgroups from a task shader, with explicit task_payload.
+# Rules:
+# - This is a terminating instruction.
+# - May only occur in workgroup-uniform control flow.
+# - Dispatch sizes may be divergent (in which case the values
+#   from the first invocation are used).
+# Meaning of indices:
+# - BASE: address of the task_payload variable used.
+# - RANGE: size of the task_payload variable used.
+#
+# src[] = {vec(x, y, z)}
+intrinsic("launch_mesh_workgroups", src_comp=[3], indices=[BASE, RANGE])
+
 # Trace a ray through an acceleration structure
 #
 # This instruction has a lot of parameters:
@@ -692,7 +705,8 @@ intrinsic("load_vulkan_descriptor", src_comp=[-1], dest_comp=0,
 #    in ssbo_atomic_add, etc).
 # 3: For CompSwap only: the second data parameter.
 #
-# All shared variable operations take 2 sources except CompSwap that takes 3.
+# All shared (and task payload) variable operations take 2 sources
+# except CompSwap that takes 3.
 # These sources represent:
 #
 # 0: The offset into the shared variable storage region that the atomic
@@ -716,6 +730,7 @@ def memory_atomic_data1(name):
     intrinsic("deref_atomic_" + name,  src_comp=[-1, 1], dest_comp=1, indices=[ACCESS])
     intrinsic("ssbo_atomic_" + name,  src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
     intrinsic("shared_atomic_" + name,  src_comp=[1, 1], dest_comp=1, indices=[BASE])
+    intrinsic("task_payload_atomic_" + name,  src_comp=[1, 1], dest_comp=1, indices=[BASE])
     intrinsic("global_atomic_" + name,  src_comp=[1, 1], dest_comp=1, indices=[])
     intrinsic("global_atomic_" + name + "_amd",  src_comp=[1, 1, 1], dest_comp=1, indices=[BASE])
     if not name.startswith('f'):
@@ -725,6 +740,7 @@ def memory_atomic_data2(name):
     intrinsic("deref_atomic_" + name,  src_comp=[-1, 1, 1], dest_comp=1, indices=[ACCESS])
     intrinsic("ssbo_atomic_" + name,  src_comp=[-1, 1, 1, 1], dest_comp=1, indices=[ACCESS])
     intrinsic("shared_atomic_" + name,  src_comp=[1, 1, 1], dest_comp=1, indices=[BASE])
+    intrinsic("task_payload_atomic_" + name,  src_comp=[1, 1, 1], dest_comp=1, indices=[BASE])
     intrinsic("global_atomic_" + name,  src_comp=[1, 1, 1], dest_comp=1, indices=[])
     intrinsic("global_atomic_" + name + "_amd",  src_comp=[1, 1, 1, 1], dest_comp=1, indices=[BASE])
     if not name.startswith('f'):
@@ -791,6 +807,7 @@ system_value("workgroup_index", 1)
 system_value("base_workgroup_id", 3, bit_sizes=[32, 64])
 system_value("user_clip_plane", 4, indices=[UCP_ID])
 system_value("num_workgroups", 3, bit_sizes=[32, 64])
+system_value("num_vertices", 1)
 system_value("helper_invocation", 1, bit_sizes=[1, 32])
 system_value("layer_id", 1)
 system_value("view_index", 1)
@@ -820,6 +837,8 @@ system_value("scratch_base_ptr", 0, bit_sizes=[32,64], indices=[BASE])
 system_value("constant_base_ptr", 0, bit_sizes=[32,64])
 system_value("shared_base_ptr", 0, bit_sizes=[32,64])
 system_value("global_base_ptr", 0, bit_sizes=[32,64])
+# Address of a transform feedback buffer, indexed by BASE
+system_value("xfb_address", 1, bit_sizes=[32,64], indices=[BASE])
 
 # System values for ray tracing.
 system_value("ray_launch_id", 3)
@@ -837,6 +856,7 @@ system_value("ray_flags", 1)
 system_value("ray_geometry_index", 1)
 system_value("ray_instance_custom_index", 1)
 system_value("shader_record_ptr", 1, bit_sizes=[64])
+system_value("cull_mask", 1)
 
 # Driver-specific viewport scale/offset parameters.
 #
@@ -912,8 +932,8 @@ barycentric("at_offset", 2, [2])
 intrinsic("load_sample_pos_from_id", src_comp=[1], dest_comp=2,
           flags=[CAN_ELIMINATE, CAN_REORDER])
 
-# Loads what I believe is the primitive size, for scaling ij to pixel size:
-intrinsic("load_size_ir3", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
+intrinsic("load_persp_center_rhw_ir3", dest_comp=1,
+          flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Load texture scaling values:
 #
@@ -1222,7 +1242,7 @@ intrinsic("shared_atomic_comp_swap_dxil", src_comp=[1, 1, 1], dest_comp=1)
 
 # src[] = { value }
 store("raw_output_pan", [], [])
-store("combined_output_pan", [1, 1, 1, 4], [COMPONENT, SRC_TYPE, DEST_TYPE])
+store("combined_output_pan", [1, 1, 1, 4], [BASE, COMPONENT, SRC_TYPE, DEST_TYPE])
 load("raw_output_pan", [1], [BASE], [CAN_ELIMINATE, CAN_REORDER])
 
 # Loads the sampler paramaters <min_lod, max_lod, lod_bias>
@@ -1277,6 +1297,9 @@ system_value("ring_es2gs_offset_amd", 1)
 system_value("ring_task_draw_amd", 4)
 # Address of the task shader payload ring (used for all other outputs)
 system_value("ring_task_payload_amd", 4)
+# Address of the mesh shader scratch ring (used for excess mesh shader outputs)
+system_value("ring_mesh_scratch_amd", 4)
+system_value("ring_mesh_scratch_offset_amd", 1)
 # Pointer into the draw and payload rings
 system_value("task_ring_entry_amd", 1)
 # Pointer into the draw and payload rings
@@ -1333,10 +1356,8 @@ intrinsic("overwrite_vs_arguments_amd", src_comp=[1, 1], indices=[])
 # Overwrites TES input registers, for use with vertex compaction after culling. src = {tes_u, tes_v, rel_patch_id, patch_id}.
 intrinsic("overwrite_tes_arguments_amd", src_comp=[1, 1, 1, 1], indices=[])
 
-# loads a descriptor for an sbt.
-# src = [index] BINDING = which table
-intrinsic("load_sbt_amd", dest_comp=4, bit_sizes=[32], indices=[BINDING],
-          flags=[CAN_ELIMINATE, CAN_REORDER])
+# The address of the sbt descriptors.
+system_value("sbt_base_amd", 1, bit_sizes=[64])
 
 # 1. HW descriptor
 # 2. BVH node(64-bit pointer as 2x32 ...)
@@ -1374,6 +1395,12 @@ intrinsic("load_shared2_amd", [1], dest_comp=2, indices=[OFFSET0, OFFSET1, ST64]
 
 # src[] = { value, offset }.
 intrinsic("store_shared2_amd", [2, 1], indices=[OFFSET0, OFFSET1, ST64])
+
+# Vertex stride in LS-HS buffer
+system_value("lshs_vertex_stride_amd", 1)
+
+# Per patch data offset in HS VRAM output buffer
+system_value("hs_out_patch_data_offset_amd", 1)
 
 # V3D-specific instrinc for tile buffer color reads.
 #

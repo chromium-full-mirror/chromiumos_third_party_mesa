@@ -273,7 +273,7 @@ build_shader(struct radv_device *dev)
       color_payload = flip_endian(&b, color_payload, 2);
       nir_ssa_def *color_y = nir_channel(&b, color_payload, 0);
       nir_ssa_def *color_x = nir_channel(&b, color_payload, 1);
-      nir_ssa_def *flip = nir_ine_imm(&b, nir_iand_imm(&b, color_y, 1), 0);
+      nir_ssa_def *flip = nir_test_mask(&b, color_y, 1);
       nir_ssa_def *subblock = nir_ushr_imm(
          &b, nir_bcsel(&b, flip, nir_channel(&b, pixel_coord, 1), nir_channel(&b, pixel_coord, 0)),
          1);
@@ -281,7 +281,7 @@ build_shader(struct radv_device *dev)
       nir_variable *punchthrough =
          nir_variable_create(b.shader, nir_var_shader_temp, glsl_bool_type(), "punchthrough");
       nir_ssa_def *punchthrough_init =
-         nir_iand(&b, alpha_bits_1, nir_ieq_imm(&b, nir_iand_imm(&b, color_y, 2), 0));
+         nir_iand(&b, alpha_bits_1, nir_inot(&b, nir_test_mask(&b, color_y, 2)));
       nir_store_var(&b, punchthrough, punchthrough_init, 0x1);
 
       nir_variable *etc1_compat =
@@ -313,8 +313,8 @@ build_shader(struct radv_device *dev)
          nir_iand_imm(&b, nir_ushr(&b, color_x, nir_iadd_imm(&b, linear_pixel, 15)), 2);
       nir_ssa_def *lsb = nir_iand_imm(&b, nir_ushr(&b, color_x, linear_pixel), 1);
 
-      nir_push_if(&b, nir_iand(&b, nir_inot(&b, alpha_bits_1),
-                               nir_ieq_imm(&b, nir_iand_imm(&b, color_y, 2), 0)));
+      nir_push_if(
+         &b, nir_iand(&b, nir_inot(&b, alpha_bits_1), nir_inot(&b, nir_test_mask(&b, color_y, 2))));
       {
          nir_store_var(&b, etc1_compat, nir_imm_bool(&b, true), 1);
          nir_ssa_def *tmp[3];
@@ -730,8 +730,8 @@ radv_meta_decode_etc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
    uint32_t base_slice = radv_meta_get_iview_layer(image, subresource, &offset);
    uint32_t slice_count = image->vk.image_type == VK_IMAGE_TYPE_3D ? extent.depth : subresource->layerCount;
 
-   extent = radv_sanitize_image_extent(image->vk.image_type, extent);
-   offset = radv_sanitize_image_offset(image->vk.image_type, offset);
+   extent = vk_image_sanitize_extent(&image->vk, extent);
+   offset = vk_image_sanitize_offset(&image->vk, offset);
 
    VkFormat load_format = vk_format_get_blocksize(image->vk.format) == 16
                              ? VK_FORMAT_R32G32B32A32_UINT

@@ -29,7 +29,8 @@ struct state {
    uint32_t topology;
 
    struct primitive_map {
-      unsigned loc[32 + 4]; /* +POSITION +PSIZE +CLIP_DIST0 +CLIP_DIST1 */
+      /* +POSITION, +PSIZE, ... - see shader_io_get_unique_index */
+      unsigned loc[32 + 11];
       unsigned stride;
    } map;
 
@@ -98,17 +99,31 @@ is_tess_levels(gl_varying_slot slot)
 static unsigned
 shader_io_get_unique_index(gl_varying_slot slot)
 {
-   if (slot == VARYING_SLOT_POS)
-      return 0;
-   if (slot == VARYING_SLOT_PSIZ)
-      return 1;
-   if (slot == VARYING_SLOT_CLIP_DIST0)
-      return 2;
-   if (slot == VARYING_SLOT_CLIP_DIST1)
-      return 3;
-   if (slot >= VARYING_SLOT_VAR0 && slot <= VARYING_SLOT_VAR31)
-      return 4 + (slot - VARYING_SLOT_VAR0);
-   unreachable("illegal slot in get unique index\n");
+   switch (slot) {
+   case VARYING_SLOT_POS:         return 0;
+   case VARYING_SLOT_PSIZ:        return 1;
+   case VARYING_SLOT_COL0:        return 2;
+   case VARYING_SLOT_COL1:        return 3;
+   case VARYING_SLOT_BFC0:        return 4;
+   case VARYING_SLOT_BFC1:        return 5;
+   case VARYING_SLOT_FOGC:        return 6;
+   case VARYING_SLOT_CLIP_DIST0:  return 7;
+   case VARYING_SLOT_CLIP_DIST1:  return 8;
+   case VARYING_SLOT_CLIP_VERTEX: return 9;
+   case VARYING_SLOT_LAYER:       return 10;
+   case VARYING_SLOT_VIEWPORT:    return 11;
+   case VARYING_SLOT_VAR0 ... VARYING_SLOT_VAR31: {
+      struct state state = {};
+      STATIC_ASSERT(ARRAY_SIZE(state.map.loc) ==
+                    (12 + VARYING_SLOT_VAR31 - VARYING_SLOT_VAR0));
+      struct ir3_shader_variant v = {};
+      STATIC_ASSERT(ARRAY_SIZE(v.output_loc) ==
+                    (12 + VARYING_SLOT_VAR31 - VARYING_SLOT_VAR0));
+      return 12 + (slot - VARYING_SLOT_VAR0);
+   }
+   default:
+      unreachable("illegal slot in get unique index\n");
+   }
 }
 
 static nir_ssa_def *
@@ -834,6 +849,16 @@ ir3_nir_lower_tess_eval(nir_shader *shader, struct ir3_shader_variant *v,
 }
 
 static void
+copy_vars(nir_builder *b, struct exec_list *dests, struct exec_list *srcs)
+{
+   foreach_two_lists (dest_node, dests, src_node, srcs) {
+      nir_variable *dest = exec_node_data(nir_variable, dest_node, node);
+      nir_variable *src = exec_node_data(nir_variable, src_node, node);
+      nir_copy_var(b, dest, src);
+   }
+}
+
+static void
 lower_gs_block(nir_block *block, nir_builder *b, struct state *state)
 {
    nir_foreach_instr_safe (instr, block) {
@@ -869,12 +894,7 @@ lower_gs_block(nir_block *block, nir_builder *b, struct state *state)
                                nir_imm_int(b, stream)),
                        0x1 /* .x */);
 
-         foreach_two_lists (dest_node, &state->emit_outputs, src_node,
-                            &state->old_outputs) {
-            nir_variable *dest = exec_node_data(nir_variable, dest_node, node);
-            nir_variable *src = exec_node_data(nir_variable, src_node, node);
-            nir_copy_var(b, dest, src);
-         }
+         copy_vars(b, &state->emit_outputs, &state->old_outputs);
 
          nir_instr_remove(&intr->instr);
 
@@ -903,6 +923,11 @@ void
 ir3_nir_lower_gs(nir_shader *shader)
 {
    struct state state = {};
+
+   /* Don't lower multiple times: */
+   nir_foreach_shader_out_variable (var, shader)
+      if (var->data.location == VARYING_SLOT_GS_VERTEX_FLAGS_IR3)
+         return;
 
    if (shader_debug_enabled(shader->info.stage)) {
       mesa_logi("NIR (before gs lowering):");
@@ -986,14 +1011,23 @@ ir3_nir_lower_gs(nir_shader *shader)
       nir_ssa_def *cond =
          nir_ieq_imm(&b, nir_load_var(&b, state.emitted_vertex_var), 0);
 
+      /* If we haven't emitted any vertex we need to copy the shadow (old)
+       * outputs to emit outputs here.
+       *
+       * Also some piglit GS tests[1] don't have EndPrimitive() so throw
+       * in an extra vertex_flags write for good measure.  If unneeded it
+       * will be optimized out.
+       *
+       * [1] ex, tests/spec/glsl-1.50/execution/compatibility/clipping/gs-clip-vertex-const-accept.shader_test
+       */
+      nir_push_if(&b, cond);
+      nir_store_var(&b, state.vertex_flags_out, nir_imm_int(&b, 4), 0x1);
+      copy_vars(&b, &state.emit_outputs, &state.old_outputs);
+      nir_pop_if(&b, NULL);
+
       nir_discard_if(&b, cond);
 
-      foreach_two_lists (dest_node, &state.new_outputs, src_node,
-                         &state.emit_outputs) {
-         nir_variable *dest = exec_node_data(nir_variable, dest_node, node);
-         nir_variable *src = exec_node_data(nir_variable, src_node, node);
-         nir_copy_var(&b, dest, src);
-      }
+      copy_vars(&b, &state.new_outputs, &state.emit_outputs);
    }
 
    exec_list_append(&shader->variables, &state.old_outputs);

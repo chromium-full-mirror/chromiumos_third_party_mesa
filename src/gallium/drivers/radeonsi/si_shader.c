@@ -1104,13 +1104,14 @@ static void si_shader_dump_stats(struct si_screen *sscreen, struct si_shader *sh
               "Spilled VGPRs: %d\n"
               "Private memory VGPRs: %d\n"
               "Code Size: %d bytes\n"
-              "LDS: %d blocks\n"
+              "LDS: %d bytes\n"
               "Scratch: %d bytes per wave\n"
               "Max Waves: %d\n"
               "********************\n\n\n",
               conf->num_sgprs, conf->num_vgprs, conf->spilled_sgprs, conf->spilled_vgprs,
               shader->info.private_mem_vgprs, si_get_shader_binary_size(sscreen, shader),
-              conf->lds_size, conf->scratch_bytes_per_wave, shader->info.max_simd_waves);
+              conf->lds_size * get_lds_granularity(sscreen, shader->selector->stage),
+              conf->scratch_bytes_per_wave, shader->info.max_simd_waves);
    }
 }
 
@@ -1238,8 +1239,6 @@ static void si_dump_shader_key(const struct si_shader *shader, FILE *f)
          si_dump_shader_key_vs(key, &key->ge.part.tcs.ls_prolog, "part.tcs.ls_prolog", f);
       }
       fprintf(f, "  part.tcs.epilog.prim_mode = %u\n", key->ge.part.tcs.epilog.prim_mode);
-      fprintf(f, "  mono.u.ff_tcs_inputs_to_copy = 0x%" PRIx64 "\n",
-              key->ge.mono.u.ff_tcs_inputs_to_copy);
       fprintf(f, "  opt.prefer_mono = %u\n", key->ge.opt.prefer_mono);
       fprintf(f, "  opt.same_patch_vertices = %u\n", key->ge.opt.same_patch_vertices);
       break;
@@ -1490,24 +1489,90 @@ static bool si_nir_kill_outputs(nir_shader *nir, const union si_shader_key *key)
    return progress;
 }
 
-struct nir_shader *si_get_nir_shader(struct si_shader_selector *sel,
-                                     const union si_shader_key *key,
-                                     bool *free_nir)
+static unsigned si_map_io_driver_location(unsigned semantic)
 {
+   if ((semantic >= VARYING_SLOT_PATCH0 && semantic < VARYING_SLOT_TESS_MAX) ||
+       semantic == VARYING_SLOT_TESS_LEVEL_INNER ||
+       semantic == VARYING_SLOT_TESS_LEVEL_OUTER)
+      return si_shader_io_get_unique_index_patch(semantic);
+
+   return si_shader_io_get_unique_index(semantic, false);
+}
+
+static bool si_lower_io_to_mem(struct si_shader *shader, nir_shader *nir,
+                               uint64_t tcs_vgpr_only_inputs)
+{
+   struct si_shader_selector *sel = shader->selector;
+   const union si_shader_key *key = &shader->key;
+
+   if (nir->info.stage == MESA_SHADER_VERTEX) {
+      if (key->ge.as_ls) {
+         NIR_PASS_V(nir, ac_nir_lower_ls_outputs_to_mem, si_map_io_driver_location,
+                    key->ge.opt.same_patch_vertices, tcs_vgpr_only_inputs);
+         return true;
+      } else if (key->ge.as_es) {
+         NIR_PASS_V(nir, ac_nir_lower_es_outputs_to_mem, si_map_io_driver_location,
+                    sel->screen->info.gfx_level, sel->info.esgs_itemsize);
+         return true;
+      }
+   } else if (nir->info.stage == MESA_SHADER_TESS_CTRL) {
+      NIR_PASS_V(nir, ac_nir_lower_hs_inputs_to_mem, si_map_io_driver_location,
+                 key->ge.opt.same_patch_vertices);
+      NIR_PASS_V(nir, ac_nir_lower_hs_outputs_to_mem, si_map_io_driver_location,
+                 sel->screen->info.gfx_level,
+                 false, /* does not matter as we disabled final tess factor write */
+                 ~0ULL, ~0ULL, /* no TES inputs filter */
+                 util_last_bit64(sel->info.outputs_written),
+                 util_last_bit64(sel->info.patch_outputs_written),
+                 shader->wave_size,
+                 /* ALL TCS inputs are passed by register. */
+                 key->ge.opt.same_patch_vertices &&
+                 !(sel->info.base.inputs_read & ~sel->info.tcs_vgpr_only_inputs),
+                 sel->info.tessfactors_are_def_in_all_invocs, false);
+      return true;
+   } else if (nir->info.stage == MESA_SHADER_TESS_EVAL) {
+      NIR_PASS_V(nir, ac_nir_lower_tes_inputs_to_mem, si_map_io_driver_location);
+
+      if (key->ge.as_es) {
+         NIR_PASS_V(nir, ac_nir_lower_es_outputs_to_mem, si_map_io_driver_location,
+                    sel->screen->info.gfx_level, sel->info.esgs_itemsize);
+      }
+
+      return true;
+   } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+      NIR_PASS_V(nir, ac_nir_lower_gs_inputs_to_mem, si_map_io_driver_location,
+                 sel->screen->info.gfx_level, key->ge.mono.u.gs_tri_strip_adj_fix);
+      return true;
+   }
+
+   return false;
+}
+
+struct nir_shader *si_deserialize_shader(struct si_shader_selector *sel)
+{
+   struct pipe_screen *screen = &sel->screen->b;
+   const void *options = screen->get_compiler_options(screen, PIPE_SHADER_IR_NIR,
+                                                      pipe_shader_type_from_mesa(sel->stage));
+
+   struct blob_reader blob_reader;
+   blob_reader_init(&blob_reader, sel->nir_binary, sel->nir_size);
+   return nir_deserialize(NULL, options, &blob_reader);
+}
+
+struct nir_shader *si_get_nir_shader(struct si_shader *shader, bool *free_nir,
+                                     uint64_t tcs_vgpr_only_inputs)
+{
+   struct si_shader_selector *sel = shader->selector;
+   const union si_shader_key *key = &shader->key;
+
    nir_shader *nir;
    *free_nir = false;
 
    if (sel->nir) {
       nir = sel->nir;
    } else if (sel->nir_binary) {
-      struct pipe_screen *screen = &sel->screen->b;
-      const void *options = screen->get_compiler_options(screen, PIPE_SHADER_IR_NIR,
-                                                         pipe_shader_type_from_mesa(sel->stage));
-
-      struct blob_reader blob_reader;
-      blob_reader_init(&blob_reader, sel->nir_binary, sel->nir_size);
+      nir = si_deserialize_shader(sel);
       *free_nir = true;
-      nir = nir_deserialize(NULL, options, &blob_reader);
    } else {
       return NULL;
    }
@@ -1602,11 +1667,25 @@ struct nir_shader *si_get_nir_shader(struct si_shader_selector *sel,
     * this should be done after that.
     */
    progress2 |= ac_nir_lower_indirect_derefs(nir, sel->screen->info.gfx_level);
-   if (progress2)
+
+   bool opt_offsets = si_lower_io_to_mem(shader, nir, tcs_vgpr_only_inputs);
+
+   if (progress2 || opt_offsets)
       si_nir_opts(sel->screen, nir, false);
 
-   if (progress || progress2)
+   if (opt_offsets) {
+      static const nir_opt_offsets_options offset_options = {
+         .uniform_max = 0,
+         .buffer_max = ~0,
+         .shared_max = ~0,
+      };
+      NIR_PASS_V(nir, nir_opt_offsets, &offset_options);
+   }
+
+   if (progress || progress2 || opt_offsets)
       si_nir_late_opts(nir);
+
+   NIR_PASS_V(nir, nir_divergence_analysis);
 
    /* This helps LLVM form VMEM clauses and thus get more GPU cache hits.
     * 200 is tuned for Viewperf. It should be done last.
@@ -1681,7 +1760,7 @@ bool si_compile_shader(struct si_screen *sscreen, struct ac_llvm_compiler *compi
 {
    struct si_shader_selector *sel = shader->selector;
    bool free_nir;
-   struct nir_shader *nir = si_get_nir_shader(sel, &shader->key, &free_nir);
+   struct nir_shader *nir = si_get_nir_shader(shader, &free_nir, 0);
 
    /* Assign param export indices. */
    if ((sel->stage == MESA_SHADER_VERTEX ||
@@ -1720,7 +1799,7 @@ bool si_compile_shader(struct si_screen *sscreen, struct ac_llvm_compiler *compi
    }
 
    struct pipe_stream_output_info so = {};
-   if (sel->info.enabled_streamout_buffer_mask)
+   if (si_shader_uses_streamout(shader))
       nir_gather_stream_output_info(nir, &so);
 
    /* Dump NIR before doing NIR->LLVM conversion in case the
@@ -1972,12 +2051,8 @@ void si_get_tcs_epilog_key(struct si_shader *shader, union si_shader_part_key *k
    key->tcs_epilog.wave32 = shader->wave_size == 32;
    key->tcs_epilog.states = shader->key.ge.part.tcs.epilog;
 
-   /* If output patches are wholly in one wave, we don't need a barrier.
-    * The fixed-func TCS doesn't set tcs_vertices_out, but it won't use a barrier
-    * anyway because tess levels are always defined in all invocations there.
-    */
+   /* If output patches are wholly in one wave, we don't need a barrier. */
    key->tcs_epilog.noop_s_barrier =
-      shader->selector->info.base.tess.tcs_vertices_out &&
       shader->wave_size % shader->selector->info.base.tess.tcs_vertices_out == 0;
 }
 
@@ -2182,6 +2257,7 @@ void si_get_ps_epilog_key(struct si_shader *shader, union si_shader_part_key *ke
    struct si_shader_info *info = &shader->selector->info;
    memset(key, 0, sizeof(*key));
    key->ps_epilog.wave32 = shader->wave_size == 32;
+   key->ps_epilog.uses_discard = si_shader_uses_discard(shader);
    key->ps_epilog.colors_written = info->colors_written;
    key->ps_epilog.color_types = info->output_color_types;
    key->ps_epilog.writes_z = info->writes_z;
@@ -2458,10 +2534,10 @@ bool si_create_shader_variant(struct si_screen *sscreen, struct ac_llvm_compiler
         /* Used to export PrimitiveID from the correct vertex. */
         shader->key.ge.mono.u.vs_export_prim_id));
 
-   shader->uses_vs_state_outprim = sscreen->use_ngg &&
+   shader->uses_gs_state_outprim = sscreen->use_ngg &&
                                    /* Only used by streamout in vertex shaders. */
                                    sel->stage == MESA_SHADER_VERTEX &&
-                                   sel->info.enabled_streamout_buffer_mask;
+                                   si_shader_uses_streamout(shader);
 
    if (sel->stage == MESA_SHADER_VERTEX) {
       shader->uses_base_instance = sel->info.uses_base_instance ||

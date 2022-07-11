@@ -41,6 +41,7 @@ libtu_files = files(
   'tu_descriptor_set.h',
   'tu_formats.c',
   'tu_image.c',
+  'tu_lrz.c',
   'tu_nir_lower_multiview.c',
   'tu_pass.c',
   'tu_pipeline.c',
@@ -88,6 +89,8 @@ endif
 
 if with_freedreno_kgsl
   tu_flags += '-DTU_USE_KGSL'
+  # Even if libdrm is available we shouldn't use it in KGSL build
+  tu_flags += '-UHAVE_LIBDRM'
   libtu_files += files('tu_kgsl.c')
 else
   libtu_files += files('tu_drm.c')

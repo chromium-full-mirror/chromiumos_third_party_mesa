@@ -1264,6 +1264,18 @@ ntq_emit_cond_to_bool(struct v3d_compile *c, enum v3d_qpu_cond cond)
 }
 
 static struct qreg
+ntq_emit_cond_to_int(struct v3d_compile *c, enum v3d_qpu_cond cond)
+{
+        struct qreg result =
+                vir_MOV(c, vir_SEL(c, cond,
+                                   vir_uniform_ui(c, 1),
+                                   vir_uniform_ui(c, 0)));
+        c->flags_temp = result.index;
+        c->flags_cond = cond;
+        return result;
+}
+
+static struct qreg
 f2f16_rtz(struct v3d_compile *c, struct qreg f32)
 {
         /* The GPU doesn't provide a mechanism to modify the f32->f16 rounding
@@ -1713,7 +1725,13 @@ ntq_emit_alu(struct v3d_compile *c, nir_alu_instr *instr)
         case nir_op_uadd_carry:
                 vir_set_pf(c, vir_ADD_dest(c, vir_nop_reg(), src[0], src[1]),
                            V3D_QPU_PF_PUSHC);
-                result = ntq_emit_cond_to_bool(c, V3D_QPU_COND_IFA);
+                result = ntq_emit_cond_to_int(c, V3D_QPU_COND_IFA);
+                break;
+
+        case nir_op_usub_borrow:
+                vir_set_pf(c, vir_SUB_dest(c, vir_nop_reg(), src[0], src[1]),
+                           V3D_QPU_PF_PUSHC);
+                result = ntq_emit_cond_to_int(c, V3D_QPU_COND_IFA);
                 break;
 
         case nir_op_pack_half_2x16_split:
@@ -1931,6 +1949,7 @@ emit_frag_end(struct v3d_compile *c)
             !(c->s->info.num_images || c->s->info.num_ssbos) &&
             !c->s->info.fs.uses_discard &&
             !c->fs_key->sample_alpha_to_coverage &&
+            c->output_sample_mask_index == -1 &&
             has_any_tlb_color_write) {
                 c->s->info.fs.early_fragment_tests = true;
         }
@@ -3571,7 +3590,7 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 /* This is basically the batch index, which is the Local
                  * Invocation Index divided by the SIMD width).
                  */
-                STATIC_ASSERT(util_is_power_of_two_nonzero(V3D_CHANNELS));
+                STATIC_ASSERT(IS_POT(V3D_CHANNELS) && V3D_CHANNELS > 0);
                 const uint32_t divide_shift = ffs(V3D_CHANNELS) - 1;
                 struct qreg lii = emit_load_local_invocation_index(c);
                 ntq_store_dest(c, &instr->dest, 0,
@@ -4169,7 +4188,6 @@ ntq_emit_nonuniform_loop(struct v3d_compile *c, nir_loop *loop)
 static void
 ntq_emit_uniform_loop(struct v3d_compile *c, nir_loop *loop)
 {
-
         c->loop_cont_block = vir_new_block(c);
         c->loop_break_block = vir_new_block(c);
 
@@ -4189,6 +4207,23 @@ ntq_emit_uniform_loop(struct v3d_compile *c, nir_loop *loop)
 static void
 ntq_emit_loop(struct v3d_compile *c, nir_loop *loop)
 {
+        /* Disable flags optimization for loop conditions. The problem here is
+         * that we can have code like this:
+         *
+         *  // block_0
+         *  vec1 32 con ssa_9 = ine32 ssa_8, ssa_2
+         *  loop {
+         *     // block_1
+         *     if ssa_9 {
+         *
+         * In this example we emit flags to compute ssa_9 and the optimization
+         * will skip regenerating them again for the loop condition in the
+         * loop continue block (block_1). However, this is not safe after the
+         * first iteration because the loop body can stomp the flags if it has
+         * any conditionals.
+         */
+        c->flags_temp = -1;
+
         bool was_in_control_flow = c->in_control_flow;
         c->in_control_flow = true;
 

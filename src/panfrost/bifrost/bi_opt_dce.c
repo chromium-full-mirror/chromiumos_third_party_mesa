@@ -32,7 +32,6 @@ bi_opt_dead_code_eliminate(bi_context *ctx)
 {
         unsigned temp_count = bi_max_temp(ctx);
 
-        bi_invalidate_liveness(ctx);
         bi_compute_liveness(ctx);
 
         bi_foreach_block_rev(ctx, block) {
@@ -53,7 +52,10 @@ bi_opt_dead_code_eliminate(bi_context *ctx)
                                 if (ins->op == BI_OPCODE_AXCHG_I32 ||
                                     ins->op == BI_OPCODE_ACMPXCHG_I32 ||
                                     ins->op == BI_OPCODE_ATOM_RETURN_I32 ||
-                                    ins->op == BI_OPCODE_ATOM1_RETURN_I32)
+                                    ins->op == BI_OPCODE_ATOM1_RETURN_I32 ||
+                                    ins->op == BI_OPCODE_BLEND ||
+                                    ins->op == BI_OPCODE_ATEST ||
+                                    ins->op == BI_OPCODE_ZS_EMIT)
                                         continue;
 
                                 if (index < temp_count && !(live[index] & bi_writemask(ins, d)))
@@ -75,7 +77,7 @@ bi_opt_dead_code_eliminate(bi_context *ctx)
 
 /* Post-RA liveness-based dead code analysis to clean up results of bundling */
 
-uint64_t
+uint64_t MUST_CHECK
 bi_postra_liveness_ins(uint64_t live, bi_instr *ins)
 {
         bi_foreach_dest(ins, d) {

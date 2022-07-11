@@ -38,7 +38,7 @@ gles2_def = custom_target(
   output : 'gles2.def',
   command : [prog_python, gen_vs_module_defs_py,
              '--in_file', '@INPUT@', '--out_file', '@OUTPUT@',
-             '--compiler_id', cc.get_id(), '--cpu_family', host_machine.cpu_family()]
+             '--compiler_id', cc.get_argument_syntax(), '--cpu_family', host_machine.cpu_family()]
 )
 
 libgles2 = shared_library(
@@ -56,7 +56,7 @@ libgles2 = shared_library(
   link_args : [ld_args_gc_sections],
   include_directories : [inc_src, inc_include, inc_mapi],
   link_with : libglapi,
-  dependencies : [dep_thread, dep_libdrm, dep_m, dep_dl],
+  dependencies : [dep_thread, dep_libdrm, dep_m, dep_dl, idep_mesautilc11],
   soversion : host_machine.system() == 'windows' ? '' : '2',
   version : '2.0.0',
   darwin_versions : '3.0.0',

@@ -741,6 +741,13 @@ nir_iand_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
 }
 
 static inline nir_ssa_def *
+nir_test_mask(nir_builder *build, nir_ssa_def *x, uint64_t mask)
+{
+   assert(mask <= BITFIELD64_MASK(x->bit_size));
+   return nir_ine_imm(build, nir_iand_imm(build, x, mask), 0);
+}
+
+static inline nir_ssa_def *
 nir_ior_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
 {
    assert(x->bit_size <= 64);
@@ -1452,6 +1459,40 @@ nir_copy_var(nir_builder *build, nir_variable *dest, nir_variable *src)
                          nir_build_deref_var(build, src));
 }
 
+static inline nir_ssa_def *
+nir_load_array_var(nir_builder *build, nir_variable *var, nir_ssa_def *index)
+{
+   nir_deref_instr *deref =
+      nir_build_deref_array(build, nir_build_deref_var(build, var), index);
+   return nir_load_deref(build, deref);
+}
+
+static inline nir_ssa_def *
+nir_load_array_var_imm(nir_builder *build, nir_variable *var, int64_t index)
+{
+   nir_deref_instr *deref =
+      nir_build_deref_array_imm(build, nir_build_deref_var(build, var), index);
+   return nir_load_deref(build, deref);
+}
+
+static inline void
+nir_store_array_var(nir_builder *build, nir_variable *var, nir_ssa_def *index,
+                    nir_ssa_def *value, unsigned writemask)
+{
+   nir_deref_instr *deref =
+      nir_build_deref_array(build, nir_build_deref_var(build, var), index);
+   nir_store_deref(build, deref, value, writemask);
+}
+
+static inline void
+nir_store_array_var_imm(nir_builder *build, nir_variable *var, int64_t index,
+                        nir_ssa_def *value, unsigned writemask)
+{
+   nir_deref_instr *deref =
+      nir_build_deref_array_imm(build, nir_build_deref_var(build, var), index);
+   nir_store_deref(build, deref, value, writemask);
+}
+
 #undef nir_load_global
 static inline nir_ssa_def *
 nir_load_global(nir_builder *build, nir_ssa_def *addr, unsigned align,
@@ -1507,32 +1548,6 @@ nir_load_param(nir_builder *build, uint32_t param_idx)
    assert(param_idx < build->impl->function->num_params);
    nir_parameter *param = &build->impl->function->params[param_idx];
    return nir_build_load_param(build, param->num_components, param->bit_size, param_idx);
-}
-
-/**
- * This function takes an I/O intrinsic like load/store_input,
- * and emits a sequence that calculates the full offset of that instruction,
- * including a stride to the base and component offsets.
- */
-static inline nir_ssa_def *
-nir_build_calc_io_offset(nir_builder *b,
-                         nir_intrinsic_instr *intrin,
-                         nir_ssa_def *base_stride,
-                         unsigned component_stride)
-{
-   /* base is the driver_location, which is in slots (1 slot = 4x4 bytes) */
-   nir_ssa_def *base_op = nir_imul_imm(b, base_stride, nir_intrinsic_base(intrin));
-
-   /* offset should be interpreted in relation to the base,
-    * so the instruction effectively reads/writes another input/output
-    * when it has an offset
-    */
-   nir_ssa_def *offset_op = nir_imul(b, base_stride, nir_ssa_for_src(b, *nir_get_io_offset_src(intrin), 1));
-
-   /* component is in bytes */
-   unsigned const_op = nir_intrinsic_component(intrin) * component_stride;
-
-   return nir_iadd_imm_nuw(b, nir_iadd_nuw(b, base_op, offset_op), const_op);
 }
 
 /* calculate a `(1 << value) - 1` in ssa without overflows */

@@ -40,7 +40,7 @@ static void blorp_measure_start(struct blorp_batch *_batch,
                                 const struct blorp_params *params)
 {
    struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
-   trace_intel_begin_blorp(&cmd_buffer->trace, cmd_buffer);
+   trace_intel_begin_blorp(&cmd_buffer->trace);
    anv_measure_snapshot(cmd_buffer,
                         params->snapshot_type,
                         NULL, 0);
@@ -50,7 +50,7 @@ static void blorp_measure_end(struct blorp_batch *_batch,
                               const struct blorp_params *params)
 {
    struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
-   trace_intel_end_blorp(&cmd_buffer->trace, cmd_buffer,
+   trace_intel_end_blorp(&cmd_buffer->trace,
                          params->x1 - params->x0,
                          params->y1 - params->y0,
                          params->hiz_op,
@@ -288,7 +288,7 @@ blorp_exec_on_render(struct blorp_batch *batch,
 #if GFX_VER >= 11
    /* The PIPE_CONTROL command description says:
     *
-    *    "Whenever a Binding Table Index (BTI) used by a Render Taget Message
+    *    "Whenever a Binding Table Index (BTI) used by a Render Target Message
     *     points to a different RENDER_SURFACE_STATE, SW must issue a Render
     *     Target Cache Flush by enabling this bit. When render target flush
     *     is set due to new association of BTI, PS Scoreboard Stall bit must
@@ -321,7 +321,7 @@ blorp_exec_on_render(struct blorp_batch *batch,
 #if GFX_VER >= 11
    /* The PIPE_CONTROL command description says:
     *
-    *    "Whenever a Binding Table Index (BTI) used by a Render Taget Message
+    *    "Whenever a Binding Table Index (BTI) used by a Render Target Message
     *     points to a different RENDER_SURFACE_STATE, SW must issue a Render
     *     Target Cache Flush by enabling this bit. When render target flush
     *     is set due to new association of BTI, PS Scoreboard Stall bit must
@@ -337,11 +337,9 @@ blorp_exec_on_render(struct blorp_batch *batch,
     * Flush everything else.
     */
    anv_cmd_dirty_mask_t skip_bits = ANV_CMD_DIRTY_DYNAMIC_SCISSOR |
-                                    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS |
                                     ANV_CMD_DIRTY_INDEX_BUFFER |
                                     ANV_CMD_DIRTY_XFB_ENABLE |
                                     ANV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE |
-                                    ANV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |
                                     ANV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS |
                                     ANV_CMD_DIRTY_DYNAMIC_SHADING_RATE |
                                     ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE;

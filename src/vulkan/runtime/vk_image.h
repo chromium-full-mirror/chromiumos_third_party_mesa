@@ -125,6 +125,76 @@ vk_image_subresource_level_count(const struct vk_image *image,
           image->mip_levels - range->baseMipLevel : range->levelCount;
 }
 
+static inline VkExtent3D
+vk_image_sanitize_extent(const struct vk_image *image,
+                         const VkExtent3D imageExtent)
+{
+   switch (image->image_type) {
+   case VK_IMAGE_TYPE_1D:
+      return (VkExtent3D) { imageExtent.width, 1, 1 };
+   case VK_IMAGE_TYPE_2D:
+      return (VkExtent3D) { imageExtent.width, imageExtent.height, 1 };
+   case VK_IMAGE_TYPE_3D:
+      return imageExtent;
+   default:
+      unreachable("invalid image type");
+   }
+}
+
+VkExtent3D
+vk_image_extent_to_elements(const struct vk_image *image, VkExtent3D extent);
+
+static inline VkOffset3D
+vk_image_sanitize_offset(const struct vk_image *image,
+                         const VkOffset3D imageOffset)
+{
+   switch (image->image_type) {
+   case VK_IMAGE_TYPE_1D:
+      return (VkOffset3D) { imageOffset.x, 0, 0 };
+   case VK_IMAGE_TYPE_2D:
+      return (VkOffset3D) { imageOffset.x, imageOffset.y, 0 };
+   case VK_IMAGE_TYPE_3D:
+      return imageOffset;
+   default:
+      unreachable("invalid image type");
+   }
+}
+
+VkOffset3D
+vk_image_offset_to_elements(const struct vk_image *image, VkOffset3D offset);
+
+struct vk_image_buffer_layout {
+   /**
+    * VkBufferImageCopy2KHR::bufferRowLength or
+    * VkBufferImageCopy2KHR::extent::width as needed.
+    */
+   uint32_t row_length;
+
+   /**
+    * VkBufferImageCopy2KHR::bufferImageHeight or
+    * VkBufferImageCopy2KHR::extent::height as needed.
+    */
+   uint32_t image_height;
+
+   /** Size of a single element (pixel or compressed block) in bytes */
+   uint32_t element_size_B;
+
+   /** Row stride in bytes */
+   uint32_t row_stride_B;
+
+   /** Image (or layer) stride in bytes
+    *
+    * For 1D or 2D array images, this is the stride in bytes between array
+    * slices.  For 3D images, this is the stride in bytes between fixed-Z
+    * slices.
+    */
+   uint64_t image_stride_B;
+};
+
+struct vk_image_buffer_layout
+vk_image_buffer_copy_layout(const struct vk_image *image,
+                            const VkBufferImageCopy2KHR* region);
+
 struct vk_image_view {
    struct vk_object_base base;
 
@@ -201,6 +271,9 @@ struct vk_image_view {
    uint32_t level_count;
    uint32_t base_array_layer;
    uint32_t layer_count;
+
+   /* VK_EXT_image_view_min_lod */
+   float min_lod;
 
    /* Image extent at LOD 0 */
    VkExtent3D extent;

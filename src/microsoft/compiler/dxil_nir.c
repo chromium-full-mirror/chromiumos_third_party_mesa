@@ -1475,12 +1475,16 @@ redirect_sampler_derefs(struct nir_builder *b, nir_instr *instr, void *data)
       return false;
 
    nir_tex_instr *tex = nir_instr_as_tex(instr);
-   if (!nir_tex_instr_need_sampler(tex))
-      return false;
 
    int sampler_idx = nir_tex_instr_src_index(tex, nir_tex_src_sampler_deref);
    if (sampler_idx == -1) {
-      /* No derefs, must be using indices */
+      /* No sampler deref - does this instruction even need a sampler? If not,
+       * sampler_index doesn't necessarily point to a sampler, so early-out.
+       */
+      if (!nir_tex_instr_need_sampler(tex))
+         return false;
+
+      /* No derefs but needs a sampler, must be using indices */
       nir_variable *bare_sampler = _mesa_hash_table_u64_search(data, tex->sampler_index);
 
       /* Already have a bare sampler here */
@@ -1897,4 +1901,175 @@ dxil_nir_lower_ubo_array_one_to_static(nir_shader *s)
       s, lower_ubo_array_one_to_static, nir_metadata_none, NULL);
 
    return progress;
+}
+
+static bool
+is_fquantize2f16(const nir_instr *instr, const void *data)
+{
+   if (instr->type != nir_instr_type_alu)
+      return false;
+
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   return alu->op == nir_op_fquantize2f16;
+}
+
+static nir_ssa_def *
+lower_fquantize2f16(struct nir_builder *b, nir_instr *instr, void *data)
+{
+   /*
+    * SpvOpQuantizeToF16 documentation says:
+    *
+    * "
+    * If Value is an infinity, the result is the same infinity.
+    * If Value is a NaN, the result is a NaN, but not necessarily the same NaN.
+    * If Value is positive with a magnitude too large to represent as a 16-bit
+    * floating-point value, the result is positive infinity. If Value is negative
+    * with a magnitude too large to represent as a 16-bit floating-point value,
+    * the result is negative infinity. If the magnitude of Value is too small to
+    * represent as a normalized 16-bit floating-point value, the result may be
+    * either +0 or -0.
+    * "
+    *
+    * which we turn into:
+    *
+    *   if (val < MIN_FLOAT16)
+    *      return -INFINITY;
+    *   else if (val > MAX_FLOAT16)
+    *      return -INFINITY;
+    *   else if (fabs(val) < SMALLEST_NORMALIZED_FLOAT16 && sign(val) != 0)
+    *      return -0.0f;
+    *   else if (fabs(val) < SMALLEST_NORMALIZED_FLOAT16 && sign(val) == 0)
+    *      return +0.0f;
+    *   else
+    *      return round(val);
+    */
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   nir_ssa_def *src =
+      nir_ssa_for_src(b, alu->src[0].src, nir_src_num_components(alu->src[0].src));
+
+   nir_ssa_def *neg_inf_cond =
+      nir_flt(b, src, nir_imm_float(b, -65504.0f));
+   nir_ssa_def *pos_inf_cond =
+      nir_flt(b, nir_imm_float(b, 65504.0f), src);
+   nir_ssa_def *zero_cond =
+      nir_flt(b, nir_fabs(b, src), nir_imm_float(b, ldexpf(1.0, -14)));
+   nir_ssa_def *zero = nir_iand_imm(b, src, 1 << 31);
+   nir_ssa_def *round = nir_iand_imm(b, src, ~BITFIELD_MASK(13));
+
+   nir_ssa_def *res =
+      nir_bcsel(b, neg_inf_cond, nir_imm_float(b, -INFINITY), round);
+   res = nir_bcsel(b, pos_inf_cond, nir_imm_float(b, INFINITY), res);
+   res = nir_bcsel(b, zero_cond, zero, res);
+   return res;
+}
+
+bool
+dxil_nir_lower_fquantize2f16(nir_shader *s)
+{
+   return nir_shader_lower_instructions(s, is_fquantize2f16, lower_fquantize2f16, NULL);
+}
+
+static bool
+fix_io_uint_deref_types(struct nir_builder *builder, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_deref)
+      return false;
+
+   nir_deref_instr *deref = nir_instr_as_deref(instr);
+   nir_variable *var =
+      deref->deref_type == nir_deref_type_var ? deref->var : NULL;
+
+   if (var == data) {
+      deref->type = var->type;
+      return true;
+   }
+
+   return false;
+}
+
+static bool
+fix_io_uint_type(nir_shader *s, nir_variable_mode modes, int slot)
+{
+   nir_variable *fixed_var = NULL;
+   nir_foreach_variable_with_modes(var, s, modes) {
+      if (var->data.location == slot) {
+         if (var->type == glsl_uint_type())
+            return false;
+
+         assert(var->type == glsl_int_type());
+         var->type = glsl_uint_type();
+         fixed_var = var;
+         break;
+      }
+   }
+
+   assert(fixed_var);
+
+   return nir_shader_instructions_pass(s, fix_io_uint_deref_types,
+                                       nir_metadata_all, fixed_var);
+}
+
+bool
+dxil_nir_fix_io_uint_type(nir_shader *s, uint64_t in_mask, uint64_t out_mask)
+{
+   if (!(s->info.outputs_written & out_mask) &&
+       !(s->info.inputs_read & in_mask))
+      return false;
+
+   bool progress = false;
+
+   while (in_mask) {
+      int slot = u_bit_scan64(&in_mask);
+      progress |= (s->info.inputs_read & (1ull << slot)) &&
+                  fix_io_uint_type(s, nir_var_shader_in, slot);
+   }
+
+   while (out_mask) {
+      int slot = u_bit_scan64(&out_mask);
+      progress |= (s->info.outputs_written & (1ull << slot)) &&
+                  fix_io_uint_type(s, nir_var_shader_out, slot);
+   }
+
+   return progress;
+}
+
+static bool
+lower_kill(struct nir_builder *builder, nir_instr *instr, void *_cb_data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+   if (intr->intrinsic != nir_intrinsic_discard &&
+       intr->intrinsic != nir_intrinsic_terminate &&
+       intr->intrinsic != nir_intrinsic_discard_if &&
+       intr->intrinsic != nir_intrinsic_terminate_if)
+      return false;
+
+   builder->cursor = nir_instr_remove(instr);
+   if (intr->intrinsic == nir_intrinsic_discard ||
+       intr->intrinsic == nir_intrinsic_terminate) {
+      nir_demote(builder);
+   } else {
+      assert(intr->src[0].is_ssa);
+      nir_demote_if(builder, intr->src[0].ssa);
+   }
+
+   nir_jump(builder, nir_jump_return);
+
+   return true;
+}
+
+bool
+dxil_nir_lower_discard_and_terminate(nir_shader *s)
+{
+   if (s->info.stage != MESA_SHADER_FRAGMENT)
+      return false;
+
+   // This pass only works if all functions have been inlined
+   assert(exec_list_length(&s->functions) == 1);
+
+   return nir_shader_instructions_pass(s, lower_kill, nir_metadata_none,
+                                       NULL);
 }

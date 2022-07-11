@@ -286,7 +286,7 @@ tiling_possible(VkFormat format)
 bool
 ubwc_possible(VkFormat format, VkImageType type, VkImageUsageFlags usage,
               VkImageUsageFlags stencil_usage, const struct fd_dev_info *info,
-              VkSampleCountFlagBits samples)
+              VkSampleCountFlagBits samples, bool use_z24uint_s8uint)
 {
    /* no UBWC with compressed formats, E5B9G9R9, S8_UINT
     * (S8_UINT because separate stencil doesn't have UBWC-enable bit)
@@ -294,6 +294,13 @@ ubwc_possible(VkFormat format, VkImageType type, VkImageUsageFlags usage,
    if (vk_format_is_compressed(format) ||
        format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32 ||
        format == VK_FORMAT_S8_UINT)
+      return false;
+
+   /* In copy_format, we treat snorm as unorm to avoid clamping.  But snorm
+    * and unorm are UBWC incompatible for special values such as all 0's or
+    * all 1's.  Disable UBWC for snorm.
+    */
+   if (vk_format_is_snorm(format))
       return false;
 
    if (!info->a6xx.has_8bpp_ubwc &&
@@ -329,10 +336,13 @@ ubwc_possible(VkFormat format, VkImageType type, VkImageUsageFlags usage,
     *
     * It must be sampled as FMT6_8_8_8_8_UINT, which is not UBWC-compatible
     *
+    * If we wish to get the border colors correct without knowing the format
+    * when creating the sampler, we also have to use the A630 workaround.
+    *
     * Additionally, the special AS_R8G8B8A8 format is broken without UBWC,
     * so we have to fallback to 8_8_8_8_UNORM when UBWC is disabled
     */
-   if (!info->a6xx.has_z24uint_s8uint &&
+   if (!use_z24uint_s8uint &&
        format == VK_FORMAT_D24_UNORM_S8_UINT &&
        (stencil_usage & (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)))
       return false;
@@ -445,7 +455,8 @@ tu_image_init(struct tu_device *device, struct tu_image *image,
 
    if (!ubwc_possible(image->vk_format, pCreateInfo->imageType, pCreateInfo->usage,
                       stencil_usage_info ? stencil_usage_info->stencilUsage : pCreateInfo->usage,
-                      device->physical_device->info, pCreateInfo->samples))
+                      device->physical_device->info, pCreateInfo->samples,
+                      device->use_z24uint_s8uint))
       ubwc_enabled = false;
 
    /* expect UBWC enabled if we asked for it */
@@ -561,6 +572,35 @@ tu_image_init(struct tu_device *device, struct tu_image *image,
       image->lrz_offset = image->total_size;
       unsigned lrz_size = lrz_pitch * lrz_height * 2;
       image->total_size += lrz_size;
+
+      unsigned nblocksx = DIV_ROUND_UP(DIV_ROUND_UP(width, 8), 16);
+      unsigned nblocksy = DIV_ROUND_UP(DIV_ROUND_UP(height, 8), 4);
+
+      /* Fast-clear buffer is 1bit/block */
+      image->lrz_fc_size = DIV_ROUND_UP(nblocksx * nblocksy, 8);
+
+      /* Fast-clear buffer cannot be larger than 512 bytes (HW limitation) */
+      bool has_lrz_fc = image->lrz_fc_size <= 512 &&
+         device->physical_device->info->a6xx.enable_lrz_fast_clear &&
+         !unlikely(device->physical_device->instance->debug_flags & TU_DEBUG_NOLRZFC);
+
+      if (has_lrz_fc || device->physical_device->info->a6xx.has_lrz_dir_tracking) {
+         image->lrz_fc_offset = image->total_size;
+         image->total_size += 512;
+
+         if (device->physical_device->info->a6xx.has_lrz_dir_tracking) {
+            /* Direction tracking uses 1 byte */
+            image->total_size += 1;
+            /* GRAS_LRZ_DEPTH_VIEW needs 5 bytes: 4 for view data and 1 for padding */
+            image->total_size += 5;
+         }
+      }
+
+      if (!has_lrz_fc) {
+         image->lrz_fc_size = 0;
+      }
+   } else {
+      image->lrz_height = 0;
    }
 
    return VK_SUCCESS;
@@ -791,7 +831,7 @@ tu_CreateImageView(VkDevice _device,
    if (view == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   tu_image_view_init(view, pCreateInfo, device->physical_device->info->a6xx.has_z24uint_s8uint);
+   tu_image_view_init(view, pCreateInfo, device->use_z24uint_s8uint);
 
    *pView = tu_image_view_to_handle(view);
 

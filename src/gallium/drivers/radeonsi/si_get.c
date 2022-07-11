@@ -74,7 +74,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_PRIMITIVE_RESTART:
    case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_CONDITIONAL_RENDER:
@@ -165,6 +164,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_IMAGE_ATOMIC_INC_WRAP:
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
    case PIPE_CAP_ALLOW_DRAW_OUT_OF_ORDER:
+   case PIPE_CAP_QUERY_SO_OVERFLOW:
+   case PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS:
       return 1;
 
    case PIPE_CAP_TEXTURE_TRANSFER_MODES:
@@ -184,9 +185,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
    case PIPE_CAP_CUBE_MAP_ARRAY:
       return sscreen->info.has_3d_cube_border_color_mipmap;
-
-   case PIPE_CAP_QUERY_SO_OVERFLOW:
-      return !sscreen->use_ngg_streamout;
 
    case PIPE_CAP_POST_DEPTH_COVERAGE:
       return sscreen->info.gfx_level >= GFX10;
@@ -234,12 +232,42 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GL_BEGIN_END_BUFFER_SIZE:
       return 4096 * 1024;
 
-   case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
-   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT: {
+      unsigned max_texels =
+         pscreen->get_param(pscreen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT);
+
+      /* FYI, BUF_RSRC_WORD2.NUM_RECORDS field limit is UINT32_MAX. */
+
+      /* Gfx8 and older use the size in bytes for bounds checking, and the max element size
+       * is 16B. Gfx9 and newer use the VGPR index for bounds checking.
+       */
+      if (sscreen->info.gfx_level <= GFX8)
+         max_texels = MIN2(max_texels, UINT32_MAX / 16);
+      else
+         /* Gallium has a limitation that it can only bind UINT32_MAX bytes, not texels.
+          * TODO: Remove this after the gallium interface is changed. */
+         max_texels = MIN2(max_texels, UINT32_MAX / 16);
+
+      return max_texels;
+   }
+
+   case PIPE_CAP_MAX_CONSTANT_BUFFER_SIZE_UINT:
+   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT: {
+      /* Return 1/4th of the heap size as the maximum because the max size is not practically
+       * allocatable. Also, this can only return UINT32_MAX at most.
+       */
+      unsigned max_size = MIN2((sscreen->info.max_heap_size_kb * 1024ull) / 4, UINT32_MAX);
+
       /* Allow max 512 MB to pass CTS with a 32-bit build. */
-      return MIN2(sscreen->info.max_alloc_size, 512 * 1024 * 1024);
+      if (sizeof(void*) == 4)
+         max_size = MIN2(max_size, 512 * 1024 * 1024);
+
+      return max_size;
+   }
+
    case PIPE_CAP_MAX_TEXTURE_MB:
-      return sscreen->info.max_alloc_size / (1024 * 1024);
+      /* Allow 1/4th of the heap size. */
+      return sscreen->info.max_heap_size_kb / 1024 / 4;
 
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
    case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
@@ -253,6 +281,13 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_UMA:
    case PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF:
       return 0;
+
+   case PIPE_CAP_CONTEXT_PRIORITY_MASK:
+      if (!(sscreen->info.is_amdgpu && sscreen->info.drm_minor >= 22))
+         return 0;
+      return PIPE_CONTEXT_PRIORITY_LOW |
+             PIPE_CONTEXT_PRIORITY_MEDIUM |
+             PIPE_CONTEXT_PRIORITY_HIGH;
 
    case PIPE_CAP_FENCE_SIGNAL:
       return sscreen->info.has_syncobj;
@@ -423,7 +458,7 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
       return shader == PIPE_SHADER_FRAGMENT ? 8 : 32;
    case PIPE_SHADER_CAP_MAX_TEMPS:
       return 256; /* Max native temporaries. */
-   case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+   case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
       return 1 << 26; /* 64 MB */
    case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
       return SI_NUM_CONST_BUFFERS;
@@ -434,8 +469,6 @@ static int si_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_typ
       return SI_NUM_SHADER_BUFFERS;
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
       return SI_NUM_IMAGES;
-   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-      return 0;
    case PIPE_SHADER_CAP_PREFERRED_IR:
       return PIPE_SHADER_IR_NIR;
 
@@ -593,7 +626,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return 0;
       case PIPE_VIDEO_CAP_EFC_SUPPORTED:
          return ((sscreen->info.family >= CHIP_RENOIR) &&
-                 (sscreen->info.family < CHIP_SIENNA_CICHLID) &&
+                 (sscreen->info.family < CHIP_NAVI21) &&
                  !(sscreen->debug_flags & DBG(NO_EFC)));
       default:
          return 0;
@@ -603,7 +636,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
    switch (param) {
    case PIPE_VIDEO_CAP_SUPPORTED:
       if (codec < PIPE_VIDEO_FORMAT_MPEG4_AVC &&
-          sscreen->info.family >= CHIP_BEIGE_GOBY)
+          sscreen->info.family >= CHIP_NAVI24)
          return false;
       if (codec != PIPE_VIDEO_FORMAT_JPEG &&
           !(sscreen->info.has_video_hw.uvd_decode ||
@@ -660,7 +693,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return false;
          return true;
       case PIPE_VIDEO_FORMAT_AV1:
-         if (sscreen->info.family < CHIP_SIENNA_CICHLID)
+         if (sscreen->info.family < CHIP_NAVI21)
             return false;
          return true;
       default:
@@ -813,9 +846,9 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
    case PIPE_COMPUTE_CAP_MAX_GRID_SIZE:
       if (ret) {
          uint64_t *grid_size = ret;
-         grid_size[0] = 65535;
-         grid_size[1] = 65535;
-         grid_size[2] = 65535;
+         grid_size[0] = UINT32_MAX;
+         grid_size[1] = UINT32_MAX;
+         grid_size[2] = UINT32_MAX;
       }
       return 3 * sizeof(uint64_t);
 
@@ -857,7 +890,7 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
           * 4 * MAX_MEM_ALLOC_SIZE.
           */
          *max_global_size =
-            MIN2(4 * max_mem_alloc_size, MAX2(sscreen->info.gart_size, sscreen->info.vram_size));
+            MIN2(4 * max_mem_alloc_size, sscreen->info.max_heap_size_kb * 1024ull);
       }
       return sizeof(uint64_t);
 
@@ -865,7 +898,10 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
       if (ret) {
          uint64_t *max_local_size = ret;
          /* Value reported by the closed source driver. */
-         *max_local_size = 32768;
+         if (sscreen->info.gfx_level == GFX6)
+            *max_local_size = 32 * 1024;
+         else
+            *max_local_size = 64 * 1024;
       }
       return sizeof(uint64_t);
 
@@ -881,7 +917,10 @@ static int si_get_compute_param(struct pipe_screen *screen, enum pipe_shader_ir 
       if (ret) {
          uint64_t *max_mem_alloc_size = ret;
 
-         *max_mem_alloc_size = sscreen->info.max_alloc_size;
+         /* Return 1/4 of the heap size as the maximum because the max size is not practically
+          * allocatable.
+          */
+         *max_mem_alloc_size = (sscreen->info.max_heap_size_kb / 4) * 1024ull;
       }
       return sizeof(uint64_t);
 
@@ -1074,6 +1113,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
       .lower_insert_word = true,
       .lower_rotate = true,
       .lower_to_scalar = true,
+      .lower_int64_options = nir_lower_imul_2x32_64,
       .has_sdot_4x8 = sscreen->info.has_accelerated_dot_product,
       .has_udot_4x8 = sscreen->info.has_accelerated_dot_product,
       .has_dot_2x16 = sscreen->info.has_accelerated_dot_product,

@@ -52,6 +52,10 @@ void si_blitter_begin(struct si_context *sctx, enum si_blitter_op op)
    util_blitter_save_rasterizer(sctx->blitter, sctx->queued.named.rasterizer);
 
    if (op & SI_SAVE_FRAGMENT_STATE) {
+      struct pipe_constant_buffer fs_cb = {};
+      si_get_pipe_constant_buffer(sctx, PIPE_SHADER_FRAGMENT, 0, &fs_cb);
+      util_blitter_save_fragment_constant_buffer_slot(sctx->blitter, &fs_cb);
+      pipe_resource_reference(&fs_cb.buffer, NULL);
       util_blitter_save_blend(sctx->blitter, sctx->queued.named.blend);
       util_blitter_save_depth_stencil_alpha(sctx->blitter, sctx->queued.named.dsa);
       util_blitter_save_stencil_ref(sctx->blitter, &sctx->stencil_ref.state);
@@ -1351,8 +1355,10 @@ void si_decompress_dcc(struct si_context *sctx, struct si_texture *tex)
    /* If graphics is disabled, we can't decompress DCC, but it shouldn't
     * be compressed either. The caller should simply discard it.
     */
-   if (!tex->surface.meta_offset || !sctx->has_graphics)
+   if (!tex->surface.meta_offset || !sctx->has_graphics || sctx->in_dcc_decompress)
       return;
+
+   sctx->in_dcc_decompress = true;
 
    if (sctx->gfx_level == GFX8 || tex->buffer.b.b.nr_storage_samples >= 2) {
       si_blit_decompress_color(sctx, tex, 0, tex->buffer.b.b.last_level, 0,
@@ -1395,6 +1401,7 @@ void si_decompress_dcc(struct si_context *sctx, struct si_texture *tex)
        */
       sctx->flags |= SI_CONTEXT_WB_L2 | SI_CONTEXT_INV_L2_METADATA;
    }
+   sctx->in_dcc_decompress = false;
 }
 
 void si_init_blit_functions(struct si_context *sctx)

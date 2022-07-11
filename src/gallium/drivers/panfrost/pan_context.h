@@ -71,6 +71,7 @@ enum pan_dirty_3d {
         PAN_DIRTY_OQ             = BITFIELD_BIT(9),
         PAN_DIRTY_RASTERIZER     = BITFIELD_BIT(10),
         PAN_DIRTY_POINTS         = BITFIELD_BIT(11),
+        PAN_DIRTY_SO             = BITFIELD_BIT(12),
 };
 
 enum pan_dirty_shader {
@@ -289,6 +290,9 @@ struct panfrost_shader_state {
 
         struct pan_shader_info info;
 
+        /* Attached transform feedback program, if one exists */
+        struct panfrost_shader_state *xfb;
+
         /* Linked varyings, for non-separable programs */
         struct pan_linkage linkage;
 
@@ -401,6 +405,11 @@ panfrost_shader_compile(struct pipe_screen *pscreen,
 
 void
 panfrost_analyze_sysvals(struct panfrost_shader_state *ss);
+
+mali_ptr
+panfrost_get_index_buffer(struct panfrost_batch *batch,
+                          const struct pipe_draw_info *info,
+                          const struct pipe_draw_start_count_bias *draw);
 
 mali_ptr
 panfrost_get_index_buffer_bounded(struct panfrost_batch *batch,

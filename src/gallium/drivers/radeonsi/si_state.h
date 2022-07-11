@@ -535,7 +535,7 @@ void si_init_state_functions(struct si_context *sctx);
 void si_init_screen_state_functions(struct si_screen *sscreen);
 void si_init_cs_preamble_state(struct si_context *sctx, bool uses_reg_shadowing);
 void si_make_buffer_descriptor(struct si_screen *screen, struct si_resource *buf,
-                               enum pipe_format format, unsigned offset, unsigned size,
+                               enum pipe_format format, unsigned offset, unsigned num_elements,
                                uint32_t *state);
 void si_set_sampler_depth_decompress_mask(struct si_context *sctx, struct si_texture *tex);
 void si_update_fb_dirtiness_after_rendering(struct si_context *sctx);
@@ -583,7 +583,6 @@ void si_vs_key_update_inputs(struct si_context *sctx);
 void si_get_vs_key_inputs(struct si_context *sctx, union si_shader_key *key,
                           struct si_vs_prolog_bits *prolog_key);
 void si_update_ps_inputs_read_or_disabled(struct si_context *sctx);
-void si_update_ps_kill_enable(struct si_context *sctx);
 void si_update_vrs_flat_shading(struct si_context *sctx);
 unsigned si_get_input_prim(const struct si_shader_selector *gs, const union si_shader_key *key);
 bool si_update_ngg(struct si_context *sctx);
@@ -598,6 +597,7 @@ void si_init_tess_factor_ring(struct si_context *sctx);
 bool si_update_gs_ring_buffers(struct si_context *sctx);
 bool si_update_spi_tmpring_size(struct si_context *sctx, unsigned bytes);
 unsigned si_calc_inst_pref_size(struct si_shader *shader);
+bool si_set_tcs_to_fixed_func_shader(struct si_context *sctx);
 
 /* si_state_draw.cpp */
 void si_cp_dma_prefetch(struct si_context *sctx, struct pipe_resource *buf,
@@ -650,7 +650,7 @@ static inline unsigned si_get_image_slot(unsigned slot)
    return SI_NUM_IMAGE_SLOTS - 1 - slot;
 }
 
-static inline unsigned si_clamp_texture_texel_count(unsigned max_texture_buffer_size,
+static inline unsigned si_clamp_texture_texel_count(unsigned max_texel_buffer_elements,
                                                     enum pipe_format format,
                                                     uint32_t size)
 {
@@ -661,9 +661,7 @@ static inline unsigned si_clamp_texture_texel_count(unsigned max_texture_buffer_
     * So compute the number of texels, compare to GL_MAX_TEXTURE_BUFFER_SIZE and update it.
     */
    unsigned stride = util_format_get_blocksize(format);
-   unsigned num_texels = MIN2(max_texture_buffer_size,
-                               size / stride);
-   return num_texels * stride;
+   return MIN2(max_texel_buffer_elements, size / stride);
 }
 
 #ifdef __cplusplus

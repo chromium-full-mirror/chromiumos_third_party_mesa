@@ -3518,11 +3518,8 @@ disable_varying_optimizations_for_sso(struct gl_shader_program *prog)
 }
 
 static bool
-link_varyings_and_uniforms(unsigned first, unsigned last,
-                           const struct gl_constants *consts,
-                           const struct gl_extensions *exts,
-                           gl_api api,
-                           struct gl_shader_program *prog, void *mem_ctx)
+link_varyings(const struct gl_constants *consts, struct gl_shader_program *prog,
+              void *mem_ctx)
 {
    /* Mark all generic shader inputs and outputs as unpaired. */
    for (unsigned i = MESA_SHADER_VERTEX; i <= MESA_SHADER_FRAGMENT; i++) {
@@ -3562,16 +3559,6 @@ link_varyings_and_uniforms(unsigned first, unsigned last,
    }
 
    return true;
-}
-
-static void
-linker_optimisation_loop(const struct gl_constants *consts, exec_list *ir,
-                         unsigned stage)
-{
-   /* Run it just once, since NIR will do the real optimizaiton. */
-   do_common_optimization(ir, true, false,
-                           &consts->ShaderCompilerOptions[stage],
-                           consts->NativeIntegers);
 }
 
 void
@@ -3911,17 +3898,10 @@ link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
          }
       }
 
-      /* Call opts before lowering const arrays to uniforms so we can const
-       * propagate any elements accessed directly.
-       */
-      linker_optimisation_loop(consts, prog->_LinkedShaders[i]->ir, i);
-
-      /* Call opts after lowering const arrays to copy propagate things. */
-      if (consts->GLSLLowerConstArrays &&
-          lower_const_arrays_to_uniforms(prog->_LinkedShaders[i]->ir, i,
-                                         consts->Program[i].MaxUniformComponents))
-         linker_optimisation_loop(consts, prog->_LinkedShaders[i]->ir, i);
-
+      /* Run it just once, since NIR will do the real optimizaiton. */
+      do_common_optimization(prog->_LinkedShaders[i]->ir, true,
+                             &consts->ShaderCompilerOptions[i],
+                             consts->NativeIntegers);
    }
 
    /* Check and validate stream emissions in geometry shaders */
@@ -3929,19 +3909,8 @@ link_shaders(struct gl_context *ctx, struct gl_shader_program *prog)
 
    store_fragdepth_layout(prog);
 
-   if(!link_varyings_and_uniforms(first, last, consts,
-                                  &ctx->Extensions, ctx->API, prog, mem_ctx))
+   if(!link_varyings(consts, prog, mem_ctx))
       goto done;
-
-   /* Linking varyings can cause some extra, useless swizzles to be generated
-    * due to packing and unpacking.
-    */
-   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
-      if (prog->_LinkedShaders[i] == NULL)
-         continue;
-
-      optimize_swizzles(prog->_LinkedShaders[i]->ir);
-   }
 
    /* OpenGL ES < 3.1 requires that a vertex shader and a fragment shader both
     * be present in a linked program. GL_ARB_ES2_compatibility doesn't say
