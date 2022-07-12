@@ -630,6 +630,7 @@ vn_CreateFence(VkDevice device,
                const VkAllocationCallbacks *pAllocator,
                VkFence *pFence)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
@@ -682,6 +683,7 @@ vn_DestroyFence(VkDevice device,
                 VkFence _fence,
                 const VkAllocationCallbacks *pAllocator)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_fence *fence = vn_fence_from_handle(_fence);
    const VkAllocationCallbacks *alloc =
@@ -704,6 +706,7 @@ vn_DestroyFence(VkDevice device,
 VkResult
 vn_ResetFences(VkDevice device, uint32_t fenceCount, const VkFence *pFences)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
 
    /* TODO if the fence is shared-by-ref, this needs to be synchronous */
@@ -893,6 +896,7 @@ VkResult
 vn_ImportFenceFdKHR(VkDevice device,
                     const VkImportFenceFdInfoKHR *pImportFenceFdInfo)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_fence *fence = vn_fence_from_handle(pImportFenceFdInfo->fence);
    ASSERTED const bool sync_file = pImportFenceFdInfo->handleType ==
@@ -920,6 +924,7 @@ vn_GetFenceFdKHR(VkDevice device,
                  const VkFenceGetFdInfoKHR *pGetFdInfo,
                  int *pFd)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_fence *fence = vn_fence_from_handle(pGetFdInfo->fence);
    const bool sync_file =
@@ -987,6 +992,7 @@ vn_CreateSemaphore(VkDevice device,
                    const VkAllocationCallbacks *pAllocator,
                    VkSemaphore *pSemaphore)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
@@ -1029,6 +1035,7 @@ vn_DestroySemaphore(VkDevice device,
                     VkSemaphore semaphore,
                     const VkAllocationCallbacks *pAllocator)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_semaphore *sem = vn_semaphore_from_handle(semaphore);
    const VkAllocationCallbacks *alloc =
@@ -1051,6 +1058,7 @@ vn_GetSemaphoreCounterValue(VkDevice device,
                             VkSemaphore semaphore,
                             uint64_t *pValue)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_semaphore *sem = vn_semaphore_from_handle(semaphore);
    ASSERTED struct vn_sync_payload *payload = sem->payload;
@@ -1063,6 +1071,7 @@ vn_GetSemaphoreCounterValue(VkDevice device,
 VkResult
 vn_SignalSemaphore(VkDevice device, const VkSemaphoreSignalInfo *pSignalInfo)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
 
    /* TODO if the semaphore is shared-by-ref, this needs to be synchronous */
@@ -1167,6 +1176,7 @@ VkResult
 vn_ImportSemaphoreFdKHR(
    VkDevice device, const VkImportSemaphoreFdInfoKHR *pImportSemaphoreFdInfo)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_semaphore *sem =
       vn_semaphore_from_handle(pImportSemaphoreFdInfo->semaphore);
@@ -1195,6 +1205,7 @@ vn_GetSemaphoreFdKHR(VkDevice device,
                      const VkSemaphoreGetFdInfoKHR *pGetFdInfo,
                      int *pFd)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_semaphore *sem = vn_semaphore_from_handle(pGetFdInfo->semaphore);
    const bool sync_file =
@@ -1256,6 +1267,7 @@ vn_CreateEvent(VkDevice device,
                const VkAllocationCallbacks *pAllocator,
                VkEvent *pEvent)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
@@ -1288,6 +1300,7 @@ vn_DestroyEvent(VkDevice device,
                 VkEvent event,
                 const VkAllocationCallbacks *pAllocator)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_event *ev = vn_event_from_handle(event);
    const VkAllocationCallbacks *alloc =
@@ -1307,6 +1320,7 @@ vn_DestroyEvent(VkDevice device,
 VkResult
 vn_GetEventStatus(VkDevice device, VkEvent event)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_event *ev = vn_event_from_handle(event);
    VkResult result;
@@ -1322,6 +1336,7 @@ vn_GetEventStatus(VkDevice device, VkEvent event)
 VkResult
 vn_SetEvent(VkDevice device, VkEvent event)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_event *ev = vn_event_from_handle(event);
 
@@ -1340,6 +1355,7 @@ vn_SetEvent(VkDevice device, VkEvent event)
 VkResult
 vn_ResetEvent(VkDevice device, VkEvent event)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_event *ev = vn_event_from_handle(event);
 
