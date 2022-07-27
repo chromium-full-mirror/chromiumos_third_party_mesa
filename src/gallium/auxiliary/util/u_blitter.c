@@ -337,8 +337,8 @@ struct blitter_context *util_blitter_create(struct pipe_context *pipe)
    }
 
    ctx->has_layered =
-      pipe->screen->get_param(pipe->screen, PIPE_CAP_TGSI_INSTANCEID) &&
-      pipe->screen->get_param(pipe->screen, PIPE_CAP_TGSI_VS_LAYER_VIEWPORT);
+      pipe->screen->get_param(pipe->screen, PIPE_CAP_VS_INSTANCEID) &&
+      pipe->screen->get_param(pipe->screen, PIPE_CAP_VS_LAYER_VIEWPORT);
 
    /* set invariant vertex coordinates */
    for (i = 0; i < 4; i++) {
@@ -778,29 +778,46 @@ static void blitter_check_saved_textures(ASSERTED struct blitter_context_priv *c
    assert(ctx->base.saved_num_sampler_views != ~0u);
 }
 
-void util_blitter_restore_textures(struct blitter_context *blitter)
+static void util_blitter_restore_textures_internal(struct blitter_context *blitter, unsigned count)
 {
    struct blitter_context_priv *ctx = (struct blitter_context_priv*)blitter;
    struct pipe_context *pipe = ctx->base.pipe;
    unsigned i;
 
    /* Fragment sampler states. */
-   pipe->bind_sampler_states(pipe, PIPE_SHADER_FRAGMENT, 0,
-                             ctx->base.saved_num_sampler_states,
-                             ctx->base.saved_sampler_states);
+   void *states[2] = {NULL};
+   assert(count <= ARRAY_SIZE(states));
+   if (ctx->base.saved_num_sampler_states)
+      pipe->bind_sampler_states(pipe, PIPE_SHADER_FRAGMENT, 0,
+                                ctx->base.saved_num_sampler_states,
+                                ctx->base.saved_sampler_states);
+   else if (count)
+      pipe->bind_sampler_states(pipe, PIPE_SHADER_FRAGMENT, 0,
+                                count,
+                                states);
 
    ctx->base.saved_num_sampler_states = ~0;
 
    /* Fragment sampler views. */
-   pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0,
-                           ctx->base.saved_num_sampler_views, 0, true,
-                           ctx->base.saved_sampler_views);
+   if (ctx->base.saved_num_sampler_views)
+      pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0,
+                              ctx->base.saved_num_sampler_views, 0, true,
+                              ctx->base.saved_sampler_views);
+   else if (count)
+      pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0,
+                              0, count, true,
+                              NULL);
 
    /* Just clear them to NULL because set_sampler_views(take_ownership = true). */
    for (i = 0; i < ctx->base.saved_num_sampler_views; i++)
       ctx->base.saved_sampler_views[i] = NULL;
 
    ctx->base.saved_num_sampler_views = ~0;
+}
+
+void util_blitter_restore_textures(struct blitter_context *blitter)
+{
+   util_blitter_restore_textures_internal(blitter, 0);
 }
 
 void util_blitter_restore_constant_buffer_state(struct blitter_context *blitter)
@@ -829,14 +846,17 @@ static void blitter_set_rectangle(struct blitter_context_priv *ctx,
    ctx->vertices[3][0][0] = (float)x1 / ctx->dst_width * 2.0f - 1.0f; /*v3.x*/
    ctx->vertices[3][0][1] = (float)y2 / ctx->dst_height * 2.0f - 1.0f; /*v3.y*/
 
+   for (unsigned i = 0; i < 4; ++i)
+      ctx->vertices[i][0][2] = depth;
+
    /* viewport */
    struct pipe_viewport_state viewport;
    viewport.scale[0] = 0.5f * ctx->dst_width;
    viewport.scale[1] = 0.5f * ctx->dst_height;
-   viewport.scale[2] = 0.0f;
+   viewport.scale[2] = 1.0f;
    viewport.translate[0] = 0.5f * ctx->dst_width;
    viewport.translate[1] = 0.5f * ctx->dst_height;
-   viewport.translate[2] = depth;
+   viewport.translate[2] = 0.0f;
    viewport.swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X;
    viewport.swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y;
    viewport.swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z;
@@ -2136,6 +2156,7 @@ void util_blitter_blit_generic(struct blitter_context *blitter,
    }
 
    /* Set samplers. */
+   unsigned count = 0;
    if (src_has_depth && src_has_stencil &&
        (dst_has_color || (dst_has_depth && dst_has_stencil))) {
       /* Setup two samplers, one for depth and the other one for stencil. */
@@ -2150,6 +2171,7 @@ void util_blitter_blit_generic(struct blitter_context *blitter,
       views[0] = src;
       views[1] = pipe->create_sampler_view(pipe, src->texture, &templ);
 
+      count = 2;
       pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 2, 0, false, views);
       pipe->bind_sampler_states(pipe, PIPE_SHADER_FRAGMENT, 0, 2, samplers);
 
@@ -2165,12 +2187,14 @@ void util_blitter_blit_generic(struct blitter_context *blitter,
 
       view = pipe->create_sampler_view(pipe, src->texture, &templ);
 
+      count = 1;
       pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 1, 0, false, &view);
       pipe->bind_sampler_states(pipe, PIPE_SHADER_FRAGMENT,
                                 0, 1, &sampler_state);
 
       pipe_sampler_view_reference(&view, NULL);
    } else {
+      count = 1;
       pipe->set_sampler_views(pipe, PIPE_SHADER_FRAGMENT, 0, 1, 0, false, &src);
       pipe->bind_sampler_states(pipe, PIPE_SHADER_FRAGMENT,
                                 0, 1, &sampler_state);
@@ -2187,7 +2211,7 @@ void util_blitter_blit_generic(struct blitter_context *blitter,
 
    util_blitter_restore_vertex_states(blitter);
    util_blitter_restore_fragment_states(blitter);
-   util_blitter_restore_textures(blitter);
+   util_blitter_restore_textures_internal(blitter, count);
    util_blitter_restore_fb_state(blitter);
    if (scissor) {
       pipe->set_scissor_states(pipe, 0, 1, &ctx->base.saved_scissor);
@@ -2329,7 +2353,7 @@ void util_blitter_generate_mipmap(struct blitter_context *blitter,
 
    util_blitter_restore_vertex_states(blitter);
    util_blitter_restore_fragment_states(blitter);
-   util_blitter_restore_textures(blitter);
+   util_blitter_restore_textures_internal(blitter, 1);
    util_blitter_restore_fb_state(blitter);
    util_blitter_restore_render_cond(blitter);
    util_blitter_unset_running_flag(blitter);
@@ -3008,7 +3032,7 @@ util_blitter_stencil_fallback(struct blitter_context *blitter,
 
    util_blitter_restore_vertex_states(blitter);
    util_blitter_restore_fragment_states(blitter);
-   util_blitter_restore_textures(blitter);
+   util_blitter_restore_textures_internal(blitter, 1);
    util_blitter_restore_fb_state(blitter);
    util_blitter_restore_render_cond(blitter);
    util_blitter_restore_constant_buffer_state(blitter);

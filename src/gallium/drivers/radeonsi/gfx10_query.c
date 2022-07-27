@@ -276,7 +276,8 @@ static bool gfx10_sh_query_get_result(struct si_context *sctx, struct si_query *
 }
 
 static void gfx10_sh_query_get_result_resource(struct si_context *sctx, struct si_query *rquery,
-                                               bool wait, enum pipe_query_value_type result_type,
+                                               enum pipe_query_flags flags,
+                                               enum pipe_query_value_type result_type,
                                                int index, struct pipe_resource *resource,
                                                unsigned offset)
 {
@@ -388,7 +389,7 @@ static void gfx10_sh_query_get_result_resource(struct si_context *sctx, struct s
 
       sctx->b.set_constant_buffer(&sctx->b, PIPE_SHADER_COMPUTE, 0, false, &constant_buffer);
 
-      if (wait) {
+      if (flags & PIPE_QUERY_WAIT) {
          uint64_t va;
 
          /* Wait for result availability. Wait only for readiness
@@ -445,6 +446,9 @@ void gfx10_init_query(struct si_context *sctx)
 
 void gfx10_destroy_query(struct si_context *sctx)
 {
+   if (!sctx->shader_query_buffers.next)
+      return;
+
    while (!list_is_empty(&sctx->shader_query_buffers)) {
       struct gfx10_sh_query_buffer *qbuf =
          list_first_entry(&sctx->shader_query_buffers, struct gfx10_sh_query_buffer, list);

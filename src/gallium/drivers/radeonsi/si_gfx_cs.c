@@ -503,7 +503,6 @@ void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
       ctx->last_tes_sh_base = -1;
       ctx->last_num_tcs_input_cp = -1;
       ctx->last_ls_hs_config = -1; /* impossible value */
-      ctx->last_binning_enabled = -1;
 
       if (has_clear_state) {
          si_set_tracked_regs_to_clear_state(ctx);
@@ -605,7 +604,7 @@ static struct si_resource* si_get_wait_mem_scratch_bo(struct si_context *ctx, bo
       if (!ctx->wait_mem_scratch_tmz)
          ctx->wait_mem_scratch_tmz =
             si_aligned_buffer_create(&sscreen->b,
-                                     SI_RESOURCE_FLAG_UNMAPPABLE |
+                                     PIPE_RESOURCE_FLAG_UNMAPPABLE |
                                      SI_RESOURCE_FLAG_DRIVER_INTERNAL |
                                      PIPE_RESOURCE_FLAG_ENCRYPTED,
                                      PIPE_USAGE_DEFAULT, 8,
