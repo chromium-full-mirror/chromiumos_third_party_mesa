@@ -60,7 +60,8 @@ struct zink_resource_object {
 
    VkPipelineStageFlagBits access_stage;
    VkAccessFlags access;
-   bool unordered_barrier;
+   bool unordered_read;
+   bool unordered_write;
 
    unsigned persistent_maps; //if nonzero, requires vkFlushMappedMemoryRanges during batch use
    struct zink_descriptor_refs desc_set_refs;
@@ -97,9 +98,10 @@ struct zink_resource_object {
    VkDeviceSize offset, size, alignment;
    VkImageCreateFlags vkflags;
    VkImageUsageFlags vkusage;
+   VkFormatFeatureFlags vkfeats;
    uint64_t modifier;
    VkImageAspectFlags modifier_aspect;
-   VkSamplerYcbcrConversionKHR sampler_conversion;
+   VkSamplerYcbcrConversion sampler_conversion;
    unsigned plane_offsets[3];
    unsigned plane_strides[3];
    unsigned plane_count;

@@ -863,6 +863,14 @@ fs_inst::components_read(unsigned i) const
          return 1;
    }
 
+   case SHADER_OPCODE_URB_WRITE_LOGICAL:
+      if (i == URB_LOGICAL_SRC_DATA)
+         return mlen - 1 -
+            unsigned(src[URB_LOGICAL_SRC_PER_SLOT_OFFSETS].file != BAD_FILE) -
+            unsigned(src[URB_LOGICAL_SRC_CHANNEL_MASK].file != BAD_FILE);
+      else
+         return 1;
+
    default:
       return 1;
    }
@@ -891,12 +899,6 @@ fs_inst::size_read(int arg) const
       break;
 
    case FS_OPCODE_FB_READ:
-   case SHADER_OPCODE_URB_WRITE_LOGICAL:
-   case SHADER_OPCODE_URB_WRITE_PER_SLOT_LOGICAL:
-   case SHADER_OPCODE_URB_WRITE_MASKED_LOGICAL:
-   case SHADER_OPCODE_URB_WRITE_MASKED_PER_SLOT_LOGICAL:
-   case SHADER_OPCODE_URB_READ_LOGICAL:
-   case SHADER_OPCODE_URB_READ_PER_SLOT_LOGICAL:
    case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
    case FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET:
       if (arg == 0)
@@ -1178,13 +1180,16 @@ fs_visitor::emit_fragcoord_interpolation(fs_reg wpos)
 }
 
 enum brw_barycentric_mode
-brw_barycentric_mode(enum glsl_interp_mode mode, nir_intrinsic_op op)
+brw_barycentric_mode(nir_intrinsic_instr *intr)
 {
+   const glsl_interp_mode mode =
+      (enum glsl_interp_mode) nir_intrinsic_interp_mode(intr);
+
    /* Barycentric modes don't make sense for flat inputs. */
    assert(mode != INTERP_MODE_FLAT);
 
    unsigned bary;
-   switch (op) {
+   switch (intr->intrinsic) {
    case nir_intrinsic_load_barycentric_pixel:
    case nir_intrinsic_load_barycentric_at_offset:
       bary = BRW_BARYCENTRIC_PERSPECTIVE_PIXEL;
@@ -1322,13 +1327,9 @@ fs_visitor::emit_sampleid_setup()
    const fs_builder abld = bld.annotate("compute sample id");
    fs_reg sample_id = abld.vgrf(BRW_REGISTER_TYPE_UD);
 
-   if (!key->multisample_fbo) {
-      /* As per GL_ARB_sample_shading specification:
-       * "When rendering to a non-multisample buffer, or if multisample
-       *  rasterization is disabled, gl_SampleID will always be zero."
-       */
-      abld.MOV(sample_id, brw_imm_d(0));
-   } else if (devinfo->ver >= 8) {
+   assert(key->multisample_fbo);
+
+   if (devinfo->ver >= 8) {
       /* Sample ID comes in as 4-bit numbers in g1.0:
        *
        *    15:12 Slot 3 SampleID (only used in SIMD16)
@@ -1530,10 +1531,7 @@ fs_visitor::emit_gs_thread_end()
 
    if (gs_prog_data->static_vertex_count != -1) {
       foreach_in_list_reverse(fs_inst, prev, &this->instructions) {
-         if (prev->opcode == SHADER_OPCODE_URB_WRITE_LOGICAL ||
-             prev->opcode == SHADER_OPCODE_URB_WRITE_MASKED_LOGICAL ||
-             prev->opcode == SHADER_OPCODE_URB_WRITE_PER_SLOT_LOGICAL ||
-             prev->opcode == SHADER_OPCODE_URB_WRITE_MASKED_PER_SLOT_LOGICAL) {
+         if (prev->opcode == SHADER_OPCODE_URB_WRITE_LOGICAL) {
             prev->eot = true;
 
             /* Delete now dead instructions. */
@@ -1547,17 +1545,17 @@ fs_visitor::emit_gs_thread_end()
             break;
          }
       }
-      fs_reg hdr = abld.vgrf(BRW_REGISTER_TYPE_UD, 1);
-      abld.MOV(hdr, fs_reg(retype(brw_vec8_grf(1, 0), BRW_REGISTER_TYPE_UD)));
-      inst = abld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL, reg_undef, hdr);
+      fs_reg srcs[URB_LOGICAL_NUM_SRCS];
+      srcs[URB_LOGICAL_SRC_HANDLE] = fs_reg(retype(brw_vec8_grf(1, 0), BRW_REGISTER_TYPE_UD));
+      inst = abld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL, reg_undef,
+                       srcs, ARRAY_SIZE(srcs));
       inst->mlen = 1;
    } else {
-      fs_reg payload = abld.vgrf(BRW_REGISTER_TYPE_UD, 2);
-      fs_reg *sources = ralloc_array(mem_ctx, fs_reg, 2);
-      sources[0] = fs_reg(retype(brw_vec8_grf(1, 0), BRW_REGISTER_TYPE_UD));
-      sources[1] = this->final_gs_vertex_count;
-      abld.LOAD_PAYLOAD(payload, sources, 2, 2);
-      inst = abld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL, reg_undef, payload);
+      fs_reg srcs[URB_LOGICAL_NUM_SRCS];
+      srcs[URB_LOGICAL_SRC_HANDLE] = fs_reg(retype(brw_vec8_grf(1, 0), BRW_REGISTER_TYPE_UD));
+      srcs[URB_LOGICAL_SRC_DATA] = this->final_gs_vertex_count;
+      inst = abld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL, reg_undef,
+                       srcs, ARRAY_SIZE(srcs));
       inst->mlen = 2;
    }
    inst->eot = true;
@@ -5066,11 +5064,7 @@ get_lowered_simd_width(const struct brw_compiler *compiler,
       return 8;
 
    case SHADER_OPCODE_URB_READ_LOGICAL:
-   case SHADER_OPCODE_URB_READ_PER_SLOT_LOGICAL:
    case SHADER_OPCODE_URB_WRITE_LOGICAL:
-   case SHADER_OPCODE_URB_WRITE_PER_SLOT_LOGICAL:
-   case SHADER_OPCODE_URB_WRITE_MASKED_LOGICAL:
-   case SHADER_OPCODE_URB_WRITE_MASKED_PER_SLOT_LOGICAL:
       return MIN2(8, inst->exec_size);
 
    case SHADER_OPCODE_QUAD_SWIZZLE: {
@@ -5527,6 +5521,77 @@ fs_visitor::lower_derivatives()
       else if (inst->opcode == FS_OPCODE_DDY_FINE)
          progress |= lower_derivative(this, block, inst,
                                       BRW_SWIZZLE_XYXY, BRW_SWIZZLE_ZWZW);
+   }
+
+   if (progress)
+      invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
+
+   return progress;
+}
+
+bool
+fs_visitor::lower_find_live_channel()
+{
+   bool progress = false;
+
+   if (devinfo->ver < 8)
+      return false;
+
+   bool packed_dispatch =
+      brw_stage_has_packed_dispatch(devinfo, stage, stage_prog_data);
+   bool vmask =
+      stage == MESA_SHADER_FRAGMENT &&
+      brw_wm_prog_data(stage_prog_data)->uses_vmask;
+
+   foreach_block_and_inst_safe(block, fs_inst, inst, cfg) {
+      if (inst->opcode != SHADER_OPCODE_FIND_LIVE_CHANNEL &&
+          inst->opcode != SHADER_OPCODE_FIND_LAST_LIVE_CHANNEL)
+         continue;
+
+      bool first = inst->opcode == SHADER_OPCODE_FIND_LIVE_CHANNEL;
+
+      /* Getting the first active channel index is easy on Gfx8: Just find
+       * the first bit set in the execution mask.  The register exists on
+       * HSW already but it reads back as all ones when the current
+       * instruction has execution masking disabled, so it's kind of
+       * useless there.
+       */
+      fs_reg exec_mask(retype(brw_mask_reg(0), BRW_REGISTER_TYPE_UD));
+
+      const fs_builder ubld = bld.at(block, inst).exec_all().group(1, 0);
+
+      /* ce0 doesn't consider the thread dispatch mask (DMask or VMask),
+       * so combine the execution and dispatch masks to obtain the true mask.
+       *
+       * If we're looking for the first live channel, and we have packed
+       * dispatch, we can skip this step, as we know all dispatched channels
+       * will appear at the front of the mask.
+       */
+      if (!(first && packed_dispatch)) {
+         fs_reg mask = ubld.vgrf(BRW_REGISTER_TYPE_UD);
+         ubld.emit(SHADER_OPCODE_READ_SR_REG, mask, brw_imm_ud(vmask ? 3 : 2));
+
+         /* Quarter control has the effect of magically shifting the value of
+          * ce0 so you'll get the first/last active channel relative to the
+          * specified quarter control as result.
+          */
+         if (inst->group > 0)
+            ubld.SHR(mask, mask, brw_imm_ud(ALIGN(inst->group, 8)));
+
+         ubld.AND(mask, exec_mask, mask);
+         exec_mask = mask;
+      }
+
+      if (first) {
+         ubld.FBL(inst->dst, exec_mask);
+      } else {
+         fs_reg tmp = ubld.vgrf(BRW_REGISTER_TYPE_UD, 1);
+         ubld.LZD(tmp, exec_mask);
+         ubld.ADD(inst->dst, negate(tmp), brw_imm_uw(31));
+      }
+
+      inst->remove(block);
+      progress = true;
    }
 
    if (progress)
@@ -6127,6 +6192,8 @@ fs_visitor::optimize()
 
    lower_uniform_pull_constant_loads();
 
+   lower_find_live_channel();
+
    validate();
 }
 
@@ -6677,16 +6744,12 @@ fs_visitor::run_tcs()
    }
 
    /* Emit EOT write; set TR DS Cache bit */
-   fs_reg srcs[3] = {
-      fs_reg(get_tcs_output_urb_handle()),
-      fs_reg(brw_imm_ud(WRITEMASK_X << 16)),
-      fs_reg(brw_imm_ud(0)),
-   };
-   fs_reg payload = bld.vgrf(BRW_REGISTER_TYPE_UD, 3);
-   bld.LOAD_PAYLOAD(payload, srcs, 3, 2);
-
-   fs_inst *inst = bld.emit(SHADER_OPCODE_URB_WRITE_MASKED_LOGICAL,
-                            bld.null_reg_ud(), payload);
+   fs_reg srcs[URB_LOGICAL_NUM_SRCS];
+   srcs[URB_LOGICAL_SRC_HANDLE] = get_tcs_output_urb_handle();
+   srcs[URB_LOGICAL_SRC_CHANNEL_MASK] = brw_imm_ud(WRITEMASK_X << 16);
+   srcs[URB_LOGICAL_SRC_DATA] = brw_imm_ud(0);
+   fs_inst *inst = bld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL,
+                            reg_undef, srcs, ARRAY_SIZE(srcs));
    inst->mlen = 3;
    inst->eot = true;
 
@@ -6976,6 +7039,8 @@ fs_visitor::run_task(bool allow_spilling)
    if (failed)
       return false;
 
+   emit_urb_fence();
+
    emit_cs_terminate();
 
    calculate_cfg();
@@ -7020,6 +7085,8 @@ fs_visitor::run_mesh(bool allow_spilling)
 
    if (failed)
       return false;
+
+   emit_urb_fence();
 
    emit_cs_terminate();
 
@@ -7092,11 +7159,9 @@ brw_compute_barycentric_interp_modes(const struct intel_device_info *devinfo,
             if (!is_used_in_not_interp_frag_coord(&intrin->dest.ssa))
                continue;
 
-            enum glsl_interp_mode interp = (enum glsl_interp_mode)
-               nir_intrinsic_interp_mode(intrin);
             nir_intrinsic_op bary_op = intrin->intrinsic;
             enum brw_barycentric_mode bary =
-               brw_barycentric_mode(interp, bary_op);
+               brw_barycentric_mode(intrin);
 
             barycentric_interp_modes |= 1 << bary;
 
@@ -7228,43 +7293,6 @@ brw_nir_move_interpolation_to_top(nir_shader *nir)
    return progress;
 }
 
-static bool
-brw_nir_demote_sample_qualifiers_instr(nir_builder *b,
-                                       nir_instr *instr,
-                                       UNUSED void *cb_data)
-{
-   if (instr->type != nir_instr_type_intrinsic)
-      return false;
-
-   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-   if (intrin->intrinsic != nir_intrinsic_load_barycentric_sample &&
-       intrin->intrinsic != nir_intrinsic_load_barycentric_at_sample)
-      return false;
-
-   b->cursor = nir_before_instr(instr);
-   nir_ssa_def *centroid =
-      nir_load_barycentric(b, nir_intrinsic_load_barycentric_centroid,
-                           nir_intrinsic_interp_mode(intrin));
-   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, centroid);
-   nir_instr_remove(instr);
-   return true;
-}
-
-/**
- * Demote per-sample barycentric intrinsics to centroid.
- *
- * Useful when rendering to a non-multisampled buffer.
- */
-bool
-brw_nir_demote_sample_qualifiers(nir_shader *nir)
-{
-   return nir_shader_instructions_pass(nir,
-                                       brw_nir_demote_sample_qualifiers_instr,
-                                       nir_metadata_block_index |
-                                       nir_metadata_dominance,
-                                       NULL);
-}
-
 static void
 brw_nir_populate_wm_prog_data(const nir_shader *shader,
                               const struct intel_device_info *devinfo,
@@ -7288,10 +7316,7 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
    prog_data->persample_dispatch =
       key->multisample_fbo &&
       (key->persample_interp ||
-       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_ID) ||
-       BITSET_TEST(shader->info.system_values_read, SYSTEM_VALUE_SAMPLE_POS) ||
-       shader->info.fs.uses_sample_qualifier ||
-       shader->info.outputs_read);
+       shader->info.fs.uses_sample_shading);
 
    if (devinfo->ver >= 6) {
       prog_data->uses_sample_mask =
@@ -7321,11 +7346,16 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
 
    prog_data->barycentric_interp_modes =
       brw_compute_barycentric_interp_modes(devinfo, shader);
+   prog_data->uses_nonperspective_interp_modes |=
+      (prog_data->barycentric_interp_modes &
+      BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) != 0;
 
+   /* You can't be coarse and per-sample */
+   assert(!key->coarse_pixel || !key->persample_interp);
    prog_data->per_coarse_pixel_dispatch =
       key->coarse_pixel &&
+      !shader->info.fs.uses_sample_shading &&
       !prog_data->uses_omask &&
-      !prog_data->persample_dispatch &&
       !prog_data->uses_sample_mask &&
       (prog_data->computed_depth_mode == BRW_PSCDEPTH_OFF) &&
       !prog_data->computed_stencil;
@@ -7401,8 +7431,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
       NIR_PASS_V(nir, brw_nir_lower_alpha_to_coverage);
    }
 
-   if (!key->multisample_fbo)
-      NIR_PASS_V(nir, brw_nir_demote_sample_qualifiers);
    NIR_PASS_V(nir, brw_nir_move_interpolation_to_top);
    brw_postprocess_nir(nir, compiler, true, debug_enabled,
                        key->base.robust_buffer_access);
@@ -7728,10 +7756,10 @@ lower_simd(nir_builder *b, nir_instr *instr, void *options)
    }
 }
 
-void
+bool
 brw_nir_lower_simd(nir_shader *nir, unsigned dispatch_width)
 {
-   nir_shader_lower_instructions(nir, filter_simd, lower_simd,
+   return nir_shader_lower_instructions(nir, filter_simd, lower_simd,
                                  (void *)(uintptr_t)dispatch_width);
 }
 
@@ -7775,11 +7803,11 @@ brw_compile_cs(const struct brw_compiler *compiler,
       brw_nir_apply_key(shader, compiler, &key->base,
                         dispatch_width, true /* is_scalar */);
 
-      NIR_PASS_V(shader, brw_nir_lower_simd, dispatch_width);
+      NIR_PASS(_, shader, brw_nir_lower_simd, dispatch_width);
 
       /* Clean up after the local index and ID calculations. */
-      NIR_PASS_V(shader, nir_opt_constant_folding);
-      NIR_PASS_V(shader, nir_opt_dce);
+      NIR_PASS(_, shader, nir_opt_constant_folding);
+      NIR_PASS(_, shader, nir_opt_dce);
 
       brw_postprocess_nir(shader, compiler, true, debug_enabled,
                           key->base.robust_buffer_access);

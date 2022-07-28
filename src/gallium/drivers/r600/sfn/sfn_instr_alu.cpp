@@ -788,14 +788,20 @@ bool AluInstr::propagate_death()
 
 bool AluInstr::has_lds_access() const
 {
-   if (has_alu_flag(alu_is_lds))
-      return true;
+   return has_alu_flag(alu_is_lds) || has_lds_queue_read();
+}
 
-   for (auto& s : m_src)
-      if (s->as_inline_const() &&
-          (s->as_inline_const()->sel() == ALU_SRC_LDS_OQ_A_POP))
+bool AluInstr::has_lds_queue_read() const
+{
+   for (auto& s : m_src) {
+      auto ic = s->as_inline_const();
+      if (!ic)
+         continue;
+
+      if (ic->sel() == ALU_SRC_LDS_OQ_A_POP ||
+          ic->sel() == ALU_SRC_LDS_OQ_B_POP)
          return true;
-
+   }
    return false;
 }
 
@@ -1135,6 +1141,8 @@ static bool emit_tex_fdd(const nir_alu_instr& alu, TexInstr::Opcode opcode, bool
 
 static bool emit_alu_cube(const nir_alu_instr& alu, Shader& shader);
 
+static bool emit_fdph(const nir_alu_instr& alu, Shader& shader);
+
 static bool check_64_bit_op_src(nir_src *src, void *state)
 {
    if (nir_src_bit_size(*src) == 64) {
@@ -1219,6 +1227,21 @@ bool AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
          ;
       }
    } else {
+      if (shader.chip_class() == ISA_CC_EVERGREEN) {
+         switch (alu->op) {
+         case nir_op_f2i32: return emit_alu_f2i32_or_u32_eg(*alu, op1_flt_to_int, shader);
+         case nir_op_f2u32: return emit_alu_f2i32_or_u32_eg(*alu, op1_flt_to_uint, shader);
+         default:
+            ;
+         }
+      } else {
+         switch (alu->op) {
+         case nir_op_f2i32: return emit_alu_trans_op1_eg(*alu, op1_flt_to_int, shader);
+         case nir_op_f2u32: return emit_alu_trans_op1_eg(*alu, op1_flt_to_uint, shader);
+         default:
+            ;
+         }
+      }
       switch (alu->op) {
       case nir_op_fcos_amd: return emit_alu_trans_op1_eg(*alu, op1_cos, shader);
       case nir_op_fexp2: return emit_alu_trans_op1_eg(*alu, op1_exp_ieee, shader);
@@ -1232,8 +1255,6 @@ bool AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       case nir_op_imul: return emit_alu_trans_op2_eg(*alu, op2_mullo_int, shader);
       case nir_op_imul_high: return emit_alu_trans_op2_eg(*alu, op2_mulhi_int, shader);
       case nir_op_umul_high: return emit_alu_trans_op2_eg(*alu, op2_mulhi_uint, shader);
-      case nir_op_f2i32: return emit_alu_f2i32_or_u32_eg(*alu, op1_flt_to_int, shader);
-      case nir_op_f2u32: return emit_alu_f2i32_or_u32_eg(*alu, op1_flt_to_uint, shader);
       default:
          ;
       }
@@ -1273,6 +1294,7 @@ bool AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
    case nir_op_fcsel_ge: return emit_alu_op3(*alu, op3_cndge, shader, {0, 1, 2});
    case nir_op_fcsel_gt: return emit_alu_op3(*alu, op3_cndgt, shader, {0, 1, 2});
 
+   case nir_op_fdph: return emit_fdph(*alu, shader);
    case nir_op_fdot2: return emit_dot(*alu, 2, shader);
    case nir_op_fdot3: return emit_dot(*alu, 3, shader);
    case nir_op_fdot4: return emit_dot(*alu, 4, shader);
@@ -2069,6 +2091,39 @@ static bool emit_dot(const nir_alu_instr& alu, int n, Shader& shader)
       srcs[2 * i    ] = value_factory.zero();
       srcs[2 * i + 1] = value_factory.zero();
    }
+
+   auto op = unlikely(shader.has_flag(Shader::sh_legacy_math_rules)) ?
+                op2_dot4 : op2_dot4_ieee;
+   AluInstr *ir = new AluInstr(op, dest, srcs,  AluInstr::last_write, 4);
+
+   if (src0.negate) ir->set_alu_flag(alu_src0_neg);
+   if (src0.abs) ir->set_alu_flag(alu_src0_abs);
+   if (src1.negate) ir->set_alu_flag(alu_src1_neg);
+   if (src1.abs) ir->set_alu_flag(alu_src1_abs);
+
+   if (alu.dest.saturate) ir->set_alu_flag(alu_dst_clamp);
+
+   shader.emit_instruction(ir);
+   return true;
+}
+
+static bool emit_fdph(const nir_alu_instr& alu, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+   const nir_alu_src& src0 = alu.src[0];
+   const nir_alu_src& src1 = alu.src[1];
+
+   auto dest = value_factory.dest(alu.dest.dest, 0, pin_free);
+
+   AluInstr::SrcValues srcs(8);
+
+   for (int i = 0; i < 3 ; ++i) {
+      srcs[2 * i    ] = value_factory.src(src0, i);
+      srcs[2 * i + 1] = value_factory.src(src1, i);
+   }
+
+   srcs[6] = value_factory.one();
+   srcs[7] = value_factory.src(src1, 3);
 
    auto op = unlikely(shader.has_flag(Shader::sh_legacy_math_rules)) ?
                 op2_dot4 : op2_dot4_ieee;

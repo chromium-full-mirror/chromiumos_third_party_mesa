@@ -24,6 +24,7 @@
 
 #include "vk_nir.h"
 
+#include "compiler/nir/nir_xfb_info.h"
 #include "compiler/spirv/nir_spirv.h"
 #include "vk_log.h"
 #include "vk_util.h"
@@ -62,6 +63,16 @@ spirv_nir_debug(void *private_data,
    default:
       break;
    }
+}
+
+static bool
+is_not_xfb_output(nir_variable *var, void *data)
+{
+   if (var->data.mode != nir_var_shader_out)
+      return true;
+
+   return !var->data.explicit_xfb_buffer &&
+          !var->data.explicit_xfb_stride;
 }
 
 nir_shader *
@@ -127,10 +138,24 @@ vk_spirv_to_nir(struct vk_device *device,
    NIR_PASS_V(nir, nir_split_var_copies);
    NIR_PASS_V(nir, nir_split_per_member_structs);
 
+   nir_remove_dead_variables_options dead_vars_opts = {
+      .can_remove_var = is_not_xfb_output,
+   };
    NIR_PASS_V(nir, nir_remove_dead_variables,
               nir_var_shader_in | nir_var_shader_out | nir_var_system_value |
               nir_var_shader_call_data | nir_var_ray_hit_attrib,
-              NULL);
+              &dead_vars_opts);
+
+   /* This needs to happen after remove_dead_vars because GLSLang likes to
+    * insert dead clip/cull vars and we don't want to clip/cull based on
+    * uninitialized garbage.
+    */
+   NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
+
+   if (nir->info.stage == MESA_SHADER_VERTEX ||
+       nir->info.stage == MESA_SHADER_TESS_EVAL ||
+       nir->info.stage == MESA_SHADER_GEOMETRY)
+      NIR_PASS_V(nir, nir_shader_gather_xfb_info);
 
    NIR_PASS_V(nir, nir_propagate_invariant, false);
 

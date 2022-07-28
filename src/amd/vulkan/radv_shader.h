@@ -104,6 +104,8 @@ struct radv_pipeline_key {
 
       /* Used to export alpha through MRTZ for alpha-to-coverage (GFX11+). */
       bool alpha_to_coverage_via_mrtz;
+
+      bool has_epilog;
    } ps;
 
    struct {
@@ -154,6 +156,7 @@ enum radv_ud_index {
    AC_UD_VS_BASE_VERTEX_START_INSTANCE,
    AC_UD_VS_PROLOG_INPUTS,
    AC_UD_VS_MAX_UD,
+   AC_UD_PS_EPILOG_PC,
    AC_UD_PS_MAX_UD,
    AC_UD_CS_GRID_SIZE = AC_UD_SHADER_START,
    AC_UD_CS_SBT_DESCRIPTORS,
@@ -337,6 +340,7 @@ struct radv_shader_info {
       uint8_t reads_sample_pos_mask;
       uint8_t depth_layout;
       bool allow_flat_shading;
+      bool has_epilog;
       unsigned spi_ps_input;
    } ps;
    struct {
@@ -376,8 +380,6 @@ struct radv_shader_info {
 
 struct radv_vs_input_state {
    uint32_t attribute_mask;
-   uint32_t misaligned_mask;
-   uint32_t possibly_misaligned_mask;
 
    uint32_t instance_rate_inputs;
    uint32_t nontrivial_divisors;
@@ -395,6 +397,8 @@ struct radv_vs_input_state {
    uint8_t formats[MAX_VERTEX_ATTRIBS];
    uint8_t format_align_req_minus_1[MAX_VERTEX_ATTRIBS];
    uint8_t format_sizes[MAX_VERTEX_ATTRIBS];
+
+   bool bindings_match_attrib;
 };
 
 struct radv_vs_prolog_key {
@@ -405,6 +409,17 @@ struct radv_vs_prolog_key {
    bool is_ngg;
    bool wave32;
    gl_shader_stage next_stage;
+};
+
+struct radv_ps_epilog_key {
+   uint32_t spi_shader_col_format;
+
+   /* Bitmasks, each bit represents one of the 8 MRTs. */
+   uint8_t color_is_int8;
+   uint8_t color_is_int10;
+   uint8_t enable_mrt_output_nan_fixup;
+
+   bool wave32;
 };
 
 enum radv_shader_binary_type { RADV_BINARY_TYPE_LEGACY, RADV_BINARY_TYPE_RTLD };
@@ -580,6 +595,9 @@ void radv_trap_handler_shader_destroy(struct radv_device *device,
 
 struct radv_shader_part *radv_create_vs_prolog(struct radv_device *device,
                                                const struct radv_vs_prolog_key *key);
+
+struct radv_shader_part *radv_create_ps_epilog(struct radv_device *device,
+                                               const struct radv_ps_epilog_key *key);
 
 void radv_shader_destroy(struct radv_device *device, struct radv_shader *shader);
 

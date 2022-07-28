@@ -574,8 +574,6 @@ virgl_is_vertex_format_supported(struct pipe_screen *screen,
    int i;
 
    format_desc = util_format_description(format);
-   if (!format_desc)
-      return false;
 
    if (format == PIPE_FORMAT_R11G11B10_FLOAT) {
       int vformat = VIRGL_FORMAT_R11G11B10_FLOAT;
@@ -683,8 +681,6 @@ virgl_is_format_supported( struct pipe_screen *screen,
           target == PIPE_TEXTURE_CUBE_ARRAY);
 
    format_desc = util_format_description(format);
-   if (!format_desc)
-      return false;
 
    if (util_format_is_intensity(format))
       return false;
@@ -960,6 +956,10 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
    uint32_t shader_debug_flags = virgl_debug & VIRGL_DEBUG_USE_TGSI;
    _mesa_sha1_update(&sha1_ctx, &shader_debug_flags, sizeof(shader_debug_flags));
 
+   /* When we switch the host the caps might change and then we might have to
+    * apply different lowering. */
+   _mesa_sha1_update(&sha1_ctx, &screen->caps, sizeof(screen->caps));
+
    uint8_t sha1[20];
    _mesa_sha1_final(&sha1_ctx, sha1);
    char timestamp[41];
@@ -1010,7 +1010,7 @@ fixup_renderer(union virgl_caps *caps)
 static const void *
 virgl_get_compiler_options(struct pipe_screen *pscreen,
                            enum pipe_shader_ir ir,
-                           unsigned shader)
+                           enum pipe_shader_type shader)
 {
    struct virgl_screen *vscreen = virgl_screen(pscreen);
 
@@ -1092,6 +1092,7 @@ virgl_create_screen(struct virgl_winsys *vws, const struct pipe_screen_config *c
        * ffract+fsub back into ffloor.
        */
       screen->compiler_options.lower_ffloor = true;
+      screen->compiler_options.lower_fneg = true;
    }
 
    slab_create_parent(&screen->transfer_pool, sizeof(struct virgl_transfer), 16);

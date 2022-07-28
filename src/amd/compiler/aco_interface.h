@@ -37,6 +37,7 @@ extern "C" {
 struct ac_shader_config;
 struct aco_shader_info;
 struct aco_vs_prolog_key;
+struct aco_ps_epilog_key;
 
 struct aco_compiler_statistic_info {
    char name[32];
@@ -57,14 +58,14 @@ typedef void (aco_callback)(void **priv_ptr,
                             const uint32_t *code,
                             uint32_t code_dw);
 
-typedef void (aco_prolog_callback)(void **priv_ptr,
-                                   uint32_t num_sgprs,
-                                   uint32_t num_vgprs,
-                                   uint32_t num_preserved_sgprs,
-                                   const uint32_t *code,
-                                   uint32_t code_size,
-                                   const char *disasm_str,
-                                   uint32_t disasm_size);
+typedef void (aco_shader_part_callback)(void **priv_ptr,
+                                        uint32_t num_sgprs,
+                                        uint32_t num_vgprs,
+                                        uint32_t num_preserved_sgprs,
+                                        const uint32_t *code,
+                                        uint32_t code_size,
+                                        const char *disasm_str,
+                                        uint32_t disasm_size);
 
 extern const unsigned aco_num_statistics;
 extern const struct aco_compiler_statistic_info* aco_statistic_infos;
@@ -80,8 +81,15 @@ void aco_compile_vs_prolog(const struct aco_compiler_options* options,
                            const struct aco_shader_info* info,
                            const struct aco_vs_prolog_key* key,
                            const struct radv_shader_args* args,
-                           aco_prolog_callback *build_prolog,
+                           aco_shader_part_callback *build_prolog,
                            void **binary);
+
+void aco_compile_ps_epilog(const struct aco_compiler_options* options,
+                           const struct aco_shader_info* info,
+                           const struct aco_ps_epilog_key* key,
+                           const struct radv_shader_args* args,
+                           aco_shader_part_callback* build_epilog,
+                           void** binary);
 
 uint64_t aco_get_codegen_flags();
 

@@ -439,6 +439,7 @@ vn_CreateCommandPool(VkDevice device,
                      const VkAllocationCallbacks *pAllocator,
                      VkCommandPool *pCommandPool)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
@@ -469,6 +470,7 @@ vn_DestroyCommandPool(VkDevice device,
                       VkCommandPool commandPool,
                       const VkAllocationCallbacks *pAllocator)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_command_pool *pool = vn_command_pool_from_handle(commandPool);
    const VkAllocationCallbacks *alloc;
@@ -501,6 +503,7 @@ vn_ResetCommandPool(VkDevice device,
                     VkCommandPool commandPool,
                     VkCommandPoolResetFlags flags)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_command_pool *pool = vn_command_pool_from_handle(commandPool);
 
@@ -520,6 +523,7 @@ vn_TrimCommandPool(VkDevice device,
                    VkCommandPool commandPool,
                    VkCommandPoolTrimFlags flags)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
 
    vn_async_vkTrimCommandPool(dev->instance, device, commandPool, flags);
@@ -532,6 +536,7 @@ vn_AllocateCommandBuffers(VkDevice device,
                           const VkCommandBufferAllocateInfo *pAllocateInfo,
                           VkCommandBuffer *pCommandBuffers)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_command_pool *pool =
       vn_command_pool_from_handle(pAllocateInfo->commandPool);
@@ -583,6 +588,7 @@ vn_FreeCommandBuffers(VkDevice device,
                       uint32_t commandBufferCount,
                       const VkCommandBuffer *pCommandBuffers)
 {
+   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_command_pool *pool = vn_command_pool_from_handle(commandPool);
    const VkAllocationCallbacks *alloc = &pool->allocator;
@@ -612,6 +618,7 @@ VkResult
 vn_ResetCommandBuffer(VkCommandBuffer commandBuffer,
                       VkCommandBufferResetFlags flags)
 {
+   VN_TRACE_FUNC();
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
 
@@ -622,6 +629,93 @@ vn_ResetCommandBuffer(VkCommandBuffer commandBuffer,
    vn_async_vkResetCommandBuffer(cmd->device->instance, commandBuffer, flags);
 
    return VK_SUCCESS;
+}
+
+struct vn_command_buffer_begin_info {
+   VkCommandBufferBeginInfo begin;
+   VkCommandBufferInheritanceInfo inheritance;
+   VkCommandBufferInheritanceConditionalRenderingInfoEXT conditional_rendering;
+
+   bool has_inherited_pass;
+};
+
+static const VkCommandBufferBeginInfo *
+vn_fix_command_buffer_begin_info(struct vn_command_buffer *cmd,
+                                 const VkCommandBufferBeginInfo *begin_info,
+                                 struct vn_command_buffer_begin_info *local)
+{
+   local->has_inherited_pass = false;
+
+   if (!begin_info->pInheritanceInfo)
+      return begin_info;
+
+   const bool is_cmd_secondary =
+      cmd->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+   const bool has_continue =
+      begin_info->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+   const bool has_renderpass =
+      begin_info->pInheritanceInfo->renderPass != VK_NULL_HANDLE;
+
+   /* Can early-return if dynamic rendering is used and no structures need to
+    * be dropped from the pNext chain of VkCommandBufferInheritanceInfo.
+    */
+   if (is_cmd_secondary && has_continue && !has_renderpass)
+      return begin_info;
+
+   local->begin = *begin_info;
+
+   if (!is_cmd_secondary) {
+      local->begin.pInheritanceInfo = NULL;
+      return &local->begin;
+   }
+
+   local->inheritance = *begin_info->pInheritanceInfo;
+   local->begin.pInheritanceInfo = &local->inheritance;
+
+   if (!has_continue) {
+      local->inheritance.framebuffer = VK_NULL_HANDLE;
+      local->inheritance.renderPass = VK_NULL_HANDLE;
+      local->inheritance.subpass = 0;
+   } else {
+      /* With early-returns above, it must be an inherited pass. */
+      local->has_inherited_pass = true;
+   }
+
+   /* Per spec, about VkCommandBufferInheritanceRenderingInfo:
+    *
+    * If VkCommandBufferInheritanceInfo::renderPass is not VK_NULL_HANDLE, or
+    * VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT is not specified in
+    * VkCommandBufferBeginInfo::flags, parameters of this structure are
+    * ignored.
+    */
+   VkBaseOutStructure *head = NULL;
+   VkBaseOutStructure *tail = NULL;
+   vk_foreach_struct_const(src, local->inheritance.pNext) {
+      void *pnext = NULL;
+      switch (src->sType) {
+      case VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_CONDITIONAL_RENDERING_INFO_EXT:
+         memcpy(
+            &local->conditional_rendering, src,
+            sizeof(VkCommandBufferInheritanceConditionalRenderingInfoEXT));
+         pnext = &local->conditional_rendering;
+         break;
+      case VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO:
+      default:
+         break;
+      }
+
+      if (pnext) {
+         if (!head)
+            head = pnext;
+         else
+            tail->pNext = pnext;
+
+         tail = pnext;
+      }
+   }
+   local->inheritance.pNext = head;
+
+   return &local->begin;
 }
 
 VkResult
@@ -637,25 +731,9 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    vn_cs_encoder_reset(&cmd->cs);
    cmd->draw_cmd_batched = 0;
 
-   /* TODO: add support for VK_KHR_dynamic_rendering */
-   VkCommandBufferBeginInfo local_begin_info;
-   VkCommandBufferInheritanceInfo local_inheritance_info;
-   if (pBeginInfo->pInheritanceInfo) {
-      if (cmd->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
-         local_begin_info = *pBeginInfo;
-         local_begin_info.pInheritanceInfo = NULL;
-         pBeginInfo = &local_begin_info;
-      } else if (!(pBeginInfo->flags &
-                   VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
-         local_inheritance_info = *pBeginInfo->pInheritanceInfo;
-         local_inheritance_info.framebuffer = VK_NULL_HANDLE;
-         local_inheritance_info.renderPass = VK_NULL_HANDLE;
-         local_inheritance_info.subpass = 0;
-         local_begin_info = *pBeginInfo;
-         local_begin_info.pInheritanceInfo = &local_inheritance_info;
-         pBeginInfo = &local_begin_info;
-      }
-   }
+   struct vn_command_buffer_begin_info local_begin_info;
+   pBeginInfo =
+      vn_fix_command_buffer_begin_info(cmd, pBeginInfo, &local_begin_info);
 
    cmd_size = vn_sizeof_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
    if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size)) {
@@ -667,9 +745,7 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 
    cmd->state = VN_COMMAND_BUFFER_STATE_RECORDING;
 
-   if (cmd->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY &&
-       (pBeginInfo->flags &
-        VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
+   if (local_begin_info.has_inherited_pass) {
       const VkCommandBufferInheritanceInfo *inheritance_info =
          pBeginInfo->pInheritanceInfo;
       vn_cmd_begin_render_pass(
@@ -879,6 +955,19 @@ vn_CmdDraw(VkCommandBuffer commandBuffer,
 
    vn_cmd_count_draw_and_submit_on_batch_limit(
       vn_command_buffer_from_handle(commandBuffer));
+}
+
+void
+vn_CmdBeginRendering(VkCommandBuffer commandBuffer,
+                     const VkRenderingInfo *pRenderingInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdBeginRendering, commandBuffer, pRenderingInfo);
+}
+
+void
+vn_CmdEndRendering(VkCommandBuffer commandBuffer)
+{
+   VN_CMD_ENQUEUE(vkCmdEndRendering, commandBuffer);
 }
 
 void

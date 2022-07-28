@@ -68,6 +68,7 @@ typedef uint32_t xcb_window_t;
 #include "vk_command_buffer.h"
 #include "vk_command_pool.h"
 #include "vk_descriptor_set_layout.h"
+#include "vk_graphics_state.h"
 #include "vk_pipeline_layout.h"
 #include "vk_queue.h"
 #include "vk_sync.h"
@@ -255,6 +256,7 @@ struct lvp_image_view {
    enum pipe_format pformat;
 
    struct pipe_surface *surface; /* have we created a pipe surface for this? */
+   struct lvp_image_view *multisample; //VK_EXT_multisampled_render_to_single_sampled
 };
 
 struct lvp_sampler {
@@ -417,9 +419,9 @@ struct lvp_pipeline_layout {
 };
 
 struct lvp_access_info {
-   uint32_t images_read;
-   uint32_t images_written;
-   uint32_t buffers_written;
+   uint64_t images_read;
+   uint64_t images_written;
+   uint64_t buffers_written;
 };
 
 struct lvp_pipeline {
@@ -430,24 +432,25 @@ struct lvp_pipeline {
    struct lvp_access_info access[MESA_SHADER_STAGES];
 
    void *mem_ctx;
+   void *state_data;
    bool is_compute_pipeline;
    bool force_min_sample;
    nir_shader *pipeline_nir[MESA_SHADER_STAGES];
    void *shader_cso[PIPE_SHADER_TYPES];
+   struct {
+      uint32_t uniform_offsets[PIPE_MAX_CONSTANT_BUFFERS][MAX_INLINABLE_UNIFORMS];
+      uint8_t count[PIPE_MAX_CONSTANT_BUFFERS];
+      bool must_inline;
+      uint32_t can_inline; //bitmask
+   } inlines[MESA_SHADER_STAGES];
    gl_shader_stage last_vertex;
    struct pipe_stream_output_info stream_output;
-   VkGraphicsPipelineCreateInfo graphics_create_info;
-   VkComputePipelineCreateInfo compute_create_info;
+   struct vk_graphics_pipeline_state graphics_state;
    VkGraphicsPipelineLibraryFlagsEXT stages;
-   uint32_t line_stipple_factor;
-   uint16_t line_stipple_pattern;
-   bool line_stipple_enable;
    bool line_smooth;
    bool disable_multisample;
    bool line_rectangular;
    bool gs_output_lines;
-   bool provoking_vertex_last;
-   bool negative_one_to_one;
    bool library;
 };
 
@@ -514,6 +517,20 @@ struct lvp_cmd_buffer {
    uint8_t push_constants[MAX_PUSH_CONSTANTS_SIZE];
 };
 
+
+static inline const struct lvp_descriptor_set_layout *
+get_set_layout(const struct lvp_pipeline_layout *layout, uint32_t set)
+{
+   return container_of(layout->vk.set_layouts[set],
+                       const struct lvp_descriptor_set_layout, vk);
+}
+
+static inline const struct lvp_descriptor_set_binding_layout *
+get_binding_layout(const struct lvp_pipeline_layout *layout,
+                   uint32_t set, uint32_t binding)
+{
+   return &get_set_layout(layout, set)->binding[binding];
+}
 
 #define LVP_FROM_HANDLE(__lvp_type, __name, __handle) \
    struct __lvp_type *__name = __lvp_type ## _from_handle(__handle)
@@ -588,7 +605,6 @@ lvp_vk_format_to_pipe_format(VkFormat format)
 {
    /* Some formats cause problems with CTS right now.*/
    if (format == VK_FORMAT_R4G4B4A4_UNORM_PACK16 ||
-       format == VK_FORMAT_R5G5B5A1_UNORM_PACK16 ||
        format == VK_FORMAT_R8_SRGB ||
        format == VK_FORMAT_R8G8_SRGB ||
        format == VK_FORMAT_R64G64B64A64_SFLOAT ||
@@ -625,6 +641,12 @@ void
 lvp_shader_optimize(nir_shader *nir);
 void *
 lvp_pipeline_compile_stage(struct lvp_pipeline *pipeline, nir_shader *nir);
+bool
+lvp_find_inlinable_uniforms(struct lvp_pipeline *pipeline, nir_shader *shader);
+void
+lvp_inline_uniforms(nir_shader *shader, const struct lvp_pipeline *pipeline, const uint32_t *uniform_values, uint32_t ubo);
+void *
+lvp_pipeline_compile(struct lvp_pipeline *pipeline, nir_shader *base_nir);
 #ifdef __cplusplus
 }
 #endif

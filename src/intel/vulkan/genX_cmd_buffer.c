@@ -37,6 +37,7 @@
 #include "genxml/genX_pack.h"
 #include "genxml/gen_rt_pack.h"
 #include "common/intel_guardband.h"
+#include "compiler/brw_prim.h"
 
 #include "nir/nir_xfb_info.h"
 
@@ -1548,13 +1549,12 @@ transition_color_buffer(struct anv_cmd_buffer *cmd_buffer,
 
 static MUST_CHECK VkResult
 anv_cmd_buffer_init_attachments(struct anv_cmd_buffer *cmd_buffer,
-                                uint32_t color_att_count,
-                                uint32_t color_att_valid)
+                                uint32_t color_att_count)
 {
    struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
 
    /* Reserve one for the NULL state. */
-   unsigned num_states = 1 + util_bitcount(color_att_valid);
+   unsigned num_states = 1 + color_att_count;
    const struct isl_device *isl_dev = &cmd_buffer->device->isl_dev;
    const uint32_t ss_stride = align_u32(isl_dev->ss.size, isl_dev->ss.align);
    gfx->att_states =
@@ -1574,17 +1574,11 @@ anv_cmd_buffer_init_attachments(struct anv_cmd_buffer *cmd_buffer,
 
    gfx->color_att_count = color_att_count;
    for (uint32_t i = 0; i < color_att_count; i++) {
-      if (color_att_valid & BITFIELD_BIT(i)) {
-         gfx->color_att[i] = (struct anv_attachment) {
-            .surface_state.state = next_state,
-         };
-         next_state.offset += ss_stride;
-         next_state.map += ss_stride;
-      } else {
-         gfx->color_att[i] = (struct anv_attachment) {
-            .surface_state.state = gfx->null_surface_state,
-         };
-      }
+      gfx->color_att[i] = (struct anv_attachment) {
+         .surface_state.state = next_state,
+      };
+      next_state.offset += ss_stride;
+      next_state.map += ss_stride;
    }
    gfx->depth_att = (struct anv_attachment) { };
    gfx->stencil_att = (struct anv_attachment) { };
@@ -1700,6 +1694,7 @@ genX(BeginCommandBuffer)(
          const VkCommandBufferInheritanceRenderingInfo *inheritance_info =
             vk_get_command_buffer_inheritance_rendering_info(cmd_buffer->vk.level,
                                                              pBeginInfo);
+         assert(inheritance_info);
 
          gfx->rendering_flags = inheritance_info->flags;
          gfx->render_area = (VkRect2D) { };
@@ -1707,16 +1702,8 @@ genX(BeginCommandBuffer)(
          gfx->samples = inheritance_info->rasterizationSamples;
          gfx->view_mask = inheritance_info->viewMask;
 
-         uint32_t color_att_valid = 0;
          uint32_t color_att_count = inheritance_info->colorAttachmentCount;
-         for (uint32_t i = 0; i < color_att_count; i++) {
-            VkFormat format = inheritance_info->pColorAttachmentFormats[i];
-            if (format != VK_FORMAT_UNDEFINED)
-               color_att_valid |= BITFIELD_BIT(i);
-         }
-         result = anv_cmd_buffer_init_attachments(cmd_buffer,
-                                                  color_att_count,
-                                                  color_att_valid);
+         result = anv_cmd_buffer_init_attachments(cmd_buffer, color_att_count);
          if (result != VK_SUCCESS)
             return result;
 
@@ -1938,8 +1925,8 @@ genX(CmdExecuteCommands)(
    primary->state.current_pipeline = UINT32_MAX;
    primary->state.current_l3_config = NULL;
    primary->state.current_hash_scale = 0;
-   primary->state.gfx.dirty |= ANV_CMD_DIRTY_DYNAMIC_ALL;
    primary->state.gfx.push_constant_stages = 0;
+   vk_dynamic_graphics_state_dirty_all(&primary->vk.dynamic_graphics_state);
 
    /* Each of the secondary command buffers will use its own state base
     * address.  We need to re-emit state base address for the primary after
@@ -2568,8 +2555,8 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
          const enum isl_format format =
             anv_isl_format_for_descriptor_type(cmd_buffer->device,
                                                VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-         anv_fill_buffer_surface_state(cmd_buffer->device,
-                                       surface_state, format,
+         anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
+                                       format, ISL_SWIZZLE_IDENTITY,
                                        ISL_SURF_USAGE_CONSTANT_BUFFER_BIT,
                                        constant_data, constant_data_size, 1);
 
@@ -2590,7 +2577,7 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
             anv_isl_format_for_descriptor_type(cmd_buffer->device,
                                                VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
          anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
-                                       format,
+                                       format, ISL_SWIZZLE_IDENTITY,
                                        ISL_SURF_USAGE_CONSTANT_BUFFER_BIT,
                                        cmd_buffer->state.compute.num_workgroups,
                                        12, 1);
@@ -2752,7 +2739,8 @@ emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                   ISL_SURF_USAGE_STORAGE_BIT;
 
                anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
-                                             format, usage, address, range, 1);
+                                             format, ISL_SWIZZLE_IDENTITY,
+                                             usage, address, range, 1);
                if (need_client_mem_relocs)
                   add_surface_reloc(cmd_buffer, surface_state, address);
             } else {
@@ -3426,43 +3414,31 @@ cmd_buffer_flush_mesh_inline_data(struct anv_cmd_buffer *cmd_buffer,
 static void
 cmd_buffer_emit_clip(struct anv_cmd_buffer *cmd_buffer)
 {
-   const uint32_t clip_states =
-#if GFX_VER <= 7
-      ANV_CMD_DIRTY_DYNAMIC_FRONT_FACE |
-      ANV_CMD_DIRTY_DYNAMIC_CULL_MODE |
-#endif
-      ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY |
-      ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |
-      ANV_CMD_DIRTY_PIPELINE;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd_buffer->vk.dynamic_graphics_state;
 
-   if ((cmd_buffer->state.gfx.dirty & clip_states) == 0)
+   if (!(cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE) &&
+       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY) &&
+#if GFX_VER <= 7
+       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_CULL_MODE) &&
+       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_FRONT_FACE) &&
+#endif
+       !BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_VIEWPORT_COUNT))
       return;
 
    /* Take dynamic primitive topology in to account with
     *    3DSTATE_CLIP::ViewportXYClipTestEnable
     */
-   bool xy_clip_test_enable = 0;
+   VkPolygonMode dynamic_raster_mode =
+      genX(raster_polygon_mode)(cmd_buffer->state.gfx.pipeline,
+                                dyn->ia.primitive_topology);
+   bool xy_clip_test_enable = (dynamic_raster_mode == VK_POLYGON_MODE_FILL);
 
-   if (cmd_buffer->state.gfx.pipeline->dynamic_states &
-       ANV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY) {
-      VkPrimitiveTopology primitive_topology =
-         cmd_buffer->state.gfx.dynamic.primitive_topology;
-
-      VkPolygonMode dynamic_raster_mode =
-         genX(raster_polygon_mode)(cmd_buffer->state.gfx.pipeline,
-                                   primitive_topology);
-
-      xy_clip_test_enable = (dynamic_raster_mode == VK_POLYGON_MODE_FILL);
-   }
-
-#if GFX_VER <= 7
-   const struct anv_dynamic_state *d = &cmd_buffer->state.gfx.dynamic;
-#endif
    struct GENX(3DSTATE_CLIP) clip = {
       GENX(3DSTATE_CLIP_header),
 #if GFX_VER <= 7
-      .FrontWinding = genX(vk_to_intel_front_face)[d->front_face],
-      .CullMode     = genX(vk_to_intel_cullmode)[d->cull_mode],
+      .FrontWinding = genX(vk_to_intel_front_face)[dyn->rs.front_face],
+      .CullMode     = genX(vk_to_intel_cullmode)[dyn->rs.cull_mode],
 #endif
       .ViewportXYClipTestEnable = xy_clip_test_enable,
    };
@@ -3474,15 +3450,14 @@ cmd_buffer_emit_clip(struct anv_cmd_buffer *cmd_buffer)
       const struct brw_vue_prog_data *last =
          anv_pipeline_get_last_vue_prog_data(pipeline);
       if (last->vue_map.slots_valid & VARYING_BIT_VIEWPORT) {
-         clip.MaximumVPIndex =
-            cmd_buffer->state.gfx.dynamic.viewport.count > 0 ?
-            cmd_buffer->state.gfx.dynamic.viewport.count - 1 : 0;
+         clip.MaximumVPIndex = dyn->vp.viewport_count > 0 ?
+                               dyn->vp.viewport_count - 1 : 0;
       }
    } else if (anv_pipeline_is_mesh(pipeline)) {
       const struct brw_mesh_prog_data *mesh_prog_data = get_mesh_prog_data(pipeline);
       if (mesh_prog_data->map.start_dw[VARYING_SLOT_VIEWPORT] >= 0) {
-         uint32_t viewport_count = cmd_buffer->state.gfx.dynamic.viewport.count;
-         clip.MaximumVPIndex = viewport_count > 0 ? viewport_count - 1 : 0;
+         clip.MaximumVPIndex = dyn->vp.viewport_count > 0 ?
+                               dyn->vp.viewport_count - 1 : 0;
       }
    }
 
@@ -3495,8 +3470,10 @@ static void
 cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
-   uint32_t count = gfx->dynamic.viewport.count;
-   const VkViewport *viewports = gfx->dynamic.viewport.viewports;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd_buffer->vk.dynamic_graphics_state;
+   uint32_t count = dyn->vp.viewport_count;
+   const VkViewport *viewports = dyn->vp.viewports;
    struct anv_state sf_clip_state =
       anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, count * 64, 64);
 
@@ -3558,8 +3535,8 @@ cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
        * It's theoretically possible that they could do all their clipping
        * with clip planes but that'd be a bit odd.
        */
-      if (i < gfx->dynamic.scissor.count) {
-         const VkRect2D *scissor = &gfx->dynamic.scissor.scissors[i];
+      if (i < dyn->vp.scissor_count) {
+         const VkRect2D *scissor = &dyn->vp.scissors[i];
          x_min = MAX2(x_min, scissor->offset.x);
          x_max = MIN2(x_min, scissor->offset.x + scissor->extent.width);
          y_min = MAX2(y_min, scissor->offset.y);
@@ -3596,9 +3573,10 @@ static void
 cmd_buffer_emit_depth_viewport(struct anv_cmd_buffer *cmd_buffer,
                                bool depth_clamp_enable)
 {
-   uint32_t count = cmd_buffer->state.gfx.dynamic.viewport.count;
-   const VkViewport *viewports =
-      cmd_buffer->state.gfx.dynamic.viewport.viewports;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd_buffer->vk.dynamic_graphics_state;
+   uint32_t count = dyn->vp.viewport_count;
+   const VkViewport *viewports = dyn->vp.viewports;
    struct anv_state cc_state =
       anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, count * 8, 32);
 
@@ -3642,9 +3620,11 @@ static void
 cmd_buffer_emit_scissor(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
-   uint32_t count = gfx->dynamic.scissor.count;
-   const VkRect2D *scissors = gfx->dynamic.scissor.scissors;
-   const VkViewport *viewports = gfx->dynamic.viewport.viewports;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd_buffer->vk.dynamic_graphics_state;
+   uint32_t count = dyn->vp.scissor_count;
+   const VkRect2D *scissors = dyn->vp.scissors;
+   const VkViewport *viewports = dyn->vp.viewports;
 
    /* Wa_1409725701:
     *    "The viewport-specific state used by the SF unit (SCISSOR_RECT) is
@@ -3717,7 +3697,8 @@ cmd_buffer_emit_scissor(struct anv_cmd_buffer *cmd_buffer)
 static void
 cmd_buffer_emit_streamout(struct anv_cmd_buffer *cmd_buffer)
 {
-   const struct anv_dynamic_state *d = &cmd_buffer->state.gfx.dynamic;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd_buffer->vk.dynamic_graphics_state;
    struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
 
 #if GFX_VER == 7
@@ -3730,7 +3711,7 @@ cmd_buffer_emit_streamout(struct anv_cmd_buffer *cmd_buffer)
 
    struct GENX(3DSTATE_STREAMOUT) so = {
       GENX(3DSTATE_STREAMOUT_header),
-      .RenderingDisable = d->raster_discard,
+      .RenderingDisable = dyn->rs.rasterizer_discard_enable,
    };
    GENX(3DSTATE_STREAMOUT_pack)(NULL, dwords, &so);
    anv_batch_emit_merge(&cmd_buffer->batch, dwords, streamout_state_dw);
@@ -3740,6 +3721,8 @@ void
 genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
+   const struct vk_dynamic_graphics_state *dyn =
+      &cmd_buffer->vk.dynamic_graphics_state;
    uint32_t *p;
 
    assert((pipeline->active_stages & VK_SHADER_STAGE_COMPUTE_BIT) == 0);
@@ -3771,24 +3754,16 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
          struct anv_buffer *buffer = cmd_buffer->state.vertex_bindings[vb].buffer;
          uint32_t offset = cmd_buffer->state.vertex_bindings[vb].offset;
 
-         /* If dynamic, use stride/size from vertex binding, otherwise use
-          * stride/size that was setup in the pipeline object.
-          */
-         bool dynamic_stride = cmd_buffer->state.gfx.dynamic.dyn_vbo_stride;
-         bool dynamic_size = cmd_buffer->state.gfx.dynamic.dyn_vbo_size;
-
          struct GENX(VERTEX_BUFFER_STATE) state;
          if (buffer) {
-            uint32_t stride = dynamic_stride ?
-               cmd_buffer->state.vertex_bindings[vb].stride : pipeline->vb[vb].stride;
-            /* From the Vulkan spec (vkCmdBindVertexBuffers2EXT):
-             *
-             * "If pname:pSizes is not NULL then pname:pSizes[i] specifies
-             * the bound size of the vertex buffer starting from the corresponding
-             * elements of pname:pBuffers[i] plus pname:pOffsets[i]."
-             */
-            UNUSED uint32_t size = dynamic_size ?
-               cmd_buffer->state.vertex_bindings[vb].size : buffer->vk.size - offset;
+            uint32_t stride = dyn->vi_binding_strides[vb];
+            UNUSED uint32_t size = cmd_buffer->state.vertex_bindings[vb].size;
+
+#if GFX_VER <= 7
+            bool per_instance = pipeline->vb[vb].instanced;
+            uint32_t divisor = pipeline->vb[vb].instance_divisor *
+                               pipeline->instance_multiplier;
+#endif
 
             state = (struct GENX(VERTEX_BUFFER_STATE)) {
                .VertexBufferIndex = vb,
@@ -3796,8 +3771,8 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
                .MOCS = anv_mocs(cmd_buffer->device, buffer->address.bo,
                                 ISL_SURF_USAGE_VERTEX_BUFFER_BIT),
 #if GFX_VER <= 7
-               .BufferAccessType = pipeline->vb[vb].instanced ? INSTANCEDATA : VERTEXDATA,
-               .InstanceDataStepRate = pipeline->vb[vb].instance_divisor,
+               .BufferAccessType = per_instance ? INSTANCEDATA : VERTEXDATA,
+               .InstanceDataStepRate = per_instance ? divisor : 1,
 #endif
                .AddressModifyEnable = true,
                .BufferPitch = stride,
@@ -3843,6 +3818,7 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
    uint32_t descriptors_dirty = cmd_buffer->state.descriptors_dirty &
                                 pipeline->active_stages;
    if (!cmd_buffer->state.gfx.dirty && !descriptors_dirty &&
+       !vk_dynamic_graphics_state_any_dirty(dyn) &&
        !cmd_buffer->state.push_constants_dirty)
       return;
 
@@ -3922,9 +3898,6 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
       cmd_buffer_alloc_push_constants(cmd_buffer);
    }
 
-   if (cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE)
-      cmd_buffer->state.gfx.primitive_topology = pipeline->topology;
-
 #if GFX_VER <= 7
    if (cmd_buffer->state.descriptors_dirty & VK_SHADER_STAGE_VERTEX_BIT ||
        cmd_buffer->state.push_constants_dirty & VK_SHADER_STAGE_VERTEX_BIT) {
@@ -3989,24 +3962,41 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
 
    cmd_buffer_emit_clip(cmd_buffer);
 
-   if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
-                                      ANV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE |
-                                      ANV_CMD_DIRTY_XFB_ENABLE))
+   if ((cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
+                                       ANV_CMD_DIRTY_XFB_ENABLE)) ||
+       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE))
       cmd_buffer_emit_streamout(cmd_buffer);
 
-   if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_DYNAMIC_SCISSOR |
-                                      ANV_CMD_DIRTY_RENDER_TARGETS |
-                                      ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |
-                                      ANV_CMD_DIRTY_PIPELINE)) {
+   if ((cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_PIPELINE |
+                                       ANV_CMD_DIRTY_RENDER_TARGETS)) ||
+       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_VIEWPORTS) ||
+       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSORS)) {
       cmd_buffer_emit_viewport(cmd_buffer);
       cmd_buffer_emit_depth_viewport(cmd_buffer,
                                      pipeline->depth_clamp_enable);
    }
 
-   if (cmd_buffer->state.gfx.dirty & (ANV_CMD_DIRTY_DYNAMIC_SCISSOR |
-                                      ANV_CMD_DIRTY_RENDER_TARGETS |
-                                      ANV_CMD_DIRTY_DYNAMIC_VIEWPORT))
+   if ((cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_RENDER_TARGETS) ||
+       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_VIEWPORTS) ||
+       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_VP_SCISSORS))
       cmd_buffer_emit_scissor(cmd_buffer);
+
+   if ((cmd_buffer->state.gfx.dirty & ANV_CMD_DIRTY_PIPELINE) ||
+       BITSET_TEST(dyn->dirty, MESA_VK_DYNAMIC_IA_PRIMITIVE_TOPOLOGY)) {
+      uint32_t topology;
+      if (anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
+         topology = _3DPRIM_PATCHLIST(pipeline->patch_control_points);
+      else
+         topology = genX(vk_to_intel_primitive_type)[dyn->ia.primitive_topology];
+
+      cmd_buffer->state.gfx.primitive_topology = topology;
+
+#if (GFX_VER >= 8)
+      anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_VF_TOPOLOGY), vft) {
+         vft.PrimitiveTopologyType = topology;
+      }
+#endif
+   }
 
    genX(cmd_buffer_flush_dynamic_state)(cmd_buffer);
 }
@@ -4132,13 +4122,6 @@ cmd_buffer_emit_vertex_constants_and_flush(struct anv_cmd_buffer *cmd_buffer,
       genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 }
 
-static unsigned
-anv_cmd_buffer_get_view_count(struct anv_cmd_buffer *cmd_buffer)
-{
-   struct anv_cmd_graphics_state *gfx = &cmd_buffer->state.gfx;
-   return MAX2(1, util_bitcount(gfx->view_mask));
-}
-
 void genX(CmdDraw)(
     VkCommandBuffer                             commandBuffer,
     uint32_t                                    vertexCount,
@@ -4153,10 +4136,8 @@ void genX(CmdDraw)(
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
 
-   const uint32_t count = (vertexCount *
-                           instanceCount *
-                           (pipeline->use_primitive_replication ?
-                            1 : anv_cmd_buffer_get_view_count(cmd_buffer)));
+   const uint32_t count =
+      vertexCount * instanceCount * pipeline->instance_multiplier;
    anv_measure_snapshot(cmd_buffer,
                         INTEL_SNAPSHOT_DRAW,
                         "draw", count);
@@ -4171,19 +4152,14 @@ void genX(CmdDraw)(
                                               firstVertex, firstInstance, 0,
                                               true);
 
-   /* Our implementation of VK_KHR_multiview uses instancing to draw the
-    * different views.  We need to multiply instanceCount by the view count.
-    */
-   if (!pipeline->use_primitive_replication)
-      instanceCount *= anv_cmd_buffer_get_view_count(cmd_buffer);
-
    anv_batch_emit(&cmd_buffer->batch, GENX(3DPRIMITIVE), prim) {
       prim.PredicateEnable          = cmd_buffer->state.conditional_render_enabled;
       prim.VertexAccessType         = SEQUENTIAL;
       prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       prim.VertexCountPerInstance   = vertexCount;
       prim.StartVertexLocation      = firstVertex;
-      prim.InstanceCount            = instanceCount;
+      prim.InstanceCount            = instanceCount *
+                                      pipeline->instance_multiplier;
       prim.StartInstanceLocation    = firstInstance;
       prim.BaseVertexLocation       = 0;
    }
@@ -4208,10 +4184,8 @@ void genX(CmdDrawMultiEXT)(
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
 
-   const uint32_t count = (drawCount *
-                           instanceCount *
-                           (pipeline->use_primitive_replication ?
-                            1 : anv_cmd_buffer_get_view_count(cmd_buffer)));
+   const uint32_t count =
+      drawCount * instanceCount * pipeline->instance_multiplier;
    anv_measure_snapshot(cmd_buffer,
                         INTEL_SNAPSHOT_DRAW,
                         "draw_multi", count);
@@ -4221,12 +4195,6 @@ void genX(CmdDrawMultiEXT)(
 
    if (cmd_buffer->state.conditional_render_enabled)
       genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
-
-   /* Our implementation of VK_KHR_multiview uses instancing to draw the
-    * different views.  We need to multiply instanceCount by the view count.
-    */
-   if (!pipeline->use_primitive_replication)
-      instanceCount *= anv_cmd_buffer_get_view_count(cmd_buffer);
 
    uint32_t i = 0;
    vk_foreach_multi_draw(draw, i, pVertexInfo, drawCount, stride) {
@@ -4240,7 +4208,8 @@ void genX(CmdDrawMultiEXT)(
          prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
          prim.VertexCountPerInstance   = draw->vertexCount;
          prim.StartVertexLocation      = draw->firstVertex;
-         prim.InstanceCount            = instanceCount;
+         prim.InstanceCount            = instanceCount *
+                                         pipeline->instance_multiplier;
          prim.StartInstanceLocation    = firstInstance;
          prim.BaseVertexLocation       = 0;
       }
@@ -4266,10 +4235,8 @@ void genX(CmdDrawIndexed)(
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
 
-   const uint32_t count = (indexCount *
-                           instanceCount *
-                           (pipeline->use_primitive_replication ?
-                            1 : anv_cmd_buffer_get_view_count(cmd_buffer)));
+   const uint32_t count =
+      indexCount * instanceCount * pipeline->instance_multiplier;
    anv_measure_snapshot(cmd_buffer,
                         INTEL_SNAPSHOT_DRAW,
                         "draw indexed",
@@ -4283,19 +4250,14 @@ void genX(CmdDrawIndexed)(
 
    cmd_buffer_emit_vertex_constants_and_flush(cmd_buffer, vs_prog_data, vertexOffset, firstInstance, 0, true);
 
-   /* Our implementation of VK_KHR_multiview uses instancing to draw the
-    * different views.  We need to multiply instanceCount by the view count.
-    */
-   if (!pipeline->use_primitive_replication)
-      instanceCount *= anv_cmd_buffer_get_view_count(cmd_buffer);
-
    anv_batch_emit(&cmd_buffer->batch, GENX(3DPRIMITIVE), prim) {
       prim.PredicateEnable          = cmd_buffer->state.conditional_render_enabled;
       prim.VertexAccessType         = RANDOM;
       prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
       prim.VertexCountPerInstance   = indexCount;
       prim.StartVertexLocation      = firstIndex;
-      prim.InstanceCount            = instanceCount;
+      prim.InstanceCount            = instanceCount *
+                                      pipeline->instance_multiplier;
       prim.StartInstanceLocation    = firstInstance;
       prim.BaseVertexLocation       = vertexOffset;
    }
@@ -4321,10 +4283,8 @@ void genX(CmdDrawMultiIndexedEXT)(
    if (anv_batch_has_error(&cmd_buffer->batch))
       return;
 
-   const uint32_t count = (drawCount *
-                           instanceCount *
-                           (pipeline->use_primitive_replication ?
-                            1 : anv_cmd_buffer_get_view_count(cmd_buffer)));
+   const uint32_t count =
+      drawCount * instanceCount * pipeline->instance_multiplier;
    anv_measure_snapshot(cmd_buffer,
                         INTEL_SNAPSHOT_DRAW,
                         "draw indexed_multi",
@@ -4335,12 +4295,6 @@ void genX(CmdDrawMultiIndexedEXT)(
 
    if (cmd_buffer->state.conditional_render_enabled)
       genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
-
-   /* Our implementation of VK_KHR_multiview uses instancing to draw the
-    * different views.  We need to multiply instanceCount by the view count.
-    */
-   if (!pipeline->use_primitive_replication)
-      instanceCount *= anv_cmd_buffer_get_view_count(cmd_buffer);
 
    uint32_t i = 0;
    if (pVertexOffset) {
@@ -4368,7 +4322,8 @@ void genX(CmdDrawMultiIndexedEXT)(
                prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
                prim.VertexCountPerInstance   = draw->indexCount;
                prim.StartVertexLocation      = draw->firstIndex;
-               prim.InstanceCount            = instanceCount;
+               prim.InstanceCount            = instanceCount *
+                                               pipeline->instance_multiplier;
                prim.StartInstanceLocation    = firstInstance;
                prim.BaseVertexLocation       = *pVertexOffset;
             }
@@ -4390,7 +4345,8 @@ void genX(CmdDrawMultiIndexedEXT)(
                prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
                prim.VertexCountPerInstance   = draw->indexCount;
                prim.StartVertexLocation      = draw->firstIndex;
-               prim.InstanceCount            = instanceCount;
+               prim.InstanceCount            = instanceCount *
+                                               pipeline->instance_multiplier;
                prim.StartInstanceLocation    = firstInstance;
                prim.BaseVertexLocation       = *pVertexOffset;
             }
@@ -4408,7 +4364,8 @@ void genX(CmdDrawMultiIndexedEXT)(
             prim.PrimitiveTopologyType    = cmd_buffer->state.gfx.primitive_topology;
             prim.VertexCountPerInstance   = draw->indexCount;
             prim.StartVertexLocation      = draw->firstIndex;
-            prim.InstanceCount            = instanceCount;
+            prim.InstanceCount            = instanceCount *
+                                            pipeline->instance_multiplier;
             prim.StartInstanceLocation    = firstInstance;
             prim.BaseVertexLocation       = draw->vertexOffset;
          }
@@ -4452,7 +4409,7 @@ void genX(CmdDrawIndirectByteCountEXT)(
    anv_measure_snapshot(cmd_buffer,
                         INTEL_SNAPSHOT_DRAW,
                         "draw indirect byte count",
-                        instanceCount);
+                        instanceCount * pipeline->instance_multiplier);
    trace_intel_begin_draw_indirect_byte_count(&cmd_buffer->trace);
 
    genX(cmd_buffer_flush_state)(cmd_buffer);
@@ -4471,12 +4428,6 @@ void genX(CmdDrawIndirectByteCountEXT)(
     */
    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
-   /* Our implementation of VK_KHR_multiview uses instancing to draw the
-    * different views.  We need to multiply instanceCount by the view count.
-    */
-   if (!pipeline->use_primitive_replication)
-      instanceCount *= anv_cmd_buffer_get_view_count(cmd_buffer);
-
    struct mi_builder b;
    mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
    struct mi_value count =
@@ -4488,7 +4439,8 @@ void genX(CmdDrawIndirectByteCountEXT)(
    mi_store(&b, mi_reg32(GFX7_3DPRIM_VERTEX_COUNT), count);
 
    mi_store(&b, mi_reg32(GFX7_3DPRIM_START_VERTEX), mi_imm(firstVertex));
-   mi_store(&b, mi_reg32(GFX7_3DPRIM_INSTANCE_COUNT), mi_imm(instanceCount));
+   mi_store(&b, mi_reg32(GFX7_3DPRIM_INSTANCE_COUNT),
+            mi_imm(instanceCount * pipeline->instance_multiplier));
    mi_store(&b, mi_reg32(GFX7_3DPRIM_START_INSTANCE), mi_imm(firstInstance));
    mi_store(&b, mi_reg32(GFX7_3DPRIM_BASE_VERTEX), mi_imm(0));
 
@@ -4501,7 +4453,8 @@ void genX(CmdDrawIndirectByteCountEXT)(
 
    update_dirty_vbs_for_gfx8_vb_flush(cmd_buffer, SEQUENTIAL);
 
-   trace_intel_end_draw_indirect_byte_count(&cmd_buffer->trace, instanceCount);
+   trace_intel_end_draw_indirect_byte_count(&cmd_buffer->trace,
+      instanceCount * pipeline->instance_multiplier);
 #endif /* GFX_VERx10 >= 75 */
 }
 
@@ -4510,6 +4463,8 @@ load_indirect_parameters(struct anv_cmd_buffer *cmd_buffer,
                          struct anv_address addr,
                          bool indexed)
 {
+   struct anv_graphics_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
+
    struct mi_builder b;
    mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
@@ -4517,10 +4472,10 @@ load_indirect_parameters(struct anv_cmd_buffer *cmd_buffer,
                 mi_mem32(anv_address_add(addr, 0)));
 
    struct mi_value instance_count = mi_mem32(anv_address_add(addr, 4));
-   unsigned view_count = anv_cmd_buffer_get_view_count(cmd_buffer);
-   if (view_count > 1) {
+   if (pipeline->instance_multiplier > 1) {
 #if GFX_VERx10 >= 75
-      instance_count = mi_imul_imm(&b, instance_count, view_count);
+      instance_count = mi_imul_imm(&b, instance_count,
+                                   pipeline->instance_multiplier);
 #else
       anv_finishme("Multiview + indirect draw requires MI_MATH; "
                    "MI_MATH is not supported on Ivy Bridge");
@@ -6028,15 +5983,16 @@ genX(cmd_buffer_emit_gfx12_depth_wa)(struct anv_cmd_buffer *cmd_buffer,
                                      const struct isl_surf *surf)
 {
 #if GFX_VERx10 == 120
-   const bool fmt_is_d16 = surf->format == ISL_FORMAT_R16_UNORM;
+   const bool is_d16_1x_msaa = surf->format == ISL_FORMAT_R16_UNORM &&
+                               surf->samples == 1;
 
    switch (cmd_buffer->state.depth_reg_mode) {
    case ANV_DEPTH_REG_MODE_HW_DEFAULT:
-      if (!fmt_is_d16)
+      if (!is_d16_1x_msaa)
          return;
       break;
-   case ANV_DEPTH_REG_MODE_D16:
-      if (fmt_is_d16)
+   case ANV_DEPTH_REG_MODE_D16_1X_MSAA:
+      if (is_d16_1x_msaa)
          return;
       break;
    case ANV_DEPTH_REG_MODE_UNKNOWN:
@@ -6060,21 +6016,13 @@ genX(cmd_buffer_emit_gfx12_depth_wa)(struct anv_cmd_buffer *cmd_buffer,
     * Surface Format is D16_UNORM , surface type is not NULL & 1X_MSAA”.
     */
    anv_batch_write_reg(&cmd_buffer->batch, GENX(COMMON_SLICE_CHICKEN1), reg) {
-      reg.HIZPlaneOptimizationdisablebit = fmt_is_d16 && surf->samples == 1;
+      reg.HIZPlaneOptimizationdisablebit = is_d16_1x_msaa;
       reg.HIZPlaneOptimizationdisablebitMask = true;
    }
 
-   /* Wa_1806527549
-    *
-    * Set HIZ_CHICKEN (7018h) bit 13 = 1 when depth buffer is D16_UNORM.
-    */
-   anv_batch_write_reg(&cmd_buffer->batch, GENX(HIZ_CHICKEN), reg) {
-      reg.HZDepthTestLEGEOptimizationDisable = fmt_is_d16;
-      reg.HZDepthTestLEGEOptimizationDisableMask = true;
-   }
-
    cmd_buffer->state.depth_reg_mode =
-      fmt_is_d16 ? ANV_DEPTH_REG_MODE_D16 : ANV_DEPTH_REG_MODE_HW_DEFAULT;
+      is_d16_1x_msaa ? ANV_DEPTH_REG_MODE_D16_1X_MSAA :
+                       ANV_DEPTH_REG_MODE_HW_DEFAULT;
 #endif
 }
 
@@ -6475,23 +6423,15 @@ void genX(CmdBeginRendering)(
       .d = layers,
    };
 
-   /* Reserve one for the NULL state. */
-   uint32_t color_att_valid = 0;
-   uint32_t color_att_count = pRenderingInfo->colorAttachmentCount;
-   for (uint32_t i = 0; i < pRenderingInfo->colorAttachmentCount; i++) {
-      if (pRenderingInfo->pColorAttachments[i].imageView != VK_NULL_HANDLE)
-         color_att_valid |= BITFIELD_BIT(i);
-   }
-   result = anv_cmd_buffer_init_attachments(cmd_buffer,
-                                            color_att_count,
-                                            color_att_valid);
+   const uint32_t color_att_count = pRenderingInfo->colorAttachmentCount;
+   result = anv_cmd_buffer_init_attachments(cmd_buffer, color_att_count);
    if (result != VK_SUCCESS)
       return;
 
    genX(flush_pipeline_select_3d)(cmd_buffer);
 
    for (uint32_t i = 0; i < gfx->color_att_count; i++) {
-      if (!(color_att_valid & BITFIELD_BIT(i)))
+      if (pRenderingInfo->pColorAttachments[i].imageView == VK_NULL_HANDLE)
          continue;
 
       const VkRenderingAttachmentInfo *att =
@@ -6897,6 +6837,15 @@ void genX(CmdBeginRendering)(
    isl_null_fill_state(&cmd_buffer->device->isl_dev,
                        gfx->null_surface_state.map,
                        .size = fb_size);
+
+   for (uint32_t i = 0; i < gfx->color_att_count; i++) {
+      if (pRenderingInfo->pColorAttachments[i].imageView != VK_NULL_HANDLE)
+         continue;
+
+      isl_null_fill_state(&cmd_buffer->device->isl_dev,
+                          gfx->color_att[i].surface_state.state.map,
+                          .size = fb_size);
+   }
 
    /****** We can now start emitting code to begin the render pass ******/
 
@@ -7409,7 +7358,7 @@ void genX(CmdBindIndexBuffer)(
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
    ANV_FROM_HANDLE(anv_buffer, buffer, _buffer);
 
-   cmd_buffer->state.restart_index = restart_index_for_type(indexType);
+   cmd_buffer->state.gfx.restart_index = restart_index_for_type(indexType);
    cmd_buffer->state.gfx.index_buffer = buffer;
    cmd_buffer->state.gfx.index_type = vk_to_intel_index_type(indexType);
    cmd_buffer->state.gfx.index_offset = offset;

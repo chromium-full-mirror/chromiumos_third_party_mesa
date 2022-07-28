@@ -199,20 +199,10 @@ void AssamblerVisitor::emit_lds_op(const AluInstr& lds)
    alu.is_lds_idx_op = true;
    alu.op = lds.lds_opcode();
 
-   /* All paired LDS fetch + read from queue instructions
-    * have to fit into the same ALU CF, 256 DW fit in, but we leave some
-    * space for weired things the backend assembler might do. */
-   const bool is_lds_start = lds.has_alu_flag(alu_lds_group_start);
-   const unsigned expected_alu_clause_fill = m_bc->cf_last->ndw +
-                                             2 * lds.required_slots();
-
-   if (is_lds_start && expected_alu_clause_fill > 240)
-      m_bc->force_add_cf = 1;
-
    bool has_lds_fetch = false;
    switch (alu.op) {
-   case DS_OP_WRITE:
-      alu.op = LDS_OP2_LDS_WRITE;
+   case LDS_WRITE:
+      alu.op =LDS_OP2_LDS_WRITE;
       break;
    case LDS_WRITE_REL:
       alu.op = LDS_OP3_LDS_WRITE_REL;
@@ -233,8 +223,18 @@ void AssamblerVisitor::emit_lds_op(const AluInstr& lds)
    case LDS_CMP_XCHG_RET:
       has_lds_fetch = true;
       break;
+   case LDS_ADD:
+   case LDS_AND:
+   case LDS_OR:
+   case LDS_MAX_INT:
+   case LDS_MAX_UINT:
+   case LDS_MIN_INT:
+   case LDS_MIN_UINT:
+   case LDS_XOR:
+      break;
    default:
-      ;
+      std::cerr << "\n R600: error op: " << lds << "\n";
+      unreachable("Unhandled LDS op");
    }
 
    copy_src(alu.src[0], lds.src(0));
@@ -309,7 +309,7 @@ void AssamblerVisitor::emit_alu_op(const AluInstr& ai)
          alu.src[i].kc_rel = 1;
       }
 
-      if (ai.has_lds_access()) {
+      if (ai.has_lds_queue_read()) {
          assert(m_bc->cf_last->nlds_read > 0);
          m_bc->cf_last->nlds_read--;
       }
@@ -319,7 +319,6 @@ void AssamblerVisitor::emit_alu_op(const AluInstr& ai)
       alu.bank_swizzle_force = ai.bank_swizzle();
 
    alu.last = ai.has_alu_flag(alu_last_instr);
-   //alu.update_pred = ai.has_alu_flag(alu_update_pred);
    alu.execute_mask = ai.has_alu_flag(alu_update_exec);
 
    /* If the destination register is equal to the last loaded address register
@@ -380,13 +379,14 @@ void AssamblerVisitor::visit(const AluGroup& group)
       return;
 
    if (group.has_lds_group_start()) {
-      if (m_bc->cf_last->ndw + 2 * (*group.begin())->required_slots() > 240) {
+      if (m_bc->cf_last->ndw + 2 * (*group.begin())->required_slots() > 220) {
          assert(m_bc->cf_last->nlds_read == 0);
          m_bc->force_add_cf = 1;
          m_last_addr = nullptr;
       }
    } else if (m_bc->cf_last) {
       if (m_bc->cf_last->ndw + 2 * group.slots() > 240) {
+         assert(m_bc->cf_last->nlds_read == 0);
          m_bc->force_add_cf = 1;
          m_last_addr = nullptr;
       } else {
@@ -395,6 +395,7 @@ void AssamblerVisitor::visit(const AluGroup& group)
              !instr->has_alu_flag(alu_is_lds) &&
              instr->opcode() == op0_group_barrier &&
              m_bc->cf_last->ndw + 14 > 240) {
+            assert(m_bc->cf_last->nlds_read == 0);
             m_bc->force_add_cf = 1;
             m_last_addr = nullptr;
          }
@@ -585,9 +586,8 @@ void AssamblerVisitor::visit(const StreamOutInstr& instr)
    output.burst_count = instr.burst_count();
    output.array_size = instr.array_size();
    output.comp_mask = instr.comp_mask();
-   output.op = instr.op();
+   output.op = instr.op(m_shader->bc.gfx_level);
 
-   assert(output.op >= CF_OP_MEM_STREAM0_BUF0 && output.op <= CF_OP_MEM_STREAM3_BUF3);
 
    if (r600_bytecode_add_output(m_bc, &output))  {
       R600_ERR("shader_from_nir: Error creating stream output instruction\n");
@@ -1249,9 +1249,8 @@ const std::map<EAluOp, int> opcode_map = {
    {op2_pred_setgt, ALU_OP2_PRED_SETGT},
    {op2_pred_setge, ALU_OP2_PRED_SETGE},
    {op2_pred_setne, ALU_OP2_PRED_SETNE},
-   //{op2_pred_set_inv, ALU_OP2_PRED_SET},
-   //{op2_pred_set_clr, ALU_OP2_PRED_SET_CRL},
-   //{op2_pred_set_restore, ALU_OP2_PRED_SET_RESTORE},
+   {op0_pred_set_clr, ALU_OP0_PRED_SET_CLR},
+   {op1_pred_set_restore, ALU_OP1_PRED_SET_RESTORE},
    {op2_pred_sete_push, ALU_OP2_PRED_SETE_PUSH},
    {op2_pred_setgt_push, ALU_OP2_PRED_SETGT_PUSH},
    {op2_pred_setge_push, ALU_OP2_PRED_SETGE_PUSH},
@@ -1278,7 +1277,6 @@ const std::map<EAluOp, int> opcode_map = {
    {op2_setge_uint, ALU_OP2_SETGE_UINT},
    {op2_killgt_uint, ALU_OP2_KILLGT_UINT},
    {op2_killge_uint, ALU_OP2_KILLGE_UINT},
-   //p2_prede_int, ALU_OP2_PREDE_INT},
    {op2_pred_setgt_int, ALU_OP2_PRED_SETGT_INT},
    {op2_pred_setge_int, ALU_OP2_PRED_SETGE_INT},
    {op2_pred_setne_int, ALU_OP2_PRED_SETNE_INT},
@@ -1372,9 +1370,9 @@ const std::map<EAluOp, int> opcode_map = {
    {op1_flt32_to_flt64, ALU_OP1_FLT32_TO_FLT64},
    {op2_sad_accum_prev_uint, ALU_OP2_SAD_ACCUM_PREV_UINT},
    {op2_dot, ALU_OP2_DOT},
-   //p2_mul_prev, ALU_OP2_MUL_PREV},
-   //p2_mul_ieee_prev, ALU_OP2_MUL_IEEE_PREV},
-   //p2_add_prev, ALU_OP2_ADD_PREV},
+   {op1_mul_prev, ALU_OP1_MUL_PREV},
+   {op1_mul_ieee_prev, ALU_OP1_MUL_IEEE_PREV},
+   {op1_add_prev, ALU_OP1_ADD_PREV},
    {op2_muladd_prev, ALU_OP2_MULADD_PREV},
    {op2_muladd_ieee_prev, ALU_OP2_MULADD_IEEE_PREV},
    {op2_interp_xy, ALU_OP2_INTERP_XY},
@@ -1389,7 +1387,6 @@ const std::map<EAluOp, int> opcode_map = {
    {op1_interp_load_p0, ALU_OP1_INTERP_LOAD_P0},
    {op1_interp_load_p10, ALU_OP1_INTERP_LOAD_P10},
    {op1_interp_load_p20, ALU_OP1_INTERP_LOAD_P20},
-      // {op 3 all left shift 6
    {op3_bfe_uint, ALU_OP3_BFE_UINT},
    {op3_bfe_int, ALU_OP3_BFE_INT},
    {op3_bfi_int, ALU_OP3_BFI_INT},

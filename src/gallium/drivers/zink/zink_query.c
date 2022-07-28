@@ -174,7 +174,7 @@ find_or_allocate_qp(struct zink_context *ctx,
 
    VkResult status = VKSCR(CreateQueryPool)(screen->dev, &pool_create, NULL, &new_pool->query_pool);
    if (status != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateQueryPool failed");
+      mesa_loge("ZINK: vkCreateQueryPool failed (%s)", vk_Result_to_str(status));
       FREE(new_pool);
       return NULL;
    }
@@ -273,7 +273,7 @@ timestamp_to_nanoseconds(struct zink_screen *screen, uint64_t *timestamp)
     * can be obtained from VkPhysicalDeviceLimits::timestampPeriod
     * - 17.5. Timestamp Queries
     */
-   *timestamp *= screen->info.props.limits.timestampPeriod;
+   *timestamp *= (double)screen->info.props.limits.timestampPeriod;
 }
 
 static VkQueryType
@@ -732,6 +732,7 @@ copy_pool_results_to_buffer(struct zink_context *ctx, struct zink_query *query, 
    zink_resource_buffer_barrier(ctx, res, VK_ACCESS_TRANSFER_WRITE_BIT, 0);
    util_range_add(&res->base.b, &res->valid_buffer_range, offset, offset + result_size);
    assert(query_id < NUM_QUERIES);
+   res->obj->unordered_read = res->obj->unordered_write = false;
    VKCTX(CmdCopyQueryPoolResults)(batch->state->cmdbuf, pool, query_id, num_results, res->obj->buffer,
                                   offset, base_result_size, flags);
 }
@@ -1134,6 +1135,7 @@ zink_start_conditional_render(struct zink_context *ctx)
    begin_info.sType = VK_STRUCTURE_TYPE_CONDITIONAL_RENDERING_BEGIN_INFO_EXT;
    begin_info.buffer = ctx->render_condition.query->predicate->obj->buffer;
    begin_info.flags = begin_flags;
+   ctx->render_condition.query->predicate->obj->unordered_read = false;
    VKCTX(CmdBeginConditionalRenderingEXT)(batch->state->cmdbuf, &begin_info);
    zink_batch_reference_resource_rw(batch, ctx->render_condition.query->predicate, false);
    ctx->render_condition.active = true;
@@ -1252,12 +1254,13 @@ zink_get_query_result_resource(struct pipe_context *pctx,
       unsigned src_offset = result_size * get_num_results(query);
       if (zink_batch_usage_check_completion(ctx, query->batch_uses)) {
          uint64_t u64[4] = {0};
-         if (VKCTX(GetQueryPoolResults)(screen->dev, start->vkq[0]->pool->query_pool, query_id, 1, sizeof(u64), u64,
-                                   0, size_flags | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT | flag) == VK_SUCCESS) {
+         VkResult result = VKCTX(GetQueryPoolResults)(screen->dev, start->vkq[0]->pool->query_pool, query_id, 1,
+                                   sizeof(u64), u64, 0, size_flags | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT | flag);
+         if (result == VK_SUCCESS) {
             tc_buffer_write(pctx, pres, offset, result_size, (unsigned char*)u64 + src_offset);
             return;
          } else {
-            mesa_loge("ZINK: vkGetQueryPoolResults failed");
+            mesa_loge("ZINK: vkGetQueryPoolResults failed (%s)", vk_Result_to_str(result));
          }
       }
       struct pipe_resource *staging = pipe_buffer_create(pctx->screen, 0, PIPE_USAGE_STAGING, src_offset + result_size);
@@ -1312,8 +1315,9 @@ zink_get_timestamp(struct pipe_screen *pscreen)
       VkCalibratedTimestampInfoEXT cti = {0};
       cti.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
       cti.timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
-      if (VKSCR(GetCalibratedTimestampsEXT)(screen->dev, 1, &cti, &timestamp, &deviation) != VK_SUCCESS) {
-         mesa_loge("ZINK: vkGetCalibratedTimestampsEXT failed");
+      VkResult result = VKSCR(GetCalibratedTimestampsEXT)(screen->dev, 1, &cti, &timestamp, &deviation);
+      if (result != VK_SUCCESS) {
+         mesa_loge("ZINK: vkGetCalibratedTimestampsEXT failed (%s)", vk_Result_to_str(result));
       }
    } else {
       struct pipe_context *pctx = &screen->copy_context->base;

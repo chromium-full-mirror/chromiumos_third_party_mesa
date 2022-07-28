@@ -48,7 +48,8 @@ apt-get install -y --no-remove \
       procps \
       spirv-tools \
       strace \
-      time
+      time \
+      zstd
 
 
 . .gitlab-ci/container/container_pre_build.sh
@@ -74,7 +75,7 @@ cd shader-db
 make
 popd
 
-git clone https://github.com/microsoft/DirectX-Headers -b mesa-mingw --depth 1
+git clone https://github.com/microsoft/DirectX-Headers -b v1.606.3 --depth 1
 mkdir -p DirectX-Headers/build
 pushd DirectX-Headers/build
 meson .. --backend=ninja --buildtype=release -Dbuild-test=false

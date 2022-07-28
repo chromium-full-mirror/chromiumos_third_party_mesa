@@ -148,7 +148,7 @@ public:
 
 class BlockSheduler {
 public:
-   BlockSheduler();
+   BlockSheduler( bool eg_t_slot_handling);
    void run(Shader *shader);
 
    void finalize();
@@ -218,11 +218,13 @@ private:
 
    int m_lds_addr_count{0};
    int m_alu_groups_schduled{0};
+   bool m_eg_t_slot_handling;
 
 };
 
 Shader *schedule(Shader *original)
 {
+   Block::set_chipclass(original->chip_class());
    AluGroup::set_chipclass(original->chip_class());
 
    sfn_log << SfnLog::schedule << "Original shader\n";
@@ -236,7 +238,7 @@ Shader *schedule(Shader *original)
    // to be able to re-start scheduling
 
    auto scheduled_shader = original;
-   BlockSheduler s;
+   BlockSheduler s(original->chip_class() >= ISA_CC_EVERGREEN);
    s.run(scheduled_shader);
    s.finalize();
 
@@ -250,12 +252,13 @@ Shader *schedule(Shader *original)
    return scheduled_shader;
 }
 
-BlockSheduler::BlockSheduler():
+BlockSheduler::BlockSheduler(bool eg_t_slot_handling):
    current_shed(sched_alu),
    m_last_pos(nullptr),
    m_last_pixel(nullptr),
    m_last_param(nullptr),
-   m_current_block(nullptr)
+   m_current_block(nullptr),
+   m_eg_t_slot_handling(eg_t_slot_handling)
 {
 }
 
@@ -489,83 +492,84 @@ bool BlockSheduler::schedule_alu(Shader::ShaderBlocks& out_blocks)
    bool has_lds_ready = !alu_vec_ready.empty() &&
                         (*alu_vec_ready.begin())->has_lds_access();
 
+   /* If we have ready ALU instructions we have to start a new ALU block */
+   if (has_alu_ready ||  !alu_groups_ready.empty()) {
+      if (m_current_block->type() != Block::alu) {
+         start_new_block(out_blocks, Block::alu);
+         m_alu_groups_schduled = 0;
+      }
+   }
+
    /* Schedule groups first. unless we have a pending LDS instuction
     * We don't want the LDS instructions to be too far apart because the
     * fetch + read from queue has to be in the same ALU CF block */
    if (!alu_groups_ready.empty() && !has_lds_ready) {
       group = *alu_groups_ready.begin();
-      alu_groups_ready.erase(alu_groups_ready.begin());
-      sfn_log << SfnLog::schedule << "Schedule ALU group\n";
-      success = true;
-   } else {
-      if (has_alu_ready) {
-         group = new AluGroup();
-         sfn_log << SfnLog::schedule << "START new ALU group\n";
-      }
-   }
-
-   if (group) {
-      int free_slots = group->free_slots();
-
-      if (free_slots && has_alu_ready) {
-         if (!alu_vec_ready.empty())
-            success |= schedule_alu_to_group_vec(group);
-
-         /* Apparently one can't schedule a t-slot if there is already
-          * and LDS instruction scheduled.
-          * TODO: check whether this is only relevant for actual LDS instructions
-          * or also for instructions that read from the LDS return value queue */
-
-         if (free_slots & 0x10 && !has_lds_ready) {
-            sfn_log << SfnLog::schedule << "Try schedule TRANS channel\n";
-            if (!alu_trans_ready.empty())
-               success |= schedule_alu_to_group_trans(group, alu_trans_ready);
-            if (!alu_vec_ready.empty())
-               success |= schedule_alu_to_group_trans(group, alu_vec_ready);
-         }
-      }
-
-      sfn_log << SfnLog::schedule << "Finalize ALU group\n";
-      group->set_scheduled();
-      group->fix_last_flag();
-      group->set_nesting_depth(m_current_block->nesting_depth());
-
-
-      if (m_current_block->type() != Block::alu) {
-         start_new_block(out_blocks, Block::alu);
-         m_alu_groups_schduled = 0;
-      }
-
-      /* Pessimistic hack: If we have started an LDS group,
-       * make sure 8 instructions groups still fit into the CF
-       * TODO: take care of Address slot emission
-       * TODO: maybe do this CF split only in the assembler
-       */
-      /*if (group->slots() > m_current_block->remaining_slots() ||
-          (group->has_lds_group_start() &&
-           m_current_block->remaining_slots() < 7 * 8)) {
-         //assert(!m_current_block->lds_group_active());
-         start_new_block(out_blocks, Block::alu);
-      }*/
-
       if (!m_current_block->try_reserve_kcache(*group)) {
-         assert(!m_current_block->lds_group_active());
          start_new_block(out_blocks, Block::alu);
          m_current_block->set_instr_flag(Instr::force_cf);
       }
 
-      assert(m_current_block->try_reserve_kcache(*group));
-
-      if (group->has_lds_group_start())
-         m_current_block->lds_group_start(*group->begin());
-
-      m_current_block->push_back(group);
-      if (group->has_lds_group_end())
-         m_current_block->lds_group_end();
+      if (!m_current_block->try_reserve_kcache(*group))
+         unreachable("Scheduling a group in a new block should always succeed");
+      alu_groups_ready.erase(alu_groups_ready.begin());
+      sfn_log << SfnLog::schedule << "Schedule ALU group\n";
+      success = true;
+   } else if (has_alu_ready) {
+      group = new AluGroup();
+      sfn_log << SfnLog::schedule << "START new ALU group\n";
+   } else {
+      return false;
    }
 
-   if (success)
-      ++m_alu_groups_schduled;
+   assert(group);
+
+   int free_slots = group->free_slots();
+
+   while (free_slots && has_alu_ready) {
+      if (!alu_vec_ready.empty())
+         success |= schedule_alu_to_group_vec(group);
+
+      /* Apparently one can't schedule a t-slot if there is already
+       * and LDS instruction scheduled.
+       * TODO: check whether this is only relevant for actual LDS instructions
+       * or also for instructions that read from the LDS return value queue */
+
+      if (free_slots & 0x10 && !has_lds_ready) {
+         sfn_log << SfnLog::schedule << "Try schedule TRANS channel\n";
+         if (!alu_trans_ready.empty())
+            success |= schedule_alu_to_group_trans(group, alu_trans_ready);
+         if (!alu_vec_ready.empty())
+            success |= schedule_alu_to_group_trans(group, alu_vec_ready);
+      }
+
+      if (success) {
+         ++m_alu_groups_schduled;
+         break;
+      } else if (m_current_block->kcache_reservation_failed()) {
+         // LDS read groups should not lead to impossible
+         // kcache constellations
+         assert(!m_current_block->lds_group_active());
+
+         // kcache reservation failed, so we have to start a new CF
+         start_new_block(out_blocks, Block::alu);
+         m_current_block->set_instr_flag(Instr::force_cf);
+      } else {
+         return false;
+      }
+   }
+
+   sfn_log << SfnLog::schedule << "Finalize ALU group\n";
+   group->set_scheduled();
+   group->fix_last_flag();
+   group->set_nesting_depth(m_current_block->nesting_depth());
+   m_current_block->push_back(group);
+
+   if (group->has_lds_group_start())
+      m_current_block->lds_group_start(*group->begin());
+
+   if (group->has_lds_group_end())
+      m_current_block->lds_group_end();
 
    return success;
 }
@@ -652,6 +656,13 @@ bool BlockSheduler::schedule_alu_to_group_vec(AluGroup *group)
    auto e = alu_vec_ready.end();
    while (i != e) {
       sfn_log << SfnLog::schedule << "Try schedule to vec " << **i;
+
+      if (!m_current_block->try_reserve_kcache(**i)) {
+           sfn_log << SfnLog::schedule << " failed (kcache)\n";
+         ++i;
+         continue;
+      }
+
       if (group->add_vec_instructions(*i)) {
          auto old_i = i;
          ++i;
@@ -679,6 +690,12 @@ bool BlockSheduler::schedule_alu_to_group_trans(AluGroup *group, std::list<AluIn
    auto e = readylist.end();
    while (i != e) {
       sfn_log << SfnLog::schedule << "Try schedule to trans " << **i;
+      if (!m_current_block->try_reserve_kcache(**i)) {
+           sfn_log << SfnLog::schedule << " failed (kcache)\n";
+         ++i;
+         continue;
+      }
+
       if (group->add_trans_instructions(*i)) {
          auto old_i = i;
          ++i;
@@ -806,7 +823,8 @@ bool BlockSheduler::collect_ready_alu_vec(std::list<AluInstr *>& ready, std::lis
          else if (AluGroup::has_t()) {
             auto opinfo = alu_ops.find((*i)->opcode());
             assert(opinfo != alu_ops.end());
-            if (opinfo->second.can_channel(AluOp::t) && !(*i)->indirect_addr().first)
+            if (opinfo->second.can_channel(AluOp::t, m_eg_t_slot_handling) &&
+                !(*i)->indirect_addr().first)
                priority = -1;
          }
 

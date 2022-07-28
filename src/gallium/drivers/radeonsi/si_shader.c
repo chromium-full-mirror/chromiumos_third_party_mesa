@@ -43,6 +43,18 @@ static const char scratch_rsrc_dword1_symbol[] = "SCRATCH_RSRC_DWORD1";
 
 static void si_dump_shader_key(const struct si_shader *shader, FILE *f);
 
+/* Get the number of all interpolated inputs */
+unsigned si_get_ps_num_interp(struct si_shader *ps)
+{
+   struct si_shader_info *info = &ps->selector->info;
+   unsigned num_colors = !!(info->colors_read & 0x0f) + !!(info->colors_read & 0xf0);
+   unsigned num_interp =
+      ps->selector->info.num_inputs + (ps->key.ps.part.prolog.color_two_side ? num_colors : 0);
+
+   assert(num_interp <= 32);
+   return MIN2(num_interp, 32);
+}
+
 /** Whether the shader runs as a combination of multiple API shaders */
 bool si_is_multi_part_shader(struct si_shader *shader)
 {
@@ -1293,6 +1305,7 @@ static void si_dump_shader_key(const struct si_shader *shader, FILE *f)
       fprintf(f, "  epilog.clamp_color = %u\n", key->ps.part.epilog.clamp_color);
       fprintf(f, "  epilog.dual_src_blend_swizzle = %u\n", key->ps.part.epilog.dual_src_blend_swizzle);
       fprintf(f, "  mono.poly_line_smoothing = %u\n", key->ps.mono.poly_line_smoothing);
+      fprintf(f, "  mono.point_smoothing = %u\n", key->ps.mono.point_smoothing);
       fprintf(f, "  mono.interpolate_at_sample_force_center = %u\n",
               key->ps.mono.interpolate_at_sample_force_center);
       fprintf(f, "  mono.fbfetch_msaa = %u\n", key->ps.mono.fbfetch_msaa);
@@ -1594,6 +1607,9 @@ struct nir_shader *si_get_nir_shader(struct si_shader *shader, bool *free_nir,
    if (sel->stage <= MESA_SHADER_GEOMETRY)
       NIR_PASS(progress, nir, si_nir_kill_outputs, key);
 
+   if (nir->info.uses_resource_info_query)
+      NIR_PASS(progress, nir, ac_nir_lower_resinfo, sel->screen->info.gfx_level);
+
    bool inline_uniforms = false;
    uint32_t *inlined_uniform_values;
    si_get_inline_uniform_state((union si_shader_key*)key, sel->pipe_shader_type,
@@ -1646,6 +1662,12 @@ struct nir_shader *si_get_nir_shader(struct si_shader *shader, bool *free_nir,
                  nir->info.inlinable_uniform_dw_offsets);
       progress = true;
    }
+
+   if (sel->stage == MESA_SHADER_FRAGMENT && key->ps.mono.poly_line_smoothing)
+      NIR_PASS(progress, nir, nir_lower_poly_line_smooth, SI_NUM_SMOOTH_AA_SAMPLES);
+
+   if (sel->stage == MESA_SHADER_FRAGMENT && key->ps.mono.point_smoothing)
+      NIR_PASS(progress, nir, nir_lower_point_smooth);
 
    if (progress)
       si_nir_opts(sel->screen, nir, true);
@@ -1820,12 +1842,41 @@ bool si_compile_shader(struct si_screen *sscreen, struct ac_llvm_compiler *compi
    shader->info.uses_instanceid = sel->info.uses_instanceid;
    shader->info.private_mem_vgprs = DIV_ROUND_UP(nir->scratch_size, 4);
 
+   /* Set the FP ALU behavior. */
+   /* By default, we disable denormals for FP32 and enable them for FP16 and FP64
+    * for performance and correctness reasons. FP32 denormals can't be enabled because
+    * they break output modifiers and v_mad_f32 and are very slow on GFX6-7.
+    *
+    * float_controls_execution_mode defines the set of valid behaviors. Contradicting flags
+    * can be set simultaneously, which means we are allowed to choose, but not really because
+    * some options cause GLCTS failures.
+    */
+   unsigned float_mode = V_00B028_FP_16_64_DENORMS;
+
+   if (!(nir->info.float_controls_execution_mode & FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP32) &&
+       nir->info.float_controls_execution_mode & FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP32)
+      float_mode |= V_00B028_FP_32_ROUND_TOWARDS_ZERO;
+
+   if (!(nir->info.float_controls_execution_mode & (FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP16 |
+                                                    FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP64)) &&
+       nir->info.float_controls_execution_mode & (FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP16 |
+                                                  FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP64))
+      float_mode |= V_00B028_FP_16_64_ROUND_TOWARDS_ZERO;
+
+   if (!(nir->info.float_controls_execution_mode & (FLOAT_CONTROLS_DENORM_PRESERVE_FP16 |
+                                                    FLOAT_CONTROLS_DENORM_PRESERVE_FP64)) &&
+       nir->info.float_controls_execution_mode & (FLOAT_CONTROLS_DENORM_FLUSH_TO_ZERO_FP16 |
+                                                  FLOAT_CONTROLS_DENORM_FLUSH_TO_ZERO_FP64))
+      float_mode &= ~V_00B028_FP_16_64_DENORMS;
+
    /* TODO: ACO could compile non-monolithic shaders here (starting
     * with PS and NGG VS), but monolithic shaders should be compiled
     * by LLVM due to more complicated compilation.
     */
    if (!si_llvm_compile_shader(sscreen, compiler, shader, &so, debug, nir, free_nir))
       return false;
+
+   shader->config.float_mode = float_mode;
 
    /* The GS copy shader is compiled next. */
    if (sel->stage == MESA_SHADER_GEOMETRY && !shader->key.ge.as_ngg) {
@@ -1923,15 +1974,15 @@ bool si_compile_shader(struct si_screen *sscreen, struct ac_llvm_compiler *compi
 /**
  * Create, compile and return a shader part (prolog or epilog).
  *
- * \param sscreen	screen
- * \param list		list of shader parts of the same category
- * \param type		shader type
- * \param key		shader part key
- * \param prolog	whether the part being requested is a prolog
- * \param tm		LLVM target machine
- * \param debug		debug callback
- * \param build		the callback responsible for building the main function
- * \return		non-NULL on success
+ * \param sscreen  screen
+ * \param list     list of shader parts of the same category
+ * \param type     shader type
+ * \param key      shader part key
+ * \param prolog   whether the part being requested is a prolog
+ * \param tm       LLVM target machine
+ * \param debug    debug callback
+ * \param build    the callback responsible for building the main function
+ * \return         non-NULL on success
  */
 static struct si_shader_part *
 si_get_shader_part(struct si_screen *sscreen, struct si_shader_part **list,

@@ -196,7 +196,8 @@ wsi_x11_connection_create(struct wsi_device *wsi_dev,
    xcb_query_extension_reply_t *dri3_reply, *pres_reply, *randr_reply,
                                *amd_reply, *nv_reply, *shm_reply = NULL,
                                *xfixes_reply;
-   bool wants_shm = wsi_dev->sw && wsi_dev->has_import_memory_host;
+   bool wants_shm = wsi_dev->sw && !(WSI_DEBUG & WSI_DEBUG_NOSHM) &&
+                    wsi_dev->has_import_memory_host;
    bool has_dri3_v1_2 = false;
    bool has_present_v1_2 = false;
 
@@ -779,7 +780,7 @@ x11_surface_get_formats(VkIcdSurfaceBase *surface,
    for (unsigned i = 0; i < count; i++) {
       vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
          f->format = sorted_formats[i];
-         f->colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+         f->colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
       }
    }
 
@@ -805,7 +806,7 @@ x11_surface_get_formats2(VkIcdSurfaceBase *surface,
       vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
          assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
          f->surfaceFormat.format = sorted_formats[i];
-         f->surfaceFormat.colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+         f->surfaceFormat.colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
       }
    }
 
@@ -1260,24 +1261,26 @@ x11_present_to_x11_dri3(struct x11_swapchain *chain, uint32_t image_index,
    image->serial = (uint32_t) chain->send_sbc;
 
    xcb_void_cookie_t cookie =
-      xcb_present_pixmap(chain->conn,
-                         chain->window,
-                         image->pixmap,
-                         image->serial,
-                         0,                                    /* valid */
-                         image->update_area,                   /* update */
-                         0,                                    /* x_off */
-                         0,                                    /* y_off */
-                         XCB_NONE,                             /* target_crtc */
-                         XCB_NONE,
-                         image->sync_fence,
-                         options,
-                         target_msc,
-                         divisor,
-                         remainder, 0, NULL);
-   xcb_discard_reply(chain->conn, cookie.sequence);
-
-   xcb_flush(chain->conn);
+      xcb_present_pixmap_checked(chain->conn,
+                                 chain->window,
+                                 image->pixmap,
+                                 image->serial,
+                                 0,                            /* valid */
+                                 image->update_area,           /* update */
+                                 0,                            /* x_off */
+                                 0,                            /* y_off */
+                                 XCB_NONE,                     /* target_crtc */
+                                 XCB_NONE,
+                                 image->sync_fence,
+                                 options,
+                                 target_msc,
+                                 divisor,
+                                 remainder, 0, NULL);
+   xcb_generic_error_t *error = xcb_request_check(chain->conn, cookie);
+   if (error) {
+      free(error);
+      return x11_swapchain_result(chain, VK_ERROR_SURFACE_LOST_KHR);
+   }
 
    return x11_swapchain_result(chain, VK_SUCCESS);
 }
@@ -1297,6 +1300,7 @@ x11_present_to_x11_sw(struct x11_swapchain *chain, uint32_t image_index,
    int stride_b = image->base.row_pitches[0];
    size_t size = (hdr_len + stride_b * chain->extent.height) >> 2;
    uint64_t max_req_len = xcb_get_maximum_request_length(chain->conn);
+   chain->images[image_index].busy = false;
 
    if (size < max_req_len) {
       cookie = xcb_put_image(chain->conn, XCB_IMAGE_FORMAT_Z_PIXMAP,
@@ -1362,10 +1366,29 @@ x11_acquire_next_image(struct wsi_swapchain *anv_chain,
    if (chain->status < 0)
       return chain->status;
 
-   /* For software drivers and without shared memory we only render to a single image. */
    if (chain->base.wsi->sw && !chain->has_mit_shm) {
-      *image_index = 0;
-      return VK_SUCCESS;
+      for (unsigned i = 0; i < chain->base.image_count; i++) {
+         if (!chain->images[i].busy) {
+            *image_index = i;
+            chain->images[i].busy = true;
+            xcb_generic_error_t *err;
+
+            xcb_get_geometry_cookie_t geom_cookie = xcb_get_geometry(chain->conn, chain->window);
+            xcb_get_geometry_reply_t *geom = xcb_get_geometry_reply(chain->conn, geom_cookie, &err);
+            VkResult result = VK_SUCCESS;
+            if (geom) {
+               if (chain->extent.width != geom->width ||
+                   chain->extent.height != geom->height)
+                  result = VK_SUBOPTIMAL_KHR;
+            } else {
+               result = VK_ERROR_SURFACE_LOST_KHR;
+            }
+            free(err);
+            free(geom);
+            return result;
+         }
+      }
+      return VK_NOT_READY;
    }
 
    if (chain->has_acquire_queue) {

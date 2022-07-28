@@ -97,7 +97,7 @@ vk_common_CreateRenderPass(VkDevice _device,
 
    const VkRenderPassMultiviewCreateInfo *multiview_info = NULL;
    const VkRenderPassInputAttachmentAspectCreateInfo *aspect_info = NULL;
-   vk_foreach_struct(ext, pCreateInfo->pNext) {
+   vk_foreach_struct_const(ext, pCreateInfo->pNext) {
       switch (ext->sType) {
       case VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO:
          aspect_info = (const VkRenderPassInputAttachmentAspectCreateInfo *)ext;
@@ -470,6 +470,10 @@ vk_common_CreateRenderPass2(VkDevice _device,
    for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
       const VkSubpassDescription2 *desc = &pCreateInfo->pSubpasses[s];
       struct vk_subpass *subpass = &pass->subpasses[s];
+      const VkMultisampledRenderToSingleSampledInfoEXT *mrtss =
+            vk_find_struct_const(desc->pNext, MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_INFO_EXT);
+      if (mrtss && !mrtss->multisampledRenderToSingleSampledEnable)
+         mrtss = NULL;
 
       subpass->attachment_count = num_subpass_attachments2(desc);
       subpass->attachments = next_subpass_attachment;
@@ -551,32 +555,35 @@ vk_common_CreateRenderPass2(VkDevice _device,
          vk_find_struct_const(desc->pNext,
                               SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE);
 
-      if (ds_resolve && ds_resolve->pDepthStencilResolveAttachment &&
-          ds_resolve->pDepthStencilResolveAttachment->attachment != VK_ATTACHMENT_UNUSED) {
-         subpass->depth_stencil_resolve_attachment = next_subpass_attachment++;
+      if (ds_resolve) {
+         if (ds_resolve->pDepthStencilResolveAttachment &&
+             ds_resolve->pDepthStencilResolveAttachment->attachment != VK_ATTACHMENT_UNUSED) {
+            subpass->depth_stencil_resolve_attachment = next_subpass_attachment++;
 
-         vk_subpass_attachment_init(subpass->depth_stencil_resolve_attachment,
-                                    pass, s,
-                                    ds_resolve->pDepthStencilResolveAttachment,
-                                    pCreateInfo->pAttachments,
-                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-         vk_subpass_attachment_link_resolve(subpass->depth_stencil_attachment,
-                                            subpass->depth_stencil_resolve_attachment,
-                                            pCreateInfo);
+            vk_subpass_attachment_init(subpass->depth_stencil_resolve_attachment,
+                                       pass, s,
+                                       ds_resolve->pDepthStencilResolveAttachment,
+                                       pCreateInfo->pAttachments,
+                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            vk_subpass_attachment_link_resolve(subpass->depth_stencil_attachment,
+                                               subpass->depth_stencil_resolve_attachment,
+                                               pCreateInfo);
+         }
+         if (subpass->depth_stencil_resolve_attachment || mrtss) {
+            /* From the Vulkan 1.3.204 spec:
+             *
+             *    VUID-VkSubpassDescriptionDepthStencilResolve-pDepthStencilResolveAttachment-03178
+             *
+             *    "If pDepthStencilResolveAttachment is not NULL and does not
+             *    have the value VK_ATTACHMENT_UNUSED, depthResolveMode and
+             *    stencilResolveMode must not both be VK_RESOLVE_MODE_NONE"
+             */
+            assert(ds_resolve->depthResolveMode != VK_RESOLVE_MODE_NONE ||
+                   ds_resolve->stencilResolveMode != VK_RESOLVE_MODE_NONE);
 
-         /* From the Vulkan 1.3.204 spec:
-          *
-          *    VUID-VkSubpassDescriptionDepthStencilResolve-pDepthStencilResolveAttachment-03178
-          *
-          *    "If pDepthStencilResolveAttachment is not NULL and does not
-          *    have the value VK_ATTACHMENT_UNUSED, depthResolveMode and
-          *    stencilResolveMode must not both be VK_RESOLVE_MODE_NONE"
-          */
-         assert(ds_resolve->depthResolveMode != VK_RESOLVE_MODE_NONE ||
-                ds_resolve->stencilResolveMode != VK_RESOLVE_MODE_NONE);
-
-         subpass->depth_resolve_mode = ds_resolve->depthResolveMode;
-         subpass->stencil_resolve_mode = ds_resolve->stencilResolveMode;
+            subpass->depth_resolve_mode = ds_resolve->depthResolveMode;
+            subpass->stencil_resolve_mode = ds_resolve->stencilResolveMode;
+         }
       }
 
       const VkFragmentShadingRateAttachmentInfoKHR *fsr_att_info =
@@ -719,6 +726,16 @@ vk_common_CreateRenderPass2(VkDevice _device,
          .stencilAttachmentFormat = stencil_format,
          .rasterizationSamples = samples,
       };
+
+      if (mrtss) {
+         assert(mrtss->multisampledRenderToSingleSampledEnable);
+         subpass->mrtss = (VkMultisampledRenderToSingleSampledInfoEXT) {
+            .sType = VK_STRUCTURE_TYPE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_INFO_EXT,
+            .multisampledRenderToSingleSampledEnable = VK_TRUE,
+            .rasterizationSamples = mrtss->rasterizationSamples,
+         };
+         subpass->self_dep_info.pNext = &subpass->mrtss;
+      }
    }
    assert(next_subpass_attachment ==
           subpass_attachments + subpass_attachment_count);
@@ -903,7 +920,7 @@ vk_get_command_buffer_inheritance_as_rendering_resume(
    const struct vk_subpass *subpass = &pass->subpasses[inheritance->subpass];
 
    VK_FROM_HANDLE(vk_framebuffer, fb, inheritance->framebuffer);
-   if (fb == NULL || (fb->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT_KHR))
+   if (fb == NULL || (fb->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT))
       return NULL;
 
    data->rendering = (VkRenderingInfo) {
@@ -985,6 +1002,11 @@ vk_get_command_buffer_inheritance_as_rendering_resume(
       };
       __vk_append_struct(&data->rendering, &data->fsr_att);
    }
+
+   /* Append this one last because it lives in the subpass and we don't want
+    * to be changed by appending other structures later.
+    */
+   __vk_append_struct(&data->rendering, (void *)&subpass->self_dep_info);
 
    return &data->rendering;
 }
@@ -1170,7 +1192,7 @@ stage_access_for_layout(VkImageLayout layout, VkImageAspectFlags aspects)
          access |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
          /* It might be a resolve attachment */
-         stages |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+         stages |= VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
          access |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
       }
    } else {
@@ -1182,7 +1204,7 @@ stage_access_for_layout(VkImageLayout layout, VkImageAspectFlags aspects)
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
 
          /* It might be a resolve attachment */
-         stages |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+         stages |= VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
          access |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
       }
    }
@@ -1646,6 +1668,12 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
          color_attachment->resolveImageView =
             vk_image_view_to_handle(res_att_state->image_view);
          color_attachment->resolveImageLayout = sp_att->resolve->layout;
+      } else if (subpass->mrtss.multisampledRenderToSingleSampledEnable &&
+                 rp_att->samples == VK_SAMPLE_COUNT_1_BIT) {
+         if (vk_format_is_int(att_state->image_view->format))
+            color_attachment->resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+         else
+            color_attachment->resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
       }
    }
 
@@ -1775,8 +1803,10 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
             att_state->views[view].sample_locations = sample_locations;
       }
 
-      if (sp_att->resolve != NULL) {
-         const struct vk_subpass_attachment *res_sp_att = sp_att->resolve;
+      if (sp_att->resolve != NULL ||
+          (subpass->mrtss.multisampledRenderToSingleSampledEnable &&
+           rp_att->samples == VK_SAMPLE_COUNT_1_BIT)) {
+         const struct vk_subpass_attachment *res_sp_att = sp_att->resolve ? sp_att->resolve : sp_att;
          assert(res_sp_att->attachment < pass->attachment_count);
          const struct vk_render_pass_attachment *res_rp_att =
             &pass->attachments[res_sp_att->attachment];
@@ -1797,11 +1827,11 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
           * that, if we resolve to the wrong aspect, we will still consider
           * it bound and clear it if requested.
           */
-         VkResolveModeFlagBitsKHR depth_resolve_mode = VK_RESOLVE_MODE_NONE;
+         VkResolveModeFlagBits depth_resolve_mode = VK_RESOLVE_MODE_NONE;
          if (res_rp_att->aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
             depth_resolve_mode = subpass->depth_resolve_mode;
 
-         VkResolveModeFlagBitsKHR stencil_resolve_mode = VK_RESOLVE_MODE_NONE;
+         VkResolveModeFlagBits stencil_resolve_mode = VK_RESOLVE_MODE_NONE;
          if (res_rp_att->aspects & VK_IMAGE_ASPECT_STENCIL_BIT)
             stencil_resolve_mode = subpass->stencil_resolve_mode;
 
@@ -1809,8 +1839,9 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
 
          if (depth_resolve_mode != VK_RESOLVE_MODE_NONE) {
             depth_attachment.resolveMode = depth_resolve_mode;
-            depth_attachment.resolveImageView =
-               vk_image_view_to_handle(res_att_state->image_view);
+            if (sp_att->resolve)
+               depth_attachment.resolveImageView =
+                  vk_image_view_to_handle(res_att_state->image_view);
             depth_attachment.resolveImageLayout =
                sp_att->resolve->layout;
 
@@ -1819,15 +1850,16 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
 
          if (stencil_resolve_mode != VK_RESOLVE_MODE_NONE) {
             stencil_attachment.resolveMode = stencil_resolve_mode;
-            stencil_attachment.resolveImageView =
-               vk_image_view_to_handle(res_att_state->image_view);
+            if (sp_att->resolve)
+               stencil_attachment.resolveImageView =
+                  vk_image_view_to_handle(res_att_state->image_view);
             stencil_attachment.resolveImageLayout =
                sp_att->resolve->stencil_layout;
 
             resolved_aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
          }
 
-         if (resolved_aspects == rp_att->aspects) {
+         if (sp_att->resolve && resolved_aspects == rp_att->aspects) {
             /* The resolve attachment is entirely overwritten by the
              * resolve operation so the load op really doesn't matter.
              * We can consider the resolve as being the load.
@@ -1964,7 +1996,6 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
 
    VkRenderingInfo rendering = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-      .pNext = &subpass->self_dep_info,
       .renderArea = cmd_buffer->render_area,
       .layerCount = pass->is_multiview ? 1 : framebuffer->layers,
       .viewMask = pass->is_multiview ? subpass->view_mask : 0,
@@ -2004,6 +2035,11 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
       sample_locations_tmp = *sample_locations;
       __vk_append_struct(&rendering, &sample_locations_tmp);
    }
+
+   /* Append this one last because it lives in the subpass and we don't want
+    * to be changed by appending other structures later.
+    */
+   __vk_append_struct(&rendering, (void *)&subpass->self_dep_info);
 
    disp->CmdBeginRendering(vk_command_buffer_to_handle(cmd_buffer),
                            &rendering);

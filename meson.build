@@ -504,9 +504,6 @@ foreach platform : _platforms
   pre_args += '-DHAVE_@0@_PLATFORM'.format(platform.to_upper())
 endforeach
 
-use_elf_tls = true
-pre_args += '-DUSE_ELF_TLS'
-
 if with_platform_android and get_option('platform-sdk-version') >= 29
   # By default the NDK compiler, at least, emits emutls references instead of
   # ELF TLS, even when building targeting newer API levels.  Make it actually do
@@ -548,14 +545,6 @@ if not have_mtls_dialect
       cpp_args += '-mtls-dialect=gnu2'
     endif
   endif
-endif
-
-if with_platform_windows and with_shared_glapi
-  # Windows doesn't support DLL exports/imports being TLS variables. When using shared
-  # glapi, libglapi.dll hosts the TLS, but other DLLs need to use them. Instead of falling
-  # all the way back to using globals and manual per-thread data, keep using TLS but just
-  # put accesses to it behind a function so the variable doesn't need to be exported.
-  pre_args += '-DUSE_TLS_BEHIND_FUNCTIONS'
 endif
 
 if with_glx != 'disabled'
@@ -1097,6 +1086,10 @@ if cc.compiles('__uint128_t foo(void) { return 0; }',
   pre_args += '-DHAVE_UINT128'
 endif
 
+if cc.has_function('reallocarray')
+   pre_args += '-DHAVE_REALLOCARRAY'
+endif
+
 # TODO: this is very incomplete
 if ['linux', 'cygwin', 'gnu', 'freebsd', 'gnu/kfreebsd', 'haiku', 'android'].contains(host_machine.system())
   pre_args += '-D_GNU_SOURCE'
@@ -1625,6 +1618,15 @@ if with_platform_haiku
   dep_network = cc.find_library('network')
 endif
 
+dep_futex = null_dep
+if host_machine.system() == 'windows'
+  if (get_option('min-windows-version') < 8)
+    dep_futex = declare_dependency(compile_args : ['-DWINDOWS_NO_FUTEX'])
+  else
+    dep_futex = cc.find_library('synchronization', required : true)
+  endif
+endif
+
 # Check for libdrm. Various drivers have different libdrm version requirements,
 # but we always want to use the same version for all libdrm modules. That means
 # even if driver foo requires 2.4.0 and driver bar requires 2.4.3, if foo and
@@ -1682,6 +1684,16 @@ if dep_libdrm.found()
   if with_dri_platform == 'drm' and with_dri
     with_gallium_drisw_kms = true
   endif
+endif
+
+if with_dri
+  pre_args += '-DHAVE_DRI'
+endif
+if with_dri2
+  pre_args += '-DHAVE_DRI2'
+endif
+if with_gallium_drisw_kms
+  pre_args += '-DHAVE_DRISW_KMS'
 endif
 
 dep_libudev = dependency('libudev', required : false)
@@ -1872,7 +1884,7 @@ endif
 # Be explicit about only using this lib on Windows, to avoid picking
 # up random libs with the generic name 'libversion'
 dep_version = null_dep
-if with_opencl_spirv and host_machine.system() == 'windows'
+if host_machine.system() == 'windows'
   dep_version = cpp.find_library('version')
 endif
 

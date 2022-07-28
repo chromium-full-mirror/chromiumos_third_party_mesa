@@ -302,14 +302,11 @@ static void si_dump_mmapped_reg(struct si_context *sctx, FILE *f, unsigned offse
 
 static void si_dump_debug_registers(struct si_context *sctx, FILE *f)
 {
-   if (!sctx->screen->info.has_read_registers_query)
-      return;
-
    fprintf(f, "Memory-mapped registers:\n");
    si_dump_mmapped_reg(sctx, f, R_008010_GRBM_STATUS);
 
-   /* No other registers can be read on DRM < 3.1.0. */
-   if (!sctx->screen->info.is_amdgpu || sctx->screen->info.drm_minor < 1) {
+   /* No other registers can be read on radeon. */
+   if (!sctx->screen->info.is_amdgpu) {
       fprintf(f, "\n");
       return;
    }

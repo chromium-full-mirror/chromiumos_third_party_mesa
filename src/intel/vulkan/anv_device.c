@@ -378,11 +378,18 @@ anv_init_meminfo(struct anv_physical_device *device, int fd)
       anv_compute_sys_heap_size(device, devinfo->mem.sram.mappable.size);
    device->sys.available = devinfo->mem.sram.mappable.free;
 
-   device->vram.region.memory_class = devinfo->mem.vram.mem_class;
-   device->vram.region.memory_instance =
+   device->vram_mappable.region.memory_class = devinfo->mem.vram.mem_class;
+   device->vram_mappable.region.memory_instance =
       devinfo->mem.vram.mem_instance;
-   device->vram.size = devinfo->mem.vram.mappable.size;
-   device->vram.available = devinfo->mem.vram.mappable.free;
+   device->vram_mappable.size = devinfo->mem.vram.mappable.size;
+   device->vram_mappable.available = devinfo->mem.vram.mappable.free;
+
+   device->vram_non_mappable.region.memory_class =
+      devinfo->mem.vram.mem_class;
+   device->vram_non_mappable.region.memory_instance =
+      devinfo->mem.vram.mem_instance;
+   device->vram_non_mappable.size = devinfo->mem.vram.unmappable.size;
+   device->vram_non_mappable.available = devinfo->mem.vram.unmappable.free;
 
    return VK_SUCCESS;
 }
@@ -395,7 +402,8 @@ anv_update_meminfo(struct anv_physical_device *device, int fd)
 
    const struct intel_device_info *devinfo = &device->info;
    device->sys.available = devinfo->mem.sram.mappable.free;
-   device->vram.available = devinfo->mem.vram.mappable.free;
+   device->vram_mappable.available = devinfo->mem.vram.mappable.free;
+   device->vram_non_mappable.available = devinfo->mem.vram.unmappable.free;
 }
 
 
@@ -408,13 +416,19 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
 
    assert(device->sys.size != 0);
 
-   if (device->vram.size > 0) {
-      /* We can create 2 different heaps when we have local memory support,
-       * first heap with local memory size and second with system memory size.
+   if (anv_physical_device_has_vram(device)) {
+      /* We can create 2 or 3 different heaps when we have local memory
+       * support, first heap with local memory size and second with system
+       * memory size and the third is added only if part of the vram is
+       * mappable to the host.
        */
       device->memory.heap_count = 2;
       device->memory.heaps[0] = (struct anv_memory_heap) {
-         .size = device->vram.size,
+         /* If there is a vram_non_mappable, use that for the device only
+          * heap. Otherwise use the vram_mappable.
+          */
+         .size = device->vram_non_mappable.size != 0 ?
+                 device->vram_non_mappable.size : device->vram_mappable.size,
          .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
          .is_local_mem = true,
       };
@@ -423,6 +437,17 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
          .flags = 0,
          .is_local_mem = false,
       };
+      /* Add an additional smaller vram mappable heap if we can't map all the
+       * vram to the host.
+       */
+      if (device->vram_non_mappable.size > 0) {
+         device->memory.heap_count++;
+         device->memory.heaps[2] = (struct anv_memory_heap) {
+            .size = device->vram_mappable.size,
+            .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
+            .is_local_mem = true,
+         };
+      }
 
       device->memory.type_count = 3;
       device->memory.types[0] = (struct anv_memory_type) {
@@ -439,7 +464,11 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
          .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-         .heapIndex = 0,
+         /* This memory type either comes from heaps[0] if there is only
+          * mappable vram region, or from heaps[2] if there is both mappable &
+          * non-mappable vram regions.
+          */
+         .heapIndex = device->vram_non_mappable.size > 0 ? 2 : 0,
       };
    } else if (device->info.has_llc) {
       device->memory.heap_count = 1;
@@ -843,7 +872,8 @@ anv_physical_device_try_create(struct anv_instance *instance,
                                       device->gtt_size > (4ULL << 30 /* GiB */);
 
    /* Initialize memory regions struct to 0. */
-   memset(&device->vram, 0, sizeof(device->vram));
+   memset(&device->vram_non_mappable, 0, sizeof(device->vram_non_mappable));
+   memset(&device->vram_mappable, 0, sizeof(device->vram_mappable));
    memset(&device->sys, 0, sizeof(device->sys));
 
    result = anv_physical_device_init_heaps(device, fd);
@@ -962,15 +992,15 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    device->local_fd = fd;
 
-   result = anv_init_wsi(device);
-   if (result != VK_SUCCESS)
-      goto fail_engine_info;
-
    anv_physical_device_init_perf(device, fd);
 
-   anv_measure_device_init(device);
-
    get_device_extensions(device, &device->vk.supported_extensions);
+
+   result = anv_init_wsi(device);
+   if (result != VK_SUCCESS)
+      goto fail_perf;
+
+   anv_measure_device_init(device);
 
    anv_genX(&device->info, init_physical_device_state)(device);
 
@@ -1000,7 +1030,8 @@ anv_physical_device_try_create(struct anv_instance *instance,
 
    return VK_SUCCESS;
 
-fail_engine_info:
+fail_perf:
+   ralloc_free(device->perf);
    free(device->engine_info);
    anv_physical_device_free_disk_cache(device);
 fail_compiler:
@@ -1525,9 +1556,9 @@ void anv_GetPhysicalDeviceFeatures2(
          break;
       }
 
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GLOBAL_PRIORITY_QUERY_FEATURES_EXT: {
-         VkPhysicalDeviceGlobalPriorityQueryFeaturesEXT *features =
-            (VkPhysicalDeviceGlobalPriorityQueryFeaturesEXT *)ext;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GLOBAL_PRIORITY_QUERY_FEATURES_KHR: {
+         VkPhysicalDeviceGlobalPriorityQueryFeaturesKHR *features =
+            (VkPhysicalDeviceGlobalPriorityQueryFeaturesKHR *)ext;
          features->globalPriorityQuery = true;
          break;
       }
@@ -2053,19 +2084,19 @@ anv_get_physical_device_properties_1_2(struct anv_physical_device *pdevice,
 {
    assert(p->sType == VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES);
 
-   p->driverID = VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA_KHR;
+   p->driverID = VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA;
    memset(p->driverName, 0, sizeof(p->driverName));
-   snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE_KHR,
+   snprintf(p->driverName, VK_MAX_DRIVER_NAME_SIZE,
             "Intel open-source Mesa driver");
    memset(p->driverInfo, 0, sizeof(p->driverInfo));
-   snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE_KHR,
+   snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE,
             "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
 
    /* Don't advertise conformance with a particular version if the hardware's
     * support is incomplete/alpha.
     */
    if (pdevice->is_alpha) {
-      p->conformanceVersion = (VkConformanceVersionKHR) {
+      p->conformanceVersion = (VkConformanceVersion) {
          .major = 0,
          .minor = 0,
          .subminor = 0,
@@ -2073,7 +2104,7 @@ anv_get_physical_device_properties_1_2(struct anv_physical_device *pdevice,
       };
    }
    else {
-      p->conformanceVersion = (VkConformanceVersionKHR) {
+      p->conformanceVersion = (VkConformanceVersion) {
          .major = 1,
          .minor = 3,
          .subminor = 0,
@@ -2082,9 +2113,9 @@ anv_get_physical_device_properties_1_2(struct anv_physical_device *pdevice,
    }
 
    p->denormBehaviorIndependence =
-      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL_KHR;
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_ALL;
    p->roundingModeIndependence =
-      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE_KHR;
+      VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE;
 
    /* Broadwell does not support HF denorms and there are restrictions
     * other gens. According to Kabylake's PRM:
@@ -2153,18 +2184,18 @@ anv_get_physical_device_properties_1_2(struct anv_physical_device *pdevice,
    p->maxDescriptorSetUpdateAfterBindInputAttachments    = MAX_DESCRIPTOR_SET_INPUT_ATTACHMENTS;
 
    /* We support all of the depth resolve modes */
-   p->supportedDepthResolveModes    = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT_KHR |
-                                      VK_RESOLVE_MODE_AVERAGE_BIT_KHR |
-                                      VK_RESOLVE_MODE_MIN_BIT_KHR |
-                                      VK_RESOLVE_MODE_MAX_BIT_KHR;
+   p->supportedDepthResolveModes    = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT |
+                                      VK_RESOLVE_MODE_AVERAGE_BIT |
+                                      VK_RESOLVE_MODE_MIN_BIT |
+                                      VK_RESOLVE_MODE_MAX_BIT;
    /* Average doesn't make sense for stencil so we don't support that */
-   p->supportedStencilResolveModes  = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT_KHR;
+   p->supportedStencilResolveModes  = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
    if (pdevice->info.ver >= 8) {
       /* The advanced stencil resolve modes currently require stencil
        * sampling be supported by the hardware.
        */
-      p->supportedStencilResolveModes |= VK_RESOLVE_MODE_MIN_BIT_KHR |
-                                         VK_RESOLVE_MODE_MAX_BIT_KHR;
+      p->supportedStencilResolveModes |= VK_RESOLVE_MODE_MIN_BIT |
+                                         VK_RESOLVE_MODE_MAX_BIT;
    }
    p->independentResolveNone  = true;
    p->independentResolve      = true;
@@ -2429,9 +2460,9 @@ void anv_GetPhysicalDeviceProperties2(
          break;
       }
 
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES_KHR: {
-         VkPhysicalDeviceMaintenance4PropertiesKHR *properties =
-            (VkPhysicalDeviceMaintenance4PropertiesKHR *)ext;
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES: {
+         VkPhysicalDeviceMaintenance4Properties *properties =
+            (VkPhysicalDeviceMaintenance4Properties *)ext;
          properties->maxBufferSize = pdevice->isl_dev.max_buffer_size;
          break;
       }
@@ -2623,13 +2654,13 @@ static int
 vk_priority_to_gen(int priority)
 {
    switch (priority) {
-   case VK_QUEUE_GLOBAL_PRIORITY_LOW_EXT:
+   case VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR:
       return INTEL_CONTEXT_LOW_PRIORITY;
-   case VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT:
+   case VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR:
       return INTEL_CONTEXT_MEDIUM_PRIORITY;
-   case VK_QUEUE_GLOBAL_PRIORITY_HIGH_EXT:
+   case VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR:
       return INTEL_CONTEXT_HIGH_PRIORITY;
-   case VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT:
+   case VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR:
       return INTEL_CONTEXT_REALTIME_PRIORITY;
    default:
       unreachable("Invalid priority");
@@ -2660,16 +2691,16 @@ void anv_GetPhysicalDeviceQueueFamilyProperties2(
 
          vk_foreach_struct(ext, p->pNext) {
             switch (ext->sType) {
-            case VK_STRUCTURE_TYPE_QUEUE_FAMILY_GLOBAL_PRIORITY_PROPERTIES_EXT: {
-               VkQueueFamilyGlobalPriorityPropertiesEXT *properties =
-                  (VkQueueFamilyGlobalPriorityPropertiesEXT *)ext;
+            case VK_STRUCTURE_TYPE_QUEUE_FAMILY_GLOBAL_PRIORITY_PROPERTIES_KHR: {
+               VkQueueFamilyGlobalPriorityPropertiesKHR *properties =
+                  (VkQueueFamilyGlobalPriorityPropertiesKHR *)ext;
 
                /* Deliberately sorted low to high */
-               VkQueueGlobalPriorityEXT all_priorities[] = {
-                  VK_QUEUE_GLOBAL_PRIORITY_LOW_EXT,
-                  VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT,
-                  VK_QUEUE_GLOBAL_PRIORITY_HIGH_EXT,
-                  VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT,
+               VkQueueGlobalPriorityKHR all_priorities[] = {
+                  VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR,
+                  VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR,
+                  VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR,
+                  VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR,
                };
 
                uint32_t count = 0;
@@ -2740,7 +2771,11 @@ anv_get_memory_budget(VkPhysicalDevice physicalDevice,
 
       if (device->memory.heaps[i].is_local_mem) {
          total_heaps_size = total_vram_heaps_size;
-         mem_available = device->vram.available;
+         if (device->vram_non_mappable.size > 0 && i == 0) {
+            mem_available = device->vram_non_mappable.available;
+         } else {
+            mem_available = device->vram_mappable.available;
+         }
       } else {
          total_heaps_size = total_sys_heaps_size;
          mem_available = device->sys.available;
@@ -3070,13 +3105,13 @@ VkResult anv_CreateDevice(
    }
 
    /* Check if client specified queue priority. */
-   const VkDeviceQueueGlobalPriorityCreateInfoEXT *queue_priority =
+   const VkDeviceQueueGlobalPriorityCreateInfoKHR *queue_priority =
       vk_find_struct_const(pCreateInfo->pQueueCreateInfos[0].pNext,
-                           DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_EXT);
+                           DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR);
 
-   VkQueueGlobalPriorityEXT priority =
+   VkQueueGlobalPriorityKHR priority =
       queue_priority ? queue_priority->globalPriority :
-         VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT;
+         VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR;
 
    device = vk_zalloc2(&physical_device->instance->vk.alloc, pAllocator,
                        sizeof(*device), 8,
@@ -3228,15 +3263,15 @@ VkResult anv_CreateDevice(
 
    /* As per spec, the driver implementation may deny requests to acquire
     * a priority above the default priority (MEDIUM) if the caller does not
-    * have sufficient privileges. In this scenario VK_ERROR_NOT_PERMITTED_EXT
+    * have sufficient privileges. In this scenario VK_ERROR_NOT_PERMITTED_KHR
     * is returned.
     */
    if (physical_device->max_context_priority >= INTEL_CONTEXT_MEDIUM_PRIORITY) {
       int err = anv_gem_set_context_param(device->fd, device->context_id,
                                           I915_CONTEXT_PARAM_PRIORITY,
                                           vk_priority_to_gen(priority));
-      if (err != 0 && priority > VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_EXT) {
-         result = vk_error(device, VK_ERROR_NOT_PERMITTED_EXT);
+      if (err != 0 && priority > VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR) {
+         result = vk_error(device, VK_ERROR_NOT_PERMITTED_KHR);
          goto fail_vmas;
       }
    }
@@ -3810,9 +3845,9 @@ VkResult anv_AllocateMemory(
          dedicated_info = (void *)ext;
          break;
 
-      case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO_KHR: {
-         const VkMemoryOpaqueCaptureAddressAllocateInfoKHR *addr_info =
-            (const VkMemoryOpaqueCaptureAddressAllocateInfoKHR *)ext;
+      case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO: {
+         const VkMemoryOpaqueCaptureAddressAllocateInfo *addr_info =
+            (const VkMemoryOpaqueCaptureAddressAllocateInfo *)ext;
          client_address = addr_info->opaqueCaptureAddress;
          break;
       }
@@ -3831,7 +3866,17 @@ VkResult anv_AllocateMemory(
    if (device->physical->has_implicit_ccs && device->info.has_aux_map)
       alloc_flags |= ANV_BO_ALLOC_IMPLICIT_CCS;
 
-   if (vk_flags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR)
+   /* If i915 reported a mappable/non_mappable vram regions and the
+    * application want lmem mappable, then we need to use the
+    * I915_GEM_CREATE_EXT_FLAG_NEEDS_CPU_ACCESS flag to create our BO.
+    */
+   if (pdevice->vram_mappable.size > 0 &&
+       pdevice->vram_non_mappable.size > 0 &&
+       (mem_type->propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+       (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
+      alloc_flags |= ANV_BO_ALLOC_LOCAL_MEM_CPU_VISIBLE;
+
+   if (vk_flags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT)
       alloc_flags |= ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS;
 
    if ((export_info && export_info->handleTypes) ||
@@ -4198,11 +4243,11 @@ VkResult anv_FlushMappedMemoryRanges(
 
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
       ANV_FROM_HANDLE(anv_device_memory, mem, pMemoryRanges[i].memory);
-      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
-      if (map_offset >= mem->map_size)
+      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
          continue;
 
-      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
+      if (map_offset >= mem->map_size)
          continue;
 
       intel_clflush_range(mem->map + map_offset,
@@ -4225,11 +4270,11 @@ VkResult anv_InvalidateMappedMemoryRanges(
 
    for (uint32_t i = 0; i < memoryRangeCount; i++) {
       ANV_FROM_HANDLE(anv_device_memory, mem, pMemoryRanges[i].memory);
-      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
-      if (map_offset >= mem->map_size)
+      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
          continue;
 
-      if (mem->type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+      uint64_t map_offset = pMemoryRanges[i].offset + mem->map_delta;
+      if (map_offset >= mem->map_size)
          continue;
 
       intel_invalidate_range(mem->map + map_offset,
@@ -4443,7 +4488,7 @@ void anv_GetBufferMemoryRequirements2(
 
 void anv_GetDeviceBufferMemoryRequirementsKHR(
     VkDevice                                    _device,
-    const VkDeviceBufferMemoryRequirementsKHR* pInfo,
+    const VkDeviceBufferMemoryRequirements*     pInfo,
     VkMemoryRequirements2*                      pMemoryRequirements)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
@@ -4499,7 +4544,7 @@ void anv_DestroyBuffer(
 
 VkDeviceAddress anv_GetBufferDeviceAddress(
     VkDevice                                    device,
-    const VkBufferDeviceAddressInfoKHR*         pInfo)
+    const VkBufferDeviceAddressInfo*            pInfo)
 {
    ANV_FROM_HANDLE(anv_buffer, buffer, pInfo->buffer);
 
@@ -4511,14 +4556,14 @@ VkDeviceAddress anv_GetBufferDeviceAddress(
 
 uint64_t anv_GetBufferOpaqueCaptureAddress(
     VkDevice                                    device,
-    const VkBufferDeviceAddressInfoKHR*         pInfo)
+    const VkBufferDeviceAddressInfo*            pInfo)
 {
    return 0;
 }
 
 uint64_t anv_GetDeviceMemoryOpaqueCaptureAddress(
     VkDevice                                    device,
-    const VkDeviceMemoryOpaqueCaptureAddressInfoKHR* pInfo)
+    const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo)
 {
    ANV_FROM_HANDLE(anv_device_memory, memory, pInfo->memory);
 
@@ -4531,6 +4576,7 @@ uint64_t anv_GetDeviceMemoryOpaqueCaptureAddress(
 void
 anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
                               enum isl_format format,
+                              struct isl_swizzle swizzle,
                               isl_surf_usage_flags_t usage,
                               struct anv_address address,
                               uint32_t range, uint32_t stride)
@@ -4541,7 +4587,7 @@ anv_fill_buffer_surface_state(struct anv_device *device, struct anv_state state,
                                           address.bo && address.bo->is_external),
                          .size_B = range,
                          .format = format,
-                         .swizzle = ISL_SWIZZLE_IDENTITY,
+                         .swizzle = swizzle,
                          .stride_B = stride);
 }
 

@@ -69,6 +69,9 @@ static const struct debug_named_value panfrost_debug_options[] = {
         {"linear",    PAN_DBG_LINEAR,   "Force linear textures"},
         {"nocache",   PAN_DBG_NO_CACHE, "Disable BO cache"},
         {"dump",      PAN_DBG_DUMP,     "Dump all graphics memory"},
+#ifdef PAN_DBG_OVERFLOW
+        {"overflow",  PAN_DBG_OVERFLOW, "Check for buffer overflows in pool uploads"},
+#endif
         DEBUG_NAMED_VALUE_END
 };
 
@@ -540,9 +543,6 @@ panfrost_is_format_supported( struct pipe_screen *screen,
                target == PIPE_TEXTURE_CUBE_ARRAY);
 
         format_desc = util_format_description(format);
-
-        if (!format_desc)
-                return false;
 
         /* MSAA 2x gets rounded up to 4x. MSAA 8x/16x only supported on v5+.
          * TODO: debug MSAA 8x/16x */

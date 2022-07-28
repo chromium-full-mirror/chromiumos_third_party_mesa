@@ -78,13 +78,16 @@
  * still want to use normal TLS (which involves a function call, but not the
  * expensive pthread_getspecific() or its equivalent).
  */
-#ifdef USE_ELF_TLS
-#if defined(__GLIBC__)
+#if DETECT_OS_APPLE
+/* Apple Clang emits wrappers when using thread_local that break module linkage,
+ * but not with __thread
+ */
+#define __THREAD_INITIAL_EXEC __thread
+#elif defined(__GLIBC__)
 #define __THREAD_INITIAL_EXEC thread_local __attribute__((tls_model("initial-exec")))
 #define REALLY_INITIAL_EXEC
 #else
 #define __THREAD_INITIAL_EXEC thread_local
-#endif
 #endif
 
 static inline int
@@ -109,6 +112,12 @@ static inline int u_thread_create(thrd_t *thrd, int (*routine)(void *), void *pa
 
    sigfillset(&new_set);
    sigdelset(&new_set, SIGSYS);
+
+   /* SIGSEGV is commonly used by Vulkan API tracing layers in order to track
+    * accesses in device memory mapped to user space. Blocking the signal hinders
+    * that tracking mechanism.
+    */
+   sigdelset(&new_set, SIGSEGV);
    pthread_sigmask(SIG_BLOCK, &new_set, &saved_set);
    ret = thrd_create(thrd, routine, param);
    pthread_sigmask(SIG_SETMASK, &saved_set, NULL);

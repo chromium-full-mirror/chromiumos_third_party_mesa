@@ -250,9 +250,17 @@ enum v3dv_queue_type {
  * cmd buf batch.
  */
 struct v3dv_last_job_sync {
-   /* If the job is the first submitted to a GPU queue in a cmd buffer batch */
+   /* If the job is the first submitted to a GPU queue in a cmd buffer batch.
+    *
+    * We use V3DV_QUEUE_{CL,CSD,TFU} both with and without multisync.
+    */
    bool first[V3DV_QUEUE_COUNT];
-   /* Array of syncobj to track the last job submitted to a GPU queue */
+   /* Array of syncobj to track the last job submitted to a GPU queue.
+    *
+    * With multisync we use V3DV_QUEUE_{CL,CSD,TFU} to track syncobjs for each
+    * queue, but without multisync we only track the last job submitted to any
+    * queue in V3DV_QUEUE_ANY.
+    */
    uint32_t syncs[V3DV_QUEUE_COUNT];
 };
 
@@ -513,6 +521,9 @@ struct v3dv_device {
    struct v3dv_bo *default_attribute_float;
    VkPhysicalDeviceFeatures features;
 
+   void *device_address_mem_ctx;
+   struct util_dynarray device_address_bo_list; /* Array of struct v3dv_bo * */
+
 #ifdef ANDROID
    const void *gralloc;
    enum {
@@ -529,6 +540,7 @@ struct v3dv_device_memory {
    struct v3dv_bo *bo;
    const VkMemoryType *type;
    bool is_for_wsi;
+   bool is_for_device_address;
 };
 
 #define V3D_OUTPUT_IMAGE_FORMAT_NO 255
@@ -885,12 +897,13 @@ enum v3dv_cmd_dirty_bits {
    V3DV_CMD_DIRTY_DESCRIPTOR_SETS           = 1 << 9,
    V3DV_CMD_DIRTY_COMPUTE_DESCRIPTOR_SETS   = 1 << 10,
    V3DV_CMD_DIRTY_PUSH_CONSTANTS            = 1 << 11,
-   V3DV_CMD_DIRTY_BLEND_CONSTANTS           = 1 << 12,
-   V3DV_CMD_DIRTY_OCCLUSION_QUERY           = 1 << 13,
-   V3DV_CMD_DIRTY_DEPTH_BIAS                = 1 << 14,
-   V3DV_CMD_DIRTY_LINE_WIDTH                = 1 << 15,
-   V3DV_CMD_DIRTY_VIEW_INDEX                = 1 << 16,
-   V3DV_CMD_DIRTY_COLOR_WRITE_ENABLE        = 1 << 17,
+   V3DV_CMD_DIRTY_PUSH_CONSTANTS_UBO        = 1 << 12,
+   V3DV_CMD_DIRTY_BLEND_CONSTANTS           = 1 << 13,
+   V3DV_CMD_DIRTY_OCCLUSION_QUERY           = 1 << 14,
+   V3DV_CMD_DIRTY_DEPTH_BIAS                = 1 << 15,
+   V3DV_CMD_DIRTY_LINE_WIDTH                = 1 << 16,
+   V3DV_CMD_DIRTY_VIEW_INDEX                = 1 << 17,
+   V3DV_CMD_DIRTY_COLOR_WRITE_ENABLE        = 1 << 18,
 };
 
 struct v3dv_dynamic_state {
@@ -1057,6 +1070,15 @@ struct v3dv_job {
 
    /* If the job executes on the transfer stage of the pipeline */
    bool is_transfer;
+
+   /* VK_KHR_buffer_device_address allows shaders to use pointers that can
+    * dereference memory in any buffer that has been flagged with
+    * VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR. These buffers may not
+    * be bound via descriptor sets, so we need to make sure that a job that
+    * uses this functionality includes all these buffers in its kernel
+    * submission.
+    */
+   bool uses_buffer_device_address;
 
    enum v3dv_job_type type;
 
@@ -1279,6 +1301,14 @@ struct v3dv_cmd_buffer_state {
     */
    bool tile_aligned_render_area;
 
+   /* FIXME: we have just one client-side BO for the push constants,
+    * independently of the stageFlags in vkCmdPushConstants, and the
+    * pipelineBindPoint in vkCmdBindPipeline. We could probably do more stage
+    * tunning in the future if it makes sense.
+    */
+   uint32_t push_constants_size;
+   uint32_t push_constants_data[MAX_PUSH_CONSTANTS_SIZE / 4];
+
    uint32_t attachment_alloc_count;
    struct v3dv_cmd_buffer_attachment_state *attachments;
 
@@ -1335,6 +1365,7 @@ struct v3dv_cmd_buffer_state {
       bool has_descriptor_state;
 
       uint32_t push_constants[MAX_PUSH_CONSTANTS_SIZE / 4];
+      uint32_t push_constants_size;
    } meta;
 
    /* Command buffer state for queries */
@@ -1469,12 +1500,7 @@ struct v3dv_cmd_buffer {
 
    struct v3dv_cmd_buffer_state state;
 
-   /* FIXME: we have just one client-side and bo for the push constants,
-    * independently of the stageFlags in vkCmdPushConstants, and the
-    * pipelineBindPoint in vkCmdBindPipeline. We could probably do more stage
-    * tunning in the future if it makes sense.
-    */
-   uint32_t push_constants_data[MAX_PUSH_CONSTANTS_SIZE / 4];
+   /* Buffer where we upload push constant data to resolve indirect indexing */
    struct v3dv_cl_reloc push_constants_resource;
 
    /* Collection of Vulkan objects created internally by the driver (typically
@@ -1617,7 +1643,7 @@ struct v3dv_pipeline_stage {
    /** A name for this program, so you can track it in shader-db output. */
    uint32_t program_id;
 
-   VkPipelineCreationFeedbackEXT feedback;
+   VkPipelineCreationFeedback feedback;
 };
 
 /* We are using the descriptor pool entry for two things:
@@ -1946,6 +1972,9 @@ struct v3dv_pipeline {
    /* Flags for whether optional pipeline stages are present, for convenience */
    bool has_gs;
 
+   /* Whether any stage in this pipeline uses VK_KHR_buffer_device_address */
+   bool uses_buffer_device_address;
+
    /* Spilling memory requirements */
    struct {
       struct v3dv_bo *bo;
@@ -2085,7 +2114,7 @@ v3dv_get_compatible_tfu_format(struct v3dv_device *device,
                                uint32_t bpp, VkFormat *out_vk_format);
 bool v3dv_buffer_format_supports_features(struct v3dv_device *device,
                                           VkFormat vk_format,
-                                          VkFormatFeatureFlags2KHR features);
+                                          VkFormatFeatureFlags2 features);
 
 struct v3dv_cl_reloc v3dv_write_uniforms(struct v3dv_cmd_buffer *cmd_buffer,
                                          struct v3dv_pipeline *pipeline,

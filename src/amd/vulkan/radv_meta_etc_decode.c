@@ -620,19 +620,12 @@ radv_device_init_meta_etc_decode_state(struct radv_device *device, bool on_deman
 
    res = create_layout(device);
    if (res != VK_SUCCESS)
-      goto fail;
+      return res;
 
    if (on_demand)
       return VK_SUCCESS;
 
-   res = create_decode_pipeline(device, &state->etc_decode.pipeline);
-   if (res != VK_SUCCESS)
-      goto fail;
-
-   return VK_SUCCESS;
-fail:
-   radv_device_finish_meta_etc_decode_state(device);
-   return res;
+   return create_decode_pipeline(device, &state->etc_decode.pipeline);
 }
 
 void
@@ -642,8 +635,8 @@ radv_device_finish_meta_etc_decode_state(struct radv_device *device)
    radv_DestroyPipeline(radv_device_to_handle(device), state->etc_decode.pipeline, &state->alloc);
    radv_DestroyPipelineLayout(radv_device_to_handle(device), state->etc_decode.p_layout,
                               &state->alloc);
-   radv_DestroyDescriptorSetLayout(radv_device_to_handle(device), state->etc_decode.ds_layout,
-                                   &state->alloc);
+   device->vk.dispatch_table.DestroyDescriptorSetLayout(radv_device_to_handle(device),
+                                                        state->etc_decode.ds_layout, &state->alloc);
 }
 
 static VkPipeline
@@ -720,12 +713,9 @@ radv_meta_decode_etc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
                      VkOffset3D offset, VkExtent3D extent)
 {
    struct radv_meta_saved_state saved_state;
-   radv_meta_save(
-      &saved_state, cmd_buffer,
-      RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS | RADV_META_SAVE_DESCRIPTORS);
-
-   bool old_predicating = cmd_buffer->state.predicating;
-   cmd_buffer->state.predicating = false;
+   radv_meta_save(&saved_state, cmd_buffer,
+                  RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS |
+                     RADV_META_SAVE_DESCRIPTORS | RADV_META_SUSPEND_PREDICATING);
 
    uint32_t base_slice = radv_meta_get_iview_layer(image, subresource, &offset);
    uint32_t slice_count = image->vk.image_type == VK_IMAGE_TYPE_3D ? extent.depth : subresource->layerCount;
@@ -797,6 +787,5 @@ radv_meta_decode_etc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
    radv_image_view_finish(&src_iview);
    radv_image_view_finish(&dest_iview);
 
-   cmd_buffer->state.predicating = old_predicating;
    radv_meta_restore(&saved_state, cmd_buffer);
 }

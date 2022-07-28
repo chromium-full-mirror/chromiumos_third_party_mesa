@@ -1,45 +1,23 @@
 /*
  * Copyrigh 2016 Red Hat Inc.
+ * SPDX-License-Identifier: MIT
+ *
  * Based on anv:
  * Copyright © 2015 Intel Corporation
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
  */
 
-#include "tu_private.h"
+#include "tu_query.h"
 
-#include <assert.h>
 #include <fcntl.h>
-#include <stdbool.h>
-#include <string.h>
-#include <unistd.h>
-
-#include "adreno_pm4.xml.h"
-#include "adreno_common.xml.h"
-#include "a6xx.xml.h"
 
 #include "nir/nir_builder.h"
 #include "util/os_time.h"
 
-#include "tu_cs.h"
 #include "vk_util.h"
+
+#include "tu_cmd_buffer.h"
+#include "tu_cs.h"
+#include "tu_device.h"
 
 #define NSEC_PER_SEC 1000000000ull
 #define WAIT_TIMEOUT 5
@@ -932,7 +910,7 @@ emit_begin_perf_query(struct tu_cmd_buffer *cmdbuf,
    uint32_t last_pass = ~0;
 
    if (cmdbuf->state.pass) {
-      cmdbuf->state.draw_cs_writes_to_cond_pred = true;
+      cmdbuf->state.rp.draw_cs_writes_to_cond_pred = true;
    }
 
    /* Querying perf counters happens in these steps:
@@ -1023,7 +1001,7 @@ emit_begin_prim_generated_query(struct tu_cmd_buffer *cmdbuf,
    uint64_t begin_iova = primitives_generated_query_iova(pool, query, begin);
 
    if (cmdbuf->state.pass) {
-      cmdbuf->state.has_prim_generated_query_in_rp = true;
+      cmdbuf->state.rp.has_prim_generated_query_in_rp = true;
    } else {
       cmdbuf->state.prim_generated_query_running_before_rp = true;
    }
@@ -1614,7 +1592,7 @@ tu_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
    }
 
    tu_cs_emit_pkt7(cs, CP_REG_TO_MEM, 3);
-   tu_cs_emit(cs, CP_REG_TO_MEM_0_REG(REG_A6XX_CP_ALWAYS_ON_COUNTER_LO) |
+   tu_cs_emit(cs, CP_REG_TO_MEM_0_REG(REG_A6XX_CP_ALWAYS_ON_COUNTER) |
                   CP_REG_TO_MEM_0_CNT(2) |
                   CP_REG_TO_MEM_0_64B);
    tu_cs_emit_qw(cs, query_result_iova(pool, query, uint64_t, 0));
@@ -1679,7 +1657,7 @@ tu_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
       for (int j = 0; j < group[i].num_countables; j++) {
 
          vk_outarray_append_typed(VkPerformanceCounterKHR, &out, counter) {
-            counter->scope = VK_QUERY_SCOPE_COMMAND_BUFFER_KHR;
+            counter->scope = VK_PERFORMANCE_COUNTER_SCOPE_COMMAND_BUFFER_KHR;
             counter->unit =
                   fd_perfcntr_type_to_vk_unit[group[i].countables[j].query_type];
             counter->storage =

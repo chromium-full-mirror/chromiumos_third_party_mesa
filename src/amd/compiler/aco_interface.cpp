@@ -112,33 +112,13 @@ get_disasm_string(aco::Program* program, std::vector<uint32_t>& code,
    return disasm;
 }
 
-void
-aco_compile_shader(const struct aco_compiler_options* options,
-                   const struct aco_shader_info* info,
-                   unsigned shader_count, struct nir_shader* const* shaders,
-                   const struct radv_shader_args *args,
-                   aco_callback *build_binary,
-                   void **binary)
+static std::string
+aco_postprocess_shader(const struct aco_compiler_options* options,
+                       const struct radv_shader_args *args,
+                       std::unique_ptr<aco::Program>& program)
 {
-   aco::init();
+   std::string llvm_ir;
 
-   ac_shader_config config = {0};
-   std::unique_ptr<aco::Program> program{new aco::Program};
-
-   program->collect_statistics = options->record_stats;
-   if (program->collect_statistics)
-      memset(program->statistics, 0, sizeof(program->statistics));
-
-   program->debug.func = options->debug.func;
-   program->debug.private_data = options->debug.private_data;
-
-   /* Instruction Selection */
-   if (args->is_gs_copy_shader)
-      aco::select_gs_copy_shader(program.get(), shaders[0], &config, options, info, args);
-   else if (args->is_trap_handler_shader)
-      aco::select_trap_handler_shader(program.get(), shaders[0], &config, options, info, args);
-   else
-      aco::select_program(program.get(), shader_count, shaders, &config, options, info, args);
    if (options->dump_preoptir)
       aco_print_program(program.get(), stderr);
 
@@ -167,7 +147,6 @@ aco_compile_shader(const struct aco_compiler_options* options,
       aco::spill(program.get(), live_vars);
    }
 
-   std::string llvm_ir;
    if (options->record_ir) {
       char* data = NULL;
       size_t size = 0;
@@ -228,12 +207,42 @@ aco_compile_shader(const struct aco_compiler_options* options,
    if (program->collect_statistics || (aco::debug_flags & aco::DEBUG_PERF_INFO))
       aco::collect_preasm_stats(program.get());
 
-   /* Assembly */
+   return llvm_ir;
+}
+
+void
+aco_compile_shader(const struct aco_compiler_options* options,
+                   const struct aco_shader_info* info,
+                   unsigned shader_count, struct nir_shader* const* shaders,
+                   const struct radv_shader_args *args,
+                   aco_callback *build_binary,
+                   void **binary)
+{
+   aco::init();
+
+   ac_shader_config config = {0};
+   std::unique_ptr<aco::Program> program{new aco::Program};
+
+   program->collect_statistics = options->record_stats;
+   if (program->collect_statistics)
+      memset(program->statistics, 0, sizeof(program->statistics));
+
+   program->debug.func = options->debug.func;
+   program->debug.private_data = options->debug.private_data;
+
+   /* Instruction Selection */
+   if (args->is_gs_copy_shader)
+      aco::select_gs_copy_shader(program.get(), shaders[0], &config, options, info, args);
+   else if (args->is_trap_handler_shader)
+      aco::select_trap_handler_shader(program.get(), shaders[0], &config, options, info, args);
+   else
+      aco::select_program(program.get(), shader_count, shaders, &config, options, info, args);
+
+   std::string llvm_ir = aco_postprocess_shader(options, args, program);
+
+   /* assembly */
    std::vector<uint32_t> code;
    unsigned exec_size = aco::emit_program(program.get(), code);
-
-   if (program->collect_statistics)
-      aco::collect_postasm_stats(program.get(), code);
 
    bool get_disasm = options->dump_shader || options->record_ir;
 
@@ -265,7 +274,7 @@ aco_compile_vs_prolog(const struct aco_compiler_options* options,
                       const struct aco_shader_info* info,
                       const struct aco_vs_prolog_key* key,
                       const struct radv_shader_args* args,
-                      aco_prolog_callback *build_prolog,
+                      aco_shader_part_callback *build_prolog,
                       void **binary)
 {
    aco::init();
@@ -300,6 +309,51 @@ aco_compile_vs_prolog(const struct aco_compiler_options* options,
                    config.num_sgprs,
                    config.num_vgprs,
                    num_preserved_sgprs,
+                   code.data(),
+                   code.size(),
+                   disasm.data(),
+                   disasm.size());
+}
+
+void
+aco_compile_ps_epilog(const struct aco_compiler_options* options,
+                      const struct aco_shader_info* info,
+                      const struct aco_ps_epilog_key* key,
+                      const struct radv_shader_args* args,
+                      aco_shader_part_callback* build_epilog,
+                      void** binary)
+{
+   aco::init();
+
+   ac_shader_config config = {0};
+   std::unique_ptr<aco::Program> program{new aco::Program};
+
+   program->collect_statistics = options->record_stats;
+   if (program->collect_statistics)
+      memset(program->statistics, 0, sizeof(program->statistics));
+
+   program->debug.func = options->debug.func;
+   program->debug.private_data = options->debug.private_data;
+
+   /* Instruction selection */
+   aco::select_ps_epilog(program.get(), key, &config, options, info, args);
+
+   aco_postprocess_shader(options, args, program);
+
+   /* assembly */
+   std::vector<uint32_t> code;
+   unsigned exec_size = aco::emit_program(program.get(), code);
+
+   bool get_disasm = options->dump_shader || options->record_ir;
+
+   std::string disasm;
+   if (get_disasm)
+      disasm = get_disasm_string(program.get(), code, exec_size);
+
+   (*build_epilog)(binary,
+                   config.num_sgprs,
+                   config.num_vgprs,
+                   0,
                    code.data(),
                    code.size(),
                    disasm.data(),

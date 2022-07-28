@@ -49,6 +49,7 @@ libradv_files = files(
   'radv_device.c',
   'radv_descriptor_set.c',
   'radv_descriptor_set.h',
+  'radv_device_generated_commands.c',
   'radv_formats.c',
   'radv_image.c',
   'radv_meta.c',
@@ -151,6 +152,11 @@ libvulkan_radeon_link_depends = []
 if with_ld_version_script
   libvulkan_radeon_ld_args += ['-Wl,--version-script', join_paths(meson.current_source_dir(), 'vulkan.sym')]
   libvulkan_radeon_link_depends += files('vulkan.sym')
+endif
+
+radv_build_id = get_option('radv-build-id')
+if radv_build_id != ''
+  radv_flags += '-DRADV_BUILD_ID_OVERRIDE="' + radv_build_id + '"'
 endif
 
 libvulkan_radeon = shared_library(

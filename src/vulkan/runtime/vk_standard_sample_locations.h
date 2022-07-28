@@ -1,6 +1,5 @@
 /*
- * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
- * Copyright © 2018 Google, Inc.
+ * Copyright © 2020 Intel Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -17,23 +16,32 @@
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- * Authors:
- *    Rob Clark <robclark@freedesktop.org>
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  */
+#ifndef VK_STANDARD_SAMPLE_LOCATIONS_H
+#define VK_STANDARD_SAMPLE_LOCATIONS_H
 
-#ifndef FD6_UTIL_H_
-#define FD6_UTIL_H_
+#include "vulkan/vulkan_core.h"
 
-#include "fdl/fd6_format_table.h"
-#include "freedreno_resource.h"
-#include "freedreno_util.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#include "a6xx.xml.h"
+struct vk_sample_locations_state;
 
-enum a6xx_tex_swiz fd6_pipe2swiz(unsigned swiz);
+/** Returns standard sample locations for a given sample count
+ *
+ * These are the sample locations defined in the Vulkan spec for when
+ * standardSampleLocations is supported.
+ */
+const struct vk_sample_locations_state*
+vk_standard_sample_locations_state(VkSampleCountFlagBits sample_count);
 
-#endif /* FD6_UTIL_H_ */
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* VK_STANDARD_SAMPLE_LOCATIONS_H */

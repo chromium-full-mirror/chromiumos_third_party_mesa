@@ -1257,9 +1257,6 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
    const struct radv_shader_info *info = &ngg_stage->info;
    nir_shader *nir = ngg_stage->nir;
 
-   /* TODO: support the LLVM backend with the NIR lowering */
-   assert(!radv_use_llvm_for_stage(device, nir->info.stage));
-
    assert(nir->info.stage == MESA_SHADER_VERTEX ||
           nir->info.stage == MESA_SHADER_TESS_EVAL ||
           nir->info.stage == MESA_SHADER_GEOMETRY ||
@@ -1325,6 +1322,9 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
                  info->has_ngg_early_prim_export, info->is_ngg_passthrough, export_prim_id,
                  pl_key->vs.provoking_vtx_last, false, pl_key->primitives_generated_query,
                  pl_key->vs.instance_rate_inputs);
+
+      /* Increase ESGS ring size so the LLVM binary contains the correct LDS size. */
+      ngg_stage->info.ngg_info.esgs_ring_size = nir->info.shared_size;
    } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
       assert(info->is_ngg);
       NIR_PASS_V(nir, ac_nir_lower_ngg_gs, info->wave_size, info->workgroup_size,
@@ -1516,7 +1516,7 @@ get_hole(struct radv_shader_arena *arena, struct list_head *head)
    if (head == &arena->entries)
       return NULL;
 
-   union radv_shader_arena_block *hole = LIST_ENTRY(union radv_shader_arena_block, head, list);
+   union radv_shader_arena_block *hole = list_entry(head, union radv_shader_arena_block, list);
    return hole->freelist.prev ? hole : NULL;
 }
 
@@ -1898,7 +1898,7 @@ radv_open_rtld_binary(struct radv_device *device, const struct radv_shader *shad
 {
    const char *elf_data = (const char *)((struct radv_shader_binary_rtld *)binary)->data;
    size_t elf_size = ((struct radv_shader_binary_rtld *)binary)->elf_size;
-   struct ac_rtld_symbol lds_symbols[2];
+   struct ac_rtld_symbol lds_symbols[3];
    unsigned num_lds_symbols = 0;
 
    if (device->physical_device->rad_info.gfx_level >= GFX9 &&
@@ -1914,6 +1914,11 @@ radv_open_rtld_binary(struct radv_device *device, const struct radv_shader *shad
       struct ac_rtld_symbol *sym = &lds_symbols[num_lds_symbols++];
       sym->name = "ngg_emit";
       sym->size = binary->info.ngg_info.ngg_emit_size * 4;
+      sym->align = 4;
+
+      sym = &lds_symbols[num_lds_symbols++];
+      sym->name = "ngg_scratch";
+      sym->size = 8;
       sym->align = 4;
    }
 
@@ -1999,12 +2004,14 @@ radv_shader_create(struct radv_device *device, const struct radv_shader_binary *
 
       if (rtld_binary.lds_size > 0) {
          unsigned encode_granularity = device->physical_device->rad_info.lds_encode_granularity;
-         config.lds_size = align(rtld_binary.lds_size, encode_granularity) / encode_granularity;
+         config.lds_size = DIV_ROUND_UP(rtld_binary.lds_size, encode_granularity);
       }
       if (!config.lds_size && binary->stage == MESA_SHADER_TESS_CTRL) {
          /* This is used for reporting LDS statistics */
          config.lds_size = binary->info.tcs.num_lds_blocks;
       }
+
+      assert(!binary->info.has_ngg_culling || config.lds_size);
 
       shader->code_size = rtld_binary.rx_size;
       shader->exec_size = rtld_binary.exec_size;
@@ -2352,33 +2359,33 @@ upload_shader_part(struct radv_device *device, struct radv_shader_part_binary *b
    return shader_part;
 }
 
-static void radv_aco_build_prolog(void **bin,
-                                  uint32_t num_sgprs,
-                                  uint32_t num_vgprs,
-                                  uint32_t num_preserved_sgprs,
-                                  const uint32_t *code,
-                                  uint32_t code_size,
-                                  const char *disasm_str,
-                                  uint32_t disasm_size)
+static void radv_aco_build_shader_part(void **bin,
+                                       uint32_t num_sgprs,
+                                       uint32_t num_vgprs,
+                                       uint32_t num_preserved_sgprs,
+                                       const uint32_t *code,
+                                       uint32_t code_size,
+                                       const char *disasm_str,
+                                       uint32_t disasm_size)
 {
    struct radv_shader_part_binary **binary = (struct radv_shader_part_binary **)bin;
    size_t size = code_size * sizeof(uint32_t) + sizeof(struct radv_shader_part_binary);
 
    size += disasm_size;
-   struct radv_shader_part_binary *prolog_binary = (struct radv_shader_part_binary *)calloc(size, 1);
+   struct radv_shader_part_binary *part_binary = (struct radv_shader_part_binary *)calloc(size, 1);
 
-   prolog_binary->num_sgprs = num_sgprs;
-   prolog_binary->num_vgprs = num_vgprs;
-   prolog_binary->num_preserved_sgprs = num_preserved_sgprs;
-   prolog_binary->code_size = code_size * sizeof(uint32_t);
-   memcpy(prolog_binary->data, code, prolog_binary->code_size);
+   part_binary->num_sgprs = num_sgprs;
+   part_binary->num_vgprs = num_vgprs;
+   part_binary->num_preserved_sgprs = num_preserved_sgprs;
+   part_binary->code_size = code_size * sizeof(uint32_t);
+   memcpy(part_binary->data, code, part_binary->code_size);
    if (disasm_size) {
-      memcpy((char*)prolog_binary->data + prolog_binary->code_size,
+      memcpy((char*)part_binary->data + part_binary->code_size,
              disasm_str, disasm_size);
-      prolog_binary->disasm_size = disasm_size;
+      part_binary->disasm_size = disasm_size;
    }
 
-   *binary = prolog_binary;
+   *binary = part_binary;
 }
 
 struct radv_shader_part *
@@ -2425,7 +2432,8 @@ radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_ke
    radv_aco_convert_shader_info(&ac_info, &info);
    radv_aco_convert_opts(&ac_opts, &options);
    radv_aco_convert_vs_prolog_key(&ac_key, key);
-   aco_compile_vs_prolog(&ac_opts, &ac_info, &ac_key, &args, &radv_aco_build_prolog, (void **)&binary);
+   aco_compile_vs_prolog(&ac_opts, &ac_info, &ac_key, &args, &radv_aco_build_shader_part,
+                         (void **)&binary);
    struct radv_shader_part *prolog = upload_shader_part(device, binary, info.wave_size);
    if (prolog) {
       prolog->nontrivial_divisors = key->state->nontrivial_divisors;
@@ -2441,6 +2449,55 @@ radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_ke
    }
 
    return prolog;
+}
+
+struct radv_shader_part *
+radv_create_ps_epilog(struct radv_device *device, const struct radv_ps_epilog_key *key)
+{
+   struct radv_shader_args args = {0};
+   struct radv_nir_compiler_options options = {0};
+   options.family = device->physical_device->rad_info.family;
+   options.gfx_level = device->physical_device->rad_info.gfx_level;
+   options.address32_hi = device->physical_device->rad_info.address32_hi;
+   options.dump_shader = device->instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS;
+   options.record_ir = device->instance->debug_flags & RADV_DEBUG_HANG;
+   options.dump_preoptir = device->instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS;
+   options.dump_shader = device->instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS;
+
+   struct radv_shader_info info = {0};
+   info.wave_size = key->wave32 ? 32 : 64;
+   info.workgroup_size = 64;
+
+   radv_declare_ps_epilog_args(device->physical_device->rad_info.gfx_level, key, &args);
+
+#ifdef LLVM_AVAILABLE
+   if (options.dump_shader || options.record_ir)
+      ac_init_llvm_once();
+#endif
+
+   struct radv_shader_part_binary *binary = NULL;
+   struct aco_shader_info ac_info;
+   struct aco_ps_epilog_key ac_key;
+   struct aco_compiler_options ac_opts;
+   radv_aco_convert_shader_info(&ac_info, &info);
+   radv_aco_convert_opts(&ac_opts, &options);
+   radv_aco_convert_ps_epilog_key(&ac_key, key);
+   aco_compile_ps_epilog(&ac_opts, &ac_info, &ac_key, &args, &radv_aco_build_shader_part,
+                         (void **)&binary);
+   struct radv_shader_part *epilog = upload_shader_part(device, binary, info.wave_size);
+   if (epilog) {
+      epilog->disasm_string =
+         binary->disasm_size ? strdup((const char *)(binary->data + binary->code_size)) : NULL;
+   }
+
+   free(binary);
+
+   if (epilog && options.dump_shader) {
+      fprintf(stderr, "Fragment epilog");
+      fprintf(stderr, "\ndisasm:\n%s\n", epilog->disasm_string);
+   }
+
+   return epilog;
 }
 
 void

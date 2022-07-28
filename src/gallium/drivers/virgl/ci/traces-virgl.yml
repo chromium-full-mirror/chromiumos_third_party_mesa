@@ -17,7 +17,7 @@ traces:
   - path: gputest/furmark-v2.trace
     expectations:
       - device: gl-virgl
-        checksum: 2762c809316c58d4eefad6677ecfcb2e
+        checksum: 57ddd36b117adc9216c65c10d914a37e
   - path: gputest/pixmark-piano-v2.trace
     expectations:
       - device: gl-virgl
@@ -207,7 +207,7 @@ traces:
   - path: itoral-gl-terrain-demo/demo-v2.trace
     expectations:
       - device: gl-virgl
-        checksum: 716d4fe36a6212b161285fed8a423ee8
+        checksum: 37780a6eaa38a55700e8207e89009f56
   - path: neverball/neverball-v2.trace
     expectations:
       - device: gl-virgl

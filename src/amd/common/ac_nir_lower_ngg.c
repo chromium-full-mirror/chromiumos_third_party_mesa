@@ -54,6 +54,7 @@ typedef struct
    bool early_prim_export;
    bool use_edgeflags;
    bool has_prim_query;
+   bool can_cull;
    unsigned wave_size;
    unsigned max_num_waves;
    unsigned num_vertices_per_primitives;
@@ -429,23 +430,6 @@ emit_ngg_nogs_prim_export(nir_builder *b, lower_ngg_nogs_state *st, nir_ssa_def 
       if (!arg)
          arg = emit_ngg_nogs_prim_exp_arg(b, st);
 
-      if (st->export_prim_id && b->shader->info.stage == MESA_SHADER_VERTEX) {
-         nir_ssa_def *prim_valid = nir_ieq_imm(b, nir_ushr_imm(b, arg, 31), 0);
-         nir_if *if_prim_valid = nir_push_if(b, prim_valid);
-         {
-            /* Copy Primitive IDs from GS threads to the LDS address
-             * corresponding to the ES thread of the provoking vertex.
-             * It will be exported as a per-vertex attribute.
-             */
-            nir_ssa_def *prim_id = nir_load_primitive_id(b);
-            nir_ssa_def *provoking_vtx_idx = nir_load_var(b, st->gs_vtx_indices_vars[st->provoking_vtx_idx]);
-            nir_ssa_def *addr = pervertex_lds_addr(b, provoking_vtx_idx, 4u);
-
-            nir_store_shared(b, prim_id, addr);
-         }
-         nir_pop_if(b, if_prim_valid);
-      }
-
       if (st->has_prim_query) {
          nir_if *if_shader_query = nir_push_if(b, nir_load_shader_query_enabled_amd(b));
          {
@@ -470,15 +454,32 @@ emit_ngg_nogs_prim_export(nir_builder *b, lower_ngg_nogs_state *st, nir_ssa_def 
 }
 
 static void
+emit_ngg_nogs_prim_id_store_shared(nir_builder *b, lower_ngg_nogs_state *st)
+{
+   nir_ssa_def *gs_thread = st->gs_accepted_var ?
+      nir_load_var(b, st->gs_accepted_var) : nir_has_input_primitive_amd(b);
+
+   nir_if *if_gs_thread = nir_push_if(b, gs_thread);
+   {
+      /* Copy Primitive IDs from GS threads to the LDS address
+       * corresponding to the ES thread of the provoking vertex.
+       * It will be exported as a per-vertex attribute.
+       */
+      nir_ssa_def *prim_id = nir_load_primitive_id(b);
+      nir_ssa_def *provoking_vtx_idx = nir_load_var(b, st->gs_vtx_indices_vars[st->provoking_vtx_idx]);
+      nir_ssa_def *addr = pervertex_lds_addr(b, provoking_vtx_idx, 4u);
+
+      nir_store_shared(b, prim_id, addr);
+   }
+   nir_pop_if(b, if_gs_thread);
+}
+
+static void
 emit_store_ngg_nogs_es_primitive_id(nir_builder *b)
 {
    nir_ssa_def *prim_id = NULL;
 
    if (b->shader->info.stage == MESA_SHADER_VERTEX) {
-      /* Workgroup barrier - wait for GS threads to store primitive ID in LDS. */
-      nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP, .memory_scope = NIR_SCOPE_WORKGROUP,
-                            .memory_semantics = NIR_MEMORY_ACQ_REL, .memory_modes = nir_var_mem_shared);
-
       /* LDS address where the primitive ID is stored */
       nir_ssa_def *thread_id_in_threadgroup = nir_load_local_invocation_index(b);
       nir_ssa_def *addr =  pervertex_lds_addr(b, thread_id_in_threadgroup, 4u);
@@ -1128,7 +1129,7 @@ add_deferred_attribute_culling(nir_builder *b, nir_cf_list *original_extracted_c
    unsigned total_es_lds_bytes = pervertex_lds_bytes * nogs_state->max_es_num_vertices;
    unsigned max_num_waves = nogs_state->max_num_waves;
    unsigned ngg_scratch_lds_base_addr = ALIGN(total_es_lds_bytes, 8u);
-   unsigned ngg_scratch_lds_bytes = DIV_ROUND_UP(max_num_waves, 4u);
+   unsigned ngg_scratch_lds_bytes = ALIGN(max_num_waves, 4u);
    nogs_state->total_lds_bytes = ngg_scratch_lds_base_addr + ngg_scratch_lds_bytes;
 
    nir_function_impl *impl = nir_shader_get_entrypoint(b->shader);
@@ -1389,6 +1390,7 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
       .early_prim_export = early_prim_export,
       .use_edgeflags = use_edgeflags,
       .has_prim_query = has_prim_query,
+      .can_cull = can_cull,
       .num_vertices_per_primitives = num_vertices_per_primitives,
       .provoking_vtx_idx = provoking_vtx_last ? (num_vertices_per_primitives - 1) : 0,
       .position_value_var = position_value_var,
@@ -1401,9 +1403,16 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
       .instance_rate_inputs = instance_rate_inputs,
    };
 
-   /* We need LDS space when VS needs to export the primitive ID. */
-   if (shader->info.stage == MESA_SHADER_VERTEX && export_prim_id)
-      state.total_lds_bytes = max_num_es_vertices * 4u;
+   const bool need_prim_id_store_shared =
+      export_prim_id && shader->info.stage == MESA_SHADER_VERTEX;
+
+   if (export_prim_id) {
+      nir_variable *prim_id_var = nir_variable_create(shader, nir_var_shader_out, glsl_uint_type(), "ngg_prim_id");
+      prim_id_var->data.location = VARYING_SLOT_PRIMITIVE_ID;
+      prim_id_var->data.driver_location = VARYING_SLOT_PRIMITIVE_ID;
+      prim_id_var->data.interpolation = INTERP_MODE_NONE;
+      shader->info.outputs_written |= VARYING_BIT_PRIMITIVE_ID;
+   }
 
    nir_builder builder;
    nir_builder *b = &builder; /* This is to avoid the & */
@@ -1448,6 +1457,25 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
          emit_ngg_nogs_prim_export(b, &state, nir_load_var(b, state.prim_exp_arg_var));
    }
 
+   if (need_prim_id_store_shared) {
+      /* We need LDS space when VS needs to export the primitive ID. */
+      state.total_lds_bytes = MAX2(state.total_lds_bytes, max_num_es_vertices * 4u);
+
+      /* The LDS space aliases with what is used by culling, so we need a barrier. */
+      if (can_cull) {
+         nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
+                               .memory_scope = NIR_SCOPE_WORKGROUP,
+                               .memory_semantics = NIR_MEMORY_ACQ_REL,
+                               .memory_modes = nir_var_mem_shared);
+      }
+
+      emit_ngg_nogs_prim_id_store_shared(b, &state);
+
+      /* Wait for GS threads to store primitive ID in LDS. */
+      nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP, .memory_scope = NIR_SCOPE_WORKGROUP,
+                            .memory_semantics = NIR_MEMORY_ACQ_REL, .memory_modes = nir_var_mem_shared);
+   }
+
    nir_intrinsic_instr *export_vertex_instr;
    nir_ssa_def *es_thread = can_cull ? nir_load_var(b, es_accepted_var) : nir_has_input_vertex_amd(b);
 
@@ -1457,23 +1485,17 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
       nir_cf_reinsert(&extracted, b->cursor);
       b->cursor = nir_after_cf_list(&if_es_thread->then_list);
 
-      /* Export all vertex attributes (except primitive ID) */
-      export_vertex_instr = nir_export_vertex_amd(b);
-
-      /* Export primitive ID (in case of early primitive export or TES) */
-      if (state.export_prim_id && (state.early_prim_export || shader->info.stage != MESA_SHADER_VERTEX))
+      if (state.export_prim_id)
          emit_store_ngg_nogs_es_primitive_id(b);
+
+      /* Export all vertex attributes (including the primitive ID) */
+      export_vertex_instr = nir_export_vertex_amd(b);
    }
    nir_pop_if(b, if_es_thread);
 
    /* Take care of late primitive export */
    if (!state.early_prim_export) {
       emit_ngg_nogs_prim_export(b, &state, nir_load_var(b, prim_exp_arg_var));
-      if (state.export_prim_id && shader->info.stage == MESA_SHADER_VERTEX) {
-         if_es_thread = nir_push_if(b, can_cull ? es_thread : nir_has_input_vertex_amd(b));
-         emit_store_ngg_nogs_es_primitive_id(b);
-         nir_pop_if(b, if_es_thread);
-      }
    }
 
    if (can_cull) {
@@ -1524,6 +1546,37 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
    shader->info.shared_size = state.total_lds_bytes;
 }
 
+/**
+ * Return the address of the LDS storage reserved for the N'th vertex,
+ * where N is in emit order, meaning:
+ * - during the finale, N is the invocation_index (within the workgroup)
+ * - during vertex emit, i.e. while the API GS shader invocation is running,
+ *   N = invocation_index * gs_max_out_vertices + emit_idx
+ *   where emit_idx is the vertex index in the current API GS invocation.
+ *
+ * Goals of the LDS memory layout:
+ * 1. Eliminate bank conflicts on write for geometry shaders that have all emits
+ *    in uniform control flow
+ * 2. Eliminate bank conflicts on read for export if, additionally, there is no
+ *    culling
+ * 3. Agnostic to the number of waves (since we don't know it before compiling)
+ * 4. Allow coalescing of LDS instructions (ds_write_b128 etc.)
+ * 5. Avoid wasting memory.
+ *
+ * We use an AoS layout due to point 4 (this also helps point 3). In an AoS
+ * layout, elimination of bank conflicts requires that each vertex occupy an
+ * odd number of dwords. We use the additional dword to store the output stream
+ * index as well as a flag to indicate whether this vertex ends a primitive
+ * for rasterization.
+ *
+ * Swizzling is required to satisfy points 1 and 2 simultaneously.
+ *
+ * Vertices are stored in export order (gsthread * gs_max_out_vertices + emitidx).
+ * Indices are swizzled in groups of 32, which ensures point 1 without
+ * disturbing point 2.
+ *
+ * \return an LDS pointer to type {[N x i32], [4 x i8]}
+ */
 static nir_ssa_def *
 ngg_gs_out_vertex_addr(nir_builder *b, nir_ssa_def *out_vtx_idx, lower_ngg_gs_state *s)
 {
@@ -1837,6 +1890,16 @@ ngg_gs_export_vertices(nir_builder *b, nir_ssa_def *max_num_out_vtx, nir_ssa_def
       exported_out_vtx_lds_addr = ngg_gs_out_vertex_addr(b, nir_u2u32(b, exported_vtx_idx), s);
    }
 
+   /* Remember proper bit sizes of output variables. */
+   uint8_t out_bitsizes[VARYING_SLOT_MAX];
+   memset(out_bitsizes, 32, VARYING_SLOT_MAX);
+   nir_foreach_shader_out_variable(var, b->shader) {
+      /* Check 8/16-bit. All others should be lowered to 32-bit already. */
+      unsigned bit_size = glsl_base_type_bit_size(glsl_get_base_type(glsl_without_array(var->type)));
+      if (bit_size == 8 || bit_size == 16)
+         out_bitsizes[var->data.location] = bit_size;
+   }
+
    for (unsigned slot = 0; slot < VARYING_SLOT_MAX; ++slot) {
       if (!(b->shader->info.outputs_written & BITFIELD64_BIT(slot)))
          continue;
@@ -1856,6 +1919,10 @@ ngg_gs_export_vertices(nir_builder *b, nir_ssa_def *max_num_out_vtx, nir_ssa_def
             nir_load_shared(b, count, 32, exported_out_vtx_lds_addr,
                             .base = packed_location * 16 + start * 4,
                             .align_mul = 4);
+
+         /* Convert to the expected bit size of the output variable. */
+         if (out_bitsizes[slot] != 32)
+            load = nir_u2u(b, load, out_bitsizes[slot]);
 
          nir_store_output(b, load, nir_imm_int(b, 0), .base = slot, .io_semantics = io_sem,
                           .component = start, .write_mask = BITFIELD_MASK(count));

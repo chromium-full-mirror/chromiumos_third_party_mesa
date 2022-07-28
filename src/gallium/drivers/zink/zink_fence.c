@@ -242,8 +242,9 @@ zink_create_fence_fd(struct pipe_context *pctx, struct pipe_fence_handle **pfenc
 
    *pfence = NULL;
 
-   if (VKSCR(CreateSemaphore)(screen->dev, &sci, NULL, &mfence->sem) != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateSemaphore failed");
+   VkResult result = VKSCR(CreateSemaphore)(screen->dev, &sci, NULL, &mfence->sem);
+   if (result != VK_SUCCESS) {
+      mesa_loge("ZINK: vkCreateSemaphore failed (%s)", vk_Result_to_str(result));
       FREE(mfence);
       return;
    }
@@ -266,7 +267,7 @@ fail:
 
 #ifdef _WIN32
 void
-zink_create_fence_win32(struct pipe_screen *pscreen, struct pipe_fence_handle **pfence, void *handle, enum pipe_fd_type type)
+zink_create_fence_win32(struct pipe_screen *pscreen, struct pipe_fence_handle **pfence, void *handle, const void *name, enum pipe_fd_type type)
 {
    struct zink_screen *screen = zink_screen(pscreen);
    VkResult ret = VK_ERROR_UNKNOWN;
@@ -294,6 +295,7 @@ zink_create_fence_win32(struct pipe_screen *pscreen, struct pipe_fence_handle **
    sdi.semaphore = mfence->sem;
    sdi.handleType = flags[type];
    sdi.handle = handle;
+   sdi.name = (LPCWSTR)name;
    ret = VKSCR(ImportSemaphoreWin32HandleKHR)(screen->dev, &sdi);
 
    if (!zink_screen_handle_vkresult(screen, ret))

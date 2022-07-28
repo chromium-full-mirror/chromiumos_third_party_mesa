@@ -32,8 +32,9 @@ from lava.exceptions import (
     MesaCIRetryError,
     MesaCITimeoutError,
 )
+from lava.utils import CONSOLE_LOG
+from lava.utils import DEFAULT_GITLAB_SECTION_TIMEOUTS as GL_SECTION_TIMEOUTS
 from lava.utils import (
-    CONSOLE_LOG,
     GitlabSection,
     LogFollower,
     LogSectionType,
@@ -95,8 +96,8 @@ def generate_lava_yaml(args):
         'url': '{}/{}'.format(args.kernel_url_prefix, args.kernel_image_name),
       },
       'nfsrootfs': {
-        'url': '{}/lava-rootfs.tgz'.format(args.rootfs_url_prefix),
-        'compression': 'gz',
+        'url': '{}/lava-rootfs.tar.zst'.format(args.rootfs_url_prefix),
+        'compression': 'zstd',
       }
     }
     if args.kernel_image_type:
@@ -160,13 +161,18 @@ def generate_lava_yaml(args):
     else:
         run_steps += [
             "echo Could not find jwt file, disabling MINIO requests...",
-            "unset MINIO_RESULTS_UPLOAD",
+            "sed -i '/MINIO_RESULTS_UPLOAD/d' /set-job-env-vars.sh",
         ]
 
     run_steps += [
       'mkdir -p {}'.format(args.ci_project_dir),
-      'wget -S --progress=dot:giga -O- {} | tar -xz -C {}'.format(args.build_url, args.ci_project_dir),
+      'wget -S --progress=dot:giga -O- {} | tar --zstd -x -C {}'.format(args.build_url, args.ci_project_dir),
       'wget -S --progress=dot:giga -O- {} | tar -xz -C /'.format(args.job_rootfs_overlay_url),
+
+      # Sleep a bit to give time for bash to dump shell xtrace messages into
+      # console which may cause interleaving with LAVA_SIGNAL_STARTTC in some
+      # devices like a618.
+      'sleep 1',
 
       # Putting CI_JOB name as the testcase name, it may help LAVA farm
       # maintainers with monitoring
@@ -385,7 +391,14 @@ def fetch_logs(job, max_idle_time, log_follower) -> None:
         job.heartbeat()
     parsed_lines = log_follower.flush()
 
-    parsed_lines = job.parse_job_result_from_log(parsed_lines)
+    # Only parse job results when the script reaches the end of the logs.
+    # Depending on how much payload the RPC scheduler.jobs.logs get, it may
+    # reach the LAVA_POST_PROCESSING phase.
+    if log_follower.current_section.type in (
+        LogSectionType.TEST_CASE,
+        LogSectionType.LAVA_POST_PROCESSING,
+    ):
+        parsed_lines = job.parse_job_result_from_log(parsed_lines)
 
     for line in parsed_lines:
         print_log(line)
@@ -484,6 +497,13 @@ def treat_mesa_job_name(args):
 
 def main(args):
     proxy = setup_lava_proxy()
+
+    # Overwrite the timeout for the testcases with the value offered by the
+    # user. The testcase running time should be at least 4 times greater than
+    # the other sections (boot and setup), so we can safely ignore them.
+    # If LAVA fails to stop the job at this stage, it will fall back to the
+    # script section timeout with a reasonable delay.
+    GL_SECTION_TIMEOUTS[LogSectionType.TEST_CASE] = timedelta(minutes=args.job_timeout)
 
     job_definition = generate_lava_yaml(args)
 

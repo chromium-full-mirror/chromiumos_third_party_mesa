@@ -618,6 +618,19 @@ is_packed(unsigned vstride, unsigned width, unsigned hstride)
 }
 
 /**
+ * Returns whether a region is linear
+ *
+ * A region is linear if its elements do not overlap and are not replicated.
+ * Unlike a packed region, intervening space (i.e. strided values) is allowed.
+ */
+static bool
+is_linear(unsigned vstride, unsigned width, unsigned hstride)
+{
+   return vstride == width * hstride ||
+          (hstride == 0 && width == 1);
+}
+
+/**
  * Returns whether an instruction is an explicit or implicit conversion
  * to/from half-float.
  */
@@ -1887,7 +1900,7 @@ special_requirements_for_handling_double_precision_data_types(
       }
 #undef DO_SRC
 
-      const unsigned src_stride = hstride * type_size;
+      const unsigned src_stride = (hstride ? hstride : vstride) * type_size;
       const unsigned dst_stride = dst_hstride * dst_type_size;
 
       /* The PRMs say that for CHV, BXT:
@@ -1961,13 +1974,19 @@ special_requirements_for_handling_double_precision_data_types(
 
       /* From the hardware spec section "Register Region Restrictions":
        *
-       * "In case where source or destination datatype is 64b or operation is
-       *  integer DWord multiply [or in case where a floating point data type
-       *  is used as destination]:
+       * There are two rules:
        *
-       *   1. Register Regioning patterns where register data bit locations
-       *      are changed between source and destination are not supported on
-       *      Src0 and Src1 except for broadcast of a scalar.
+       * "In case of all floating point data types used in destination:" and
+       *
+       * "In case where source or destination datatype is 64b or operation is
+       *  integer DWord multiply:"
+       *
+       * both of which list the same restrictions:
+       *
+       *  "1. Register Regioning patterns where register data bit location
+       *      of the LSB of the channels are changed between source and
+       *      destination are not supported on Src0 and Src1 except for
+       *      broadcast of a scalar.
        *
        *   2. Explicit ARF registers except null and accumulator must not be
        *      used."
@@ -1976,12 +1995,14 @@ special_requirements_for_handling_double_precision_data_types(
           (brw_reg_type_is_floating_point(dst_type) ||
            is_double_precision)) {
          ERROR_IF(!is_scalar_region &&
-                  (vstride != width * hstride ||
+                  BRW_ADDRESS_REGISTER_INDIRECT_REGISTER != address_mode &&
+                  (!is_linear(vstride, width, hstride) ||
                    src_stride != dst_stride ||
                    subreg != dst_subreg),
                   "Register Regioning patterns where register data bit "
-                  "locations are changed between source and destination are not "
-                  "supported except for broadcast of a scalar.");
+                  "location of the LSB of the channels are changed between "
+                  "source and destination are not supported except for "
+                  "broadcast of a scalar.");
 
          ERROR_IF((file == BRW_ARCHITECTURE_REGISTER_FILE &&
                    reg != BRW_ARF_NULL && !(reg >= BRW_ARF_ACCUMULATOR && reg < BRW_ARF_FLAG)) ||
@@ -2270,6 +2291,7 @@ send_descriptor_restrictions(const struct brw_isa_info *isa,
 bool
 brw_validate_instruction(const struct brw_isa_info *isa,
                          const brw_inst *inst, int offset,
+                         unsigned inst_size,
                          struct disasm_info *disasm)
 {
    struct string error_msg = { .str = NULL, .len = 0 };
@@ -2295,7 +2317,7 @@ brw_validate_instruction(const struct brw_isa_info *isa,
    }
 
    if (error_msg.str && disasm) {
-      disasm_insert_error(disasm, offset, error_msg.str);
+      disasm_insert_error(disasm, offset, inst_size, error_msg.str);
    }
    free(error_msg.str);
 
@@ -2323,7 +2345,8 @@ brw_validate_instructions(const struct brw_isa_info *isa,
          inst = &uncompacted;
       }
 
-      bool v = brw_validate_instruction(isa, inst, src_offset, disasm);
+      bool v = brw_validate_instruction(isa, inst, src_offset,
+                                        inst_size, disasm);
       valid = valid && v;
 
       src_offset += inst_size;

@@ -30,6 +30,8 @@
 
 #include "p_compiler.h"
 
+#include "compiler/shader_enums.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -547,19 +549,6 @@ enum pipe_resource_usage {
 };
 
 /**
- * Shaders
- */
-enum pipe_shader_type {
-   PIPE_SHADER_VERTEX,
-   PIPE_SHADER_FRAGMENT,
-   PIPE_SHADER_GEOMETRY,
-   PIPE_SHADER_TESS_CTRL,
-   PIPE_SHADER_TESS_EVAL,
-   PIPE_SHADER_COMPUTE,
-   PIPE_SHADER_TYPES,
-};
-
-/**
  * Primitive types:
  */
 enum pipe_prim_type {
@@ -1012,6 +1001,7 @@ enum pipe_cap
    PIPE_CAP_HARDWARE_GL_SELECT,
    PIPE_CAP_DITHERING,
    PIPE_CAP_FBFETCH_ZS,
+   PIPE_CAP_TIMELINE_SEMAPHORE_IMPORT,
 
    PIPE_CAP_LAST,
    /* XXX do not add caps after PIPE_CAP_LAST! */
@@ -1364,6 +1354,7 @@ enum pipe_fd_type
 {
    PIPE_FD_TYPE_NATIVE_SYNC,
    PIPE_FD_TYPE_SYNCOBJ,
+   PIPE_FD_TYPE_TIMELINE_SEMAPHORE,
 };
 
 /**

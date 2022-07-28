@@ -387,7 +387,7 @@ static int assign_alu_units(struct r600_bytecode *bc, struct r600_bytecode_alu *
 	for (i = 0; i < max_slots; i++)
 		assignment[i] = NULL;
 
-	for (alu = alu_first; alu; alu = LIST_ENTRY(struct r600_bytecode_alu, alu->list.next, list)) {
+	for (alu = alu_first; alu; alu = list_entry(alu->list.next, struct r600_bytecode_alu, list)) {
 		chan = alu->dst.chan;
 		if (max_slots == 4)
 			trans = 0;
@@ -593,6 +593,7 @@ static int check_and_set_bank_swizzle(const struct r600_bytecode *bc,
 	int i, r = 0, forced = 1;
 	boolean scalar_only = bc->gfx_level == CAYMAN ? false : true;
 	int max_slots = bc->gfx_level == CAYMAN ? 4 : 5;
+	int max_checks = max_slots * 1000;
 
 	for (i = 0; i < max_slots; i++) {
 		if (slots[i]) {
@@ -618,8 +619,8 @@ static int check_and_set_bank_swizzle(const struct r600_bytecode *bc,
 			bank_swizzle[i] = slots[i]->bank_swizzle;
 
 	bank_swizzle[4] = SQ_ALU_SCL_210;
-	while(bank_swizzle[4] <= SQ_ALU_SCL_221) {
 
+	while(bank_swizzle[4] <= SQ_ALU_SCL_221 && max_checks--) {
 		init_bank_swizzle(&bs);
 		if (scalar_only == false) {
 			for (i = 0; i < 4; i++) {
@@ -989,7 +990,7 @@ static int merge_inst_groups(struct r600_bytecode *bc, struct r600_bytecode_alu 
 	}
 
 	/* determine new last instruction */
-	LIST_ENTRY(struct r600_bytecode_alu, bc->cf_last->alu.prev, list)->last = 1;
+	list_entry(bc->cf_last->alu.prev, struct r600_bytecode_alu, list)->last = 1;
 
 	/* determine new first instruction */
 	for (i = 0; i < max_slots; ++i) {
@@ -2779,11 +2780,6 @@ void *r600_create_vertex_fetch_shader(struct pipe_context *ctx,
 				      &format, &num_format, &format_comp, &endian);
 
 		desc = util_format_description(elements[i].src_format);
-		if (!desc) {
-			r600_bytecode_clear(&bc);
-			R600_ERR("unknown format %d\n", elements[i].src_format);
-			return NULL;
-		}
 
 		if (elements[i].src_offset > 65535) {
 			r600_bytecode_clear(&bc);

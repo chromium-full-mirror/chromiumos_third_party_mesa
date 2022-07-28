@@ -1022,14 +1022,14 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 	case PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY:
 		if (ret) {
 			uint32_t *max_clock_frequency = ret;
-			*max_clock_frequency = rscreen->info.max_shader_clock;
+			*max_clock_frequency = rscreen->info.max_gpu_freq_mhz;
 		}
 		return sizeof(uint32_t);
 
 	case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS:
 		if (ret) {
 			uint32_t *max_compute_units = ret;
-			*max_compute_units = rscreen->info.num_good_compute_units;
+			*max_compute_units = rscreen->info.num_cu;
 		}
 		return sizeof(uint32_t);
 
@@ -1137,8 +1137,8 @@ static void r600_query_memory_info(struct pipe_screen *screen,
 	struct radeon_winsys *ws = rscreen->ws;
 	unsigned vram_usage, gtt_usage;
 
-	info->total_device_memory = rscreen->info.vram_size / 1024;
-	info->total_staging_memory = rscreen->info.gart_size / 1024;
+	info->total_device_memory = rscreen->info.vram_size_kb;
+	info->total_staging_memory = rscreen->info.gart_size_kb;
 
 	/* The real TTM memory usage is somewhat random, because:
 	 *
@@ -1247,7 +1247,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 	rscreen->b.resource_from_user_memory = r600_buffer_from_user_memory;
 	rscreen->b.query_memory_info = r600_query_memory_info;
 
-	if (rscreen->info.has_video_hw.uvd_decode) {
+	if (rscreen->info.ip[AMD_IP_UVD].num_queues) {
 		rscreen->b.get_video_param = rvid_get_video_param;
 		rscreen->b.is_video_format_supported = rvid_is_format_supported;
 	} else {
@@ -1286,16 +1286,16 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("gfx_level = %i\n", rscreen->info.gfx_level);
 		printf("pte_fragment_size = %u\n", rscreen->info.pte_fragment_size);
 		printf("gart_page_size = %u\n", rscreen->info.gart_page_size);
-		printf("gart_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.gart_size, 1024*1024));
-		printf("vram_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_size, 1024*1024));
-		printf("vram_vis_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_vis_size, 1024*1024));
+		printf("gart_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.gart_size_kb, 1024));
+		printf("vram_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_size_kb, 1024));
+		printf("vram_vis_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_vis_size_kb, 1024));
 		printf("max_heap_size = %i MB\n",
 		       (int)DIV_ROUND_UP(rscreen->info.max_heap_size_kb, 1024));
 		printf("min_alloc_size = %u\n", rscreen->info.min_alloc_size);
 		printf("has_dedicated_vram = %u\n", rscreen->info.has_dedicated_vram);
 		printf("r600_has_virtual_memory = %i\n", rscreen->info.r600_has_virtual_memory);
 		printf("gfx_ib_pad_with_type2 = %i\n", rscreen->info.gfx_ib_pad_with_type2);
-		printf("uvd_decode = %u\n", rscreen->info.has_video_hw.uvd_decode);
+		printf("ip[AMD_IP_UVD] = %u\n", rscreen->info.ip[AMD_IP_UVD].num_queues);
 		printf("ip[AMD_IP_SDMA] = %i\n", rscreen->info.ip[AMD_IP_SDMA].num_queues);
 		printf("ip[AMD_IP_COMPUTE] = %u\n", rscreen->info.ip[AMD_IP_COMPUTE].num_queues);
 		printf("uvd_fw_version = %u\n", rscreen->info.uvd_fw_version);
@@ -1311,8 +1311,8 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("has_syncobj = %u\n", rscreen->info.has_syncobj);
 
 		printf("r600_max_quad_pipes = %i\n", rscreen->info.r600_max_quad_pipes);
-		printf("max_shader_clock = %i\n", rscreen->info.max_shader_clock);
-		printf("num_good_compute_units = %i\n", rscreen->info.num_good_compute_units);
+		printf("max_gpu_freq_mhz = %i\n", rscreen->info.max_gpu_freq_mhz);
+		printf("num_cu = %i\n", rscreen->info.num_cu);
 		printf("max_se = %i\n", rscreen->info.max_se);
 		printf("max_sh_per_se = %i\n", rscreen->info.max_sa_per_se);
 
@@ -1350,10 +1350,13 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.vectorize_io = true,
 		.has_umad24 = true,
 		.has_umul24 = true,
+		.has_fmulz = true,
 		.use_interpolated_input_intrinsics = true,
 		.has_fsub = true,
 		.has_isub = true,
 		.lower_iabs = true,
+		.lower_uadd_sat = true,
+		.lower_usub_sat = true,
 		.lower_bitfield_extract = true,
 		.lower_bitfield_insert_to_bitfield_select = true,
 		.has_fused_comp_and_csel = true,

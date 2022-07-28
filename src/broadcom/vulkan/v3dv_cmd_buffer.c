@@ -892,8 +892,8 @@ cmd_buffer_subpass_handle_pending_resolves(struct v3dv_cmd_buffer *cmd_buffer)
       struct v3dv_image_view *dst_iview =
          cmd_buffer->state.attachments[dst_attachment_idx].image_view;
 
-      VkImageResolve2KHR region = {
-         .sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2_KHR,
+      VkImageResolve2 region = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
          .srcSubresource = {
             VK_IMAGE_ASPECT_COLOR_BIT,
             src_iview->vk.base_mip_level,
@@ -913,8 +913,8 @@ cmd_buffer_subpass_handle_pending_resolves(struct v3dv_cmd_buffer *cmd_buffer)
 
       struct v3dv_image *src_image = (struct v3dv_image *) src_iview->vk.image;
       struct v3dv_image *dst_image = (struct v3dv_image *) dst_iview->vk.image;
-      VkResolveImageInfo2KHR resolve_info = {
-         .sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2_KHR,
+      VkResolveImageInfo2 resolve_info = {
+         .sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
          .srcImage = v3dv_image_to_handle(src_image),
          .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
          .dstImage = v3dv_image_to_handle(dst_image),
@@ -970,17 +970,14 @@ cmd_buffer_begin_render_pass_secondary(
     *
     *    "The application must ensure (using scissor if necessary) that all
     *     rendering is contained within the render area."
-    *
-    * FIXME: setup constants for the max framebuffer dimensions and use them
-    * here and when filling in VkPhysicalDeviceLimits.
     */
    const struct v3dv_framebuffer *framebuffer = cmd_buffer->state.framebuffer;
    cmd_buffer->state.render_area.offset.x = 0;
    cmd_buffer->state.render_area.offset.y = 0;
    cmd_buffer->state.render_area.extent.width =
-      framebuffer ? framebuffer->width : 4096;
+      framebuffer ? framebuffer->width : V3D_MAX_IMAGE_DIMENSION;
    cmd_buffer->state.render_area.extent.height =
-      framebuffer ? framebuffer->height : 4096;
+      framebuffer ? framebuffer->height : V3D_MAX_IMAGE_DIMENSION;
 
    return VK_SUCCESS;
 }
@@ -1184,8 +1181,8 @@ cmd_buffer_state_set_attachments(struct v3dv_cmd_buffer *cmd_buffer,
    V3DV_FROM_HANDLE(v3dv_render_pass, pass, pRenderPassBegin->renderPass);
    V3DV_FROM_HANDLE(v3dv_framebuffer, framebuffer, pRenderPassBegin->framebuffer);
 
-   const VkRenderPassAttachmentBeginInfoKHR *attach_begin =
-      vk_find_struct_const(pRenderPassBegin, RENDER_PASS_ATTACHMENT_BEGIN_INFO_KHR);
+   const VkRenderPassAttachmentBeginInfo *attach_begin =
+      vk_find_struct_const(pRenderPassBegin, RENDER_PASS_ATTACHMENT_BEGIN_INFO);
 
    struct v3dv_cmd_buffer_state *state = &cmd_buffer->state;
 
@@ -2100,8 +2097,7 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
    const bool needs_fs_update = has_new_pipeline ||
                                 has_new_view_index ||
                                 has_new_push_constants_fs ||
-                                has_new_descriptors_fs ||
-                                has_new_view_index;
+                                has_new_descriptors_fs;
 
    if (needs_fs_update) {
       struct v3dv_shader_variant *fs_variant =
@@ -2234,12 +2230,12 @@ v3dv_cmd_buffer_meta_state_push(struct v3dv_cmd_buffer *cmd_buffer,
       state->meta.has_descriptor_state = false;
    }
 
-   /* FIXME: if we keep track of wether we have bound any push constant state
-    *        at all we could restruct this only to cases where it is actually
-    *        necessary.
-    */
-   memcpy(state->meta.push_constants, cmd_buffer->push_constants_data,
-          sizeof(state->meta.push_constants));
+   if (cmd_buffer->state.push_constants_size > 0) {
+      state->meta.push_constants_size = cmd_buffer->state.push_constants_size;
+      memcpy(state->meta.push_constants, cmd_buffer->state.push_constants_data,
+             cmd_buffer->state.push_constants_size);
+      cmd_buffer->state.push_constants_size = 0;
+   }
 }
 
 /* This restores command buffer state after a meta operation
@@ -2302,14 +2298,23 @@ v3dv_cmd_buffer_meta_state_pop(struct v3dv_cmd_buffer *cmd_buffer,
       }
    }
 
-   memcpy(cmd_buffer->push_constants_data, state->meta.push_constants,
-          sizeof(state->meta.push_constants));
+   /* We only need to restore push constant data if we had any data in the
+    * original command buffer and the meta operation wrote new push constant
+    * data.
+    */
+   if (state->meta.push_constants_size > 0 &&
+       cmd_buffer->state.push_constants_size > 0) {
+      memcpy(cmd_buffer->state.push_constants_data, state->meta.push_constants,
+             state->meta.push_constants_size);
+   }
+   cmd_buffer->state.push_constants_size = state->meta.push_constants_size;
 
    state->meta.gfx.pipeline = NULL;
    state->meta.framebuffer = VK_NULL_HANDLE;
    state->meta.pass = VK_NULL_HANDLE;
    state->meta.subpass_idx = -1;
    state->meta.has_descriptor_state = false;
+   state->meta.push_constants_size = 0;
 }
 
 static struct v3dv_job *
@@ -2533,6 +2538,10 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
    struct v3dv_job *job = cmd_buffer_pre_draw_split_job(cmd_buffer);
    job->draw_count++;
 
+   /* Track VK_KHR_buffer_device_address usage in the job */
+   struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
+   job->uses_buffer_device_address |= pipeline->uses_buffer_device_address;
+
    /* If this job is serialized (has consumed a barrier) then check if we need
     * to sync at the binning stage by testing if the binning shaders involved
     * with the draw call require access to external resources.
@@ -2540,12 +2549,10 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
    if (job->serialize && (cmd_buffer->state.barrier.bcl_buffer_access ||
                           cmd_buffer->state.barrier.bcl_image_access)) {
       assert(!job->needs_bcl_sync);
-      struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
       if (cmd_buffer_binning_sync_required(cmd_buffer, pipeline,
                                            indexed, indirect)) {
          consume_bcl_sync(cmd_buffer, job);
       }
-      /* FIXME: clear bc flags whether consumed bcl barrier or not? */
    }
 
    /* GL shader state binds shaders, uniform and vertex attribute state. The
@@ -3086,12 +3093,18 @@ v3dv_CmdPushConstants(VkCommandBuffer commandBuffer,
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (!memcmp((uint8_t *) cmd_buffer->push_constants_data + offset, pValues, size))
+   if (!memcmp((uint8_t *) cmd_buffer->state.push_constants_data + offset,
+               pValues, size)) {
       return;
+   }
 
-   memcpy((uint8_t *) cmd_buffer->push_constants_data + offset, pValues, size);
+   memcpy((uint8_t *) cmd_buffer->state.push_constants_data + offset,
+           pValues, size);
+   cmd_buffer->state.push_constants_size =
+      MAX2(offset + size, cmd_buffer->state.push_constants_size);
 
-   cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_PUSH_CONSTANTS;
+   cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_PUSH_CONSTANTS |
+                              V3DV_CMD_DIRTY_PUSH_CONSTANTS_UBO;
    cmd_buffer->state.dirty_push_constants_stages |= stageFlags;
 }
 
@@ -3709,6 +3722,10 @@ cmd_buffer_create_csd_job(struct v3dv_cmd_buffer *cmd_buffer,
                                      cs_variant,
                                      wg_uniform_offsets_out);
    submit->cfg[6] = uniforms.bo->offset + uniforms.offset;
+
+
+   /* Track VK_KHR_buffer_device_address usage in the job */
+   job->uses_buffer_device_address |= pipeline->uses_buffer_device_address;
 
    v3dv_job_add_bo(job, uniforms.bo);
 

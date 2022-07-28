@@ -452,6 +452,9 @@ brw_nir_lower_fs_inputs(nir_shader *nir,
    if (devinfo->ver >= 11)
       nir_lower_interpolation(nir, ~0);
 
+   if (!key->multisample_fbo)
+      nir_lower_single_sampled(nir);
+
    nir_shader_instructions_pass(nir, lower_barycentric_at_offset,
                                 nir_metadata_block_index |
                                 nir_metadata_dominance,
@@ -891,8 +894,6 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    };
    OPT(nir_lower_subgroups, &subgroups_options);
 
-   OPT(nir_lower_clip_cull_distance_arrays);
-
    nir_variable_mode indirect_mask =
       brw_nir_no_indirect_mask(compiler, nir->info.stage);
    OPT(nir_lower_indirect_derefs, indirect_mask, UINT32_MAX);
@@ -972,6 +973,15 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
    NIR_PASS(_, consumer, nir_remove_dead_variables, nir_var_shader_in, NULL);
 
    if (nir_remove_unused_varyings(producer, consumer)) {
+      if (should_print_nir(producer)) {
+         printf("nir_remove_unused_varyings\n");
+         nir_print_shader(producer, stdout);
+      }
+      if (should_print_nir(consumer)) {
+         printf("nir_remove_unused_varyings\n");
+         nir_print_shader(consumer, stdout);
+      }
+
       NIR_PASS(_, producer, nir_lower_global_vars_to_local);
       NIR_PASS(_, consumer, nir_lower_global_vars_to_local);
 

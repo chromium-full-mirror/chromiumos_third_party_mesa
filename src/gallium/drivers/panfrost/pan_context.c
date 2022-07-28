@@ -510,6 +510,8 @@ panfrost_new_variant_locked(
                 update_so_info(&shader_state->stream_output,
                                shader_state->info.outputs_written);
 
+        shader_state->earlyzs = pan_earlyzs_analyze(&shader_state->info);
+
         return variant;
 }
 
@@ -1052,13 +1054,13 @@ panfrost_set_stream_output_targets(struct pipe_context *pctx,
         assert(num_targets <= ARRAY_SIZE(so->targets));
 
         for (unsigned i = 0; i < num_targets; i++) {
-                if (offsets[i] != -1)
+                if (targets[i] && offsets[i] != -1)
                         pan_so_target(targets[i])->offset = offsets[i];
 
                 pipe_so_target_reference(&so->targets[i], targets[i]);
         }
 
-        for (unsigned i = 0; i < so->num_targets; i++)
+        for (unsigned i = num_targets; i < so->num_targets; i++)
                 pipe_so_target_reference(&so->targets[i], NULL);
 
         so->num_targets = num_targets;

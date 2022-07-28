@@ -185,6 +185,14 @@ struct pipe_rasterizer_state
    unsigned offset_units_unscaled:1;
 
    /**
+    * Depth values output from fragment shader may be outside 0..1.
+    * These have to be clamped for use with UNORM buffers.
+    * Vulkan can allow this with an extension,
+    * GL could with NV_depth_buffer_float, but GLES doesn't.
+    */
+   unsigned unclamped_fragment_depth_values:1;
+
+   /**
     * Enable bits for clipping half-spaces.
     * This applies to both user clip planes and shader clip distances.
     * Note that if the bound shader exports any clip distances, these
@@ -895,6 +903,7 @@ struct pipe_blit_info
 
    unsigned mask; /**< bitmask of PIPE_MASK_R/G/B/A/Z/S */
    unsigned filter; /**< PIPE_TEX_FILTER_* */
+   uint8_t dst_sample; /**< if non-zero, set sample_mask to (1 << (dst_sample - 1)) */
    bool sample0_only;
    bool scissor_enable;
    struct pipe_scissor_state scissor;

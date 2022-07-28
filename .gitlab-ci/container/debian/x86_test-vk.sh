@@ -51,6 +51,7 @@ STABLE_EPHEMERAL=" \
 
 apt-get install -y --no-remove \
       $STABLE_EPHEMERAL \
+      libepoxy0 \
       libxcb-shm0 \
       pciutils \
       python3-lxml \
@@ -135,18 +136,9 @@ setup_wine "/dxvk-wine64"
 dxvk_install_release "1.10.1"
 #dxvk_install_pr 2359
 
-############### Install Windows' apitrace binaries
+############### Install apitrace binaries for wine
 
-APITRACE_VERSION="10.0"
-APITRACE_VERSION_DATE=""
-
-wget "https://github.com/apitrace/apitrace/releases/download/${APITRACE_VERSION}/apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64.7z"
-7zr x "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64.7z" \
-      "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64/bin/apitrace.exe" \
-      "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64/bin/d3dretrace.exe"
-mv "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64" /apitrace-msvc-win64
-rm "apitrace-${APITRACE_VERSION}${APITRACE_VERSION_DATE}-win64.7z"
-
+. .gitlab-ci/container/install-wine-apitrace.sh
 # Add the apitrace path to the registry
 wine \
     reg add "HKEY_LOCAL_MACHINE\System\CurrentControlSet\Control\Session Manager\Environment" \
@@ -158,14 +150,6 @@ wine \
 ############### Building ...
 
 . .gitlab-ci/container/container_pre_build.sh
-
-############### Build libdrm
-
-. .gitlab-ci/container/build-libdrm.sh
-
-############### Build Wayland
-
-. .gitlab-ci/container/build-wayland.sh
 
 ############### Build parallel-deqp-runner's hang-detection tool
 

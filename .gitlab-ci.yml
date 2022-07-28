@@ -21,6 +21,7 @@ variables:
   COLLABORA_FARM: "online"
   MICROSOFT_FARM: "online"
   LIMA_FARM: "online"
+  IGALIA_FARM: "online"
 
 default:
   before_script:
@@ -77,6 +78,7 @@ include:
   - local: 'src/intel/ci/gitlab-ci.yml'
   - local: 'src/microsoft/ci/gitlab-ci.yml'
   - local: 'src/panfrost/ci/gitlab-ci.yml'
+  - local: 'src/virtio/ci/gitlab-ci.yml'
 
 stages:
   - sanity

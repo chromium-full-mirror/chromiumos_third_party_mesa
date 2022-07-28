@@ -379,6 +379,14 @@ st_prog_to_nir_postprocess(struct st_context *st, nir_shader *nir,
    NIR_PASS_V(nir, nir_lower_regs_to_ssa);
    nir_validate_shader(nir, "after st/ptn lower_regs_to_ssa");
 
+   /* Lower outputs to temporaries to avoid reading from output variables (which
+    * is permitted by the language but generally not implemented in HW).
+    */
+   NIR_PASS_V(nir, nir_lower_io_to_temporaries,
+               nir_shader_get_entrypoint(nir),
+               true, false);
+   NIR_PASS_V(nir, nir_lower_global_vars_to_local);
+
    NIR_PASS_V(nir, st_nir_lower_wpos_ytransform, prog, screen);
    NIR_PASS_V(nir, nir_lower_system_values);
    NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
@@ -407,7 +415,7 @@ st_translate_prog_to_nir(struct st_context *st, struct gl_program *prog,
       st_get_nir_compiler_options(st, prog->info.stage);
 
    /* Translate to NIR */
-   nir_shader *nir = prog_to_nir(prog, options);
+   nir_shader *nir = prog_to_nir(st->ctx, prog, options);
 
    st_prog_to_nir_postprocess(st, nir, prog);
 
@@ -571,8 +579,6 @@ st_translate_vertex_program(struct st_context *st,
    /* ARB_vp: */
    if (prog->arb.IsPositionInvariant)
       _mesa_insert_mvp_code(st->ctx, prog);
-
-   _mesa_remove_output_reads(prog, PROGRAM_OUTPUT);
 
    /* This determines which states will be updated when the assembly
       * shader is bound.
@@ -822,11 +828,6 @@ static bool
 st_translate_fragment_program(struct st_context *st,
                               struct gl_program *fp)
 {
-   /* Non-GLSL programs: */
-   _mesa_remove_output_reads(fp, PROGRAM_OUTPUT);
-   if (st->ctx->Const.GLSLFragCoordIsSysVal)
-      _mesa_program_fragment_position_to_sysval(fp);
-
    /* This determines which states will be updated when the assembly
     * shader is bound.
     *

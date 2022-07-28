@@ -1550,10 +1550,11 @@ visit_store_ssbo(struct lp_build_nir_context *bld_base,
    LLVMValueRef val = get_src(bld_base, instr->src[0]);
    LLVMValueRef idx = cast_type(bld_base, get_src(bld_base, instr->src[1]), nir_type_uint, 32);
    LLVMValueRef offset = get_src(bld_base, instr->src[2]);
+   bool index_and_offset_are_uniform = nir_src_is_always_uniform(instr->src[1]) && nir_src_is_always_uniform(instr->src[2]);
    int writemask = instr->const_index[0];
    int nc = nir_src_num_components(instr->src[0]);
    int bitsize = nir_src_bit_size(instr->src[0]);
-   bld_base->store_mem(bld_base, writemask, nc, bitsize, idx, offset, val);
+   bld_base->store_mem(bld_base, writemask, nc, bitsize, index_and_offset_are_uniform, idx, offset, val);
 }
 
 
@@ -1821,10 +1822,11 @@ visit_shared_store(struct lp_build_nir_context *bld_base,
 {
    LLVMValueRef val = get_src(bld_base, instr->src[0]);
    LLVMValueRef offset = get_src(bld_base, instr->src[1]);
+   bool offset_is_uniform = nir_src_is_always_uniform(instr->src[1]);
    int writemask = instr->const_index[1];
    int nc = nir_src_num_components(instr->src[0]);
    int bitsize = nir_src_bit_size(instr->src[0]);
-   bld_base->store_mem(bld_base, writemask, nc, bitsize, NULL, offset, val);
+   bld_base->store_mem(bld_base, writemask, nc, bitsize, offset_is_uniform, NULL, offset, val);
 }
 
 
@@ -2182,10 +2184,12 @@ visit_intrinsic(struct lp_build_nir_context *bld_base,
    case nir_intrinsic_read_invocation:
    case nir_intrinsic_read_first_invocation: {
       LLVMValueRef src1 = NULL;
-
-      if (instr->intrinsic == nir_intrinsic_read_invocation)
+      LLVMValueRef src0 = get_src(bld_base, instr->src[0]);
+      if (instr->intrinsic == nir_intrinsic_read_invocation) {
          src1 = cast_type(bld_base, get_src(bld_base, instr->src[1]), nir_type_int, 32);
-      bld_base->read_invocation(bld_base, get_src(bld_base, instr->src[0]), nir_src_bit_size(instr->src[0]), src1, result);
+         src0 = cast_type(bld_base, src0, nir_type_int, nir_src_bit_size(instr->src[0]));
+      }
+      bld_base->read_invocation(bld_base, src0, nir_src_bit_size(instr->src[0]), src1, result);
       break;
    }
    case nir_intrinsic_interp_deref_at_offset:
@@ -2198,6 +2202,9 @@ visit_intrinsic(struct lp_build_nir_context *bld_base,
       break;
    case nir_intrinsic_store_scratch:
       visit_store_scratch(bld_base, instr);
+      break;
+   case nir_intrinsic_shader_clock:
+      bld_base->clock(bld_base, result);
       break;
    default:
       fprintf(stderr, "Unsupported intrinsic: ");
@@ -2769,8 +2776,7 @@ lp_build_opt_nir(struct nir_shader *nir)
          .lower_subgroup_masks = true,
          .lower_relative_shuffle = true,
       };
-      NIR_PASS_V(nir, nir_lower_subgroups, &subgroups_options);
-
+      NIR_PASS(progress, nir, nir_lower_subgroups, &subgroups_options);
    } while (progress);
 
    do {

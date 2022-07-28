@@ -31,18 +31,30 @@
 using namespace brw;
 
 static void
-lower_urb_read_logical_send(const fs_builder &bld, fs_inst *inst,
-                            bool per_slot_present)
+lower_urb_read_logical_send(const fs_builder &bld, fs_inst *inst)
 {
    const intel_device_info *devinfo = bld.shader->devinfo;
-
+   const bool per_slot_present =
+      inst->src[URB_LOGICAL_SRC_PER_SLOT_OFFSETS].file != BAD_FILE;
 
    assert(inst->size_written % REG_SIZE == 0);
-   assert(inst->src[0].type == BRW_REGISTER_TYPE_UD);
-   assert(inst->src[0].file == FIXED_GRF || inst->src[0].file == VGRF);
+   assert(inst->header_size == 0);
+
+   fs_reg *payload_sources = new fs_reg[inst->mlen];
+   fs_reg payload = fs_reg(VGRF, bld.shader->alloc.allocate(inst->mlen),
+                           BRW_REGISTER_TYPE_F);
+
+   unsigned header_size = 0;
+   payload_sources[header_size++] = inst->src[URB_LOGICAL_SRC_HANDLE];
+   if (per_slot_present)
+      payload_sources[header_size++] = inst->src[URB_LOGICAL_SRC_PER_SLOT_OFFSETS];
+
+   bld.LOAD_PAYLOAD(payload, payload_sources, inst->mlen, header_size);
+
+   delete [] payload_sources;
 
    inst->opcode = SHADER_OPCODE_SEND;
-   inst->header_size = 1;
+   inst->header_size = header_size;
 
    inst->sfid = BRW_SFID_URB;
    inst->desc = brw_urb_desc(devinfo,
@@ -55,26 +67,46 @@ lower_urb_read_logical_send(const fs_builder &bld, fs_inst *inst,
    inst->ex_mlen = 0;
    inst->send_is_volatile = true;
 
-   fs_reg tmp = inst->src[0];
-
    inst->resize_sources(4);
 
    inst->src[0] = brw_imm_ud(0); /* desc */
    inst->src[1] = brw_imm_ud(0); /* ex_desc */
-   inst->src[2] = tmp;
+   inst->src[2] = payload;
    inst->src[3] = brw_null_reg();
 }
 
 static void
-lower_urb_write_logical_send(const fs_builder &bld, fs_inst *inst,
-                             bool per_slot_present, bool channel_mask_present)
+lower_urb_write_logical_send(const fs_builder &bld, fs_inst *inst)
 {
    const intel_device_info *devinfo = bld.shader->devinfo;
+   const bool per_slot_present =
+      inst->src[URB_LOGICAL_SRC_PER_SLOT_OFFSETS].file != BAD_FILE;
+   const bool channel_mask_present =
+      inst->src[URB_LOGICAL_SRC_CHANNEL_MASK].file != BAD_FILE;
 
    assert(inst->header_size == 0);
 
+   fs_reg *payload_sources = new fs_reg[inst->mlen];
+   fs_reg payload = fs_reg(VGRF, bld.shader->alloc.allocate(inst->mlen),
+                           BRW_REGISTER_TYPE_F);
+
+   unsigned header_size = 0;
+   payload_sources[header_size++] = inst->src[URB_LOGICAL_SRC_HANDLE];
+   if (per_slot_present)
+      payload_sources[header_size++] = inst->src[URB_LOGICAL_SRC_PER_SLOT_OFFSETS];
+
+   if (channel_mask_present)
+      payload_sources[header_size++] = inst->src[URB_LOGICAL_SRC_CHANNEL_MASK];
+
+   for (unsigned i = header_size, j = 0; i < inst->mlen; i++, j++)
+      payload_sources[i] = offset(inst->src[URB_LOGICAL_SRC_DATA], bld, j);
+
+   bld.LOAD_PAYLOAD(payload, payload_sources, inst->mlen, header_size);
+
+   delete [] payload_sources;
+
    inst->opcode = SHADER_OPCODE_SEND;
-   inst->header_size = 1;
+   inst->header_size = header_size;
    inst->dst = brw_null_reg();
 
    inst->sfid = BRW_SFID_URB;
@@ -88,13 +120,11 @@ lower_urb_write_logical_send(const fs_builder &bld, fs_inst *inst,
    inst->ex_mlen = 0;
    inst->send_has_side_effects = true;
 
-   fs_reg tmp = inst->src[0];
-
    inst->resize_sources(4);
 
    inst->src[0] = brw_imm_ud(0); /* desc */
    inst->src[1] = brw_imm_ud(0); /* ex_desc */
-   inst->src[2] = tmp;
+   inst->src[2] = payload;
    inst->src[3] = brw_null_reg();
 }
 
@@ -2698,23 +2728,11 @@ fs_visitor::lower_logical_sends()
          break;
 
       case SHADER_OPCODE_URB_READ_LOGICAL:
-         lower_urb_read_logical_send(ibld, inst, false);
-         break;
-      case SHADER_OPCODE_URB_READ_PER_SLOT_LOGICAL:
-         lower_urb_read_logical_send(ibld, inst, true);
+         lower_urb_read_logical_send(ibld, inst);
          break;
 
       case SHADER_OPCODE_URB_WRITE_LOGICAL:
-         lower_urb_write_logical_send(ibld, inst, false, false);
-         break;
-      case SHADER_OPCODE_URB_WRITE_PER_SLOT_LOGICAL:
-         lower_urb_write_logical_send(ibld, inst, true, false);
-         break;
-      case SHADER_OPCODE_URB_WRITE_MASKED_LOGICAL:
-         lower_urb_write_logical_send(ibld, inst, false, true);
-         break;
-      case SHADER_OPCODE_URB_WRITE_MASKED_PER_SLOT_LOGICAL:
-         lower_urb_write_logical_send(ibld, inst, true, true);
+         lower_urb_write_logical_send(ibld, inst);
          break;
 
       default:

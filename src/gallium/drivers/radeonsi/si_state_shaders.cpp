@@ -666,10 +666,13 @@ static unsigned si_get_vs_vgpr_comp_cnt(struct si_screen *sscreen, struct si_sha
    return max;
 }
 
-unsigned si_calc_inst_pref_size(struct si_shader *shader)
+unsigned si_get_shader_prefetch_size(struct si_shader *shader)
 {
-   /* TODO: Disable for now. */
-   if (shader->selector->screen->info.gfx_level == GFX11)
+   /* Return 0 for some A0 chips only. Other chips don't need it. */
+   if ((shader->selector->screen->info.family == CHIP_GFX1100 ||
+        shader->selector->screen->info.family == CHIP_GFX1102 ||
+        shader->selector->screen->info.family == CHIP_GFX1103) &&
+       shader->selector->screen->info.chip_rev == 0)
       return 0;
 
    /* inst_pref_size is calculated in cache line size granularity */
@@ -714,7 +717,7 @@ static void si_shader_hs(struct si_screen *sscreen, struct si_shader *shader)
    if (sscreen->info.gfx_level >= GFX9) {
       if (sscreen->info.gfx_level >= GFX11) {
          ac_set_reg_cu_en(pm4, R_00B404_SPI_SHADER_PGM_RSRC4_HS,
-                          S_00B404_INST_PREF_SIZE(si_calc_inst_pref_size(shader)) |
+                          S_00B404_INST_PREF_SIZE(si_get_shader_prefetch_size(shader)) |
                           S_00B404_CU_EN(0xffff),
                           C_00B404_CU_EN, 16, &sscreen->info,
                           (void (*)(void*, unsigned, uint32_t))si_pm4_set_reg_idx3);
@@ -1436,7 +1439,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
    if (sscreen->info.gfx_level >= GFX11) {
       shader->ctx_reg.ngg.spi_shader_pgm_rsrc4_gs =
          S_00B204_CU_EN_GFX11(0x1) | S_00B204_SPI_SHADER_LATE_ALLOC_GS_GFX10(late_alloc_wave64) |
-         S_00B204_INST_PREF_SIZE(si_calc_inst_pref_size(shader));
+         S_00B204_INST_PREF_SIZE(si_get_shader_prefetch_size(shader));
    } else {
       shader->ctx_reg.ngg.spi_shader_pgm_rsrc4_gs =
          S_00B204_CU_EN_GFX10(0xffff) | S_00B204_SPI_SHADER_LATE_ALLOC_GS_GFX10(late_alloc_wave64);
@@ -1513,7 +1516,7 @@ static void gfx10_shader_ngg(struct si_screen *sscreen, struct si_shader *shader
       shader->ge_cntl = S_03096C_PRIMS_PER_SUBGRP(shader->ngg.max_gsprims) |
                         S_03096C_VERTS_PER_SUBGRP(shader->ngg.hw_max_esverts) |
                         S_03096C_BREAK_PRIMGRP_AT_EOI(break_wave_at_eoi) |
-                        S_03096C_PRIM_GRP_SIZE_GFX11(256);
+                        S_03096C_PRIM_GRP_SIZE_GFX11(252 / MAX2(shader->ngg.prim_amp_factor, 1));
    } else {
       shader->ge_cntl = S_03096C_PRIM_GRP_SIZE_GFX10(shader->ngg.max_gsprims) |
                         S_03096C_VERT_GRP_SIZE(shader->ngg.hw_max_esverts) |
@@ -1770,17 +1773,6 @@ static void si_shader_vs(struct si_screen *sscreen, struct si_shader *shader,
    polaris_set_vgt_vertex_reuse(sscreen, shader->selector, shader);
 }
 
-static unsigned si_get_ps_num_interp(struct si_shader *ps)
-{
-   struct si_shader_info *info = &ps->selector->info;
-   unsigned num_colors = !!(info->colors_read & 0x0f) + !!(info->colors_read & 0xf0);
-   unsigned num_interp =
-      ps->selector->info.num_inputs + (ps->key.ps.part.prolog.color_two_side ? num_colors : 0);
-
-   assert(num_interp <= 32);
-   return MIN2(num_interp, 32);
-}
-
 static unsigned si_get_spi_shader_col_format(struct si_shader *shader)
 {
    unsigned spi_shader_col_format = shader->key.ps.part.epilog.spi_shader_col_format;
@@ -1994,8 +1986,11 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
    spi_ps_in_control = S_0286D8_NUM_INTERP(num_interp) |
                        S_0286D8_PS_W32_EN(shader->wave_size == 32);
 
-   /* Workaround when there are no PS inputs but LDS is used. */
-   if (sscreen->info.gfx_level == GFX11 && !num_interp && shader->config.lds_size)
+   /* Enable PARAM_GEN for point smoothing.
+    * Gfx11 workaround when there are no PS inputs but LDS is used.
+    */
+   if ((sscreen->info.gfx_level == GFX11 && !num_interp && shader->config.lds_size) ||
+       shader->key.ps.mono.point_smoothing)
       spi_ps_in_control |= S_0286D8_PARAM_GEN(1);
 
    shader->ctx_reg.ps.num_interp = num_interp;
@@ -2031,7 +2026,7 @@ static void si_shader_ps(struct si_screen *sscreen, struct si_shader *shader)
       unsigned cu_mask_ps = gfx103_get_cu_mask_ps(sscreen);
 
       ac_set_reg_cu_en(pm4, R_00B004_SPI_SHADER_PGM_RSRC4_PS,
-                       S_00B004_INST_PREF_SIZE(si_calc_inst_pref_size(shader)) |
+                       S_00B004_INST_PREF_SIZE(si_get_shader_prefetch_size(shader)) |
                        S_00B004_CU_EN(cu_mask_ps >> 16),
                        C_00B004_CU_EN, 16, &sscreen->info,
                        (void (*)(void*, unsigned, uint32_t))si_pm4_set_reg_idx3);
@@ -2187,7 +2182,8 @@ void si_update_ps_inputs_read_or_disabled(struct si_context *sctx)
                             ps->info.writes_samplemask ||
                             sctx->queued.named.blend->alpha_to_coverage ||
                             sctx->queued.named.dsa->alpha_func != PIPE_FUNC_ALWAYS ||
-                            sctx->queued.named.rasterizer->poly_stipple_enable;
+                            sctx->queued.named.rasterizer->poly_stipple_enable ||
+                            sctx->queued.named.rasterizer->point_smooth;
       unsigned ps_colormask = si_get_total_colormask(sctx);
 
       ps_disabled = sctx->queued.named.rasterizer->rasterizer_discard ||
@@ -2388,6 +2384,9 @@ static void si_ps_key_update_primtype_shader_rasterizer_framebuffer(struct si_co
    key->ps.mono.poly_line_smoothing =
       ((is_poly && rs->poly_smooth) || (is_line && rs->line_smooth)) &&
       sctx->framebuffer.nr_samples <= 1;
+
+   key->ps.mono.point_smoothing = rs->point_smooth &&
+                                  sctx->current_rast_prim == PIPE_PRIM_POINTS;
 }
 
 void si_ps_key_update_sample_shading(struct si_context *sctx)
@@ -3552,7 +3551,7 @@ void si_update_vrs_flat_shading(struct si_context *sctx)
 
       if (allow_flat_shading &&
           (rs->line_smooth || rs->poly_smooth || rs->poly_stipple_enable ||
-           (!rs->flatshade && info->uses_interp_color)))
+           rs->point_smooth || (!rs->flatshade && info->uses_interp_color)))
          allow_flat_shading = false;
 
       if (sctx->allow_flat_shading != allow_flat_shading) {

@@ -1801,7 +1801,6 @@ brw_pixel_interpolator_query(struct brw_codegen *p,
 void
 brw_find_live_channel(struct brw_codegen *p,
                       struct brw_reg dst,
-                      struct brw_reg mask,
                       bool last);
 
 void
@@ -1883,6 +1882,7 @@ void brw_debug_compact_uncompact(const struct brw_isa_info *isa,
 /* brw_eu_validate.c */
 bool brw_validate_instruction(const struct brw_isa_info *isa,
                               const brw_inst *inst, int offset,
+                              unsigned inst_size,
                               struct disasm_info *disasm);
 bool brw_validate_instructions(const struct brw_isa_info *isa,
                                const void *assembly, int start_offset, int end_offset,

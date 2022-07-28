@@ -359,9 +359,10 @@ force_waitcnt(wait_ctx& ctx, wait_imm& imm)
 void
 kill(wait_imm& imm, Instruction* instr, wait_ctx& ctx, memory_sync_info sync_info)
 {
-   if (debug_flags & DEBUG_FORCE_WAITCNT) {
+   if (instr->opcode == aco_opcode::s_setpc_b64 || (debug_flags & DEBUG_FORCE_WAITCNT)) {
       /* Force emitting waitcnt states right after the instruction if there is
-       * something to wait for.
+       * something to wait for. This is also applied for s_setpc_b64 to ensure
+       * waitcnt states are inserted before jumping to the PS epilog.
        */
       force_waitcnt(ctx, imm);
    }
@@ -693,11 +694,9 @@ gen(Instruction* instr, wait_ctx& ctx)
          insert_wait_entry(ctx, instr->definitions[0], ev, get_vmem_type(instr));
 
       if (ctx.gfx_level == GFX6 && instr->format != Format::MIMG && instr->operands.size() == 4) {
-         ctx.exp_cnt++;
          update_counters(ctx, event_vmem_gpr_lock);
          insert_wait_entry(ctx, instr->operands[3], event_vmem_gpr_lock);
       } else if (ctx.gfx_level == GFX6 && instr->isMIMG() && !instr->operands[2].isUndefined()) {
-         ctx.exp_cnt++;
          update_counters(ctx, event_vmem_gpr_lock);
          insert_wait_entry(ctx, instr->operands[2], event_vmem_gpr_lock);
       }

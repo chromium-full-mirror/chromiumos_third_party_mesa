@@ -1809,6 +1809,7 @@ aco_opcode get_ordered(aco_opcode op);
 aco_opcode get_unordered(aco_opcode op);
 aco_opcode get_inverse(aco_opcode op);
 aco_opcode get_f32_cmp(aco_opcode op);
+aco_opcode get_vcmpx(aco_opcode op);
 unsigned get_cmp_bitsize(aco_opcode op);
 bool is_cmp(aco_opcode op);
 
@@ -2205,6 +2206,12 @@ void select_vs_prolog(Program* program, const struct aco_vs_prolog_key* key,
                       const struct aco_shader_info* info,
                       const struct radv_shader_args* args,
                       unsigned* num_preserved_sgprs);
+
+void select_ps_epilog(Program* program, const struct aco_ps_epilog_key* key,
+                      ac_shader_config* config,
+                      const struct aco_compiler_options* options,
+                      const struct aco_shader_info* info,
+                      const struct radv_shader_args* args);
 
 void lower_phis(Program* program);
 void calc_min_waves(Program* program);

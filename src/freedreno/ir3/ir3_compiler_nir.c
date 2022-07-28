@@ -826,6 +826,14 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
       dst[0] = ir3_ADD_S(b, src[0], 0, src[1], 0);
       dst[0]->flags |= IR3_INSTR_SAT;
       break;
+   case nir_op_usub_sat:
+      dst[0] = ir3_SUB_U(b, src[0], 0, src[1], 0);
+      dst[0]->flags |= IR3_INSTR_SAT;
+      break;
+   case nir_op_isub_sat:
+      dst[0] = ir3_SUB_S(b, src[0], 0, src[1], 0);
+      dst[0]->flags |= IR3_INSTR_SAT;
+      break;
 
    case nir_op_udot_4x8_uadd:
    case nir_op_udot_4x8_uadd_sat:
@@ -4884,6 +4892,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 
    IR3_PASS(ir, ir3_postsched, so);
 
+   IR3_PASS(ir, ir3_legalize_relative);
    IR3_PASS(ir, ir3_lower_subgroups);
 
    if (so->type == MESA_SHADER_FRAGMENT)

@@ -103,9 +103,6 @@ queue_wait_idle(struct v3dv_queue *queue,
          if (result != VK_SUCCESS)
             return result;
       }
-
-      for (int i = 0; i < 3; i++)
-         queue->last_job_syncs.first[i] = false;
    } else {
       /* Without multisync, all the semaphores are baked into the one syncobj
        * at the start of each submit so we only need to wait on the one.
@@ -119,6 +116,9 @@ queue_wait_idle(struct v3dv_queue *queue,
                           "syncobj wait failed: %m");
       }
    }
+
+   for (int i = 0; i < 3; i++)
+      queue->last_job_syncs.first[i] = false;
 
    return VK_SUCCESS;
 }
@@ -722,8 +722,6 @@ set_multisync(struct drm_v3d_multi_sync *ms,
    ms->in_sync_count = in_sync_count;
    ms->in_syncs = (uintptr_t)(void *)in_syncs;
 
-   queue->last_job_syncs.first[queue_sync] = false;
-
    return;
 
 fail:
@@ -770,6 +768,17 @@ handle_cl_job(struct v3dv_queue *queue,
    if (job->tmu_dirty_rcl)
       submit.flags |= DRM_V3D_SUBMIT_CL_FLUSH_CACHE;
 
+   /* If the job uses VK_KHR_buffer_device_addess we need to ensure all
+    * buffers flagged with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR
+    * are included.
+    */
+   if (job->uses_buffer_device_address) {
+      util_dynarray_foreach(&queue->device->device_address_bo_list,
+                            struct v3dv_bo *, bo) {
+         v3dv_job_add_bo(job, *bo);
+      }
+   }
+
    submit.bo_handle_count = job->bo_count;
    uint32_t *bo_handles =
       (uint32_t *) malloc(sizeof(uint32_t) * submit.bo_handle_count);
@@ -786,35 +795,33 @@ handle_cl_job(struct v3dv_queue *queue,
    const bool needs_perf_sync = queue->last_perfmon_id != submit.perfmon_id;
    queue->last_perfmon_id = submit.perfmon_id;
 
-   /* We need a binning sync if we are waiting on a semaphore with a wait stage
-    * that involves the geometry pipeline, or if the job comes after a pipeline
-    * barrier that involves geometry stages (needs_bcl_sync), or if
-    * performance queries are in use.
+   /* We need a binning sync if we are the first CL job waiting on a semaphore
+    * with a wait stage that involves the geometry pipeline, or if the job
+    * comes after a pipeline barrier that involves geometry stages
+    * (needs_bcl_sync) or when performance queries are in use.
     *
     * We need a render sync if the job doesn't need a binning sync but has
     * still been flagged for serialization. It should be noted that RCL jobs
     * don't start until the previous RCL job has finished so we don't really
     * need to add a fence for those, however, we might need to wait on a CSD or
     * TFU job, which are not automatically serialized with CL jobs.
-    *
-    * FIXME: see if we can do better and avoid bcl syncs for any jobs in the
-    * command buffer after the first job where we should be able to track bcl
-    * dependencies strictly through barriers.
     */
-   bool needs_bcl_sync = job->needs_bcl_sync;
-   for (int i = 0; !needs_bcl_sync && i < sync_info->wait_count; i++) {
-      needs_bcl_sync = sync_info->waits[i].stage_mask &
-         (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT |
-          VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
-          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
-          VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
-          VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
-          VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-          VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
-          VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
-          VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT);
+   bool needs_bcl_sync = job->needs_bcl_sync || needs_perf_sync;
+   if (queue->last_job_syncs.first[V3DV_QUEUE_CL]) {
+      for (int i = 0; !needs_bcl_sync && i < sync_info->wait_count; i++) {
+         needs_bcl_sync = sync_info->waits[i].stage_mask &
+             (VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT |
+              VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+              VK_PIPELINE_STAGE_ALL_COMMANDS_BIT |
+              VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+              VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+              VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+              VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+              VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+              VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT);
+      }
    }
-   needs_bcl_sync |= needs_perf_sync;
+
    bool needs_rcl_sync = job->serialize && !needs_bcl_sync;
 
    /* Replace single semaphore settings whenever our kernel-driver supports
@@ -854,6 +861,8 @@ handle_cl_job(struct v3dv_queue *queue,
 
    free(bo_handles);
    multisync_free(device, &ms);
+
+   queue->last_job_syncs.first[V3DV_QUEUE_CL] = false;
 
    if (ret)
       return vk_queue_set_lost(&queue->vk, "V3D_SUBMIT_CL failed: %m");
@@ -895,6 +904,7 @@ handle_tfu_job(struct v3dv_queue *queue,
                         DRM_IOCTL_V3D_SUBMIT_TFU, &job->tfu);
 
    multisync_free(device, &ms);
+   queue->last_job_syncs.first[V3DV_QUEUE_TFU] = false;
 
    if (ret != 0)
       return vk_queue_set_lost(&queue->vk, "V3D_SUBMIT_TFU failed: %m");
@@ -912,6 +922,17 @@ handle_csd_job(struct v3dv_queue *queue,
    struct v3dv_device *device = queue->device;
 
    struct drm_v3d_submit_csd *submit = &job->csd.submit;
+
+   /* If the job uses VK_KHR_buffer_device_addess we need to ensure all
+    * buffers flagged with VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR
+    * are included.
+    */
+   if (job->uses_buffer_device_address) {
+      util_dynarray_foreach(&queue->device->device_address_bo_list,
+                            struct v3dv_bo *, bo) {
+         v3dv_job_add_bo(job, *bo);
+      }
+   }
 
    submit->bo_handle_count = job->bo_count;
    uint32_t *bo_handles =
@@ -962,6 +983,7 @@ handle_csd_job(struct v3dv_queue *queue,
    free(bo_handles);
 
    multisync_free(device, &ms);
+   queue->last_job_syncs.first[V3DV_QUEUE_CSD] = false;
 
    if (ret)
       return vk_queue_set_lost(&queue->vk, "V3D_SUBMIT_CSD failed: %m");

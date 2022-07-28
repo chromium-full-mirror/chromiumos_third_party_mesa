@@ -93,8 +93,13 @@ struct etna_screen {
    uint32_t drm_version;
 
    struct etna_compiler *compiler;
-   nir_shader_compiler_options options;
    struct util_queue shader_compiler_queue;
+
+   /* dummy render target for GPUs that can't fully disable the color pipe */
+   struct etna_reloc dummy_rt_reloc;
+
+   /* dummy texture descriptor */
+   struct etna_reloc dummy_desc_reloc;
 };
 
 static inline struct etna_screen *

@@ -411,7 +411,10 @@ Shader *Shader::translate_from_nir(nir_shader *nir, const pipe_stream_output_inf
 
    switch (nir->info.stage) {
    case MESA_SHADER_FRAGMENT:
-      shader = new FragmentShader(key);
+      if (chip_class >= ISA_CC_EVERGREEN)
+         shader = new FragmentShaderEG(key);
+      else
+         shader = new FragmentShaderR600(key);
    break;
    case MESA_SHADER_VERTEX:
       shader = new VertexShader(so_info, gs_shader, key);
@@ -505,8 +508,11 @@ bool Shader::scan_shader(const nir_function *func)
 
    int lds_pos = 0;
    for (auto& [index, input] : m_inputs) {
-      if (input.need_lds_pos())
+      if (input.need_lds_pos()) {
+         if (chip_class() < ISA_CC_EVERGREEN)
+            input.set_gpr(lds_pos);
          input.set_lds_pos(lds_pos++);
+      }
    }
 
    int param_id = 0;
@@ -664,8 +670,8 @@ bool Shader::process_if(nir_if *if_stmt)
    }
 
    if (!child_block_empty(if_stmt->else_list)) {
-      assert(emit_control_flow(ControlFlowInstr::cf_else));
-
+      if (!emit_control_flow(ControlFlowInstr::cf_else))
+         return false;
       foreach_list_typed(nir_cf_node, n, node, &if_stmt->else_list)
             if (!process_cf_node(n)) return false;
    }
@@ -982,12 +988,15 @@ bool Shader::emit_local_store(nir_intrinsic_instr *instr)
    unsigned write_mask = nir_intrinsic_write_mask(instr);
 
    auto address = value_factory().src(instr->src[1], 0);
-   int swizzle_base = (write_mask & 0x3) ? 0 : 2;
-   write_mask |= write_mask >> 2;
+   int swizzle_base = 0;
+   unsigned w = write_mask;
+   while (!(w & 1)) {
+      ++swizzle_base;
+      w >>= 1;
+   }
+   write_mask = write_mask >> swizzle_base;
 
    if ((write_mask & 3) != 3) {
-      if (write_mask == 2)
-         swizzle_base += 1;
       auto value = value_factory().src(instr->src[0], swizzle_base);
       emit_instruction(new LDSAtomicInstr(LDS_WRITE, nullptr, address, {value}));
    } else {
@@ -1290,9 +1299,9 @@ void Shader::get_shader_info(r600_shader *sh_info)
 {
    sh_info->ninput = m_inputs.size();
    int lds_pos = 0;
-   int output_array_array_loc = 0;
+   int input_array_array_loc = 0;
    for (auto& [index, info] : m_inputs) {
-      r600_shader_io& io = sh_info->input[output_array_array_loc++];
+      r600_shader_io& io = sh_info->input[input_array_array_loc++];
 
       io.sid = info.sid();
       io.gpr = info.gpr();
@@ -1316,9 +1325,10 @@ void Shader::get_shader_info(r600_shader *sh_info)
    sh_info->nlds = lds_pos;
    sh_info->noutput = m_outputs.size();
    sh_info->num_loops = m_nloops;
+   int output_array_array_loc = 0;
 
    for (auto& [index, info] : m_outputs) {
-      r600_shader_io& io = sh_info->output[index];
+      r600_shader_io& io = sh_info->output[output_array_array_loc++];
       io.sid = info.sid();
       io.gpr = info.gpr();
       io.spi_sid = info.spi_sid();

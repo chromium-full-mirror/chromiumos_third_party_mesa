@@ -1,10 +1,12 @@
-# Samples as luminance or intensity, instead of red.
+# Test expects red instead of luminance, contra OES_depth_texture spec.
+# https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/3815
 KHR-GLES2.core.internalformat.texture2d.depth_component_unsigned_int_depth_component16,Fail
 KHR-GLES2.core.internalformat.texture2d.depth_component_unsigned_int_depth_component24,Fail
 KHR-GLES2.core.internalformat.texture2d.depth_component_unsigned_short_depth_component16,Fail
 
 #  Creating OpenGL ES 3 context
 # Fail, context: 0x00000000, error: EGL_BAD_MATCH
+# https://gitlab.khronos.org/Tracker/vk-gl-cts/-/issues/3816
 dEQP-EGL.functional.create_context.no_config,Fail
 
 # wide line outside the viewport incorrectly clipped out when ES wants it
@@ -15,20 +17,10 @@ dEQP-GLES2.functional.clipping.line.wide_line_clip_viewport_corner,Fail
 
 dEQP-GLES2.functional.depth_stencil_clear.depth_stencil_masked,Fail
 
-# 2-count line loop incorrectly draws nothing (HW bug).  Need to demote to being
-# GL_LINES, though that wouldn't be correct with blending/logicop.
-dEQP-GLES2.functional.draw.draw_arrays.line_loop.multiple_attributes,Fail
-dEQP-GLES2.functional.draw.draw_arrays.line_loop.single_attribute,Fail
-
 # A glTexImage, glDraw, glTexSubImage sequence into a texture is missing what looks like the drawing.
 dEQP-GLES2.functional.fbo.render.texsubimage.after_render_tex2d_rgba,Fail
 # A glTexImage, glDraw, glTexSubImage, glDraw sequence into a texture is missing what looks like the first drawing.
 dEQP-GLES2.functional.fbo.render.texsubimage.between_render_tex2d_rgba,Fail
-
-# "GL_INVALID_VALUE is generated if index is greater than or equal to GL_MAX_VERTEX_ATTRIBS."
-# but we didn't generate an error.
-dEQP-GLES2.functional.negative_api.vertex_array.vertex_attrib,Fail
-dEQP-GLES2.functional.negative_api.vertex_array.vertex_attribv,Fail
 
 # Sampling grid slightly off in test 2?
 dEQP-GLES2.functional.texture.filtering.2d.nearest_mipmap_linear_linear_mirror_rgba8888,Fail
@@ -110,7 +102,6 @@ spec@glsl-1.20@execution@tex-miplevel-selection gl2:textureproj 3d,Fail
 spec@glsl-1.20@execution@tex-miplevel-selection gl2:textureproj(bias) 3d,Fail
 spec@khr_texture_compression_astc@basic-gl,Fail
 
-glx@glx-make-current,Crash
 glx@glx-multithread-buffer,Fail
 glx@glx-swap-pixmap-bad,Fail
 glx@glx-visuals-depth -pixmap,Fail

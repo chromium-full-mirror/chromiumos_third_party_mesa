@@ -213,6 +213,11 @@ radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_
       state->render_area = cmd_buffer->state.render_area;
    }
 
+   if (state->flags & RADV_META_SUSPEND_PREDICATING) {
+      state->predicating = cmd_buffer->state.predicating;
+      cmd_buffer->state.predicating = false;
+   }
+
    radv_suspend_queries(state, cmd_buffer);
 }
 
@@ -363,6 +368,9 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
       if (state->subpass)
          cmd_buffer->state.dirty |= RADV_CMD_DIRTY_FRAMEBUFFER;
    }
+
+   if (state->flags & RADV_META_SUSPEND_PREDICATING)
+      cmd_buffer->state.predicating = state->predicating;
 
    radv_resume_queries(state, cmd_buffer);
 }
@@ -622,39 +630,49 @@ radv_device_init_meta(struct radv_device *device)
    if (result != VK_SUCCESS)
       goto fail_etc_decode;
 
+   if (device->uses_device_generated_commands) {
+      result = radv_device_init_dgc_prepare_state(device);
+      if (result != VK_SUCCESS)
+         goto fail_dgc;
+   }
+
    device->app_shaders_internal = false;
 
    return VK_SUCCESS;
 
+fail_dgc:
+   radv_device_finish_dgc_prepare_state(device);
 fail_etc_decode:
-   radv_device_finish_meta_fmask_copy_state(device);
+   radv_device_finish_meta_etc_decode_state(device);
 fail_fmask_copy:
-   radv_device_finish_accel_struct_build_state(device);
+   radv_device_finish_meta_fmask_copy_state(device);
 fail_accel_struct_build:
-   radv_device_finish_meta_fmask_expand_state(device);
+   radv_device_finish_accel_struct_build_state(device);
 fail_fmask_expand:
-   radv_device_finish_meta_resolve_fragment_state(device);
+   radv_device_finish_meta_fmask_expand_state(device);
 fail_resolve_fragment:
-   radv_device_finish_meta_resolve_compute_state(device);
+   radv_device_finish_meta_resolve_fragment_state(device);
 fail_resolve_compute:
-   radv_device_finish_meta_fast_clear_flush_state(device);
+   radv_device_finish_meta_resolve_compute_state(device);
 fail_fast_clear:
-   radv_device_finish_meta_query_state(device);
+   radv_device_finish_meta_fast_clear_flush_state(device);
 fail_query:
-   radv_device_finish_meta_buffer_state(device);
+   radv_device_finish_meta_query_state(device);
 fail_buffer:
-   radv_device_finish_meta_depth_decomp_state(device);
+   radv_device_finish_meta_buffer_state(device);
 fail_depth_decomp:
-   radv_device_finish_meta_bufimage_state(device);
+   radv_device_finish_meta_depth_decomp_state(device);
 fail_bufimage:
-   radv_device_finish_meta_blit2d_state(device);
+   radv_device_finish_meta_bufimage_state(device);
 fail_blit2d:
-   radv_device_finish_meta_blit_state(device);
+   radv_device_finish_meta_blit2d_state(device);
 fail_blit:
-   radv_device_finish_meta_resolve_state(device);
+   radv_device_finish_meta_blit_state(device);
 fail_resolve:
-   radv_device_finish_meta_clear_state(device);
+   radv_device_finish_meta_resolve_state(device);
 fail_clear:
+   radv_device_finish_meta_clear_state(device);
+
    mtx_destroy(&device->meta_state.mtx);
    radv_pipeline_cache_finish(&device->meta_state.cache);
    return result;
@@ -663,6 +681,7 @@ fail_clear:
 void
 radv_device_finish_meta(struct radv_device *device)
 {
+   radv_device_finish_dgc_prepare_state(device);
    radv_device_finish_meta_etc_decode_state(device);
    radv_device_finish_accel_struct_build_state(device);
    radv_device_finish_meta_clear_state(device);
@@ -705,38 +724,6 @@ nir_builder PRINTFLIKE(3, 4)
    return b;
 }
 
-nir_ssa_def *
-radv_meta_gen_rect_vertices_comp2(nir_builder *vs_b, nir_ssa_def *comp2)
-{
-
-   nir_ssa_def *vertex_id = nir_load_vertex_id_zero_base(vs_b);
-
-   /* vertex 0 - -1.0, -1.0 */
-   /* vertex 1 - -1.0, 1.0 */
-   /* vertex 2 - 1.0, -1.0 */
-   /* so channel 0 is vertex_id != 2 ? -1.0 : 1.0
-      channel 1 is vertex id != 1 ? -1.0 : 1.0 */
-
-   nir_ssa_def *c0cmp = nir_ine_imm(vs_b, vertex_id, 2);
-   nir_ssa_def *c1cmp = nir_ine_imm(vs_b, vertex_id, 1);
-
-   nir_ssa_def *comp[4];
-   comp[0] = nir_bcsel(vs_b, c0cmp, nir_imm_float(vs_b, -1.0), nir_imm_float(vs_b, 1.0));
-
-   comp[1] = nir_bcsel(vs_b, c1cmp, nir_imm_float(vs_b, -1.0), nir_imm_float(vs_b, 1.0));
-   comp[2] = comp2;
-   comp[3] = nir_imm_float(vs_b, 1.0);
-   nir_ssa_def *outvec = nir_vec(vs_b, comp, 4);
-
-   return outvec;
-}
-
-nir_ssa_def *
-radv_meta_gen_rect_vertices(nir_builder *vs_b)
-{
-   return radv_meta_gen_rect_vertices_comp2(vs_b, nir_imm_float(vs_b, 0.0));
-}
-
 /* vertex shader that generates vertices */
 nir_shader *
 radv_meta_build_nir_vs_generate_vertices(struct radv_device *dev)
@@ -747,7 +734,7 @@ radv_meta_build_nir_vs_generate_vertices(struct radv_device *dev)
 
    nir_builder b = radv_meta_init_shader(dev, MESA_SHADER_VERTEX, "meta_vs_gen_verts");
 
-   nir_ssa_def *outvec = radv_meta_gen_rect_vertices(&b);
+   nir_ssa_def *outvec = nir_gen_rect_vertices(&b, NULL, NULL);
 
    v_position = nir_variable_create(b.shader, nir_var_shader_out, vec4, "gl_Position");
    v_position->data.location = VARYING_SLOT_POS;

@@ -23,6 +23,7 @@
 
 #include "wsi_common_private.h"
 #include "wsi_common_entrypoints.h"
+#include "util/debug.h"
 #include "util/macros.h"
 #include "util/os_file.h"
 #include "util/xmlconfig.h"
@@ -45,6 +46,16 @@
 #include <unistd.h>
 #endif
 
+uint64_t WSI_DEBUG;
+
+static const struct debug_control debug_control[] = {
+   { "buffer",       WSI_DEBUG_BUFFER },
+   { "sw",           WSI_DEBUG_SW },
+   { "noshm",        WSI_DEBUG_NOSHM },
+   { "linear",       WSI_DEBUG_LINEAR },
+   { NULL, },
+};
+
 VkResult
 wsi_device_init(struct wsi_device *wsi,
                 VkPhysicalDevice pdevice,
@@ -57,11 +68,14 @@ wsi_device_init(struct wsi_device *wsi,
    const char *present_mode;
    UNUSED VkResult result;
 
+   WSI_DEBUG = parse_debug_string(getenv("MESA_VK_WSI_DEBUG"), debug_control);
+
    memset(wsi, 0, sizeof(*wsi));
 
    wsi->instance_alloc = *alloc;
    wsi->pdevice = pdevice;
-   wsi->sw = sw_device;
+   wsi->sw = sw_device || (WSI_DEBUG & WSI_DEBUG_SW);
+   wsi->wants_linear = (WSI_DEBUG & WSI_DEBUG_LINEAR) != 0;
 #define WSI_GET_CB(func) \
    PFN_vk##func func = (PFN_vk##func)proc_addr(pdevice, "vk" #func)
    WSI_GET_CB(GetPhysicalDeviceExternalSemaphoreProperties);
@@ -271,7 +285,7 @@ wsi_swapchain_init(const struct wsi_device *wsi,
    chain->device = _device;
    chain->alloc = *pAllocator;
 
-   chain->use_buffer_blit = use_buffer_blit;
+   chain->use_buffer_blit = use_buffer_blit || (WSI_DEBUG & WSI_DEBUG_BUFFER);
    if (wsi->sw && !wsi->wants_linear)
       chain->use_buffer_blit = true;
 
@@ -459,11 +473,11 @@ wsi_configure_image(const struct wsi_swapchain *chain,
 
    if (pCreateInfo->flags & VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR) {
       info->create.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT |
-                            VK_IMAGE_CREATE_EXTENDED_USAGE_BIT_KHR;
+                            VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
 
-      const VkImageFormatListCreateInfoKHR *format_list_in =
+      const VkImageFormatListCreateInfo *format_list_in =
          vk_find_struct_const(pCreateInfo->pNext,
-                              IMAGE_FORMAT_LIST_CREATE_INFO_KHR);
+                              IMAGE_FORMAT_LIST_CREATE_INFO);
 
       assume(format_list_in && format_list_in->viewFormatCount > 0);
 
@@ -482,8 +496,8 @@ wsi_configure_image(const struct wsi_swapchain *chain,
       }
       assert(format_found);
 
-      info->format_list = (VkImageFormatListCreateInfoKHR) {
-         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO_KHR,
+      info->format_list = (VkImageFormatListCreateInfo) {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO,
          .viewFormatCount = view_format_count,
          .pViewFormats = view_formats,
       };
@@ -1223,7 +1237,7 @@ wsi_common_create_swapchain_image(const struct wsi_device *wsi,
    assert(pCreateInfo->tiling == VK_IMAGE_TILING_OPTIMAL);
    assert(!(pCreateInfo->usage & ~swcInfo->usage));
 
-   vk_foreach_struct(ext, pCreateInfo->pNext) {
+   vk_foreach_struct_const(ext, pCreateInfo->pNext) {
       switch (ext->sType) {
       case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: {
          const VkImageFormatListCreateInfo *iflci =

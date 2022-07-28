@@ -165,10 +165,10 @@ struct vk_subpass {
    uint32_t view_mask;
 
    /** VkSubpassDescriptionDepthStencilResolve::depthResolveMode */
-   VkResolveModeFlagBitsKHR depth_resolve_mode;
+   VkResolveModeFlagBits depth_resolve_mode;
 
    /** VkSubpassDescriptionDepthStencilResolve::stencilResolveMode */
-   VkResolveModeFlagBitsKHR stencil_resolve_mode;
+   VkResolveModeFlagBits stencil_resolve_mode;
 
    /** VkFragmentShadingRateAttachmentInfoKHR::shadingRateAttachmentTexelSize */
    VkExtent2D fragment_shading_rate_attachment_texel_size;
@@ -198,6 +198,9 @@ struct vk_subpass {
     * VkCommandBufferInheritanceInfo::renderPass != VK_NULL_HANDLE.
     */
    VkCommandBufferInheritanceRenderingInfo inheritance_info;
+
+   /** VkMultisampledRenderToSingleSampledInfoEXT for this subpass */
+   VkMultisampledRenderToSingleSampledInfoEXT mrtss;
 };
 
 struct vk_render_pass_attachment {

@@ -27,6 +27,8 @@
 #ifndef FREEDRENO_UTIL_H_
 #define FREEDRENO_UTIL_H_
 
+#include "common/freedreno_common.h"
+
 #include "drm/freedreno_drmif.h"
 #include "drm/freedreno_ringbuffer.h"
 
@@ -96,6 +98,7 @@ enum fd_debug_flag {
    FD_DBG_LAYOUT       = BITFIELD_BIT(26),
    FD_DBG_NOFP16       = BITFIELD_BIT(27),
    FD_DBG_NOHW         = BITFIELD_BIT(28),
+   FD_DBG_NOSBIN       = BITFIELD_BIT(29),
 };
 /* clang-format on */
 
@@ -223,9 +226,6 @@ static inline void
 fd_context_access_end(struct fd_context *ctx) release_cap(fd_context_access_cap)
 {
 }
-
-/* for conditionally setting boolean flag(s): */
-#define COND(bool, val) ((bool) ? (val) : 0)
 
 #define CP_REG(reg) ((0x4 << 16) | ((unsigned int)((reg) - (0x2000))))
 
@@ -419,18 +419,6 @@ pack_rgba(enum pipe_format format, const float *rgba)
    util_pack_color(rgba, format, &uc);
    return uc.ui[0];
 }
-
-/*
- * swap - swap value of @a and @b
- */
-#define swap(a, b)                                                             \
-   do {                                                                        \
-      __typeof(a) __tmp = (a);                                                 \
-      (a) = (b);                                                               \
-      (b) = __tmp;                                                             \
-   } while (0)
-
-#define BIT(bit) (1u << bit)
 
 /*
  * a3xx+ helpers:

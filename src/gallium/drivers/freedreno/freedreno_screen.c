@@ -96,6 +96,7 @@ static const struct debug_named_value fd_debug_options[] = {
    {"layout",    FD_DBG_LAYOUT,   "Dump resource layouts"},
    {"nofp16",    FD_DBG_NOFP16,   "Disable mediump precision lowering"},
    {"nohw",      FD_DBG_NOHW,     "Disable submitting commands to the HW"},
+   {"nosbin",    FD_DBG_NOSBIN,   "Execute GMEM bins in raster order instead of 'S' pattern"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -802,7 +803,7 @@ fd_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
 
 static const void *
 fd_get_compiler_options(struct pipe_screen *pscreen, enum pipe_shader_ir ir,
-                        unsigned shader)
+                        enum pipe_shader_type shader)
 {
    struct fd_screen *screen = fd_screen(pscreen);
 

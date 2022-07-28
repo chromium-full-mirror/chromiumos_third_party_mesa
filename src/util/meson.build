@@ -209,6 +209,7 @@ deps_for_libmesa_util = [
   dep_zstd,
   dep_dl,
   dep_unwind,
+  dep_futex,
   idep_mesautilc11
 ]
 
@@ -275,7 +276,7 @@ _libmesa_util = static_library(
 idep_mesautil = declare_dependency(
   link_with : _libmesa_util,
   include_directories : [inc_util, inc_gallium],
-  dependencies : [dep_zlib, dep_clock, dep_thread, dep_atomic, dep_m, dep_valgrind],
+  dependencies : [dep_zlib, dep_clock, dep_thread, dep_atomic, dep_m, dep_valgrind, dep_futex],
 )
 
 xmlconfig_deps = []
@@ -342,7 +343,6 @@ if with_tests
     'tests/register_allocate_test.cpp',
     'tests/roundeven_test.cpp',
     'tests/set_test.cpp',
-    'tests/sparse_array_test.cpp',
     'tests/timespec_test.cpp',
     'tests/u_atomic_test.cpp',
     'tests/u_debug_stack_test.cpp',
@@ -362,6 +362,13 @@ if with_tests
   if host_machine.system() != 'windows'
     files_util_tests += files(
       'tests/mesa-sha1_test.cpp',
+    )
+  endif
+
+  # FIXME: this test cause a big timeout on MacOS
+  if host_machine.system() != 'darwin'
+    files_util_tests += files(
+      'tests/sparse_array_test.cpp',
     )
   endif
 

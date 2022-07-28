@@ -195,9 +195,9 @@ enum EAluOp {
    op1v_flt32_to_flt64 = 206,
    op2_sad_accum_prev_uint = 207,
    op2_dot = 208,
-   op2_mul_prev = 209,
-   op2_mul_ieee_prev = 210,
-   op2_add_prev = 211,
+   op1_mul_prev = 209,
+   op1_mul_ieee_prev = 210,
+   op1_add_prev = 211,
    op2_muladd_prev = 212,
    op2_muladd_ieee_prev = 213,
    op2_interp_xy = 214,
@@ -312,18 +312,19 @@ struct AluOp {
    static constexpr int t = 16;
    static constexpr int a = 31;
 
-   AluOp(int ns, int f, int um, const char *n):
-      nsrc(ns), is_float(f), unit_mask(um), name(n)
+   AluOp(int ns, int f, int um, int um_eg, const char *n):
+      nsrc(ns), is_float(f), unit_mask(um), unit_mask_eg(um_eg), name(n)
    {
    }
 
-   bool can_channel(int flags) const {
-      return flags & unit_mask;
+   bool can_channel(int flags, bool eg) const {
+      return flags & (eg ? unit_mask_eg : unit_mask);
    }
 
    int nsrc: 4;
    int is_float:1;
    int unit_mask: 5;
+   int unit_mask_eg: 5;
    const char *name;
 };
 

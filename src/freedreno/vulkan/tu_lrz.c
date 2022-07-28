@@ -1,29 +1,14 @@
 /*
  * Copyright © 2022 Igalia S.L.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
-#include "tu_private.h"
+#include "tu_lrz.h"
 
+#include "tu_clear_blit.h"
+#include "tu_cmd_buffer.h"
 #include "tu_cs.h"
+#include "tu_image.h"
 
 /* Low-resolution Z buffer is very similar to a depth prepass that helps
  * the HW avoid executing the fragment shader on those fragments that will
@@ -202,8 +187,11 @@ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
                   const struct tu_render_pass_attachment *att,
                   const struct tu_image_view *view)
 {
-   if (!view->image->lrz_height)
+   if (!view->image->lrz_height) {
+      assert((cmd->device->instance->debug_flags & TU_DEBUG_NOLRZ) ||
+             !vk_format_has_depth(att->format));
       return;
+   }
 
    bool clears_depth = att->clear_mask &
       (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT);
@@ -213,10 +201,17 @@ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
    if (!has_gpu_tracking && !clears_depth)
       return;
 
+   /* We need to always have an LRZ view just to disable it if there is a
+    * depth attachment, there are any secondaries, and GPU tracking is
+    * enabled, in order not to rely on loadOp state which doesn't exist with
+    * dynamic rendering in secondaries. Otherwise the secondary will have LRZ
+    * enabled and there will be a NULL/garbage LRZ buffer.
+    */
+   cmd->state.lrz.image_view = view;
+
    if (!clears_depth && !att->load)
       return;
 
-   cmd->state.lrz.image_view = view;
    cmd->state.lrz.valid = true;
    cmd->state.lrz.prev_direction = TU_LRZ_UNKNOWN;
    /* Be optimistic and unconditionally enable fast-clear in
@@ -228,9 +223,72 @@ tu_lrz_init_state(struct tu_cmd_buffer *cmd,
    cmd->state.lrz.reuse_previous_state = !clears_depth;
 }
 
+/* Note: if we enable LRZ here, then tu_lrz_init_state() must at least set
+ * lrz.image_view, so that an LRZ buffer is present (even if LRZ is
+ * dynamically disabled).
+ */
+
+static void
+tu_lrz_init_secondary(struct tu_cmd_buffer *cmd,
+                      const struct tu_render_pass_attachment *att)
+{
+   bool has_gpu_tracking =
+      cmd->device->physical_device->info->a6xx.has_lrz_dir_tracking;
+
+   if (!has_gpu_tracking)
+      return;
+
+   if (cmd->device->instance->debug_flags & TU_DEBUG_NOLRZ)
+      return;
+
+   if (!vk_format_has_depth(att->format))
+      return;
+
+   cmd->state.lrz.valid = true;
+   cmd->state.lrz.prev_direction = TU_LRZ_UNKNOWN;
+   cmd->state.lrz.gpu_dir_tracking = has_gpu_tracking;
+
+   /* We may not have the depth attachment when executing in a secondary
+    * inside a render pass. This means we have to be even more optimistic than
+    * the normal case and enable fast clear even if the depth image doesn't
+    * support it.
+    */
+   cmd->state.lrz.fast_clear = true;
+
+   /* These are not used inside secondaries */
+   cmd->state.lrz.image_view = NULL;
+   cmd->state.lrz.reuse_previous_state = false;
+}
+
+/* This is generally the same as tu_lrz_begin_renderpass(), but we skip
+ * actually emitting anything. The lrz state needs to be consistent between
+ * renderpasses, but only the first should actually emit commands to disable
+ * lrz etc.
+ */
+void
+tu_lrz_begin_resumed_renderpass(struct tu_cmd_buffer *cmd,
+                                const VkClearValue *clear_values)
+{
+    /* Track LRZ valid state */
+   memset(&cmd->state.lrz, 0, sizeof(cmd->state.lrz));
+   uint32_t a = cmd->state.subpass->depth_stencil_attachment.attachment;
+   if (a != VK_ATTACHMENT_UNUSED) {
+      const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
+      tu_lrz_init_state(cmd, att, cmd->state.attachments[a]);
+      if (att->clear_mask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT)) {
+         VkClearValue clear = clear_values[a];
+         cmd->state.lrz.depth_clear_value = clear;
+         cmd->state.lrz.fast_clear = cmd->state.lrz.fast_clear &&
+                                     (clear.depthStencil.depth == 0.f ||
+                                      clear.depthStencil.depth == 1.f);
+      }
+      cmd->state.dirty |= TU_CMD_DIRTY_LRZ;
+   }
+}
+
 void
 tu_lrz_begin_renderpass(struct tu_cmd_buffer *cmd,
-                        const VkRenderPassBeginInfo *pRenderPassBegin)
+                        const VkClearValue *clear_values)
 {
    const struct tu_render_pass *pass = cmd->state.pass;
 
@@ -257,44 +315,32 @@ tu_lrz_begin_renderpass(struct tu_cmd_buffer *cmd,
    }
 
     /* Track LRZ valid state */
-   cmd->state.lrz.valid = false;
-   uint32_t a = cmd->state.subpass->depth_stencil_attachment.attachment;
-   if (a != VK_ATTACHMENT_UNUSED) {
-      const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
-      tu_lrz_init_state(cmd, att, cmd->state.attachments[a]);
-      if (att->clear_mask & (VK_IMAGE_ASPECT_COLOR_BIT | VK_IMAGE_ASPECT_DEPTH_BIT)) {
-         VkClearValue clear = pRenderPassBegin->pClearValues[a];
-         cmd->state.lrz.depth_clear_value = clear;
-         cmd->state.lrz.fast_clear = cmd->state.lrz.fast_clear &&
-                                     (clear.depthStencil.depth == 0.f ||
-                                      clear.depthStencil.depth == 1.f);
-      }
-      cmd->state.dirty |= TU_CMD_DIRTY_LRZ;
-   }
+   tu_lrz_begin_resumed_renderpass(cmd, clear_values);
 
    if (!cmd->state.lrz.valid) {
-      memset(&cmd->state.lrz, 0, sizeof(cmd->state.lrz));
       tu6_emit_lrz_buffer(&cmd->cs, NULL);
    }
 }
 
 void
-tu_lrz_begin_secondary_cmdbuf(struct tu_cmd_buffer *cmd,
-                              struct tu_framebuffer *fb)
+tu_lrz_begin_secondary_cmdbuf(struct tu_cmd_buffer *cmd)
 {
+   memset(&cmd->state.lrz, 0, sizeof(cmd->state.lrz));
    uint32_t a = cmd->state.subpass->depth_stencil_attachment.attachment;
-   if (a != VK_ATTACHMENT_UNUSED &&
-       cmd->device->physical_device->info->a6xx.has_lrz_dir_tracking) {
+   if (a != VK_ATTACHMENT_UNUSED) {
       const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
-      struct tu_image_view *view = fb->attachments[a].attachment;
-
-      tu_lrz_init_state(cmd, att, view);
+      tu_lrz_init_secondary(cmd, att);
    }
 }
 
 void
 tu_lrz_tiling_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs)
 {
+   /* TODO: If lrz was never valid for the entire renderpass, we could exit
+    * early here. Sometimes we know this ahead of time and null out
+    * image_view, but with LOAD_OP_DONT_CARE this only happens if there were
+    * no secondaries.
+    */
    if (!cmd->state.lrz.image_view)
       return;
 
@@ -483,7 +529,7 @@ tu_lrz_clear_depth_image(struct tu_cmd_buffer *cmd,
 
    tu6_write_lrz_reg(cmd, &cmd->cs, A6XX_GRAS_LRZ_DEPTH_VIEW(
          .base_layer = range->baseArrayLayer,
-         .layer_count = tu_get_layerCount(image, range),
+         .layer_count = vk_image_subresource_layer_count(&image->vk, range),
          .base_mip_level = range->baseMipLevel,
    ));
 

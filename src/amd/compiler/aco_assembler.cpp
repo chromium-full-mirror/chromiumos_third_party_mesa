@@ -803,13 +803,21 @@ fix_exports(asm_context& ctx, std::vector<uint32_t>& out, Program* program)
                   break;
                }
             } else {
-               exp.done = true;
-               exp.valid_mask = true;
+               if (!program->info.ps.has_epilog) {
+                  exp.done = true;
+                  exp.valid_mask = true;
+               }
                exported = true;
                break;
             }
-         } else if ((*it)->definitions.size() && (*it)->definitions[0].physReg() == exec)
+         } else if ((*it)->definitions.size() && (*it)->definitions[0].physReg() == exec) {
             break;
+         } else if ((*it)->opcode == aco_opcode::s_setpc_b64) {
+            /* Do not abort if the main FS has an epilog because it only
+             * exports MRTZ (if present) and the epilog exports colors.
+             */
+            exported |= program->stage.hw == HWStage::FS && program->info.ps.has_epilog;
+         }
          ++it;
       }
    }

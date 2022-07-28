@@ -467,15 +467,10 @@ enum opcode {
    SHADER_OPCODE_SCRATCH_HEADER,
 
    /**
-    * Gfx8+ SIMD8 URB Read messages.
+    * Gfx8+ SIMD8 URB messages.
     */
    SHADER_OPCODE_URB_READ_LOGICAL,
-   SHADER_OPCODE_URB_READ_PER_SLOT_LOGICAL,
-
    SHADER_OPCODE_URB_WRITE_LOGICAL,
-   SHADER_OPCODE_URB_WRITE_PER_SLOT_LOGICAL,
-   SHADER_OPCODE_URB_WRITE_MASKED_LOGICAL,
-   SHADER_OPCODE_URB_WRITE_MASKED_PER_SLOT_LOGICAL,
 
    /**
     * Return the index of the first enabled live channel and assign it to
@@ -949,6 +944,17 @@ enum rt_logical_srcs {
 
    RT_LOGICAL_NUM_SRCS
 };
+
+enum urb_logical_srcs {
+   URB_LOGICAL_SRC_HANDLE,
+   URB_LOGICAL_SRC_PER_SLOT_OFFSETS,
+   URB_LOGICAL_SRC_CHANNEL_MASK,
+   /** Data to be written.  BAD_FILE for reads. */
+   URB_LOGICAL_SRC_DATA,
+
+   URB_LOGICAL_NUM_SRCS
+};
+
 
 #ifdef __cplusplus
 /**

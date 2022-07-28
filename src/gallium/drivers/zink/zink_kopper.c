@@ -27,7 +27,26 @@
 #include "zink_screen.h"
 #include "zink_resource.h"
 #include "zink_kopper.h"
-#include "vk_enum_to_str.h"
+
+static void
+zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int interval)
+{
+#ifdef WIN32
+    // not hooked up yet so let's not sabotage benchmarks
+    cdt->present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+#else
+   assert(interval >= 0); /* TODO: VK_PRESENT_MODE_FIFO_RELAXED_KHR */
+   if (interval == 0) {
+      if (cdt->present_modes & BITFIELD_BIT(VK_PRESENT_MODE_IMMEDIATE_KHR))
+         cdt->present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+      else
+         cdt->present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+   } else if (interval > 0) {
+      cdt->present_mode = VK_PRESENT_MODE_FIFO_KHR;
+   }
+   assert(cdt->present_modes & BITFIELD_BIT(cdt->present_mode));
+#endif
+}
 
 static void
 init_dt_type(struct kopper_displaytarget *cdt)
@@ -52,13 +71,6 @@ init_dt_type(struct kopper_displaytarget *cdt)
     default:
        unreachable("unsupported!");
     }
-#ifdef WIN32
-    // not hooked up yet so let's not sabotage benchmarks
-    cdt->present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-#else
-    // Matches the EGL and GLX_SGI_swap_interval default
-    cdt->present_mode = VK_PRESENT_MODE_FIFO_KHR;
-#endif
 }
 
 static VkSurfaceKHR
@@ -111,6 +123,8 @@ kopper_CreateSurface(struct zink_screen *screen, struct kopper_displaytarget *cd
        if (modes[i] <= VK_PRESENT_MODE_FIFO_RELAXED_KHR)
           cdt->present_modes |= BITFIELD_BIT(modes[i]);
     }
+
+    zink_kopper_set_present_mode_for_interval(cdt, cdt->info.initial_swap_interval);
 
     return surface;
 fail:
@@ -268,8 +282,9 @@ kopper_CreateSwapchain(struct zink_screen *screen, struct kopper_displaytarget *
    if (error == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) {
       if (util_queue_is_initialized(&screen->flush_queue))
          util_queue_finish(&screen->flush_queue);
-      if (VKSCR(QueueWaitIdle)(screen->queue) != VK_SUCCESS)
-         debug_printf("vkQueueWaitIdle failed\n");
+      VkResult result = VKSCR(QueueWaitIdle)(screen->queue);
+      if (result != VK_SUCCESS)
+         mesa_loge("ZINK: vkQueueWaitIdle failed (%s)", vk_Result_to_str(result));
       zink_kopper_deinit_displaytarget(screen, cdt);
       error = VKSCR(CreateSwapchainKHR)(screen->dev, &cswap->scci, NULL,
                                    &cswap->swapchain);
@@ -721,6 +736,22 @@ zink_kopper_present_queue(struct zink_screen *screen, struct zink_resource *res)
    cpi->info.pImageIndices = &cpi->image;
    cpi->info.pResults = NULL;
    res->obj->present = VK_NULL_HANDLE;
+   /* Ex GLX_EXT_buffer_age:
+    *
+    *  Buffers' ages are initialized to 0 at buffer creation time.
+    *  When a frame boundary is reached, the following occurs before
+    *  any exchanging or copying of color buffers:
+    *
+    *  * The current back buffer's age is set to 1.
+    *  * Any other color buffers' ages are incremented by 1 if
+    *    their age was previously greater than 0.
+    */
+   for (int i = 0; i < cdt->swapchain->num_images; i++) {
+       if (i == res->obj->dt_idx)
+           cdt->swapchain->images[i].age = 1;
+       else if (cdt->swapchain->images[i].age > 0)
+           cdt->swapchain->images[i].age += 1;
+   }
    if (util_queue_is_initialized(&screen->flush_queue)) {
       p_atomic_inc(&cpi->swapchain->async_presents);
       util_queue_add_job(&screen->flush_queue, cpi, &cdt->present_fence,
@@ -884,17 +915,28 @@ zink_kopper_set_swap_interval(struct pipe_screen *pscreen, struct pipe_resource 
    struct kopper_displaytarget *cdt = res->obj->dt;
    VkPresentModeKHR old_present_mode = cdt->present_mode;
 
-   assert(interval >= 0); /* TODO: VK_PRESENT_MODE_FIFO_RELAXED_KHR */
-   if (interval == 0) {
-      if (cdt->present_modes & BITFIELD_BIT(VK_PRESENT_MODE_IMMEDIATE_KHR))
-         cdt->present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-      else
-         cdt->present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
-   } else if (interval > 0) {
-      cdt->present_mode = VK_PRESENT_MODE_FIFO_KHR;
-   }
-   assert(cdt->present_modes & BITFIELD_BIT(cdt->present_mode));
+   zink_kopper_set_present_mode_for_interval(cdt, interval);
 
    if (old_present_mode != cdt->present_mode)
       update_swapchain(screen, cdt, cdt->caps.currentExtent.width, cdt->caps.currentExtent.height);
+}
+
+int
+zink_kopper_query_buffer_age(struct pipe_context *pctx, struct pipe_resource *pres)
+{
+   struct zink_context *ctx = zink_context(pctx);
+   struct zink_resource *res = zink_resource(pres);
+   assert(res->obj->dt);
+   struct kopper_displaytarget *cdt = res->obj->dt;
+
+   ctx = zink_tc_context_unwrap(pctx);
+
+   /* Returning 0 here isn't ideal (yes, the buffer is undefined, because you
+    * lost it) but threading the error up is more hassle than it's worth.
+    */
+   if (!zink_kopper_acquired(res->obj->dt, res->obj->dt_idx))
+      if (!zink_kopper_acquire(ctx, res, UINT64_MAX))
+         return 0;
+
+   return cdt->swapchain->images[res->obj->dt_idx].age;
 }

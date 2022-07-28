@@ -85,20 +85,26 @@ bool GeometryShader::process_store_output(nir_intrinsic_instr *instr)
       tgsi_semantic name = (tgsi_semantic)semantic.first;
       auto write_mask = nir_intrinsic_write_mask(instr);
       ShaderOutput output(driver_location, name, write_mask);
-      output.set_sid(semantic.second);
-      add_output(output);
 
-      if (location == VARYING_SLOT_CLIP_DIST0 ||
-          location == VARYING_SLOT_CLIP_DIST1) {
-         m_clip_dist_mask |= 1 << (location - VARYING_SLOT_CLIP_DIST0);
-      }
+      if (!nir_intrinsic_io_semantics(instr).no_varying)
+         output.set_sid(semantic.second);
+      if (nir_intrinsic_io_semantics(instr).location != VARYING_SLOT_CLIP_VERTEX)
+         add_output(output);
 
       if (location == VARYING_SLOT_VIEWPORT) {
          m_out_viewport = true;
          m_out_misc_write = true;
-
       }
-      if (m_noutputs <= driver_location)
+
+      if (location == VARYING_SLOT_CLIP_DIST0 ||
+          location == VARYING_SLOT_CLIP_DIST1)   {
+         auto write_mask = nir_intrinsic_write_mask(instr);
+         m_cc_dist_mask |= write_mask << (4 * (location - VARYING_SLOT_CLIP_DIST0));
+         m_clip_dist_write |= write_mask <<  (4 * (location - VARYING_SLOT_CLIP_DIST0));
+      }
+
+      if (m_noutputs <= driver_location &&
+          nir_intrinsic_io_semantics(instr).location != VARYING_SLOT_CLIP_VERTEX)
          m_noutputs = driver_location + 1;
 
       return true;
@@ -222,17 +228,17 @@ bool GeometryShader::emit_vertex(nir_intrinsic_instr* instr, bool cut)
       auto ir = new AluInstr(op2_add_int, m_export_base[stream], m_export_base[stream],
                              value_factory().literal(m_noutputs),
                              AluInstr::last_write);
-      //ir->add_required_instr(cut_instr);
       emit_instruction(ir);
    }
-
-
 
    return true;
 }
 
 bool GeometryShader::store_output(nir_intrinsic_instr* instr)
 {
+   if (nir_intrinsic_io_semantics(instr).location == VARYING_SLOT_CLIP_VERTEX)
+      return true;
+
    auto location = nir_intrinsic_io_semantics(instr).location;
    auto index = nir_src_as_const_value(instr->src[1]);
    assert(index);
@@ -250,16 +256,15 @@ bool GeometryShader::store_output(nir_intrinsic_instr* instr)
 
    AluInstr *ir = nullptr;
    if (m_streamout_data[location]) {
-      auto value = m_streamout_data[location]->value();
+      const auto& value = m_streamout_data[location]->value();
       auto tmp = value_factory().temp_vec4(pin_group);
-
       for (unsigned i = 0; i < 4 - shift; ++i) {
          if (!(write_mask & (1 << i)))
             continue;
-         if (value[i]->chan() < 4) {
-            ir = new AluInstr(op1_mov, tmp[i], value[src_swz[i]], AluInstr::write);
-         } else if (out_value[i]->chan() < 4) {
-            ir = new AluInstr(op1_mov, tmp[i], out_value[i], AluInstr::write);
+         if (out_value[i + shift]->chan() < 4) {
+            ir = new AluInstr(op1_mov, tmp[i + shift], out_value[i  + shift], AluInstr::write);
+         } else if (value[i]->chan() < 4) {
+            ir = new AluInstr(op1_mov, tmp[i + shift], value[i], AluInstr::write);
          } else
             continue;
          emit_instruction(ir);
@@ -300,9 +305,6 @@ bool GeometryShader::store_output(nir_intrinsic_instr* instr)
       }
    }
 
-
-
-
    return true;
 }
 
@@ -324,13 +326,21 @@ bool GeometryShader::emit_load_per_vertex_input(nir_intrinsic_instr* instr)
    assert(literal_index->u32 < 6);
    assert(nir_intrinsic_io_semantics(instr).num_slots == 1);
 
+
+   EVTXDataFormat fmt = chip_class() >= ISA_CC_EVERGREEN ?
+                           fmt_invalid:
+                           fmt_32_32_32_32_float;
+
+
    auto addr = m_per_vertex_offsets[literal_index->u32];
    auto fetch = new LoadFromBuffer(dest, dest_swz, addr,
                                    16 * nir_intrinsic_base(instr),
                                    R600_GS_RING_CONST_BUFFER, nullptr,
-                                   fmt_invalid);
+                                   fmt);
 
-   fetch->set_fetch_flag(FetchInstr::use_const_field);
+   if (chip_class() >= ISA_CC_EVERGREEN)
+      fetch->set_fetch_flag(FetchInstr::use_const_field);
+
    fetch->set_num_format(vtx_nf_norm);
    fetch->reset_fetch_flag(FetchInstr::format_comp_signed);
 
@@ -347,6 +357,8 @@ void GeometryShader::do_get_shader_info(r600_shader *sh_info)
 {
    sh_info->processor_type = PIPE_SHADER_GEOMETRY;
    sh_info->ring_item_sizes[0] =  m_ring_item_sizes[0];
+   sh_info->cc_dist_mask = m_cc_dist_mask;
+   sh_info->clip_dist_write = m_clip_dist_write;
 }
 
 bool GeometryShader::read_prop(std::istream& is)
