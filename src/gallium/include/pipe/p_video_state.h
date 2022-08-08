@@ -361,6 +361,14 @@ struct pipe_h264_picture_desc
    void    *priv;
 };
 
+struct pipe_enc_quality_modes
+{
+   unsigned int level;
+   unsigned int preset_mode;
+   unsigned int pre_encode_mode;
+   unsigned int vbaq_mode;
+};
+
 struct pipe_h264_enc_rate_control
 {
    enum pipe_h2645_enc_rate_control_method rate_ctrl_method;
@@ -442,6 +450,7 @@ struct pipe_h264_enc_picture_desc
    unsigned ref_idx_l1_list[32];
    unsigned gop_size;
    unsigned num_temporal_layers;
+   struct pipe_enc_quality_modes quality_modes;
 
    bool not_referenced;
    bool enable_vui;
@@ -537,6 +546,7 @@ struct pipe_h265_enc_picture_desc
    unsigned pic_order_cnt_type;
    unsigned ref_idx_l0;
    unsigned ref_idx_l1;
+   struct pipe_enc_quality_modes quality_modes;
    bool not_referenced;
    struct hash_table *frame_idx;
 };
