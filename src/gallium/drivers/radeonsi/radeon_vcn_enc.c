@@ -72,6 +72,9 @@ static void radeon_vcn_enc_get_param(struct radeon_encoder *enc, struct pipe_pic
    if (u_reduce_video_profile(picture->profile) == PIPE_VIDEO_FORMAT_MPEG4_AVC) {
       struct pipe_h264_enc_picture_desc *pic = (struct pipe_h264_enc_picture_desc *)picture;
       enc->enc_pic.picture_type = pic->picture_type;
+      enc->enc_pic.bit_depth_luma_minus8 = 0;
+      enc->enc_pic.bit_depth_chroma_minus8 = 0;
+      radeon_vcn_enc_quality_modes(enc, &pic->quality_modes);
       enc->enc_pic.frame_num = pic->frame_num;
       enc->enc_pic.pic_order_cnt = pic->pic_order_cnt;
       enc->enc_pic.pic_order_cnt_type = pic->pic_order_cnt_type;
@@ -150,6 +153,7 @@ static void radeon_vcn_enc_get_param(struct radeon_encoder *enc, struct pipe_pic
       struct pipe_h265_enc_picture_desc *pic = (struct pipe_h265_enc_picture_desc *)picture;
       enc->enc_pic.picture_type = pic->picture_type;
       enc->enc_pic.frame_num = pic->frame_num;
+      radeon_vcn_enc_quality_modes(enc, &pic->quality_modes);
       enc->enc_pic.pic_order_cnt = pic->pic_order_cnt;
       enc->enc_pic.pic_order_cnt_type = pic->pic_order_cnt_type;
       enc->enc_pic.ref_idx_l0 = pic->ref_idx_l0;
