@@ -278,6 +278,13 @@ vn_device_fix_create_info(const struct vn_device *dev,
       }
    }
 
+   /* see vn_queue_submission_count_batch_semaphores */
+   if (!app_exts->KHR_external_semaphore_fd &&
+       (physical_dev->renderer_sync_fd_semaphore_features &
+        VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT)) {
+      extra_exts[extra_count++] = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+   }
+
    assert(extra_count <= ARRAY_SIZE(extra_exts));
    assert(block_count <= ARRAY_SIZE(block_exts));
 
