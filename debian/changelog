@@ -1,3 +1,13 @@
+mesa (21.2.6-1~cros10+1) UNRELEASED; urgency=medium
+
+  * Rebuild for cros-packages.
+  * Drop d3d12 from build.
+  * Build with llvm 11.
+  * Restore old wayland workaround.
+  * Fix compilation on ARM.
+
+ -- James Ye <jamesye@google.com>  Mon, 5 Sep 2022 16:09:21 +1000
+
 mesa (21.2.6-1) unstable; urgency=medium
 
   * New upstream release.
