@@ -34,7 +34,7 @@
 
 #include "hw/isa.xml.h"
 #include "util/u_math.h"
-#include "util/u_half.h"
+#include "util/half_float.h"
 
 struct instr {
    /* dword0: */
@@ -379,7 +379,7 @@ print_src(struct etna_inst_src *src, bool sep)
             printf("%d", src->imm_val);
             break;
          case 3: /* 16-bit */
-            printf("%f/%.5X", util_half_to_float(src->imm_val), src->imm_val);
+            printf("%f/%.5X", _mesa_half_to_float(src->imm_val), src->imm_val);
             break;
          }
       } else {
@@ -508,6 +508,8 @@ static const struct opc_info {
    OPC(STORE),
    OPC(IMULLO0),
    OPC(IMULHI0),
+   OPC(IMADLO0),
+   OPC(IMADHI0),
    OPC(LEADZERO),
    OPC(LSHIFT),
    OPC(RSHIFT),
@@ -518,6 +520,7 @@ static const struct opc_info {
    OPC(NOT),
    OPC(DP2),
    OPC(DIV),
+   OPC(IABS),
 };
 
 static void

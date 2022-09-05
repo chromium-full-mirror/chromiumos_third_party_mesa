@@ -53,7 +53,7 @@
 #include "lp_setup_context.h"
 #include "lp_screen.h"
 #include "lp_state.h"
-#include "state_tracker/sw_winsys.h"
+#include "frontend/sw_winsys.h"
 
 #include "draw/draw_context.h"
 #include "draw/draw_vbuf.h"
@@ -128,6 +128,7 @@ void lp_setup_reset( struct lp_setup_context *setup )
       setup->constants[i].stored_size = 0;
       setup->constants[i].stored_data = NULL;
    }
+
    setup->fs.stored = NULL;
    setup->dirty = ~0;
 
@@ -409,23 +410,7 @@ lp_setup_try_clear_color_buffer(struct lp_setup_context *setup,
 
    LP_DBG(DEBUG_SETUP, "%s state %d\n", __FUNCTION__, setup->state);
 
-   if (util_format_is_pure_integer(format)) {
-      /*
-       * We expect int/uint clear values here, though some APIs
-       * might disagree (but in any case util_pack_color()
-       * couldn't handle it)...
-       */
-      if (util_format_is_pure_sint(format)) {
-         util_format_write_4i(format, color->i, 0, &uc, 0, 0, 0, 1, 1);
-      }
-      else {
-         assert(util_format_is_pure_uint(format));
-         util_format_write_4ui(format, color->ui, 0, &uc, 0, 0, 0, 1, 1);
-      }
-   }
-   else {
-      util_pack_color(color->f, format, &uc);
-   }
+   util_pack_color_union(format, &uc, color);
 
    if (setup->state == SETUP_ACTIVE) {
       struct lp_scene *scene = setup->scene;
@@ -456,7 +441,7 @@ lp_setup_try_clear_color_buffer(struct lp_setup_context *setup,
    else {
       /* Put ourselves into the 'pre-clear' state, specifically to try
        * and accumulate multiple clears to color and depth_stencil
-       * buffers which the app or state-tracker might issue
+       * buffers which the app or gallium frontend might issue
        * separately.
        */
       set_scene_state( setup, SETUP_CLEARED, __FUNCTION__ );
@@ -520,7 +505,7 @@ lp_setup_try_clear_zs(struct lp_setup_context *setup,
    else {
       /* Put ourselves into the 'pre-clear' state, specifically to try
        * and accumulate multiple clears to color and depth_stencil
-       * buffers which the app or state-tracker might issue
+       * buffers which the app or gallium frontend might issue
        * separately.
        */
       set_scene_state( setup, SETUP_CLEARED, __FUNCTION__ );
@@ -583,13 +568,15 @@ lp_setup_set_triangle_state( struct lp_setup_context *setup,
                              boolean ccw_is_frontface,
                              boolean scissor,
                              boolean half_pixel_center,
-                             boolean bottom_edge_rule)
+                             boolean bottom_edge_rule,
+                             boolean multisample)
 {
    LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
 
    setup->ccw_is_frontface = ccw_is_frontface;
    setup->cullmode = cull_mode;
    setup->triangle = first_triangle;
+   setup->multisample = multisample;
    setup->pixel_offset = half_pixel_center ? 0.5f : 0.0f;
    setup->bottom_edge_rule = bottom_edge_rule;
 
@@ -601,11 +588,13 @@ lp_setup_set_triangle_state( struct lp_setup_context *setup,
 
 void 
 lp_setup_set_line_state( struct lp_setup_context *setup,
-			 float line_width)
+                         float line_width,
+                         boolean line_rectangular)
 {
    LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
 
    setup->line_width = line_width;
+   setup->rectangular_lines = line_rectangular;
 }
 
 void 
@@ -613,7 +602,8 @@ lp_setup_set_point_state( struct lp_setup_context *setup,
                           float point_size,
                           boolean point_size_per_vertex,
                           uint sprite_coord_enable,
-                          uint sprite_coord_origin)
+                          uint sprite_coord_origin,
+                          boolean point_quad_rasterization)
 {
    LP_DBG(DEBUG_SETUP, "%s\n", __FUNCTION__);
 
@@ -621,6 +611,7 @@ lp_setup_set_point_state( struct lp_setup_context *setup,
    setup->sprite_coord_enable = sprite_coord_enable;
    setup->sprite_coord_origin = sprite_coord_origin;
    setup->point_size_per_vertex = point_size_per_vertex;
+   setup->legacy_points = !point_quad_rasterization;
 }
 
 void
@@ -638,7 +629,6 @@ lp_setup_set_fs_variant( struct lp_setup_context *setup,
 {
    LP_DBG(DEBUG_SETUP, "%s %p\n", __FUNCTION__,
           variant);
-   /* FIXME: reference count */
 
    setup->fs.current.variant = variant;
    setup->dirty |= LP_SETUP_NEW_FS;
@@ -656,10 +646,10 @@ lp_setup_set_fs_constants(struct lp_setup_context *setup,
    assert(num <= ARRAY_SIZE(setup->constants));
 
    for (i = 0; i < num; ++i) {
-      util_copy_constant_buffer(&setup->constants[i].current, &buffers[i]);
+      util_copy_constant_buffer(&setup->constants[i].current, &buffers[i], false);
    }
    for (; i < ARRAY_SIZE(setup->constants); i++) {
-      util_copy_constant_buffer(&setup->constants[i].current, NULL);
+      util_copy_constant_buffer(&setup->constants[i].current, NULL, false);
    }
    setup->dirty |= LP_SETUP_NEW_CONSTANTS;
 }
@@ -684,6 +674,83 @@ lp_setup_set_fs_ssbos(struct lp_setup_context *setup,
    setup->dirty |= LP_SETUP_NEW_SSBOS;
 }
 
+void
+lp_setup_set_fs_images(struct lp_setup_context *setup,
+                       unsigned num,
+                       struct pipe_image_view *images)
+{
+   unsigned i;
+
+   LP_DBG(DEBUG_SETUP, "%s %p\n", __FUNCTION__, (void *) images);
+
+   assert(num <= ARRAY_SIZE(setup->images));
+
+   for (i = 0; i < num; ++i) {
+      struct pipe_image_view *image = &images[i];
+      util_copy_image_view(&setup->images[i].current, &images[i]);
+
+      struct pipe_resource *res = image->resource;
+      struct llvmpipe_resource *lp_res = llvmpipe_resource(res);
+      struct lp_jit_image *jit_image;
+
+      jit_image = &setup->fs.current.jit_context.images[i];
+      if (!lp_res)
+         continue;
+      if (!lp_res->dt) {
+         /* regular texture - setup array of mipmap level offsets */
+         if (llvmpipe_resource_is_texture(res)) {
+            jit_image->base = lp_res->tex_data;
+         } else
+            jit_image->base = lp_res->data;
+
+         jit_image->width = res->width0;
+         jit_image->height = res->height0;
+         jit_image->depth = res->depth0;
+         jit_image->num_samples = res->nr_samples;
+
+         if (llvmpipe_resource_is_texture(res)) {
+            uint32_t mip_offset = lp_res->mip_offsets[image->u.tex.level];
+            const uint32_t bw = util_format_get_blockwidth(image->resource->format);
+            const uint32_t bh = util_format_get_blockheight(image->resource->format);
+
+            jit_image->width = DIV_ROUND_UP(jit_image->width, bw);
+            jit_image->height = DIV_ROUND_UP(jit_image->height, bh);
+            jit_image->width = u_minify(jit_image->width, image->u.tex.level);
+            jit_image->height = u_minify(jit_image->height, image->u.tex.level);
+
+            if (res->target == PIPE_TEXTURE_1D_ARRAY ||
+                res->target == PIPE_TEXTURE_2D_ARRAY ||
+                res->target == PIPE_TEXTURE_3D ||
+                res->target == PIPE_TEXTURE_CUBE ||
+                res->target == PIPE_TEXTURE_CUBE_ARRAY) {
+               /*
+                * For array textures, we don't have first_layer, instead
+                * adjust last_layer (stored as depth) plus the mip level offsets
+                * (as we have mip-first layout can't just adjust base ptr).
+                * XXX For mip levels, could do something similar.
+                */
+               jit_image->depth = image->u.tex.last_layer - image->u.tex.first_layer + 1;
+               mip_offset += image->u.tex.first_layer * lp_res->img_stride[image->u.tex.level];
+            } else
+               jit_image->depth = u_minify(jit_image->depth, image->u.tex.level);
+
+            jit_image->row_stride = lp_res->row_stride[image->u.tex.level];
+            jit_image->img_stride = lp_res->img_stride[image->u.tex.level];
+            jit_image->sample_stride = lp_res->sample_stride;
+            jit_image->base = (uint8_t *)jit_image->base + mip_offset;
+         }
+         else {
+            unsigned view_blocksize = util_format_get_blocksize(image->format);
+            jit_image->width = image->u.buf.size / view_blocksize;
+            jit_image->base = (uint8_t *)jit_image->base + image->u.buf.offset;
+         }
+      }
+   }
+   for (; i < ARRAY_SIZE(setup->images); i++) {
+      util_copy_image_view(&setup->images[i].current, NULL);
+   }
+   setup->dirty |= LP_SETUP_NEW_FS;
+}
 
 void
 lp_setup_set_alpha_ref_value( struct lp_setup_context *setup,
@@ -744,6 +811,15 @@ lp_setup_set_scissors( struct lp_setup_context *setup,
    setup->dirty |= LP_SETUP_NEW_SCISSOR;
 }
 
+void
+lp_setup_set_sample_mask(struct lp_setup_context *setup,
+                         uint32_t sample_mask)
+{
+   if (setup->fs.current.jit_context.sample_mask != sample_mask) {
+      setup->fs.current.jit_context.sample_mask = sample_mask;
+      setup->dirty |= LP_SETUP_NEW_FS;
+   }
+}
 
 void 
 lp_setup_set_flatshade_first(struct lp_setup_context *setup,
@@ -828,6 +904,12 @@ lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
    for (i = 0; i < max_tex_num; i++) {
       struct pipe_sampler_view *view = i < num ? views[i] : NULL;
 
+      /* We are going to overwrite/unref the current texture further below. If
+       * set, make sure to unmap its resource to avoid leaking previous
+       * mapping.  */
+      if (setup->fs.current_tex[i])
+         llvmpipe_resource_unmap(setup->fs.current_tex[i], 0, 0);
+
       if (view) {
          struct pipe_resource *res = view->texture;
          struct llvmpipe_resource *lp_tex = llvmpipe_resource(res);
@@ -867,6 +949,8 @@ lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
                jit_tex->mip_offsets[0] = 0;
                jit_tex->row_stride[0] = 0;
                jit_tex->img_stride[0] = 0;
+               jit_tex->num_samples = 0;
+               jit_tex->sample_stride = 0;
             }
             else {
                jit_tex->width = res->width0;
@@ -874,6 +958,8 @@ lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
                jit_tex->depth = res->depth0;
                jit_tex->first_level = first_level;
                jit_tex->last_level = last_level;
+               jit_tex->num_samples = res->nr_samples;
+               jit_tex->sample_stride = 0;
 
                if (llvmpipe_resource_is_texture(res)) {
                   for (j = first_level; j <= last_level; j++) {
@@ -881,6 +967,8 @@ lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
                      jit_tex->row_stride[j] = lp_tex->row_stride[j];
                      jit_tex->img_stride[j] = lp_tex->img_stride[j];
                   }
+
+                  jit_tex->sample_stride = lp_tex->sample_stride;
 
                   if (res->target == PIPE_TEXTURE_1D_ARRAY ||
                       res->target == PIPE_TEXTURE_2D_ARRAY ||
@@ -926,13 +1014,7 @@ lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
          }
          else {
             /* display target texture/surface */
-            /*
-             * XXX: Where should this be unmapped?
-             */
-            struct llvmpipe_screen *screen = llvmpipe_screen(res->screen);
-            struct sw_winsys *winsys = screen->winsys;
-            jit_tex->base = winsys->displaytarget_map(winsys, lp_tex->dt,
-                                                         PIPE_TRANSFER_READ);
+            jit_tex->base = llvmpipe_resource_map(res, 0, 0, LP_TEX_USAGE_READ);
             jit_tex->row_stride[0] = lp_tex->row_stride[0];
             jit_tex->img_stride[0] = lp_tex->img_stride[0];
             jit_tex->mip_offsets[0] = 0;
@@ -940,6 +1022,8 @@ lp_setup_set_fragment_sampler_views(struct lp_setup_context *setup,
             jit_tex->height = res->height0;
             jit_tex->depth = res->depth0;
             jit_tex->first_level = jit_tex->last_level = 0;
+            jit_tex->num_samples = res->nr_samples;
+            jit_tex->sample_stride = 0;
             assert(jit_tex->base);
          }
       }
@@ -1014,6 +1098,11 @@ lp_setup_is_resource_referenced( const struct lp_setup_context *setup,
 
    for (i = 0; i < ARRAY_SIZE(setup->ssbos); i++) {
       if (setup->ssbos[i].current.buffer == texture)
+         return LP_REFERENCED_FOR_READ | LP_REFERENCED_FOR_WRITE;
+   }
+
+   for (i = 0; i < ARRAY_SIZE(setup->images); i++) {
+      if (setup->images[i].current.resource == texture)
          return LP_REFERENCED_FOR_READ | LP_REFERENCED_FOR_WRITE;
    }
 
@@ -1101,6 +1190,12 @@ try_update_scene_state( struct lp_setup_context *setup )
       setup->dirty |= LP_SETUP_NEW_FS;
    }
 
+   struct llvmpipe_context *llvmpipe = llvmpipe_context(setup->pipe);
+   if (llvmpipe->dirty & LP_NEW_FS_CONSTANTS)
+      lp_setup_set_fs_constants(llvmpipe->setup,
+                                ARRAY_SIZE(llvmpipe->constants[PIPE_SHADER_FRAGMENT]),
+                                llvmpipe->constants[PIPE_SHADER_FRAGMENT]);
+
    if (setup->dirty & LP_SETUP_NEW_CONSTANTS) {
       for (i = 0; i < ARRAY_SIZE(setup->constants); ++i) {
          struct pipe_resource *buffer = setup->constants[i].current.buffer;
@@ -1120,7 +1215,7 @@ try_update_scene_state( struct lp_setup_context *setup )
             current_data = (ubyte *) setup->constants[i].current.user_buffer;
          }
 
-         if (current_data) {
+         if (current_data && current_size >= sizeof(float)) {
             current_data += setup->constants[i].current.buffer_offset;
 
             /* TODO: copy only the actually used constants? */
@@ -1154,7 +1249,7 @@ try_update_scene_state( struct lp_setup_context *setup )
          }
 
          num_constants =
-            setup->constants[i].stored_size / (sizeof(float) * 4);
+            DIV_ROUND_UP(setup->constants[i].stored_size, lp_get_constant_buffer_stride(scene->pipe->screen));
          setup->fs.current.jit_context.num_constants[i] = num_constants;
          setup->dirty |= LP_SETUP_NEW_FS;
       }
@@ -1199,9 +1294,14 @@ try_update_scene_state( struct lp_setup_context *setup )
             return FALSE;
          }
 
-         memcpy(stored,
-                &setup->fs.current,
-                sizeof setup->fs.current);
+         memcpy(&stored->jit_context,
+                &setup->fs.current.jit_context,
+                sizeof setup->fs.current.jit_context);
+         stored->variant = setup->fs.current.variant;
+
+         if (!lp_scene_add_frag_shader_reference(scene,
+                                                 setup->fs.current.variant))
+            return FALSE;
          setup->fs.stored = stored;
          
          /* The scene now references the textures in the rasterization
@@ -1325,7 +1425,10 @@ lp_setup_destroy( struct lp_setup_context *setup )
    util_unreference_framebuffer_state(&setup->fb);
 
    for (i = 0; i < ARRAY_SIZE(setup->fs.current_tex); i++) {
-      pipe_resource_reference(&setup->fs.current_tex[i], NULL);
+      struct pipe_resource **res_ptr = &setup->fs.current_tex[i];
+      if (*res_ptr)
+         llvmpipe_resource_unmap(*res_ptr, 0, 0);
+      pipe_resource_reference(res_ptr, NULL);
    }
 
    for (i = 0; i < ARRAY_SIZE(setup->constants); i++) {
@@ -1428,13 +1531,13 @@ void
 lp_setup_begin_query(struct lp_setup_context *setup,
                      struct llvmpipe_query *pq)
 {
-
    set_scene_state(setup, SETUP_ACTIVE, "begin_query");
 
    if (!(pq->type == PIPE_QUERY_OCCLUSION_COUNTER ||
          pq->type == PIPE_QUERY_OCCLUSION_PREDICATE ||
          pq->type == PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE ||
-         pq->type == PIPE_QUERY_PIPELINE_STATISTICS))
+         pq->type == PIPE_QUERY_PIPELINE_STATISTICS ||
+         pq->type == PIPE_QUERY_TIME_ELAPSED))
       return;
 
    /* init the query to its beginning state */
@@ -1486,7 +1589,8 @@ lp_setup_end_query(struct lp_setup_context *setup, struct llvmpipe_query *pq)
           pq->type == PIPE_QUERY_OCCLUSION_PREDICATE ||
           pq->type == PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE ||
           pq->type == PIPE_QUERY_PIPELINE_STATISTICS ||
-          pq->type == PIPE_QUERY_TIMESTAMP) {
+          pq->type == PIPE_QUERY_TIMESTAMP ||
+          pq->type == PIPE_QUERY_TIME_ELAPSED) {
          if (pq->type == PIPE_QUERY_TIMESTAMP &&
                !(setup->scene->tiles_x | setup->scene->tiles_y)) {
             /*
@@ -1522,7 +1626,8 @@ fail:
    if (pq->type == PIPE_QUERY_OCCLUSION_COUNTER ||
       pq->type == PIPE_QUERY_OCCLUSION_PREDICATE ||
       pq->type == PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE ||
-      pq->type == PIPE_QUERY_PIPELINE_STATISTICS) {
+      pq->type == PIPE_QUERY_PIPELINE_STATISTICS ||
+      pq->type == PIPE_QUERY_TIME_ELAPSED) {
       unsigned i;
 
       /* remove from active binned query list */

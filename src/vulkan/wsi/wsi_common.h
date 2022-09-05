@@ -35,36 +35,28 @@
  */
 #define VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA (VkStructureType)1000001002
 #define VK_STRUCTURE_TYPE_WSI_MEMORY_ALLOCATE_INFO_MESA (VkStructureType)1000001003
-#define VK_STRUCTURE_TYPE_WSI_FORMAT_MODIFIER_PROPERTIES_LIST_MESA (VkStructureType)1000001004
 #define VK_STRUCTURE_TYPE_WSI_SURFACE_SUPPORTED_COUNTERS_MESA (VkStructureType)1000001005
+#define VK_STRUCTURE_TYPE_WSI_MEMORY_SIGNAL_SUBMIT_INFO_MESA (VkStructureType)1000001006
 
+/* This is always chained to VkImageCreateInfo when a wsi image is created.
+ * It indicates that the image can be transitioned to/from
+ * VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
+ */
 struct wsi_image_create_info {
     VkStructureType sType;
     const void *pNext;
     bool scanout;
 
-    uint32_t modifier_count;
-    const uint64_t *modifiers;
+    /* If set, the buffer is the prime blit destination and the image is the
+     * source.
+     */
+    VkBuffer prime_blit_buffer;
 };
 
 struct wsi_memory_allocate_info {
     VkStructureType sType;
     const void *pNext;
     bool implicit_sync;
-};
-
-struct wsi_format_modifier_properties {
-   uint64_t modifier;
-   uint32_t modifier_plane_count;
-};
-
-/* Chain in for vkGetPhysicalDeviceFormatProperties2KHR */
-struct wsi_format_modifier_properties_list {
-   VkStructureType sType;
-   const void *pNext;
-
-   uint32_t modifier_count;
-   struct wsi_format_modifier_properties *modifier_properties;
 };
 
 /* To be chained into VkSurfaceCapabilities2KHR */
@@ -74,6 +66,13 @@ struct wsi_surface_supported_counters {
 
    VkSurfaceCounterFlagsEXT supported_surface_counters;
 
+};
+
+/* To be chained into VkSubmitInfo */
+struct wsi_memory_signal_submit_info {
+    VkStructureType sType;
+    const void *pNext;
+    VkDeviceMemory memory;
 };
 
 struct wsi_fence {
@@ -104,6 +103,7 @@ struct wsi_device {
    bool supports_modifiers;
    uint32_t maxImageDimension2D;
    VkPresentModeKHR override_present_mode;
+   bool force_bgra8_unorm_first;
 
    /* Whether to enable adaptive sync for a swapchain if implemented and
     * available. Not all window systems might support this. */
@@ -118,9 +118,52 @@ struct wsi_device {
        * provided VkSwapchainCreateInfoKH::RminImageCount.
        */
       bool strict_imageCount;
+
+      /* Ensures to create at least the number of image specified by the
+       * driver in VkSurfaceCapabilitiesKHR::minImageCount.
+       */
+      bool ensure_minImageCount;
    } x11;
 
-   uint64_t (*image_get_modifier)(VkImage image);
+   bool sw;
+
+   /* Signals the semaphore such that any wait on the semaphore will wait on
+    * any reads or writes on the give memory object.  This is used to
+    * implement the semaphore signal operation in vkAcquireNextImage.
+    */
+   void (*signal_semaphore_for_memory)(VkDevice device,
+                                       VkSemaphore semaphore,
+                                       VkDeviceMemory memory);
+
+   /* Signals the fence such that any wait on the fence will wait on any reads
+    * or writes on the give memory object.  This is used to implement the
+    * semaphore signal operation in vkAcquireNextImage.
+    */
+   void (*signal_fence_for_memory)(VkDevice device,
+                                   VkFence fence,
+                                   VkDeviceMemory memory);
+
+   /*
+    * This sets the ownership for a WSI memory object:
+    *
+    * The ownership is true if and only if the application is allowed to submit
+    * command buffers that reference the buffer.
+    *
+    * This can be used to prune BO lists without too many adverse affects on
+    * implicit sync.
+    *
+    * Side note: care needs to be taken for internally delayed submissions wrt
+    * timeline semaphores.
+    */
+   void (*set_memory_ownership)(VkDevice device,
+                                VkDeviceMemory memory,
+                                VkBool32 ownership);
+
+   /*
+    * If this is set, the WSI device will call it to let the driver backend
+    * decide if it can present images directly on the given device fd.
+    */
+   bool (*can_present_on_device)(VkPhysicalDevice pdevice, int fd);
 
 #define WSI_CB(cb) PFN_vk##cb cb
    WSI_CB(AllocateMemory);
@@ -141,14 +184,18 @@ struct wsi_device {
    WSI_CB(FreeMemory);
    WSI_CB(FreeCommandBuffers);
    WSI_CB(GetBufferMemoryRequirements);
+   WSI_CB(GetImageDrmFormatModifierPropertiesEXT);
    WSI_CB(GetImageMemoryRequirements);
    WSI_CB(GetImageSubresourceLayout);
    WSI_CB(GetMemoryFdKHR);
    WSI_CB(GetPhysicalDeviceFormatProperties);
    WSI_CB(GetPhysicalDeviceFormatProperties2KHR);
+   WSI_CB(GetPhysicalDeviceImageFormatProperties2);
    WSI_CB(ResetFences);
    WSI_CB(QueueSubmit);
    WSI_CB(WaitForFences);
+   WSI_CB(MapMemory);
+   WSI_CB(UnmapMemory);
 #undef WSI_CB
 
     struct wsi_interface *                  wsi[VK_ICD_WSI_PLATFORM_MAX];
@@ -162,7 +209,8 @@ wsi_device_init(struct wsi_device *wsi,
                 WSI_FN_GetPhysicalDeviceProcAddr proc_addr,
                 const VkAllocationCallbacks *alloc,
                 int display_fd,
-                const struct driOptionCache *dri_options);
+                const struct driOptionCache *dri_options,
+                bool sw_device);
 
 void
 wsi_device_finish(struct wsi_device *wsi,

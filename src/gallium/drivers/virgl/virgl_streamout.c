@@ -24,7 +24,7 @@
 #include "util/u_memory.h"
 #include "virgl_context.h"
 #include "virgl_encode.h"
-#include "virgl_protocol.h"
+#include "virtio-gpu/virgl_protocol.h"
 #include "virgl_resource.h"
 
 static struct pipe_stream_output_target *virgl_create_so_target(
@@ -50,7 +50,7 @@ static struct pipe_stream_output_target *virgl_create_so_target(
    t->handle = handle;
 
    res->bind_history |= PIPE_BIND_STREAM_OUTPUT;
-   util_range_add(&res->valid_buffer_range, buffer_offset,
+   util_range_add(&res->b, &res->valid_buffer_range, buffer_offset,
                   buffer_offset + buffer_size);
    virgl_resource_dirty(res, 0);
 

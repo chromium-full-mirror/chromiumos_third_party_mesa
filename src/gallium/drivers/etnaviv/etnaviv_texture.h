@@ -37,6 +37,7 @@ struct etna_context;
 struct etna_sampler_ts {
    unsigned enable:1;
    unsigned mode:1;
+   unsigned comp:1;
    uint32_t TS_SAMPLER_CONFIG;
    struct etna_reloc TS_SAMPLER_STATUS_BASE;
    uint32_t TS_SAMPLER_CLEAR_VALUE;
@@ -60,5 +61,9 @@ etna_texture_handle_incompatible(struct pipe_context *pctx, struct pipe_resource
  */
 uint32_t
 active_samplers_bits(struct etna_context *ctx);
+
+/* update TS / cache for a sampler if required */
+void
+etna_update_sampler_source(struct pipe_sampler_view *view, int num);
 
 #endif

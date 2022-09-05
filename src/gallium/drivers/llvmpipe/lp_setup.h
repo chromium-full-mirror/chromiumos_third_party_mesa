@@ -78,18 +78,21 @@ lp_setup_set_triangle_state( struct lp_setup_context *setup,
                              boolean front_is_ccw,
                              boolean scissor,
                              boolean half_pixel_center,
-                             boolean bottom_edge_rule);
+                             boolean bottom_edge_rule,
+                             boolean multisample);
 
 void 
 lp_setup_set_line_state( struct lp_setup_context *setup,
-                         float line_width);
+                         float line_width,
+                         boolean line_rectangular);
 
 void 
 lp_setup_set_point_state( struct lp_setup_context *setup,
                           float point_size,                          
                           boolean point_size_per_vertex,
                           uint sprite_coord_enable,
-                          uint sprite_coord_origin);
+                          uint sprite_coord_origin,
+                          boolean point_quad_rasterization);
 
 void
 lp_setup_set_setup_variant( struct lp_setup_context *setup,
@@ -108,6 +111,11 @@ void
 lp_setup_set_fs_ssbos(struct lp_setup_context *setup,
                       unsigned num,
                       struct pipe_shader_buffer *buffers);
+
+void
+lp_setup_set_fs_images(struct lp_setup_context *setup,
+                       unsigned num,
+                       struct pipe_image_view *images);
 
 void
 lp_setup_set_alpha_ref_value( struct lp_setup_context *setup,
@@ -143,6 +151,10 @@ lp_setup_set_fragment_sampler_state(struct lp_setup_context *setup,
 unsigned
 lp_setup_is_resource_referenced( const struct lp_setup_context *setup,
                                 const struct pipe_resource *texture );
+
+void
+lp_setup_set_sample_mask(struct lp_setup_context *setup,
+                         uint32_t sample_mask);
 
 void
 lp_setup_set_flatshade_first( struct lp_setup_context *setup, 

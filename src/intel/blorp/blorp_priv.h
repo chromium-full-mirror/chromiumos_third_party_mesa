@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 
+#include "common/intel_measure.h"
 #include "compiler/nir/nir.h"
 #include "compiler/brw_compiler.h"
 
@@ -61,7 +62,7 @@ struct brw_blorp_surface_info
    struct isl_view view;
 
    /* Z offset into a 3-D texture or slice of a 2-D array texture. */
-   uint32_t z_offset;
+   float z_offset;
 
    uint32_t tile_x_sa, tile_y_sa;
 };
@@ -70,7 +71,7 @@ void
 brw_blorp_surface_info_init(struct blorp_context *blorp,
                             struct brw_blorp_surface_info *info,
                             const struct blorp_surf *surf,
-                            unsigned int level, unsigned int layer,
+                            unsigned int level, float layer,
                             enum isl_format format, bool is_render_target);
 void
 blorp_surf_convert_to_single_slice(const struct isl_device *isl_dev,
@@ -83,6 +84,12 @@ blorp_surf_convert_to_uncompressed(const struct isl_device *isl_dev,
                                    struct brw_blorp_surface_info *info,
                                    uint32_t *x, uint32_t *y,
                                    uint32_t *width, uint32_t *height);
+void
+blorp_surf_fake_interleaved_msaa(const struct isl_device *isl_dev,
+                                 struct brw_blorp_surface_info *info);
+void
+blorp_surf_retile_w_to_y(const struct isl_device *isl_dev,
+                         struct brw_blorp_surface_info *info);
 
 
 struct brw_blorp_coord_transform
@@ -142,7 +149,7 @@ struct brw_blorp_wm_inputs
    /* Minimum layer setting works for all the textures types but texture_3d
     * for which the setting has no effect. Use the z-coordinate instead.
     */
-   uint32_t src_z;
+   float src_z;
 
    /* Pad out to an integral number of registers */
    uint32_t pad[1];
@@ -212,21 +219,35 @@ struct blorp_params
 
    bool use_pre_baked_binding_table;
    uint32_t pre_baked_binding_table_offset;
+   enum intel_measure_snapshot_type snapshot_type;
 };
 
 void blorp_params_init(struct blorp_params *params);
 
 enum blorp_shader_type {
+   BLORP_SHADER_TYPE_COPY,
    BLORP_SHADER_TYPE_BLIT,
    BLORP_SHADER_TYPE_CLEAR,
    BLORP_SHADER_TYPE_MCS_PARTIAL_RESOLVE,
    BLORP_SHADER_TYPE_LAYER_OFFSET_VS,
-   BLORP_SHADER_TYPE_GEN4_SF,
+   BLORP_SHADER_TYPE_GFX4_SF,
 };
+
+struct brw_blorp_base_key
+{
+   char name[8];
+   enum blorp_shader_type shader_type;
+};
+
+#define BRW_BLORP_BASE_KEY_INIT(_type) \
+   (struct brw_blorp_base_key) {       \
+      .name = "blorp",                 \
+      .shader_type = _type,            \
+   }
 
 struct brw_blorp_blit_prog_key
 {
-   enum blorp_shader_type shader_type; /* Must be BLORP_SHADER_TYPE_BLIT */
+   struct brw_blorp_base_key base;
 
    /* Number of samples per pixel that have been configured in the surface
     * state for texturing from.
@@ -313,6 +334,8 @@ struct brw_blorp_blit_prog_key
     */
    bool dst_rgb;
 
+   isl_surf_usage_flags_t dst_usage;
+
    enum blorp_filter filter;
 
    /* True if the rectangle being sent through the rendering pipeline might be
@@ -348,10 +371,12 @@ struct brw_blorp_blit_prog_key
  * \name BLORP internals
  * \{
  *
- * Used internally by gen6_blorp_exec() and gen7_blorp_exec().
+ * Used internally by gfx6_blorp_exec() and gfx7_blorp_exec().
  */
 
 void brw_blorp_init_wm_prog_key(struct brw_wm_prog_key *wm_key);
+
+const char *blorp_shader_type_to_name(enum blorp_shader_type type);
 
 const unsigned *
 blorp_compile_fs(struct blorp_context *blorp, void *mem_ctx,

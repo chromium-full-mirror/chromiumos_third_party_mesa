@@ -31,7 +31,9 @@
 #include <assert.h>
 #include "pan_resource.h"
 #include "pan_job.h"
-#include "pan_blend.h"
+#include "pan_blend_cso.h"
+#include "pan_encoder.h"
+#include "pan_texture.h"
 
 #include "pipe/p_compiler.h"
 #include "pipe/p_config.h"
@@ -42,6 +44,7 @@
 #include "pipe/p_state.h"
 #include "util/u_blitter.h"
 #include "util/hash_table.h"
+#include "util/simple_mtx.h"
 
 #include "midgard/midgard_compile.h"
 #include "compiler/shader_enums.h"
@@ -49,29 +52,37 @@
 /* Forward declare to avoid extra header dep */
 struct prim_convert_context;
 
-#define MAX_VARYINGS   4096
-
-//#define PAN_DIRTY_CLEAR	     (1 << 0)
-#define PAN_DIRTY_RASTERIZER (1 << 2)
-#define PAN_DIRTY_FS	     (1 << 3)
-#define PAN_DIRTY_FRAG_CORE  (PAN_DIRTY_FS) /* Dirty writes are tied */
-#define PAN_DIRTY_VS	     (1 << 4)
-#define PAN_DIRTY_VERTEX     (1 << 5)
-#define PAN_DIRTY_VERT_BUF   (1 << 6)
-//#define PAN_DIRTY_VIEWPORT   (1 << 7)
-#define PAN_DIRTY_SAMPLERS   (1 << 8)
-#define PAN_DIRTY_TEXTURES   (1 << 9)
-
 #define SET_BIT(lval, bit, cond) \
 	if (cond) \
 		lval |= (bit); \
 	else \
 		lval &= ~(bit);
 
+/* Dirty tracking flags. 3D is for general 3D state. Shader flags are
+ * per-stage. Renderer refers to Renderer State Descriptors. Vertex refers to
+ * vertex attributes/elements. */
+
+enum pan_dirty_3d {
+        PAN_DIRTY_VIEWPORT       = BITFIELD_BIT(0),
+        PAN_DIRTY_SCISSOR        = BITFIELD_BIT(1),
+        PAN_DIRTY_VERTEX         = BITFIELD_BIT(2),
+        PAN_DIRTY_PARAMS         = BITFIELD_BIT(3),
+        PAN_DIRTY_DRAWID         = BITFIELD_BIT(4),
+        PAN_DIRTY_TLS_SIZE       = BITFIELD_BIT(5),
+};
+
+enum pan_dirty_shader {
+        PAN_DIRTY_STAGE_RENDERER = BITFIELD_BIT(0),
+        PAN_DIRTY_STAGE_TEXTURE  = BITFIELD_BIT(1),
+        PAN_DIRTY_STAGE_SAMPLER  = BITFIELD_BIT(2),
+        PAN_DIRTY_STAGE_IMAGE    = BITFIELD_BIT(3),
+        PAN_DIRTY_STAGE_CONST    = BITFIELD_BIT(4),
+        PAN_DIRTY_STAGE_SSBO     = BITFIELD_BIT(5),
+};
+
 struct panfrost_constant_buffer {
         struct pipe_constant_buffer cb[PIPE_MAX_CONSTANT_BUFFERS];
         uint32_t enabled_mask;
-        uint32_t dirty_mask;
 };
 
 struct panfrost_query {
@@ -79,26 +90,32 @@ struct panfrost_query {
         unsigned type;
         unsigned index;
 
-        union {
-                /* For computed queries. 64-bit to prevent overflow */
-                struct {
-                        uint64_t start;
-                        uint64_t end;
-                };
-
-                /* Memory for the GPU to writeback the value of the query */
-                struct panfrost_transfer transfer;
+        /* For computed queries. 64-bit to prevent overflow */
+        struct {
+                uint64_t start;
+                uint64_t end;
         };
+
+        /* Memory for the GPU to writeback the value of the query */
+        struct pipe_resource *rsrc;
+
+        /* Whether an occlusion query is for a MSAA framebuffer */
+        bool msaa;
 };
 
-struct panfrost_fence {
+struct pipe_fence_handle {
         struct pipe_reference reference;
-        int fd;
+        uint32_t syncobj;
+        bool signaled;
+};
+
+struct panfrost_streamout_target {
+        struct pipe_stream_output_target base;
+        uint32_t offset;
 };
 
 struct panfrost_streamout {
         struct pipe_stream_output_target *targets[PIPE_MAX_SO_BUFFERS];
-        uint32_t offsets[PIPE_MAX_SO_BUFFERS];
         unsigned num_targets;
 };
 
@@ -106,15 +123,34 @@ struct panfrost_context {
         /* Gallium context */
         struct pipe_context base;
 
-        /* Compiler context */
-        struct midgard_screen compiler;
+        /* Dirty global state */
+        enum pan_dirty_3d dirty;
 
-        /* Bound job and map of panfrost_job_key to jobs */
-        struct panfrost_job *job;
-        struct hash_table *jobs;
+        /* Per shader stage dirty state */
+        enum pan_dirty_shader dirty_shader[PIPE_SHADER_TYPES];
 
-        /* panfrost_resource -> panfrost_job */
-        struct hash_table *write_jobs;
+        /* Unowned pools, so manage yourself. */
+        struct panfrost_pool descs, shaders;
+
+        /* Sync obj used to keep track of in-flight jobs. */
+        uint32_t syncobj;
+
+        /* Set of 32 batches. When the set is full, the LRU entry (the batch
+         * with the smallest seqnum) is flushed to free a slot.
+         */
+        struct {
+                uint64_t seqnum;
+                struct panfrost_batch slots[PAN_MAX_BATCHES];
+
+                /** Set of active batches for faster traversal */
+                BITSET_DECLARE(active, PAN_MAX_BATCHES);
+        } batches;
+
+        /* Map from resources to panfrost_batches */
+        struct hash_table *writers;
+
+        /* Bound job batch */
+        struct panfrost_batch *batch;
 
         /* Within a launch_grid call.. */
         const struct pipe_grid_info *compute_grid;
@@ -125,38 +161,26 @@ struct panfrost_context {
         struct pipe_framebuffer_state pipe_framebuffer;
         struct panfrost_streamout streamout;
 
-        struct panfrost_memory cmdstream_persistent;
-        struct panfrost_memory scratchpad;
-        struct panfrost_memory tiler_heap;
-        struct panfrost_memory tiler_dummy;
-        struct panfrost_memory depth_stencil_buffer;
-
         bool active_queries;
         uint64_t prims_generated;
         uint64_t tf_prims_generated;
         struct panfrost_query *occlusion_query;
 
-        /* Each draw has corresponding vertex and tiler payloads */
-        struct midgard_payload_vertex_tiler payloads[PIPE_SHADER_TYPES];
-
-        /* The fragment shader binary itself is pointed here (for the tripipe) but
-         * also everything else in the shader core, including blending, the
-         * stencil/depth tests, etc. Refer to the presentations. */
-
-        struct mali_shader_meta fragment_shader_core;
-
-        /* Per-draw Dirty flags are setup like any other driver */
-        int dirty;
-
+        bool indirect_draw;
+        unsigned drawid;
         unsigned vertex_count;
         unsigned instance_count;
+        unsigned offset_start;
+        unsigned base_vertex;
+        unsigned base_instance;
+        mali_ptr first_vertex_sysval_ptr;
+        mali_ptr base_vertex_sysval_ptr;
+        mali_ptr base_instance_sysval_ptr;
         enum pipe_prim_type active_prim;
 
         /* If instancing is enabled, vertex count padded for instance; if
          * it is disabled, just equal to plain vertex count */
         unsigned padded_count;
-
-        union mali_attr attributes[PIPE_MAX_ATTRIBS];
 
         /* TODO: Multiple uniform buffers (index =/= 0), finer updates? */
 
@@ -172,6 +196,9 @@ struct panfrost_context {
         struct pipe_shader_buffer ssbo[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_BUFFERS];
         uint32_t ssbo_mask[PIPE_SHADER_TYPES];
 
+        struct pipe_image_view images[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
+        uint32_t image_mask[PIPE_SHADER_TYPES];
+
         struct panfrost_sampler_state *samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
         unsigned sampler_count[PIPE_SHADER_TYPES];
 
@@ -181,27 +208,24 @@ struct panfrost_context {
         struct primconvert_context *primconvert;
         struct blitter_context *blitter;
 
-        /* Blitting the wallpaper (the old contents of the framebuffer back to
-         * itself) uses a dedicated u_blitter instance versus general blit()
-         * callbacks from Gallium, as the blit() callback can trigger
-         * wallpapering without Gallium realising, which in turns u_blitter
-         * errors due to unsupported reucrsion */
-
-        struct blitter_context *blitter_wallpaper;
-        struct panfrost_job *wallpaper_batch;
-
         struct panfrost_blend_state *blend;
 
         struct pipe_viewport_state pipe_viewport;
         struct pipe_scissor_state scissor;
         struct pipe_blend_color blend_color;
-        struct pipe_depth_stencil_alpha_state *depth_stencil;
+        struct panfrost_zsa_state *depth_stencil;
         struct pipe_stencil_ref stencil_ref;
+        uint16_t sample_mask;
+        unsigned min_samples;
 
-        /* True for t6XX, false for t8xx. */
-        bool is_t6xx;
+        struct panfrost_query *cond_query;
+        bool cond_cond;
+        enum pipe_render_cond_flag cond_mode;
 
-        uint32_t out_sync;
+        bool is_noop;
+
+        /* Mask of active render targets */
+        uint8_t fb_rt_mask;
 };
 
 /* Corresponds to the CSO */
@@ -209,46 +233,56 @@ struct panfrost_context {
 struct panfrost_rasterizer {
         struct pipe_rasterizer_state base;
 
-        /* Bitmask of front face, etc */
-        unsigned tiler_gl_enables;
+        /* Partially packed RSD words */
+        struct mali_multisample_misc_packed multisample;
+        struct mali_stencil_mask_misc_packed stencil_misc;
+};
+
+/* Linked varyings */
+struct pan_linkage {
+        /* If the upload is owned by the CSO instead
+         * of the pool, the referenced BO. Else,
+         * NULL. */
+        struct panfrost_bo *bo;
+
+        /* Uploaded attribute descriptors */
+        mali_ptr producer, consumer;
+
+        /* Varyings buffers required */
+        uint32_t present;
+
+        /* Per-vertex stride for general varying buffer */
+        uint32_t stride;
 };
 
 /* Variants bundle together to form the backing CSO, bundling multiple
- * shaders with varying emulated features baked in (alpha test
- * parameters, etc) */
-#define MAX_SHADER_VARIANTS 8
+ * shaders with varying emulated features baked in */
 
 /* A shader state corresponds to the actual, current variant of the shader */
 struct panfrost_shader_state {
         /* Compiled, mapped descriptor, ready for the hardware */
         bool compiled;
-        struct mali_shader_meta *tripipe;
 
-        /* Non-descript information */
-        int uniform_count;
-        bool can_discard;
-        bool writes_point_size;
-        bool reads_point_coord;
-        bool reads_face;
+        /* Respectively, shader binary and Renderer State Descriptor */
+        struct panfrost_pool_ref bin, state;
 
-        struct mali_attr_meta varyings[PIPE_MAX_ATTRIBS];
-        gl_varying_slot varyings_loc[PIPE_MAX_ATTRIBS];
+        /* For fragment shaders, a prepared (but not uploaded RSD) */
+        struct mali_renderer_state_packed partial_rsd;
+
+        struct pan_shader_info info;
+
+        /* Linked varyings, for non-separable programs */
+        struct pan_linkage linkage;
+
         struct pipe_stream_output_info stream_output;
         uint64_t so_mask;
 
-        unsigned sysval_count;
-        unsigned sysval[MAX_SYSVAL_COUNT];
+        /* Variants */
+        enum pipe_format rt_formats[8];
+        unsigned nr_cbufs;
 
-        /* Information on this particular shader variant */
-        struct pipe_alpha_state alpha_state;
-
-        uint16_t point_sprite_mask;
-        unsigned point_sprite_upper_left : 1;
-
-        /* Should we enable helper invocations */
-        bool helper_invocations;
-
-        struct panfrost_bo *bo;
+        /* Mask of state that dirties the sysvals */
+        unsigned dirty_3d, dirty_shader;
 };
 
 /* A collection of varyings (the CSO) */
@@ -263,31 +297,64 @@ struct panfrost_shader_variants {
                 struct pipe_compute_state cbase;
         };
 
-        struct panfrost_shader_state variants[MAX_SHADER_VARIANTS];
+        /** Lock for the variants array */
+        simple_mtx_t lock;
+
+        struct panfrost_shader_state *variants;
+        unsigned variant_space;
+
         unsigned variant_count;
 
         /* The current active variant */
         unsigned active_variant;
 };
 
+struct pan_vertex_buffer {
+        unsigned vbi;
+        unsigned divisor;
+};
+
 struct panfrost_vertex_state {
         unsigned num_elements;
 
+        /* buffers corresponds to attribute buffer, element_buffers corresponds
+         * to an index in buffers for each vertex element */
+        struct pan_vertex_buffer buffers[PIPE_MAX_ATTRIBS];
+        unsigned element_buffer[PIPE_MAX_ATTRIBS];
+        unsigned nr_bufs;
+
         struct pipe_vertex_element pipe[PIPE_MAX_ATTRIBS];
-        struct mali_attr_meta hw[PIPE_MAX_ATTRIBS];
+        unsigned formats[PIPE_MAX_ATTRIBS];
+};
+
+struct panfrost_zsa_state {
+        struct pipe_depth_stencil_alpha_state base;
+
+        /* Is any depth, stencil, or alpha testing enabled? */
+        bool enabled;
+
+        /* Mask of PIPE_CLEAR_{DEPTH,STENCIL} written */
+        unsigned draws;
+
+        /* Prepacked words from the RSD */
+        struct mali_multisample_misc_packed rsd_depth;
+        struct mali_stencil_mask_misc_packed rsd_stencil;
+        struct mali_stencil_packed stencil_front, stencil_back;
 };
 
 struct panfrost_sampler_state {
         struct pipe_sampler_state base;
-        struct mali_sampler_descriptor hw;
+        struct mali_midgard_sampler_packed hw;
 };
 
 /* Misnomer: Sampler view corresponds to textures, not samplers */
 
 struct panfrost_sampler_view {
         struct pipe_sampler_view base;
-        struct mali_texture_descriptor hw;
-        bool manual_stride;
+        struct panfrost_pool_ref state;
+        struct mali_bifrost_texture_packed bifrost_descriptor;
+        mali_ptr texture_bo;
+        uint64_t modifier;
 };
 
 static inline struct panfrost_context *
@@ -296,17 +363,32 @@ pan_context(struct pipe_context *pcontext)
         return (struct panfrost_context *) pcontext;
 }
 
+static inline struct panfrost_streamout_target *
+pan_so_target(struct pipe_stream_output_target *target)
+{
+        return (struct panfrost_streamout_target *)target;
+}
+
+static inline struct panfrost_shader_state *
+panfrost_get_shader_state(struct panfrost_context *ctx,
+                          enum pipe_shader_type st)
+{
+        struct panfrost_shader_variants *all = ctx->shader[st];
+
+        if (!all)
+                return NULL;
+
+        return &all->variants[all->active_variant];
+}
+
 struct pipe_context *
 panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags);
 
-void
-panfrost_emit_for_draw(struct panfrost_context *ctx, bool with_vertex_data);
+bool
+panfrost_writes_point_size(struct panfrost_context *ctx);
 
-struct panfrost_transfer
+struct panfrost_ptr
 panfrost_vertex_tiler_job(struct panfrost_context *ctx, bool is_tiler);
-
-unsigned
-panfrost_get_default_swizzle(unsigned components);
 
 void
 panfrost_flush(
@@ -315,83 +397,56 @@ panfrost_flush(
         unsigned flags);
 
 bool
-panfrost_is_scanout(struct panfrost_context *ctx);
-
-mali_ptr panfrost_sfbd_fragment(struct panfrost_context *ctx, bool has_draws);
-mali_ptr panfrost_mfbd_fragment(struct panfrost_context *ctx, bool has_draws);
-
-struct bifrost_framebuffer
-panfrost_emit_mfbd(struct panfrost_context *ctx, unsigned vertex_count);
-
-struct mali_single_framebuffer
-panfrost_emit_sfbd(struct panfrost_context *ctx, unsigned vertex_count);
-
-mali_ptr
-panfrost_fragment_job(struct panfrost_context *ctx, bool has_draws);
+panfrost_render_condition_check(struct panfrost_context *ctx);
 
 void
-panfrost_shader_compile(
-                struct panfrost_context *ctx,
-                struct mali_shader_meta *meta,
-                enum pipe_shader_ir ir_type,
-                const void *ir,
-                gl_shader_stage stage,
-                struct panfrost_shader_state *state,
-                uint64_t *outputs_written);
+panfrost_shader_compile(struct pipe_screen *pscreen,
+                        struct panfrost_pool *shader_pool,
+                        struct panfrost_pool *desc_pool,
+                        enum pipe_shader_ir ir_type,
+                        const void *ir,
+                        gl_shader_stage stage,
+                        struct panfrost_shader_state *state);
 
 void
-panfrost_pack_work_groups_compute(
-        struct mali_vertex_tiler_prefix *out,
-        unsigned num_x,
-        unsigned num_y,
-        unsigned num_z,
-        unsigned size_x,
-        unsigned size_y,
-        unsigned size_z);
+panfrost_analyze_sysvals(struct panfrost_shader_state *ss);
 
 void
-panfrost_pack_work_groups_fused(
-        struct mali_vertex_tiler_prefix *vertex,
-        struct mali_vertex_tiler_prefix *tiler,
-        unsigned num_x,
-        unsigned num_y,
-        unsigned num_z,
-        unsigned size_x,
-        unsigned size_y,
-        unsigned size_z);
+panfrost_create_sampler_view_bo(struct panfrost_sampler_view *so,
+                                struct pipe_context *pctx,
+                                struct pipe_resource *texture);
 
 /* Instancing */
 
 mali_ptr
 panfrost_vertex_buffer_address(struct panfrost_context *ctx, unsigned i);
 
-void
-panfrost_emit_vertex_data(struct panfrost_job *batch);
-
-struct pan_shift_odd {
-        unsigned shift;
-        unsigned odd;
-};
-
-struct pan_shift_odd
-panfrost_padded_vertex_count(
-        unsigned vertex_count,
-        bool primitive_pot);
-
-
-unsigned
-pan_expand_shift_odd(struct pan_shift_odd o);
-
 /* Compute */
 
 void
 panfrost_compute_context_init(struct pipe_context *pctx);
 
-/* Varyings */
+static inline void
+panfrost_dirty_state_all(struct panfrost_context *ctx)
+{
+        ctx->dirty = ~0;
+
+        for (unsigned i = 0; i < PIPE_SHADER_TYPES; ++i)
+                ctx->dirty_shader[i] = ~0;
+}
+
+static inline void
+panfrost_clean_state_3d(struct panfrost_context *ctx)
+{
+        ctx->dirty = 0;
+
+        for (unsigned i = 0; i < PIPE_SHADER_TYPES; ++i) {
+                if (i != PIPE_SHADER_COMPUTE)
+                        ctx->dirty_shader[i] = 0;
+        }
+}
 
 void
-panfrost_emit_varying_descriptor(
-        struct panfrost_context *ctx,
-        unsigned vertex_count);
+panfrost_cmdstream_context_init(struct pipe_context *pipe);
 
 #endif

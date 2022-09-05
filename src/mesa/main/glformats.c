@@ -1074,6 +1074,8 @@ _mesa_is_color_format(GLenum format)
       case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
       case GL_COMPRESSED_RGB_FXT1_3DFX:
       case GL_COMPRESSED_RGBA_FXT1_3DFX:
+      case GL_SR8_EXT:
+      case GL_SRG8_EXT:
       case GL_SRGB_EXT:
       case GL_SRGB8_EXT:
       case GL_SRGB_ALPHA_EXT:
@@ -1236,7 +1238,7 @@ _mesa_is_color_format(GLenum format)
       case GL_RGB10_A2UI:
          return GL_TRUE;
       case GL_YCBCR_MESA:  /* not considered to be RGB */
-         /* fall-through */
+         FALLTHROUGH;
       default:
          return GL_FALSE;
    }
@@ -1335,6 +1337,15 @@ _mesa_is_depth_or_stencil_format(GLenum format)
    }
 }
 
+/**
+ * Test if the given image format has a floating-point depth component.
+ */
+GLboolean
+_mesa_has_depth_float_channel(GLenum internalFormat)
+{
+   return internalFormat == GL_DEPTH32F_STENCIL8 ||
+          internalFormat == GL_DEPTH_COMPONENT32F;
+}
 
 /**
  * Test if an image format is a supported compressed format.
@@ -1412,6 +1423,8 @@ GLboolean
 _mesa_is_srgb_format(GLenum format)
 {
    switch (format) {
+   case GL_SR8_EXT:
+   case GL_SRG8_EXT:
    case GL_SRGB:
    case GL_SRGB8:
    case GL_SRGB_ALPHA:
@@ -1886,6 +1899,7 @@ _mesa_error_check_format_and_type(const struct gl_context *ctx,
       case GL_RED:
          if (_mesa_has_rg_textures(ctx))
             return GL_NO_ERROR;
+         FALLTHROUGH;
       default:
          return GL_INVALID_OPERATION;
       }
@@ -2180,7 +2194,7 @@ _mesa_es_error_check_format_and_type(const struct gl_context *ctx,
    case GL_RG:
       if (!_mesa_has_rg_textures(ctx))
          return GL_INVALID_VALUE;
-      /* fallthrough */
+      FALLTHROUGH;
    case GL_ALPHA:
    case GL_LUMINANCE:
    case GL_LUMINANCE_ALPHA:
@@ -2391,7 +2405,7 @@ _mesa_base_tex_format(const struct gl_context *ctx, GLint internalFormat)
         is_astc_3d_format(internalFormat)))
         return GL_RGBA;
 
-   if (!_mesa_has_MESA_ycbcr_texture(ctx)) {
+   if (_mesa_has_MESA_ycbcr_texture(ctx)) {
       if (internalFormat == GL_YCBCR_MESA)
          return GL_YCBCR_MESA;
    }
@@ -2501,6 +2515,15 @@ _mesa_base_tex_format(const struct gl_context *ctx, GLint internalFormat)
       }
    }
 
+   if (_mesa_has_EXT_texture_sRGB_RG8(ctx)) {
+      switch (internalFormat) {
+      case GL_SRG8_EXT:
+         return GL_RG;
+      default:
+         ; /* fallthrough */
+      }
+   }
+
    if (_mesa_has_integer_textures(ctx)) {
       switch (internalFormat) {
       case GL_RGBA8UI_EXT:
@@ -2580,7 +2603,7 @@ _mesa_base_tex_format(const struct gl_context *ctx, GLint internalFormat)
       case GL_R32UI:
          if (!_mesa_has_integer_textures(ctx))
             break;
-         /* FALLTHROUGH */
+         FALLTHROUGH;
       case GL_R8:
       case GL_R16:
       case GL_RED:
@@ -2603,7 +2626,7 @@ _mesa_base_tex_format(const struct gl_context *ctx, GLint internalFormat)
       case GL_RG32UI:
          if (!_mesa_has_integer_textures(ctx))
             break;
-         /* FALLTHROUGH */
+         FALLTHROUGH;
       case GL_RG:
       case GL_RG8:
       case GL_RG16:
@@ -2734,7 +2757,7 @@ gles_effective_internal_format_for_format_and_type(GLenum format,
    case GL_FLOAT:
       if (format == GL_DEPTH_COMPONENT)
          return GL_DEPTH_COMPONENT32F;
-      /* fall through */
+      FALLTHROUGH;
    case GL_HALF_FLOAT_OES:
       switch (format) {
       case GL_RGBA:
@@ -2836,7 +2859,17 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
 
    switch (format) {
    case GL_BGRA_EXT:
-      if (type != GL_UNSIGNED_BYTE || internalFormat != GL_BGRA)
+      if (type != GL_UNSIGNED_BYTE ||
+              (internalFormat != GL_BGRA &&
+               internalFormat != GL_RGBA8 &&
+               internalFormat != GL_SRGB8_ALPHA8))
+         return GL_INVALID_OPERATION;
+      break;
+
+   case GL_BGR_EXT:
+      if (type != GL_UNSIGNED_BYTE ||
+              (internalFormat != GL_RGB8 &&
+               internalFormat != GL_SRGB8))
          return GL_INVALID_OPERATION;
       break;
 
@@ -2925,16 +2958,18 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
                return GL_INVALID_OPERATION;
             break;
          case GL_RGBA:
-            if (_mesa_has_OES_texture_float(ctx) && internalFormat == format)
-               break;
+            if (!_mesa_has_OES_texture_float(ctx) || internalFormat != format)
+               return GL_INVALID_OPERATION;
+            break;
          default:
             return GL_INVALID_OPERATION;
          }
          break;
 
       case GL_HALF_FLOAT_OES:
-         if (_mesa_has_OES_texture_half_float(ctx) && internalFormat == format)
-            break;
+         if (!_mesa_has_OES_texture_half_float(ctx) || internalFormat != format)
+            return GL_INVALID_OPERATION;
+         break;
       default:
          return GL_INVALID_OPERATION;
       }
@@ -3059,12 +3094,13 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
             if (ctx->Version <= 20)
                return GL_INVALID_OPERATION;
             break;
-         case GL_RGB:
-            if (_mesa_has_OES_texture_float(ctx) && internalFormat == format)
-               break;
          case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
          case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
             if (!_mesa_has_EXT_texture_compression_bptc(ctx))
+               return GL_INVALID_OPERATION;
+            break;
+         case GL_RGB:
+            if (!_mesa_has_OES_texture_float(ctx) || internalFormat != format)
                return GL_INVALID_OPERATION;
             break;
          default:
@@ -3144,11 +3180,13 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
          return GL_INVALID_OPERATION;
       switch (type) {
       case GL_UNSIGNED_BYTE:
-         if (internalFormat != GL_RG8 &&
-             (!_mesa_has_EXT_texture_compression_rgtc(ctx) ||
-              internalFormat != GL_COMPRESSED_RED_GREEN_RGTC2_EXT))
-            return GL_INVALID_OPERATION;
-         break;
+         if (internalFormat == GL_RG8 ||
+             (_mesa_has_EXT_texture_compression_rgtc(ctx) &&
+              internalFormat == GL_COMPRESSED_RED_GREEN_RGTC2_EXT) ||
+             (_mesa_has_EXT_texture_sRGB_RG8(ctx) &&
+              internalFormat == GL_SRG8_EXT))
+            break;
+         return GL_INVALID_OPERATION;
 
       case GL_BYTE:
          if (internalFormat != GL_RG8_SNORM &&
@@ -3176,10 +3214,10 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
                   return GL_INVALID_OPERATION;
                break;
             case GL_RG:
-               if (_mesa_has_rg_textures(ctx) &&
-                   _mesa_has_OES_texture_half_float(ctx))
-                  break;
-            /* fallthrough */
+               if (!_mesa_has_rg_textures(ctx) ||
+                   !_mesa_has_OES_texture_half_float(ctx))
+                  return GL_INVALID_OPERATION;
+               break;
             default:
                return GL_INVALID_OPERATION;
          }
@@ -3191,10 +3229,10 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
          case GL_RG32F:
             break;
          case GL_RG:
-            if (_mesa_has_rg_textures(ctx) &&
-                _mesa_has_OES_texture_float(ctx))
-               break;
-            /* fallthrough */
+            if (!_mesa_has_rg_textures(ctx) ||
+                !_mesa_has_OES_texture_float(ctx))
+               return GL_INVALID_OPERATION;
+            break;
          default:
             return GL_INVALID_OPERATION;
          }
@@ -3284,10 +3322,10 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
             break;
          case GL_RG:
          case GL_RED:
-            if (_mesa_has_rg_textures(ctx) &&
-                _mesa_has_OES_texture_half_float(ctx))
-               break;
-            /* fallthrough */
+            if (!_mesa_has_rg_textures(ctx) ||
+                !_mesa_has_OES_texture_half_float(ctx))
+               return GL_INVALID_OPERATION;
+            break;
          default:
             return GL_INVALID_OPERATION;
          }
@@ -3299,10 +3337,10 @@ _mesa_gles_error_check_format_and_type(const struct gl_context *ctx,
          case GL_R32F:
             break;
          case GL_RED:
-            if (_mesa_has_rg_textures(ctx) &&
-                _mesa_has_OES_texture_float(ctx))
-               break;
-            /* fallthrough */
+            if (!_mesa_has_rg_textures(ctx) ||
+                !_mesa_has_OES_texture_float(ctx))
+               return GL_INVALID_OPERATION;
+            break;
          default:
             return GL_INVALID_OPERATION;
          }
@@ -3501,7 +3539,43 @@ get_swizzle_from_gl_format(GLenum format, uint8_t *swizzle)
    case GL_INTENSITY:
       set_swizzle(swizzle, 0, 0, 0, 0);
       return true;
+   case GL_DEPTH_COMPONENT:
+      set_swizzle(swizzle, 0, 6, 6, 6);
+      return true;
+   case GL_STENCIL_INDEX:
+      set_swizzle(swizzle, 6, 0, 6, 6);
+      return true;
    default:
+      return false;
+   }
+}
+
+bool
+_mesa_swap_bytes_in_type_enum(GLenum *type)
+{
+   switch (*type) {
+   case GL_UNSIGNED_INT_8_8_8_8:
+      *type = GL_UNSIGNED_INT_8_8_8_8_REV;
+      return true;
+   case GL_UNSIGNED_INT_8_8_8_8_REV:
+      *type = GL_UNSIGNED_INT_8_8_8_8;
+      return true;
+   case GL_UNSIGNED_SHORT_8_8_MESA:
+      *type = GL_UNSIGNED_SHORT_8_8_REV_MESA;
+      return true;
+   case GL_UNSIGNED_SHORT_8_8_REV_MESA:
+      *type = GL_UNSIGNED_SHORT_8_8_MESA;
+      return true;
+   case GL_BYTE:
+   case GL_UNSIGNED_BYTE:
+      /* format/types that are arrays of 8-bit values are unaffected by
+       * swapBytes.
+       */
+      return true;
+   default:
+      /* swapping bytes on 4444, 1555, or >8 bit per channel types etc. will
+       * never match a Mesa format.
+       */
       return false;
    }
 }
@@ -3529,6 +3603,9 @@ _mesa_format_from_format_and_type(GLenum format, GLenum type)
    uint8_t swizzle[4];
    bool normalized = false, is_float = false, is_signed = false;
    int num_channels = 0, type_size = 0;
+
+   if (format == GL_COLOR_INDEX)
+      return MESA_FORMAT_NONE;
 
    /* Extract array format type information from the OpenGL data type */
    switch (type) {
@@ -3577,10 +3654,24 @@ _mesa_format_from_format_and_type(GLenum format, GLenum type)
     * create the array format
     */
    if (is_array_format) {
-      normalized = !_mesa_is_enum_format_integer(format);
+      enum mesa_array_format_base_format bf;
+      switch (format) {
+      case GL_DEPTH_COMPONENT:
+         bf = MESA_ARRAY_FORMAT_BASE_FORMAT_DEPTH;
+         break;
+      case GL_STENCIL_INDEX:
+         bf = MESA_ARRAY_FORMAT_BASE_FORMAT_STENCIL;
+         break;
+      default:
+         bf = MESA_ARRAY_FORMAT_BASE_FORMAT_RGBA_VARIANTS;
+         break;
+      }
+
+      normalized = !(_mesa_is_enum_format_integer(format) ||
+                     format == GL_STENCIL_INDEX);
       num_channels = _mesa_components_in_format(format);
 
-      return MESA_ARRAY_FORMAT(type_size, is_signed, is_float,
+      return MESA_ARRAY_FORMAT(bf, type_size, is_signed, is_float,
                                normalized, num_channels,
                                swizzle[0], swizzle[1], swizzle[2], swizzle[3]);
    }
@@ -3737,7 +3828,9 @@ _mesa_format_from_format_and_type(GLenum format, GLenum type)
       break;
    case GL_UNSIGNED_INT_24_8:
       if (format == GL_DEPTH_STENCIL)
-         return MESA_FORMAT_Z24_UNORM_S8_UINT;
+         return MESA_FORMAT_S8_UINT_Z24_UNORM;
+      else if (format == GL_DEPTH_COMPONENT)
+         return MESA_FORMAT_X8_UINT_Z24_UNORM;
       break;
    case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
       if (format == GL_DEPTH_STENCIL)
@@ -3746,6 +3839,10 @@ _mesa_format_from_format_and_type(GLenum format, GLenum type)
    default:
       break;
    }
+
+   fprintf(stderr, "Unsupported format/type: %s/%s\n",
+           _mesa_enum_to_string(format),
+           _mesa_enum_to_string(type));
 
    /* If we got here it means that we could not find a Mesa format that
     * matches the GL format/type provided. We may need to add a new Mesa

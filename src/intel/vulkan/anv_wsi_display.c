@@ -22,7 +22,6 @@
 
 #include "anv_private.h"
 #include "wsi_common.h"
-#include "vk_format_info.h"
 #include "vk_util.h"
 #include "wsi_common_display.h"
 
@@ -185,7 +184,7 @@ anv_CreateDisplayPlaneSurfaceKHR(
    if (allocator)
      alloc = allocator;
    else
-     alloc = &instance->alloc;
+     alloc = &instance->vk.alloc;
 
    return wsi_create_display_surface(_instance, alloc, create_info, surface);
 }
@@ -241,7 +240,7 @@ anv_DisplayPowerControlEXT(VkDevice                    _device,
    ANV_FROM_HANDLE(anv_device, device, _device);
 
    return wsi_display_power_control(
-      _device, &device->instance->physicalDevice.wsi_device,
+      _device, &device->physical->wsi_device,
       display, display_power_info);
 }
 
@@ -255,22 +254,23 @@ anv_RegisterDeviceEventEXT(VkDevice _device,
    struct anv_fence *fence;
    VkResult ret;
 
-   fence = vk_zalloc2(&device->instance->alloc, allocator, sizeof (*fence), 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   fence = vk_object_zalloc(&device->vk, allocator, sizeof (*fence),
+                            VK_OBJECT_TYPE_FENCE);
    if (!fence)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
    fence->permanent.type = ANV_FENCE_TYPE_WSI;
 
    ret = wsi_register_device_event(_device,
-                                   &device->instance->physicalDevice.wsi_device,
+                                   &device->physical->wsi_device,
                                    device_event_info,
                                    allocator,
-                                   &fence->permanent.fence_wsi);
+                                   &fence->permanent.fence_wsi,
+                                   -1);
    if (ret == VK_SUCCESS)
       *_fence = anv_fence_to_handle(fence);
    else
-      vk_free2(&device->instance->alloc, allocator, fence);
+      vk_free2(&device->vk.alloc, allocator, fence);
    return ret;
 }
 
@@ -285,21 +285,21 @@ anv_RegisterDisplayEventEXT(VkDevice _device,
    struct anv_fence *fence;
    VkResult ret;
 
-   fence = vk_zalloc2(&device->alloc, allocator, sizeof (*fence), 8,
-                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   fence = vk_object_zalloc(&device->vk, allocator, sizeof (*fence),
+                            VK_OBJECT_TYPE_FENCE);
    if (!fence)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    fence->permanent.type = ANV_FENCE_TYPE_WSI;
 
    ret = wsi_register_display_event(
-      _device, &device->instance->physicalDevice.wsi_device,
-      display, display_event_info, allocator, &(fence->permanent.fence_wsi));
+      _device, &device->physical->wsi_device,
+      display, display_event_info, allocator, &fence->permanent.fence_wsi, -1);
 
    if (ret == VK_SUCCESS)
       *_fence = anv_fence_to_handle(fence);
    else
-      vk_free2(&device->alloc, allocator, fence);
+      vk_free2(&device->vk.alloc, allocator, fence);
    return ret;
 }
 
@@ -312,6 +312,27 @@ anv_GetSwapchainCounterEXT(VkDevice _device,
    ANV_FROM_HANDLE(anv_device, device, _device);
 
    return wsi_get_swapchain_counter(
-      _device, &device->instance->physicalDevice.wsi_device,
+      _device, &device->physical->wsi_device,
       swapchain, flag_bits, value);
+}
+
+VkResult
+anv_AcquireDrmDisplayEXT(VkPhysicalDevice physical_device,
+                         int32_t drm_fd,
+                         VkDisplayKHR display)
+{
+   ANV_FROM_HANDLE(anv_physical_device, pdevice, physical_device);
+
+   return wsi_acquire_drm_display(physical_device, &pdevice->wsi_device, drm_fd, display);
+}
+
+VkResult
+anv_GetDrmDisplayEXT(VkPhysicalDevice physical_device,
+                     int32_t drm_fd,
+                     uint32_t connector_id,
+                     VkDisplayKHR *display)
+{
+   ANV_FROM_HANDLE(anv_physical_device, pdevice, physical_device);
+
+   return wsi_get_drm_display(physical_device, &pdevice->wsi_device, drm_fd, connector_id, display);
 }

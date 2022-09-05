@@ -386,7 +386,7 @@
   <struct name="HCP_PAK_INSERT_OBJECT_INDIRECT_PAYLOAD" length="4">
     <field name="Indirect Payload Data Size in bits" start="0" end="31" type="uint"/>
     <field name="Indirect Payload Base Address" start="32" end="95" type="address"/>
-    <field name="Indirect Payload Base Address2" start="96" end="128" type="MEMORYADDRESSATTRIBUTES"/>
+    <field name="Indirect Payload Base Address2" start="96" end="127" type="MEMORYADDRESSATTRIBUTES"/>
   </struct>
 
   <struct name="HCP_REF_LIST_ENTRY" length="1">
@@ -706,13 +706,13 @@
     <field name="Surface QPitch" start="32" end="46" type="uint"/>
     <field name="Base Mip Level" start="51" end="55" type="u4.1"/>
     <field name="MOCS" start="56" end="62" type="uint"/>
-    <field name="EnableUnormPathInColorPipe" start="63" end="63" type="bool"/>
+    <field name="Enable Unorm Path In Color Pipe" start="63" end="63" type="bool"/>
     <field name="Width" start="64" end="77" type="uint"/>
     <field name="Height" start="80" end="93" type="uint"/>
     <field name="Surface Pitch" start="96" end="113" type="uint"/>
     <field name="Tile Address Mapping Mode" start="116" end="116" type="uint">
-      <value name="Gen9" value="0"/>
-      <value name="Gen10+" value="1"/>
+      <value name="Gfx9" value="0"/>
+      <value name="Gfx10+" value="1"/>
     </field>
     <field name="Depth" start="117" end="127" type="uint"/>
     <field name="Multisample Position Palette Index" start="128" end="130" type="uint"/>
@@ -735,7 +735,6 @@
       <value name="180DEG" value="2"/>
       <value name="270DEG" value="3"/>
     </field>
-    <field name="Force Non-Comparison Reduction Type" start="159" end="159" type="bool"/>
     <field name="MIP Count / LOD" start="160" end="163" type="uint"/>
     <field name="Surface Min LOD" start="164" end="167" type="uint"/>
     <field name="Mip Tail Start LOD" start="168" end="171" type="uint"/>
@@ -866,20 +865,21 @@
       <value name="DX10/OGL" value="0"/>
       <value name="DX9" value="1"/>
     </field>
+    <field name="CPS LOD Compensation Enable" start="30" end="30" type="bool"/>
     <field name="Sampler Disable" start="31" end="31" type="bool"/>
     <field name="Cube Surface Control Mode" start="32" end="32" type="uint">
       <value name="PROGRAMMED" value="0"/>
       <value name="OVERRIDE" value="1"/>
     </field>
-    <field name="Shadow Function" start="33" end="35" type="uint">
-      <value name="PREFILTEROP ALWAYS" value="0"/>
-      <value name="PREFILTEROP NEVER" value="1"/>
-      <value name="PREFILTEROP LESS" value="2"/>
-      <value name="PREFILTEROP EQUAL" value="3"/>
-      <value name="PREFILTEROP LEQUAL" value="4"/>
-      <value name="PREFILTEROP GREATER" value="5"/>
-      <value name="PREFILTEROP NOTEQUAL" value="6"/>
-      <value name="PREFILTEROP GEQUAL" value="7"/>
+    <field name="Shadow Function" start="33" end="35" type="uint" prefix="PREFILTEROP">
+      <value name="ALWAYS" value="0"/>
+      <value name="NEVER" value="1"/>
+      <value name="LESS" value="2"/>
+      <value name="EQUAL" value="3"/>
+      <value name="LEQUAL" value="4"/>
+      <value name="GREATER" value="5"/>
+      <value name="NOTEQUAL" value="6"/>
+      <value name="GEQUAL" value="7"/>
     </field>
     <field name="ChromaKey Mode" start="36" end="36" type="uint">
       <value name="KEYFILTER_KILL_ON_ANY_MATCH" value="0"/>
@@ -1131,10 +1131,18 @@
     <field name="Component Override W" start="15" end="15" type="bool"/>
   </struct>
 
+  <struct name="SLICE_HASH_TABLE" length="32">
+    <group count="16" start="0" size="64">
+      <group count="16" start="0" size="4">
+        <field name="Entry" start="0" end="3" type="uint"/>
+      </group>
+    </group>
+  </struct>
+
   <struct name="SO_DECL" length="1">
     <field name="Component Mask" start="0" end="3" type="uint" default="0"/>
     <field name="Register Index" start="4" end="9" type="uint"/>
-    <field name="Hole Flag" start="11" end="11" type="uint"/>
+    <field name="Hole Flag" start="11" end="11" type="bool"/>
     <field name="Output Buffer Slot" start="12" end="13" type="uint"/>
   </struct>
 
@@ -1250,21 +1258,19 @@
     <field name="3D Command Opcode" start="24" end="26" type="uint" default="1"/>
     <field name="Command SubType" start="27" end="28" type="uint" default="3"/>
     <field name="Command Type" start="29" end="31" type="uint" default="3"/>
-    <!-- "On 3DSTATE_3D_MODE, driver must always program bits 31:16 of DW1
-    a value of 0xFFFF" -->
-    <field name="Mask" start="48" end="63" type="mbo"/>
-    <field name="Slice Hashing Table Enable" start="38" end="38" type="bool"/>
-    <field name="Subslice Hashing Mode" start="34" end="35" type="uint">
-       <value name="hashing 8x8"   value="0"/>
-       <value name="hashing 16x4"  value="1"/>
-       <value name="hashing 8x4"   value="2"/>
-       <value name="hashing 16x16" value="3"/>
-    </field>
     <field name="Cross Slice Hashing Mode" start="32" end="33" type="uint">
-       <value name="Normal Mode"    value="0"/>
-       <value name="Disable"        value="1"/>
-       <value name="hashing 32x32"  value="3"/>
+      <value name="Normal Mode" value="0"/>
+      <value name="Disable" value="1"/>
+      <value name="hashing 32x32" value="3"/>
     </field>
+    <field name="Subslice Hashing Mode" start="34" end="35" type="uint">
+      <value name="hashing 8x8" value="0"/>
+      <value name="hashing 16x4" value="1"/>
+      <value name="hashing 8x4" value="2"/>
+      <value name="hashing 16x16" value="3"/>
+    </field>
+    <field name="Slice Hashing Table Enable" start="38" end="38" type="bool"/>
+    <field name="Mask" start="48" end="63" type="mbo"/>
   </instruction>
 
   <instruction name="3DSTATE_AA_LINE_PARAMETERS" bias="2" length="3" engine="render">
@@ -1420,7 +1426,7 @@
     <field name="Command SubType" start="27" end="28" type="uint" default="3"/>
     <field name="Command Type" start="29" end="31" type="uint" default="3"/>
     <field name="MOCS" start="32" end="38" type="uint"/>
-    <field name="Binding Table Pool Enable" start="43" end="43" type="uint"/>
+    <field name="Binding Table Pool Enable" start="43" end="43" type="bool"/>
     <field name="Binding Table Pool Base Address" start="44" end="95" type="address"/>
     <field name="Binding Table Pool Buffer Size" start="108" end="127" type="uint">
       <value name="No Valid Data" value="0"/>
@@ -1557,6 +1563,34 @@
     <field name="Command SubType" start="27" end="28" type="uint" default="3"/>
     <field name="Command Type" start="29" end="31" type="uint" default="3"/>
     <field name="Constant Body" start="32" end="351" type="3DSTATE_CONSTANT_BODY"/>
+  </instruction>
+
+  <instruction name="3DSTATE_CPS" bias="2" length="9">
+    <field name="DWord Length" start="0" end="7" type="uint" default="7"/>
+    <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="34"/>
+    <field name="3D Command Opcode" start="24" end="26" type="uint" default="0"/>
+    <field name="Command SubType" start="27" end="28" type="uint" default="3"/>
+    <field name="Command Type" start="29" end="31" type="uint" default="3"/>
+    <field name="Min CP Size X" start="32" end="42" type="s3.7"/>
+    <field name="Statistics Enable" start="43" end="43" type="bool"/>
+    <field name="Coarse Pixel Shading Mode" start="44" end="45" type="uint">
+      <value name="CPS_MODE_NONE" value="0"/>
+      <value name="CPS_MODE_CONSTANT" value="1"/>
+      <value name="CPS_MODE_RADIAL" value="2"/>
+    </field>
+    <field name="Scale Axis" start="46" end="46" type="uint">
+      <value name="X axis" value="0"/>
+      <value name="Y axis" value="1"/>
+    </field>
+    <field name="Min CP Size Y" start="48" end="58" type="s3.7"/>
+    <field name="Max CP Size X " start="64" end="74" type="s3.7"/>
+    <field name="Max CP Size Y" start="80" end="90" type="s3.7"/>
+    <field name="Y Focal" start="96" end="111" type="int"/>
+    <field name="X Focal" start="128" end="143" type="int"/>
+    <field name="M y" start="160" end="191" type="float"/>
+    <field name="M x" start="192" end="223" type="float"/>
+    <field name="R min" start="224" end="255" type="float"/>
+    <field name="Aspect" start="256" end="287" type="float"/>
   </instruction>
 
   <instruction name="3DSTATE_DEPTH_BUFFER" bias="2" length="8" engine="render">
@@ -2096,6 +2130,7 @@
     </field>
     <field name="Pixel Shader Has UAV" start="34" end="34" type="bool"/>
     <field name="Pixel Shader Pulls Bary" start="35" end="35" type="bool"/>
+    <field name="Pixel Shader Is Per Coarse Pixel" start="36" end="36" type="bool"/>
     <field name="Pixel Shader Computes Stencil" start="37" end="37" type="bool"/>
     <field name="Pixel Shader Is Per Sample" start="38" end="38" type="bool"/>
     <field name="Pixel Shader Disables Alpha To Coverage" start="39" end="39" type="bool"/>
@@ -2105,6 +2140,7 @@
     <field name="Pixel Shader Requires Non-Perspective Bary Plane Coefficients" start="51" end="51" type="bool"/>
     <field name="Pixel Shader Requires Perspective Bary Plane Coefficients" start="52" end="52" type="bool"/>
     <field name="Pixel Shader Requires Source Depth and/or W Plane Coefficients" start="53" end="53" type="bool"/>
+    <field name="Pixel Shader Requires Requested Coarse Pixel Shading Size" start="54" end="54" type="bool"/>
     <field name="Pixel Shader Uses Source W" start="55" end="55" type="bool"/>
     <field name="Pixel Shader Uses Source Depth" start="56" end="56" type="bool"/>
     <field name="Force Computed Depth" start="57" end="57" type="bool"/>
@@ -2498,14 +2534,6 @@
     <field name="Slice Hash State Pointer Valid" start="32" end="32" type="bool"/>
     <field name="Slice Hash Table State Pointer" start="38" end="63" type="offset"/>
   </instruction>
-
-  <struct name="SLICE_HASH_TABLE" length="32">
-     <group count="16" start="0" size="64">
-        <group count="16" start="0" size="4">
-           <field name="Entry" start="0" end="3" type="uint"/>
-        </group>
-     </group>
-  </struct>
 
   <instruction name="3DSTATE_SO_BUFFER" bias="2" length="8" engine="render">
     <field name="DWord Length" start="0" end="7" type="uint" default="6"/>
@@ -6236,6 +6264,7 @@
 
   <instruction name="PIPE_CONTROL" bias="2" length="6" engine="render">
     <field name="DWord Length" start="0" end="7" type="uint" default="4"/>
+    <field name="HDC Pipeline Flush Enable" start="9" end="9" type="bool"/>
     <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="0"/>
     <field name="3D Command Opcode" start="24" end="26" type="uint" default="2"/>
     <field name="Command SubType" start="27" end="28" type="uint" default="3"/>
@@ -6274,6 +6303,7 @@
       <value name="GGTT" value="1"/>
     </field>
     <field name="Flush LLC" start="58" end="58" type="bool"/>
+    <field name="Command Cache Invalidate Enable" start="61" end="61" type="bool"/>
     <field name="Address" start="66" end="111" type="address"/>
     <field name="Immediate Data" start="128" end="191" type="uint"/>
   </instruction>
@@ -6892,6 +6922,14 @@
     <field name="Color Compression Disable Mask" start="31" end="31" type="bool"/>
   </register>
 
+  <register name="GT_MODE" length="1" num="0x7008">
+     <field name="Binding Table Alignment" start="10" end="10" type="uint">
+       <value name="BTP_15_5" value="0"/>
+       <value name="BTP_18_8" value="1"/>
+     </field>
+     <field name="Binding Table Alignment Mask" start="26" end="26" type="bool"/>
+  </register>
+
   <register name="CACHE_MODE_SS" length="1" num="0x0e420">
     <field name="Instruction Level 1 Cache Disable" start="0" end="0" type="bool"/>
     <field name="Instruction Level 1 Cache and In-Flight Queue Disable " start="1" end="1" type="bool"/>
@@ -6914,6 +6952,11 @@
   <register name="COMMON_SLICE_CHICKEN3" length="1" num="0x7304">
     <field name="PS Thread Panic Dispatch" start="6" end="7" type="uint"/>
     <field name="PS Thread Panic Dispatch Mask" start="22" end="23" type="uint"/>
+  </register>
+
+  <register name="COMMON_SLICE_CHICKEN4" length="1" num="0x7300">
+    <field name="Enable Hardware Filtering in WM" start="5" end="5" type="bool"/>
+    <field name="Enable Hardware Filtering in WM Mask" start="21" end="21" type="bool"/>
   </register>
 
   <register name="CS_CHICKEN1" length="1" num="0x2580">
@@ -6994,13 +7037,30 @@
   </register>
 
   <register name="L3CNTLREG" length="1" num="0x7034">
-    <field name="SLM Enable" start="0" end="0" type="uint"/>
     <field name="URB Allocation" start="1" end="7" type="uint"/>
     <field name="Error Detection Behavior Control" start="9" end="9" type="bool"/>
     <field name="Use Full Ways" start="10" end="10" type="bool"/>
     <field name="RO Allocation" start="11" end="17" type="uint"/>
     <field name="DC Allocation" start="18" end="24" type="uint"/>
     <field name="All Allocation" start="25" end="31" type="uint"/>
+  </register>
+
+  <register name="PERFCNT1" length="2" num="0x91b8">
+    <field name="Value" start="0" end="43" type="uint"/>
+    <field name="Event Selection" start="52" end="59" type="uint"/>
+    <field name="Counter Clear" start="60" end="60" type="bool"/>
+    <field name="Edge Detect" start="61" end="61" type="bool"/>
+    <field name="Overflow Enable" start="62" end="62" type="bool"/>
+    <field name="Counter Enable" start="63" end="63" type="bool"/>
+  </register>
+
+  <register name="PERFCNT2" length="2" num="0x91c0">
+    <field name="Value" start="0" end="43" type="uint"/>
+    <field name="Event Selection" start="52" end="59" type="uint"/>
+    <field name="Counter Clear" start="60" end="60" type="bool"/>
+    <field name="Edge Detect" start="61" end="61" type="bool"/>
+    <field name="Overflow Enable" start="62" end="62" type="bool"/>
+    <field name="Counter Enable" start="63" end="63" type="bool"/>
   </register>
 
   <register name="PS_INVOCATION_COUNT" length="2" num="0x2348">
@@ -7023,6 +7083,11 @@
     <field name="EU12 Done SS0" start="23" end="23" type="bool"/>
     <field name="EU13 Done SS0" start="24" end="24" type="bool"/>
     <field name="MA1 Done SS0" start="26" end="26" type="bool"/>
+  </register>
+
+  <register name="RPSTAT0" length="1" num="0xa01c">
+    <field name="Previous GT Frequency" start="0" end="8" type="uint"/>
+    <field name="Current GT Frequency" start="23" end="31" type="uint"/>
   </register>
 
   <register name="SAMPLER_INSTDONE" length="1" num="0xe160">
@@ -7131,6 +7196,13 @@
 
   <register name="SO_WRITE_OFFSET3" length="1" num="0x528c">
     <field name="Write Offset" start="2" end="31" type="offset"/>
+  </register>
+
+  <register name="TCCNTLREG" length="1" num="0xb0a4">
+    <field name="URB Partial Write Merging Enable" start="0" end="0" type="bool"/>
+    <field name="Color/Z Partial Write Merging Enable" start="1" end="1" type="bool"/>
+    <field name="L3 Data Partial Write Merging Enable" start="2" end="2" type="bool"/>
+    <field name="TC Disable" start="3" end="3" type="bool"/>
   </register>
 
   <register name="VCS_INSTDONE" length="1" num="0x1206c">

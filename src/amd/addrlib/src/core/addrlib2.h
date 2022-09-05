@@ -46,28 +46,36 @@ namespace V2
 * @brief Flags for SwizzleModeTable
 ************************************************************************************************************************
 */
-struct SwizzleModeFlags
+union SwizzleModeFlags
 {
-    // Swizzle mode
-    UINT_32 isLinear        : 1;    // Linear
+    struct
+    {
+        // Swizzle mode
+        UINT_32 isLinear        : 1;    // Linear
 
-    // Block size
-    UINT_32 is256b          : 1;    // Block size is 256B
-    UINT_32 is4kb           : 1;    // Block size is 4KB
-    UINT_32 is64kb          : 1;    // Block size is 64KB
-    UINT_32 isVar           : 1;    // Block size is variable
+        // Block size
+        UINT_32 is256b          : 1;    // Block size is 256B
+        UINT_32 is4kb           : 1;    // Block size is 4KB
+        UINT_32 is64kb          : 1;    // Block size is 64KB
+        UINT_32 isVar           : 1;    // Block size is variable
 
-    UINT_32 isZ             : 1;    // Z order swizzle mode
-    UINT_32 isStd           : 1;    // Standard swizzle mode
-    UINT_32 isDisp          : 1;    // Display swizzle mode
-    UINT_32 isRot           : 1;    // Rotate swizzle mode
+        UINT_32 isZ             : 1;    // Z order swizzle mode
+        UINT_32 isStd           : 1;    // Standard swizzle mode
+        UINT_32 isDisp          : 1;    // Display swizzle mode
+        UINT_32 isRot           : 1;    // Rotate swizzle mode
 
-    // XOR mode
-    UINT_32 isXor           : 1;    // XOR after swizzle if set
+        // XOR mode
+        UINT_32 isXor           : 1;    // XOR after swizzle if set
 
-    UINT_32 isT             : 1;    // T mode
+        UINT_32 isT             : 1;    // T mode
 
-    UINT_32 isRtOpt         : 1;    // mode opt for render target
+        // GFX10
+        UINT_32 isRtOpt         : 1;    // mode opt for render target
+
+        UINT_32 reserved        : 20;   // Reserved bits
+    };
+
+    UINT_32 u32All;
 };
 
 struct Dim2d
@@ -86,26 +94,16 @@ struct Dim3d
 // Macro define resource block type
 enum AddrBlockType
 {
-    AddrBlockMicro     = 0, // Resource uses 256B block
-    AddrBlock4KB       = 1, // Resource uses 4KB block
-    AddrBlock64KB      = 2, // Resource uses 64KB block
-    AddrBlockVar       = 3, // Resource uses var block, only valid for GFX9
-    AddrBlockLinear    = 4, // Resource uses linear swizzle mode
+    AddrBlockLinear    = 0, // Resource uses linear swizzle mode
+    AddrBlockMicro     = 1, // Resource uses 256B block
+    AddrBlockThin4KB   = 2, // Resource uses thin 4KB block
+    AddrBlockThick4KB  = 3, // Resource uses thick 4KB block
+    AddrBlockThin64KB  = 4, // Resource uses thin 64KB block
+    AddrBlockThick64KB = 5, // Resource uses thick 64KB block
+    AddrBlockThinVar   = 6, // Resource uses thin var block
+    AddrBlockThickVar  = 7, // Resource uses thick var block
+    AddrBlockMaxTiledType,
 
-    AddrBlockMaxTiledType = AddrBlock64KB + 1,
-};
-
-enum AddrBlockSet
-{
-    AddrBlockSetMicro     = 1 << AddrBlockMicro,
-    AddrBlockSetMacro4KB  = 1 << AddrBlock4KB,
-    AddrBlockSetMacro64KB = 1 << AddrBlock64KB,
-    AddrBlockSetVar       = 1 << AddrBlockVar,
-    AddrBlockSetLinear    = 1 << AddrBlockLinear,
-
-    AddrBlockSetMacro   = AddrBlockSetMacro4KB | AddrBlockSetMacro64KB,
-    AddrBlockSet2dGfx10 = AddrBlockSetMicro    | AddrBlockSetMacro,
-    AddrBlockSet3dGfx10 = AddrBlockSetMacro,
 };
 
 enum AddrSwSet
@@ -115,10 +113,97 @@ enum AddrSwSet
     AddrSwSetD = 1 << ADDR_SW_D,
     AddrSwSetR = 1 << ADDR_SW_R,
 
-    AddrSwSetAll         = AddrSwSetZ | AddrSwSetS | AddrSwSetD | AddrSwSetR,
-    AddrSwSet3dThinGfx10 = AddrSwSetZ | AddrSwSetR,
-    AddrSwSetColorGfx10  = AddrSwSetS | AddrSwSetD | AddrSwSetR,
+    AddrSwSetAll = AddrSwSetZ | AddrSwSetS | AddrSwSetD | AddrSwSetR,
 };
+
+const UINT_32 Size256 = 256u;
+const UINT_32 Size4K  = 4096u;
+const UINT_32 Size64K = 65536u;
+
+const UINT_32 Log2Size256 = 8u;
+const UINT_32 Log2Size4K  = 12u;
+const UINT_32 Log2Size64K = 16u;
+
+/**
+************************************************************************************************************************
+* @brief Bit setting for swizzle pattern
+************************************************************************************************************************
+*/
+union ADDR_BIT_SETTING
+{
+    struct
+    {
+        UINT_16 x;
+        UINT_16 y;
+        UINT_16 z;
+        UINT_16 s;
+    };
+    UINT_64 value;
+};
+
+/**
+************************************************************************************************************************
+* @brief Swizzle pattern information
+************************************************************************************************************************
+*/
+struct ADDR_SW_PATINFO
+{
+    UINT_8  maxItemCount;
+    UINT_8  nibble01Idx;
+    UINT_16 nibble2Idx;
+    UINT_16 nibble3Idx;
+    UINT_8  nibble4Idx;
+};
+
+/**
+************************************************************************************************************************
+*   InitBit
+*
+*   @brief
+*       Initialize bit setting value via a return value
+************************************************************************************************************************
+*/
+#define InitBit(c, index) (1ull << ((c << 4) + index))
+
+const UINT_64 X0  = InitBit(0,  0);
+const UINT_64 X1  = InitBit(0,  1);
+const UINT_64 X2  = InitBit(0,  2);
+const UINT_64 X3  = InitBit(0,  3);
+const UINT_64 X4  = InitBit(0,  4);
+const UINT_64 X5  = InitBit(0,  5);
+const UINT_64 X6  = InitBit(0,  6);
+const UINT_64 X7  = InitBit(0,  7);
+const UINT_64 X8  = InitBit(0,  8);
+const UINT_64 X9  = InitBit(0,  9);
+const UINT_64 X10 = InitBit(0, 10);
+const UINT_64 X11 = InitBit(0, 11);
+
+const UINT_64 Y0  = InitBit(1,  0);
+const UINT_64 Y1  = InitBit(1,  1);
+const UINT_64 Y2  = InitBit(1,  2);
+const UINT_64 Y3  = InitBit(1,  3);
+const UINT_64 Y4  = InitBit(1,  4);
+const UINT_64 Y5  = InitBit(1,  5);
+const UINT_64 Y6  = InitBit(1,  6);
+const UINT_64 Y7  = InitBit(1,  7);
+const UINT_64 Y8  = InitBit(1,  8);
+const UINT_64 Y9  = InitBit(1,  9);
+const UINT_64 Y10 = InitBit(1, 10);
+const UINT_64 Y11 = InitBit(1, 11);
+
+const UINT_64 Z0  = InitBit(2,  0);
+const UINT_64 Z1  = InitBit(2,  1);
+const UINT_64 Z2  = InitBit(2,  2);
+const UINT_64 Z3  = InitBit(2,  3);
+const UINT_64 Z4  = InitBit(2,  4);
+const UINT_64 Z5  = InitBit(2,  5);
+const UINT_64 Z6  = InitBit(2,  6);
+const UINT_64 Z7  = InitBit(2,  7);
+const UINT_64 Z8  = InitBit(2,  8);
+
+const UINT_64 S0  = InitBit(3,  0);
+const UINT_64 S1  = InitBit(3,  1);
+const UINT_64 S2  = InitBit(3,  2);
 
 /**
 ************************************************************************************************************************
@@ -211,6 +296,10 @@ public:
         const ADDR2_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_INPUT* pIn,
         ADDR2_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_OUTPUT*      pOut);
 
+    ADDR_E_RETURNCODE ComputeNonBlockCompressedView(
+        const ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_INPUT* pIn,
+        ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_OUTPUT*      pOut);
+
     ADDR_E_RETURNCODE Addr2GetPreferredSurfaceSetting(
         const ADDR2_GET_PREFERRED_SURF_SETTING_INPUT* pIn,
         ADDR2_GET_PREFERRED_SURF_SETTING_OUTPUT*      pOut) const;
@@ -236,6 +325,11 @@ protected:
     static const UINT_32 MaxMacroBits = 20;
 
     static const UINT_32 MaxMipLevels = 16;
+
+    BOOL_32 IsValidSwMode(AddrSwizzleMode swizzleMode) const
+    {
+        return (m_swizzleModeTable[swizzleMode].u32All != 0);
+    }
 
     // Checking block size
     BOOL_32 IsBlock256b(AddrSwizzleMode swizzleMode) const
@@ -356,7 +450,7 @@ protected:
         {
             blockSizeLog2 = 16;
         }
-        else if (IsBlockVariable(swizzleMode))
+        else if (IsBlockVariable(swizzleMode) && (m_blockVarSizeLog2 != 0))
         {
             blockSizeLog2 = m_blockVarSizeLog2;
         }
@@ -451,12 +545,18 @@ protected:
         return ADDR_NOTSUPPORTED;
     }
 
-    virtual ADDR_E_RETURNCODE HwlComputeDccAddrFromCoord(
+    virtual ADDR_E_RETURNCODE HwlSupportComputeDccAddrFromCoord(
+        const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn)
+    {
+        ADDR_NOT_IMPLEMENTED();
+        return ADDR_NOTSUPPORTED;
+    }
+
+    virtual VOID HwlComputeDccAddrFromCoord(
         const ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT* pIn,
         ADDR2_COMPUTE_DCC_ADDRFROMCOORD_OUTPUT*      pOut)
     {
         ADDR_NOT_IMPLEMENTED();
-        return ADDR_NOTSUPPORTED;
     }
 
     virtual ADDR_E_RETURNCODE HwlComputeCmaskAddrFromCoord(
@@ -547,6 +647,14 @@ protected:
     virtual ADDR_E_RETURNCODE HwlComputeSubResourceOffsetForSwizzlePattern(
         const ADDR2_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_INPUT* pIn,
         ADDR2_COMPUTE_SUBRESOURCE_OFFSET_FORSWIZZLEPATTERN_OUTPUT*      pOut) const
+    {
+        ADDR_NOT_IMPLEMENTED();
+        return ADDR_NOTSUPPORTED;
+    }
+
+    virtual ADDR_E_RETURNCODE HwlComputeNonBlockCompressedView(
+        const ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_INPUT* pIn,
+        ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_OUTPUT*      pOut) const
     {
         ADDR_NOT_IMPLEMENTED();
         return ADDR_NOTSUPPORTED;
@@ -653,12 +761,29 @@ protected:
         AddrSwizzleMode  swizzleMode) const;
 
     ADDR_E_RETURNCODE ComputeBlockDimension(
-        UINT_32*          pWidth,
-        UINT_32*          pHeight,
-        UINT_32*          pDepth,
-        UINT_32           bpp,
-        AddrResourceType  resourceType,
-        AddrSwizzleMode   swizzleMode) const;
+        UINT_32*         pWidth,
+        UINT_32*         pHeight,
+        UINT_32*         pDepth,
+        UINT_32          bpp,
+        AddrResourceType resourceType,
+        AddrSwizzleMode  swizzleMode) const;
+
+    virtual VOID ComputeThinBlockDimension(
+        UINT_32*         pWidth,
+        UINT_32*         pHeight,
+        UINT_32*         pDepth,
+        UINT_32          bpp,
+        UINT_32          numSamples,
+        AddrResourceType resourceType,
+        AddrSwizzleMode  swizzleMode) const;
+
+    VOID ComputeThickBlockDimension(
+        UINT_32*         pWidth,
+        UINT_32*         pHeight,
+        UINT_32*         pDepth,
+        UINT_32          bpp,
+        AddrResourceType resourceType,
+        AddrSwizzleMode  swizzleMode) const;
 
     static UINT_64 ComputePadSize(
         const Dim3d*      pBlkDim,
@@ -793,6 +918,27 @@ protected:
 
     VOID ComputeQbStereoInfo(ADDR2_COMPUTE_SURFACE_INFO_OUTPUT* pOut) const;
 
+    VOID FilterInvalidEqSwizzleMode(
+        ADDR2_SWMODE_SET& allowedSwModeSet,
+        AddrResourceType  resourceType,
+        UINT_32           elemLog2) const;
+
+    static BOOL_32 IsBlockTypeAvaiable(ADDR2_BLOCK_SET blockSet, AddrBlockType blockType);
+
+    static BOOL_32 BlockTypeWithinMemoryBudget(
+        UINT_64 minSize,
+        UINT_64 newBlockTypeSize,
+        UINT_32 ratioLow,
+        UINT_32 ratioHi,
+        DOUBLE  memoryBudget = 0.0f,
+        BOOL_32 newBlockTypeBigger = TRUE);
+
+#if DEBUG
+    VOID ValidateStereoInfo(
+        const ADDR2_COMPUTE_SURFACE_INFO_INPUT* pIn,
+        const ADDR2_COMPUTE_SURFACE_INFO_OUTPUT* pOut) const;
+#endif
+
     UINT_32 m_se;                       ///< Number of shader engine
     UINT_32 m_rbPerSe;                  ///< Number of render backend per shader engine
     UINT_32 m_maxCompFrag;              ///< Number of max compressed fragment
@@ -808,6 +954,22 @@ protected:
     UINT_32 m_blockVarSizeLog2;         ///< Log2 of block var size
 
     SwizzleModeFlags m_swizzleModeTable[ADDR_SW_MAX_TYPE];  ///< Swizzle mode table
+
+    // Max number of swizzle mode supported for equation
+    static const UINT_32    MaxSwModeType = 32;
+    // Max number of resource type (2D/3D) supported for equation
+    static const UINT_32    MaxRsrcType = 2;
+    // Max number of bpp (8bpp/16bpp/32bpp/64bpp/128bpp)
+    static const UINT_32    MaxElementBytesLog2  = 5;
+    // Almost all swizzle mode + resource type support equation
+    static const UINT_32    EquationTableSize = MaxElementBytesLog2 * MaxSwModeType * MaxRsrcType;
+    // Equation table
+    ADDR_EQUATION           m_equationTable[EquationTableSize];
+
+    // Number of equation entries in the table
+    UINT_32                 m_numEquations;
+    // Equation lookup table according to bpp and tile index
+    UINT_32                 m_equationLookupTable[MaxRsrcType][MaxSwModeType][MaxElementBytesLog2];
 
 private:
     // Disallow the copy constructor

@@ -61,12 +61,23 @@ TEMPLATE = template.Template(future_imports=['division'],
 
 #include "isl/isl.h"
 
+const uint16_t isl_format_name_offsets[] = { <% offset = 0 %>
+% for format in formats:
+    [ISL_FORMAT_${format.name}] = ${offset}, <% offset += 11 + len(format.name) + 1 %>
+% endfor
+};
+
+const char isl_format_names[] = {
+% for format in formats:
+  "ISL_FORMAT_${format.name}\\0"
+% endfor
+};
+
 const struct isl_format_layout
 isl_format_layouts[] = {
 % for format in formats:
   [ISL_FORMAT_${format.name}] = {
     .format = ISL_FORMAT_${format.name},
-    .name = "ISL_FORMAT_${format.name}",
     .bpb = ${format.bpb},
     .bw = ${format.bw},
     .bh = ${format.bh},
@@ -81,6 +92,7 @@ isl_format_layouts[] = {
       % endif
     % endfor
     },
+    .uniform_channel_type = ISL_${format.uniform_channel_type},
     .colorspace = ISL_COLORSPACE_${format.colorspace},
     .txc = ISL_TXC_${format.txc},
   },
@@ -93,7 +105,12 @@ isl_format_is_valid(enum isl_format format)
 {
     if (format >= sizeof(isl_format_layouts) / sizeof(isl_format_layouts[0]))
         return false;
-    return isl_format_layouts[format].name;
+
+    /* Only ISL_FORMAT_R32G32B32A32_FLOAT == 0 but that's a valid format.
+     * For all others, if this doesn't match then the entry in the table
+     * must not exist.
+     */
+    return isl_format_layouts[format].format == format;
 }
 
 enum isl_format
@@ -158,7 +175,6 @@ class Format(object):
         # pylint: disable=invalid-name
         self.name = line[0].strip()
 
-        # Future division makes this work in python 2.
         self.bpb = int(line[1])
         self.bw = line[2].strip()
         self.bh = line[3].strip()
@@ -179,6 +195,23 @@ class Format(object):
             chan.start = bit
             bit = bit + chan.size
 
+        # Set the uniform channel type, if the format has one.
+        #
+        # Iterate over all channels, not just those in self.order, because
+        # some formats have an empty 'order' field in the CSV (such as
+        # YCRCB_NORMAL).
+        self.uniform_channel_type = 'VOID'
+        for chan in self.channels:
+            if chan.type in (None, 'VOID'):
+                pass
+            elif self.uniform_channel_type == 'VOID':
+                self.uniform_channel_type = chan.type
+            elif self.uniform_channel_type == chan.type:
+                pass
+            else:
+                self.uniform_channel_type = 'VOID'
+                break
+
         # alpha doesn't have a colorspace of it's own.
         self.colorspace = line[13].strip().upper()
         if self.colorspace in ['']:
@@ -186,6 +219,17 @@ class Format(object):
 
         # This sets it to the line value, or if it's an empty string 'NONE'
         self.txc = line[14].strip().upper() or 'NONE'
+
+
+    @property
+    def channels(self):
+        yield self.r
+        yield self.g
+        yield self.b
+        yield self.a
+        yield self.l
+        yield self.i
+        yield self.p
 
 
 def reader(csvfile):

@@ -48,8 +48,8 @@ struct acp_entry : public exec_node {
    fs_reg dst;
    fs_reg src;
    unsigned global_idx;
-   uint8_t size_written;
-   uint8_t size_read;
+   unsigned size_written;
+   unsigned size_read;
    enum opcode opcode;
    bool saturate;
 };
@@ -94,7 +94,7 @@ class fs_copy_prop_dataflow
 {
 public:
    fs_copy_prop_dataflow(void *mem_ctx, cfg_t *cfg,
-                         const fs_live_variables *live,
+                         const fs_live_variables &live,
                          exec_list *out_acp[ACP_HASH_SIZE]);
 
    void setup_initial_values();
@@ -104,7 +104,7 @@ public:
 
    void *mem_ctx;
    cfg_t *cfg;
-   const fs_live_variables *live;
+   const fs_live_variables &live;
 
    acp_entry **acp;
    int num_acp;
@@ -115,7 +115,7 @@ public:
 } /* anonymous namespace */
 
 fs_copy_prop_dataflow::fs_copy_prop_dataflow(void *mem_ctx, cfg_t *cfg,
-                                             const fs_live_variables *live,
+                                             const fs_live_variables &live,
                                              exec_list *out_acp[ACP_HASH_SIZE])
    : mem_ctx(mem_ctx), cfg(cfg), live(live)
 {
@@ -194,7 +194,7 @@ fs_copy_prop_dataflow::setup_initial_values()
        * destinations.
        */
       for (int i = 0; i < num_acp; i++) {
-         unsigned idx = acp[i]->dst.nr & (acp_table_size - 1);
+         unsigned idx = reg_space(acp[i]->dst) & (acp_table_size - 1);
          acp_table[idx].push_tail(acp[i]);
       }
 
@@ -203,7 +203,7 @@ fs_copy_prop_dataflow::setup_initial_values()
             if (inst->dst.file != VGRF)
                continue;
 
-            unsigned idx = inst->dst.nr & (acp_table_size - 1);
+            unsigned idx = reg_space(inst->dst) & (acp_table_size - 1);
             foreach_in_list(acp_entry, entry, &acp_table[idx]) {
                if (regions_overlap(inst->dst, inst->size_written,
                                    entry->dst, entry->size_written))
@@ -220,16 +220,17 @@ fs_copy_prop_dataflow::setup_initial_values()
        * sources.
        */
       for (int i = 0; i < num_acp; i++) {
-         unsigned idx = acp[i]->src.nr & (acp_table_size - 1);
+         unsigned idx = reg_space(acp[i]->src) & (acp_table_size - 1);
          acp_table[idx].push_tail(acp[i]);
       }
 
       foreach_block (block, cfg) {
          foreach_inst_in_block(fs_inst, inst, block) {
-            if (inst->dst.file != VGRF)
+            if (inst->dst.file != VGRF &&
+                inst->dst.file != FIXED_GRF)
                continue;
 
-            unsigned idx = inst->dst.nr & (acp_table_size - 1);
+            unsigned idx = reg_space(inst->dst) & (acp_table_size - 1);
             foreach_in_list(acp_entry, entry, &acp_table[idx]) {
                if (regions_overlap(inst->dst, inst->size_written,
                                    entry->src, entry->size_read))
@@ -264,8 +265,8 @@ fs_copy_prop_dataflow::setup_initial_values()
       for (int i = 0; i < num_acp; i++) {
          BITSET_SET(bd[block->num].undef, i);
          for (unsigned off = 0; off < acp[i]->size_written; off += REG_SIZE) {
-            if (BITSET_TEST(live->block_data[block->num].defout,
-                            live->var_from_reg(byte_offset(acp[i]->dst, off))))
+            if (BITSET_TEST(live.block_data[block->num].defout,
+                            live.var_from_reg(byte_offset(acp[i]->dst, off))))
                BITSET_CLEAR(bd[block->num].undef, i);
          }
       }
@@ -366,8 +367,9 @@ is_logic_op(enum opcode opcode)
 }
 
 static bool
-can_take_stride(fs_inst *inst, unsigned arg, unsigned stride,
-                const gen_device_info *devinfo)
+can_take_stride(fs_inst *inst, brw_reg_type dst_type,
+                unsigned arg, unsigned stride,
+                const intel_device_info *devinfo)
 {
    if (stride > 4)
       return false;
@@ -376,9 +378,9 @@ can_take_stride(fs_inst *inst, unsigned arg, unsigned stride,
     * of the corresponding channel of the destination, and the provided stride
     * would break this restriction.
     */
-   if (has_dst_aligned_region_restriction(devinfo, inst) &&
+   if (has_dst_aligned_region_restriction(devinfo, inst, dst_type) &&
        !(type_sz(inst->src[arg].type) * stride ==
-           type_sz(inst->dst.type) * inst->dst.stride ||
+           type_sz(dst_type) * inst->dst.stride ||
          stride == 0))
       return false;
 
@@ -417,10 +419,10 @@ can_take_stride(fs_inst *inst, unsigned arg, unsigned stride,
     * restrictions.
     */
    if (inst->is_math()) {
-      if (devinfo->gen == 6 || devinfo->gen == 7) {
+      if (devinfo->ver == 6 || devinfo->ver == 7) {
          assert(inst->dst.stride == 1);
          return stride == 1 || stride == 0;
-      } else if (devinfo->gen >= 8) {
+      } else if (devinfo->ver >= 8) {
          return stride == inst->dst.stride || stride == 0;
       }
    }
@@ -436,6 +438,7 @@ instruction_requires_packed_data(fs_inst *inst)
    case FS_OPCODE_DDX_COARSE:
    case FS_OPCODE_DDY_FINE:
    case FS_OPCODE_DDY_COARSE:
+   case SHADER_OPCODE_QUAD_SWIZZLE:
       return true;
    default:
       return false;
@@ -451,10 +454,24 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
    if (entry->src.file == IMM)
       return false;
    assert(entry->src.file == VGRF || entry->src.file == UNIFORM ||
-          entry->src.file == ATTR);
+          entry->src.file == ATTR || entry->src.file == FIXED_GRF);
 
+   /* Avoid propagating a LOAD_PAYLOAD instruction into another if there is a
+    * good chance that we'll be able to eliminate the latter through register
+    * coalescing.  If only part of the sources of the second LOAD_PAYLOAD can
+    * be simplified through copy propagation we would be making register
+    * coalescing impossible, ending up with unnecessary copies in the program.
+    * This is also the case for is_multi_copy_payload() copies that can only
+    * be coalesced when the instruction is lowered into a sequence of MOVs.
+    *
+    * Worse -- In cases where the ACP entry was the result of CSE combining
+    * multiple LOAD_PAYLOAD subexpressions, propagating the first LOAD_PAYLOAD
+    * into the second would undo the work of CSE, leading to an infinite
+    * optimization loop.  Avoid this by detecting LOAD_PAYLOAD copies from CSE
+    * temporaries which should match is_coalescing_payload().
+    */
    if (entry->opcode == SHADER_OPCODE_LOAD_PAYLOAD &&
-       inst->opcode == SHADER_OPCODE_LOAD_PAYLOAD)
+       (is_coalescing_payload(alloc, inst) || is_multi_copy_payload(inst)))
       return false;
 
    assert(entry->dst.file == VGRF);
@@ -468,6 +485,21 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
                             entry->dst, entry->size_written))
       return false;
 
+   /* Avoid propagating a FIXED_GRF register into an EOT instruction in order
+    * for any register allocation restrictions to be applied.
+    */
+   if (entry->src.file == FIXED_GRF && inst->eot)
+      return false;
+
+   /* Avoid propagating odd-numbered FIXED_GRF registers into the first source
+    * of a LINTERP instruction on platforms where the PLN instruction has
+    * register alignment restrictions.
+    */
+   if (devinfo->has_pln && devinfo->ver <= 6 &&
+       entry->src.file == FIXED_GRF && (entry->src.nr & 1) &&
+       inst->opcode == FS_OPCODE_LINTERP && arg == 0)
+      return false;
+
    /* we can't generally copy-propagate UD negations because we
     * can end up accessing the resulting values as signed integers
     * instead. See also resolve_ud_negate() and comment in
@@ -479,27 +511,74 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
 
    bool has_source_modifiers = entry->src.abs || entry->src.negate;
 
-   if ((has_source_modifiers || entry->src.file == UNIFORM ||
-        !entry->src.is_contiguous()) &&
-       !inst->can_do_source_mods(devinfo))
+   if (has_source_modifiers && !inst->can_do_source_mods(devinfo))
       return false;
 
+   /* Reject cases that would violate register regioning restrictions. */
+   if ((entry->src.file == UNIFORM || !entry->src.is_contiguous()) &&
+       ((devinfo->ver == 6 && inst->is_math()) ||
+        inst->is_send_from_grf() ||
+        inst->uses_indirect_addressing())) {
+      return false;
+   }
+
    if (has_source_modifiers &&
-       inst->opcode == SHADER_OPCODE_GEN4_SCRATCH_WRITE)
+       inst->opcode == SHADER_OPCODE_GFX4_SCRATCH_WRITE)
       return false;
 
    /* Some instructions implemented in the generator backend, such as
     * derivatives, assume that their operands are packed so we can't
     * generally propagate strided regions to them.
     */
-   if (instruction_requires_packed_data(inst) && entry->src.stride > 1)
+   const unsigned entry_stride = (entry->src.file == FIXED_GRF ? 1 :
+                                  entry->src.stride);
+   if (instruction_requires_packed_data(inst) && entry_stride != 1)
       return false;
+
+   const brw_reg_type dst_type = (has_source_modifiers &&
+                                  entry->dst.type != inst->src[arg].type) ?
+      entry->dst.type : inst->dst.type;
 
    /* Bail if the result of composing both strides would exceed the
     * hardware limit.
     */
-   if (!can_take_stride(inst, arg, entry->src.stride * inst->src[arg].stride,
+   if (!can_take_stride(inst, dst_type, arg,
+                        entry_stride * inst->src[arg].stride,
                         devinfo))
+      return false;
+
+   /* From the Cherry Trail/Braswell PRMs, Volume 7: 3D Media GPGPU:
+    *    EU Overview
+    *       Register Region Restrictions
+    *          Special Requirements for Handling Double Precision Data Types :
+    *
+    *   "When source or destination datatype is 64b or operation is integer
+    *    DWord multiply, regioning in Align1 must follow these rules:
+    *
+    *      1. Source and Destination horizontal stride must be aligned to the
+    *         same qword.
+    *      2. Regioning must ensure Src.Vstride = Src.Width * Src.Hstride.
+    *      3. Source and Destination offset must be the same, except the case
+    *         of scalar source."
+    *
+    * Most of this is already checked in can_take_stride(), we're only left
+    * with checking 3.
+    */
+   if (has_dst_aligned_region_restriction(devinfo, inst, dst_type) &&
+       entry_stride != 0 &&
+       (reg_offset(inst->dst) % REG_SIZE) != (reg_offset(entry->src) % REG_SIZE))
+      return false;
+
+   /* Bail if the source FIXED_GRF region of the copy cannot be trivially
+    * composed with the source region of the instruction -- E.g. because the
+    * copy uses some extended stride greater than 4 not supported natively by
+    * the hardware as a horizontal stride, or because instruction compression
+    * could require us to use a vertical stride shorter than a GRF.
+    */
+   if (entry->src.file == FIXED_GRF &&
+       (inst->src[arg].stride > 4 ||
+        inst->dst.component_size(inst->exec_size) >
+        inst->src[arg].component_size(inst->exec_size)))
       return false;
 
    /* Bail if the instruction type is larger than the execution type of the
@@ -523,7 +602,7 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
     *
     * Which would have different semantics.
     */
-   if (entry->src.stride != 1 &&
+   if (entry_stride != 1 &&
        (inst->src[arg].stride *
         type_sz(inst->src[arg].type)) % type_sz(entry->src.type) != 0)
       return false;
@@ -540,7 +619,7 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
         type_sz(entry->dst.type) != type_sz(inst->src[arg].type)))
       return false;
 
-   if (devinfo->gen >= 8 && (entry->src.negate || entry->src.abs) &&
+   if (devinfo->ver >= 8 && (entry->src.negate || entry->src.abs) &&
        is_logic_op(inst->opcode)) {
       return false;
    }
@@ -561,13 +640,42 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
       }
    }
 
+   /* Save the offset of inst->src[arg] relative to entry->dst for it to be
+    * applied later.
+    */
+   const unsigned rel_offset = inst->src[arg].offset - entry->dst.offset;
+
+   /* Fold the copy into the instruction consuming it. */
    inst->src[arg].file = entry->src.file;
    inst->src[arg].nr = entry->src.nr;
-   inst->src[arg].stride *= entry->src.stride;
-   inst->saturate = inst->saturate || entry->saturate;
+   inst->src[arg].subnr = entry->src.subnr;
+   inst->src[arg].offset = entry->src.offset;
 
-   /* Compute the offset of inst->src[arg] relative to entry->dst */
-   const unsigned rel_offset = inst->src[arg].offset - entry->dst.offset;
+   /* Compose the strides of both regions. */
+   if (entry->src.file == FIXED_GRF) {
+      if (inst->src[arg].stride) {
+         const unsigned orig_width = 1 << entry->src.width;
+         const unsigned reg_width = REG_SIZE / (type_sz(inst->src[arg].type) *
+                                                inst->src[arg].stride);
+         inst->src[arg].width = cvt(MIN2(orig_width, reg_width)) - 1;
+         inst->src[arg].hstride = cvt(inst->src[arg].stride);
+         inst->src[arg].vstride = inst->src[arg].hstride + inst->src[arg].width;
+      } else {
+         inst->src[arg].vstride = inst->src[arg].hstride =
+            inst->src[arg].width = 0;
+      }
+
+      inst->src[arg].stride = 1;
+
+      /* Hopefully no Align16 around here... */
+      assert(entry->src.swizzle == BRW_SWIZZLE_XYZW);
+      inst->src[arg].swizzle = entry->src.swizzle;
+   } else {
+      inst->src[arg].stride *= entry->src.stride;
+   }
+
+   /* Compose any saturate modifiers. */
+   inst->saturate = inst->saturate || entry->saturate;
 
    /* Compute the first component of the copy that the instruction is
     * reading, and the base byte offset within that component.
@@ -579,9 +687,8 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
    /* Calculate the byte offset at the origin of the copy of the given
     * component and suboffset.
     */
-   inst->src[arg].offset = suboffset +
-      component * entry->src.stride * type_sz(entry->src.type) +
-      entry->src.offset;
+   inst->src[arg] = byte_offset(inst->src[arg],
+      component * entry_stride * type_sz(entry->src.type) + suboffset);
 
    if (has_source_modifiers) {
       if (entry->dst.type != inst->src[arg].type) {
@@ -645,14 +752,14 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
       val.type = inst->src[i].type;
 
       if (inst->src[i].abs) {
-         if ((devinfo->gen >= 8 && is_logic_op(inst->opcode)) ||
+         if ((devinfo->ver >= 8 && is_logic_op(inst->opcode)) ||
              !brw_abs_immediate(val.type, &val.as_brw_reg())) {
             continue;
          }
       }
 
       if (inst->src[i].negate) {
-         if ((devinfo->gen >= 8 && is_logic_op(inst->opcode)) ||
+         if ((devinfo->ver >= 8 && is_logic_op(inst->opcode)) ||
              !brw_negate_immediate(val.type, &val.as_brw_reg())) {
             continue;
          }
@@ -669,17 +776,17 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
       case SHADER_OPCODE_INT_QUOTIENT:
       case SHADER_OPCODE_INT_REMAINDER:
          /* FINISHME: Promote non-float constants and remove this. */
-         if (devinfo->gen < 8)
+         if (devinfo->ver < 8)
             break;
-         /* fallthrough */
+         FALLTHROUGH;
       case SHADER_OPCODE_POW:
          /* Allow constant propagation into src1 (except on Gen 6 which
           * doesn't support scalar source math), and let constant combining
           * promote the constant on Gen < 8.
           */
-         if (devinfo->gen == 6)
+         if (devinfo->ver == 6)
             break;
-         /* fallthrough */
+         FALLTHROUGH;
       case BRW_OPCODE_BFI1:
       case BRW_OPCODE_ASR:
       case BRW_OPCODE_SHL:
@@ -751,7 +858,11 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
          if (i == 1) {
             inst->src[i] = val;
             progress = true;
-         } else if (i == 0 && inst->src[1].file != IMM) {
+         } else if (i == 0 && inst->src[1].file != IMM &&
+                    (inst->conditional_mod == BRW_CONDITIONAL_NONE ||
+                     /* Only GE and L are commutative. */
+                     inst->conditional_mod == BRW_CONDITIONAL_GE ||
+                     inst->conditional_mod == BRW_CONDITIONAL_L)) {
             inst->src[0] = inst->src[1];
             inst->src[1] = val;
 
@@ -790,6 +901,8 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
       case SHADER_OPCODE_LOD_LOGICAL:
       case SHADER_OPCODE_TG4_LOGICAL:
       case SHADER_OPCODE_TG4_OFFSET_LOGICAL:
+      case SHADER_OPCODE_SAMPLEINFO_LOGICAL:
+      case SHADER_OPCODE_IMAGE_SIZE_LOGICAL:
       case SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL:
       case SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL:
       case SHADER_OPCODE_UNTYPED_SURFACE_READ_LOGICAL:
@@ -833,9 +946,12 @@ can_propagate_from(fs_inst *inst)
                               inst->src[0], inst->size_read(0))) ||
             inst->src[0].file == ATTR ||
             inst->src[0].file == UNIFORM ||
-            inst->src[0].file == IMM) &&
+            inst->src[0].file == IMM ||
+            (inst->src[0].file == FIXED_GRF &&
+             inst->src[0].is_contiguous())) &&
            inst->src[0].type == inst->dst.type &&
-           !inst->is_partial_write());
+           !inst->is_partial_write()) ||
+          is_identity_payload(FIXED_GRF, inst);
 }
 
 /* Walks a basic block and does copy propagation on it using the acp
@@ -862,7 +978,7 @@ fs_visitor::opt_copy_propagation_local(void *copy_prop_ctx, bblock_t *block,
       }
 
       /* kill the destination from the ACP */
-      if (inst->dst.file == VGRF) {
+      if (inst->dst.file == VGRF || inst->dst.file == FIXED_GRF) {
          foreach_in_list_safe(acp_entry, entry, &acp[inst->dst.nr % ACP_HASH_SIZE]) {
             if (regions_overlap(entry->dst, entry->size_written,
                                 inst->dst, inst->size_written))
@@ -888,11 +1004,12 @@ fs_visitor::opt_copy_propagation_local(void *copy_prop_ctx, bblock_t *block,
        * operand of another instruction, add it to the ACP.
        */
       if (can_propagate_from(inst)) {
-         acp_entry *entry = ralloc(copy_prop_ctx, acp_entry);
+         acp_entry *entry = rzalloc(copy_prop_ctx, acp_entry);
          entry->dst = inst->dst;
          entry->src = inst->src[0];
          entry->size_written = inst->size_written;
-         entry->size_read = inst->size_read(0);
+         for (unsigned i = 0; i < inst->sources; i++)
+            entry->size_read += inst->size_read(i);
          entry->opcode = inst->opcode;
          entry->saturate = inst->saturate;
          acp[entry->dst.nr % ACP_HASH_SIZE].push_tail(entry);
@@ -904,7 +1021,9 @@ fs_visitor::opt_copy_propagation_local(void *copy_prop_ctx, bblock_t *block,
             assert(effective_width * type_sz(inst->src[i].type) % REG_SIZE == 0);
             const unsigned size_written = effective_width *
                                           type_sz(inst->src[i].type);
-            if (inst->src[i].file == VGRF) {
+            if (inst->src[i].file == VGRF ||
+                (inst->src[i].file == FIXED_GRF &&
+                 inst->src[i].is_contiguous())) {
                acp_entry *entry = rzalloc(copy_prop_ctx, acp_entry);
                entry->dst = byte_offset(inst->dst, offset);
                entry->src = inst->src[i];
@@ -935,7 +1054,7 @@ fs_visitor::opt_copy_propagation()
    for (int i = 0; i < cfg->num_blocks; i++)
       out_acp[i] = new exec_list [ACP_HASH_SIZE];
 
-   calculate_live_intervals();
+   const fs_live_variables &live = live_analysis.require();
 
    /* First, walk through each block doing local copy propagation and getting
     * the set of copies available at the end of the block.
@@ -957,15 +1076,15 @@ fs_visitor::opt_copy_propagation()
       for (unsigned a = 0; a < ACP_HASH_SIZE; a++) {
          foreach_in_list_safe(acp_entry, entry, &out_acp[block->num][a]) {
             assert(entry->dst.file == VGRF);
-            if (block->start_ip <= virtual_grf_start[entry->dst.nr] &&
-                virtual_grf_end[entry->dst.nr] <= block->end_ip)
+            if (block->start_ip <= live.vgrf_start[entry->dst.nr] &&
+                live.vgrf_end[entry->dst.nr] <= block->end_ip)
                entry->remove();
          }
       }
    }
 
    /* Do dataflow analysis for those available copies. */
-   fs_copy_prop_dataflow dataflow(copy_prop_ctx, cfg, live_intervals, out_acp);
+   fs_copy_prop_dataflow dataflow(copy_prop_ctx, cfg, live, out_acp);
 
    /* Next, re-run local copy propagation, this time with the set of copies
     * provided by the dataflow analysis available at the start of a block.
@@ -989,7 +1108,8 @@ fs_visitor::opt_copy_propagation()
    ralloc_free(copy_prop_ctx);
 
    if (progress)
-      invalidate_live_intervals();
+      invalidate_analysis(DEPENDENCY_INSTRUCTION_DATA_FLOW |
+                          DEPENDENCY_INSTRUCTION_DETAIL);
 
    return progress;
 }

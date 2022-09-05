@@ -335,12 +335,7 @@ lp_do_offset_tri(struct gallivm_state *gallivm,
    z0z1z2 = LLVMBuildShuffleVector(b, z0z1, attribv[2], LLVMConstVector(shuffles, 4), "");
    zoffset = lp_build_broadcast_scalar(bld, zoffset);
 
-   /* clamp and do offset */
-   /*
-    * FIXME I suspect the clamp (is that even right to always clamp to fixed
-    * 0.0/1.0?) should really be per fragment?
-    */
-   z0z1z2 = lp_build_clamp(bld, LLVMBuildFAdd(b, z0z1z2, zoffset, ""), bld->zero, bld->one);
+   z0z1z2 = LLVMBuildFAdd(b, z0z1z2, zoffset, "");
 
    /* insert into args->a0.z, a1.z, a2.z:
     */
@@ -481,7 +476,7 @@ apply_perspective_corr( struct gallivm_state *gallivm,
 
 
 /**
- * Applys cylindrical wrapping to vertex attributes if enabled.
+ * Apply cylindrical wrapping to vertex attributes if enabled.
  * Input coordinates must be in [0, 1] range, otherwise results are undefined.
  *
  * @param cyl_wrap  TGSI_CYLINDRICAL_WRAP_x flags
@@ -652,7 +647,7 @@ init_args(struct gallivm_state *gallivm,
    load_attribute(gallivm, args, key, 0, attr_pos);
 
    pixel_center = lp_build_const_vec(gallivm, typef4,
-                                     key->pixel_center_half ? 0.5 : 0.0);
+                                     (!key->multisample && key->pixel_center_half) ? 0.5 : 0.0);
 
    /*
     * xy are first two elems in v0a/v1a/v2a but just use vec4 arit
@@ -730,7 +725,7 @@ generate_setup_variant(struct lp_setup_variant_key *key,
    snprintf(func_name, sizeof(func_name), "setup_variant_%u",
             variant->no);
 
-   variant->gallivm = gallivm = gallivm_create(func_name, lp->context);
+   variant->gallivm = gallivm = gallivm_create(func_name, lp->context, NULL);
    if (!variant->gallivm) {
       goto fail;
    }
@@ -843,6 +838,7 @@ lp_make_setup_variant_key(struct llvmpipe_context *lp,
    key->num_inputs = fs->info.base.num_inputs;
    key->flatshade_first = lp->rasterizer->flatshade_first;
    key->pixel_center_half = lp->rasterizer->half_pixel_center;
+   key->multisample = lp->rasterizer->multisample;
    key->twoside = lp->rasterizer->light_twoside;
    key->size = Offset(struct lp_setup_variant_key,
                       inputs[key->num_inputs]);
@@ -863,7 +859,7 @@ lp_make_setup_variant_key(struct llvmpipe_context *lp,
       key->pgon_offset_units = (float) lp->rasterizer->offset_units;
    } else {
       key->pgon_offset_units =
-         (float) (lp->rasterizer->offset_units * lp->mrd);
+         (float) (lp->rasterizer->offset_units * lp->mrd * 2);
    }
 
    key->pgon_offset_scale = lp->rasterizer->offset_scale;

@@ -55,7 +55,7 @@ st_choose_format(struct st_context *st, GLenum internalFormat,
                  GLenum format, GLenum type,
                  enum pipe_texture_target target, unsigned sample_count,
                  unsigned storage_sample_count,
-                 unsigned bindings, boolean allow_dxt);
+                 unsigned bindings, bool swap_bytes, bool allow_dxt);
 
 extern enum pipe_format
 st_choose_renderbuffer_format(struct st_context *st,
@@ -76,8 +76,7 @@ st_QueryInternalFormat(struct gl_context *ctx, GLenum target,
                        GLenum internalFormat, GLenum pname, GLint *params);
 
 extern void
-st_translate_color(const union gl_color_union *colorIn,
-                   union pipe_color_union *colorOut,
+st_translate_color(union pipe_color_union *color,
                    GLenum baseFormat, GLboolean is_integer);
 
 #ifdef __cplusplus

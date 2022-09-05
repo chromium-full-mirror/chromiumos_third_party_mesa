@@ -25,8 +25,8 @@
 
 #include <xf86drm.h>
 #include <nouveau_drm.h>
-#include "util/u_format.h"
-#include "util/u_format_s3tc.h"
+#include "util/format/u_format.h"
+#include "util/format/u_format_s3tc.h"
 #include "util/u_screen.h"
 
 #include "nv_object.xml.h"
@@ -105,6 +105,9 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    /* nv35 capabilities */
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
       return eng3d->oclass == NV35_3D_CLASS || eng3d->oclass >= NV40_3D_CLASS;
+   case PIPE_CAP_SUPPORTED_PRIM_MODES_WITH_RESTART:
+   case PIPE_CAP_SUPPORTED_PRIM_MODES:
+      return BITFIELD_MASK(PIPE_PRIM_MAX);
    /* nv4x capabilities */
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_NPOT_TEXTURES:
@@ -112,8 +115,10 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
    case PIPE_CAP_PRIMITIVE_RESTART:
+   case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
       return (eng3d->oclass >= NV40_3D_CLASS) ? 1 : 0;
    /* unsupported */
+   case PIPE_CAP_EMULATE_NONFIXED_PRIMITIVE_RESTART:
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
@@ -182,8 +187,8 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
    case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
-   case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
@@ -204,7 +209,6 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
    case PIPE_CAP_CULL_DISTANCE:
-   case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
    case PIPE_CAP_TGSI_VOTE:
    case PIPE_CAP_MAX_WINDOW_RECTANGLES:
    case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
@@ -350,6 +354,10 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_INTEGERS:
       case PIPE_SHADER_CAP_INT64_ATOMICS:
       case PIPE_SHADER_CAP_FP16:
+      case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+      case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
+      case PIPE_SHADER_CAP_INT16:
+      case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
@@ -361,8 +369,9 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
-      case PIPE_SHADER_CAP_SCALAR_ISA:
          return 0;
+      case PIPE_SHADER_CAP_SUPPORTED_IRS:
+         return 1 << PIPE_SHADER_IR_TGSI;
       default:
          debug_printf("unknown vertex shader param %d\n", param);
          return 0;
@@ -403,6 +412,10 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_SUBROUTINES:
       case PIPE_SHADER_CAP_INTEGERS:
       case PIPE_SHADER_CAP_FP16:
+      case PIPE_SHADER_CAP_FP16_DERIVATIVES:
+      case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
+      case PIPE_SHADER_CAP_INT16:
+      case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
@@ -414,8 +427,9 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
-      case PIPE_SHADER_CAP_SCALAR_ISA:
          return 0;
+      case PIPE_SHADER_CAP_SUPPORTED_IRS:
+         return 1 << PIPE_SHADER_IR_TGSI;
       default:
          debug_printf("unknown fragment shader param %d\n", param);
          return 0;
@@ -452,6 +466,14 @@ nv30_screen_is_format_supported(struct pipe_screen *pscreen,
    /* shared is always supported */
    bindings &= ~PIPE_BIND_SHARED;
 
+   if (bindings & PIPE_BIND_INDEX_BUFFER) {
+      if (format != PIPE_FORMAT_R8_UINT &&
+          format != PIPE_FORMAT_R16_UINT &&
+          format != PIPE_FORMAT_R32_UINT)
+         return false;
+      bindings &= ~PIPE_BIND_INDEX_BUFFER;
+   }
+
    return (nv30_format_info(pscreen, format)->bindings & bindings) == bindings;
 }
 
@@ -486,17 +508,7 @@ nv30_screen_destroy(struct pipe_screen *pscreen)
    if (!nouveau_drm_screen_unref(&screen->base))
       return;
 
-   if (screen->base.fence.current) {
-      struct nouveau_fence *current = NULL;
-
-      /* nouveau_fence_wait will create a new current fence, so wait on the
-       * _current_ one, and remove both.
-       */
-      nouveau_fence_ref(screen->base.fence.current, &current);
-      nouveau_fence_wait(current, NULL);
-      nouveau_fence_ref(NULL, &current);
-      nouveau_fence_ref(NULL, &screen->base.fence.current);
-   }
+   nouveau_fence_cleanup(&screen->base);
 
    nouveau_bo_ref(NULL, &screen->notify);
 
@@ -657,7 +669,7 @@ nv30_screen_create(struct nouveau_device *dev)
    if (ret)
       FAIL_SCREEN_INIT("error creating query heap: %d\n", ret);
 
-   LIST_INITHEAD(&screen->queries);
+   list_inithead(&screen->queries);
 
    /* Vertex program resources (code/data), currently 6 of the constant
     * slots are reserved to implement user clipping planes

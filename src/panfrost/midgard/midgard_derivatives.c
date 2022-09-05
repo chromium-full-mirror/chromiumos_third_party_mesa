@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2019 Collabora, Ltd.
+ * Copyright (C) 2019-2020 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -50,18 +51,18 @@
  */
 
 static unsigned
-mir_derivative_op(nir_op op)
+mir_derivative_mode(nir_op op)
 {
         switch (op) {
         case nir_op_fddx:
         case nir_op_fddx_fine:
         case nir_op_fddx_coarse:
-                return TEXTURE_OP_DFDX;
+                return TEXTURE_DFDX;
 
         case nir_op_fddy:
         case nir_op_fddy_fine:
         case nir_op_fddy_coarse:
-                return TEXTURE_OP_DFDY;
+                return TEXTURE_DFDY;
 
         default:
                 unreachable("Invalid derivative op");
@@ -72,12 +73,18 @@ mir_derivative_op(nir_op op)
  * implicitly */
 
 bool
-mir_op_computes_derivatives(unsigned op)
+mir_op_computes_derivatives(gl_shader_stage stage, unsigned op)
 {
+        /* Only fragment shaders may compute derivatives, but the sense of
+         * "normal" changes in vertex shaders on certain GPUs */
+
+        if (op == midgard_tex_op_normal && stage != MESA_SHADER_FRAGMENT)
+                return false;
+
         switch (op) {
-        case TEXTURE_OP_NORMAL:
-        case TEXTURE_OP_DFDX:
-        case TEXTURE_OP_DFDY:
+        case midgard_tex_op_normal:
+        case midgard_tex_op_derivative:
+                assert(stage == MESA_SHADER_FRAGMENT);
                 return true;
         default:
                 return false;
@@ -94,16 +101,15 @@ midgard_emit_derivatives(compiler_context *ctx, nir_alu_instr *instr)
         midgard_instruction ins = {
                 .type = TAG_TEXTURE_4,
                 .mask = mask_of(nr_components),
-                .ssa_args = {
-                        .dest = nir_dest_index(ctx, &instr->dest.dest),
-                        .src = { nir_alu_src_index(ctx, &instr->src[0]), -1, -1 },
-                },
+                .dest = nir_dest_index(&instr->dest.dest),
+                .dest_type = nir_type_float32,
+                .src = { ~0, nir_src_index(ctx, &instr->src[0].src), ~0, ~0 },
+                .swizzle = SWIZZLE_IDENTITY_4,
+                .src_types = { nir_type_float32, nir_type_float32 },
+                .op = midgard_tex_op_derivative,
                 .texture = {
-                        .op = mir_derivative_op(instr->op),
-                        .format = MALI_TEX_2D,
-                        .swizzle = SWIZZLE_XYXX,
-                        .in_reg_swizzle = SWIZZLE_XYXX,
-
+                        .mode = mir_derivative_mode(instr->op),
+                        .format = 2,
                         .in_reg_full = 1,
                         .out_full = 1,
                         .sampler_type = MALI_SAMPLER_FLOAT,
@@ -114,9 +120,6 @@ midgard_emit_derivatives(compiler_context *ctx, nir_alu_instr *instr)
                 ins.mask &= instr->dest.write_mask;
 
         emit_mir_instruction(ctx, ins);
-
-        /* TODO: Set .cont/.last automatically via dataflow analysis */
-        ctx->texture_op_count++;
 }
 
 void
@@ -124,7 +127,7 @@ midgard_lower_derivatives(compiler_context *ctx, midgard_block *block)
 {
         mir_foreach_instr_in_block_safe(block, ins) {
                 if (ins->type != TAG_TEXTURE_4) continue;
-                if (!OP_IS_DERIVATIVE(ins->texture.op)) continue;
+                if (ins->op != midgard_tex_op_derivative) continue;
 
                 /* Check if we need to split */
 
@@ -144,21 +147,19 @@ midgard_lower_derivatives(compiler_context *ctx, midgard_block *block)
                 dup.mask &= 0b1100;
 
                 /* Fixup swizzles */
-                assert(ins->texture.swizzle == SWIZZLE_XYXX);
-                assert(ins->texture.in_reg_swizzle == SWIZZLE_XYXX);
-                dup.texture.swizzle = SWIZZLE_XXXY;
-                dup.texture.in_reg_swizzle = SWIZZLE_ZWWW;
+                dup.swizzle[0][0] = dup.swizzle[0][1] = dup.swizzle[0][2] = COMPONENT_X;
+                dup.swizzle[0][3] = COMPONENT_Y;
+
+                dup.swizzle[1][0] = COMPONENT_Z;
+                dup.swizzle[1][1] = dup.swizzle[1][2] = dup.swizzle[1][3] = COMPONENT_W;
 
                 /* Insert the new instruction */
-                mir_insert_instruction_before(mir_next_op(ins), dup);
-
-                /* TODO: Set .cont/.last automatically via dataflow analysis */
-                ctx->texture_op_count++;
+                mir_insert_instruction_before(ctx, mir_next_op(ins), dup);
 
                 /* We'll need both instructions to write to the same index, so
                  * rewrite to use a register */
 
                 unsigned new = make_compiler_temp_reg(ctx);
-                mir_rewrite_index(ctx, ins->ssa_args.dest, new);
+                mir_rewrite_index(ctx, ins->dest, new);
         }
 }

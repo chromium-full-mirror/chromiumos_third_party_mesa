@@ -75,6 +75,7 @@ struct lp_setup_context
 
    struct pipe_context *pipe;
    struct vertex_info *vertex_info;
+   uint view_index;
    uint prim;
    uint vertex_size;
    uint nr_vertices;
@@ -99,7 +100,10 @@ struct lp_setup_context
    boolean ccw_is_frontface;
    boolean scissor_test;
    boolean point_size_per_vertex;
+   boolean legacy_points;
    boolean rasterizer_discard;
+   boolean multisample;
+   boolean rectangular_lines;
    unsigned cullmode;
    unsigned bottom_edge_rule;
    float pixel_offset;
@@ -147,6 +151,10 @@ struct lp_setup_context
    struct {
       struct pipe_shader_buffer current;
    } ssbos[LP_MAX_TGSI_SHADER_BUFFERS];
+
+   struct {
+      struct pipe_image_view current;
+   } images[LP_MAX_TGSI_SHADER_IMAGES];
 
    struct {
       struct pipe_blend_color current;

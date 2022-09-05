@@ -1,3 +1,0 @@
-shared_FILES := \
-        shared/pan_tiling.c \
-        shared/pan_tiling.h

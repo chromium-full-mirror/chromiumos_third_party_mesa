@@ -54,9 +54,6 @@ _mesa_is_winsys_fbo(const struct gl_framebuffer *fb)
 
 
 
-extern void
-_mesa_init_fbobjects(struct gl_context *ctx);
-
 extern struct gl_framebuffer *
 _mesa_get_incomplete_framebuffer(void);
 
@@ -190,11 +187,19 @@ _es_RenderbufferStorageEXT(GLenum target, GLenum internalFormat,
 extern void GLAPIENTRY
 _mesa_NamedRenderbufferStorage(GLuint renderbuffer, GLenum internalformat,
                                GLsizei width, GLsizei height);
+extern void GLAPIENTRY
+_mesa_NamedRenderbufferStorageEXT(GLuint renderbuffer, GLenum internalformat,
+                                  GLsizei width, GLsizei height);
 
 extern void GLAPIENTRY
 _mesa_NamedRenderbufferStorageMultisample(GLuint renderbuffer, GLsizei samples,
                                           GLenum internalformat,
                                           GLsizei width, GLsizei height);
+
+extern void GLAPIENTRY
+_mesa_NamedRenderbufferStorageMultisampleEXT(GLuint renderbuffer, GLsizei samples,
+                                             GLenum internalformat,
+                                             GLsizei width, GLsizei height);
 
 extern void GLAPIENTRY
 _mesa_NamedRenderbufferStorageMultisampleAdvancedAMD(
@@ -361,12 +366,24 @@ _mesa_NamedFramebufferParameteri(GLuint framebuffer, GLenum pname,
                                  GLint param);
 
 extern void GLAPIENTRY
+_mesa_NamedFramebufferParameteriEXT(GLuint framebuffer, GLenum pname,
+                                    GLint param);
+
+extern void GLAPIENTRY
+_mesa_GetNamedRenderbufferParameterivEXT(GLuint renderbuffer, GLenum pname,
+                                         GLint *params);
+
+extern void GLAPIENTRY
 _mesa_GetFramebufferParameterivEXT(GLuint framebuffer, GLenum pname,
                                    GLint *param);
 
 extern void GLAPIENTRY
 _mesa_GetNamedFramebufferParameteriv(GLuint framebuffer, GLenum pname,
                                      GLint *param);
+
+extern void GLAPIENTRY
+_mesa_GetNamedFramebufferParameterivEXT(GLuint framebuffer, GLenum pname,
+                                        GLint *param);
 
 void GLAPIENTRY
 _mesa_InvalidateSubFramebuffer_no_error(GLenum target, GLsizei numAttachments,
@@ -405,7 +422,13 @@ extern void GLAPIENTRY
 _mesa_FramebufferParameteri(GLenum target, GLenum pname, GLint param);
 
 extern void GLAPIENTRY
+_mesa_FramebufferParameteriMESA(GLenum target, GLenum pname, GLint param);
+
+extern void GLAPIENTRY
 _mesa_GetFramebufferParameteriv(GLenum target, GLenum pname, GLint *params);
+
+extern void GLAPIENTRY
+_mesa_GetFramebufferParameterivMESA(GLenum target, GLenum pname, GLint *params);
 
 extern void GLAPIENTRY
 _mesa_FramebufferSampleLocationsfvARB(GLenum target, GLuint start,

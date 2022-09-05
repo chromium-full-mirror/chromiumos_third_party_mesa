@@ -33,6 +33,8 @@ extern "C" {
 #include <stdbool.h>
 
 #define OVERLAY_PARAMS                               \
+   OVERLAY_PARAM_BOOL(device)                        \
+   OVERLAY_PARAM_BOOL(format)                        \
    OVERLAY_PARAM_BOOL(fps)                           \
    OVERLAY_PARAM_BOOL(frame)                         \
    OVERLAY_PARAM_BOOL(frame_timing)                  \
@@ -69,6 +71,7 @@ extern "C" {
    OVERLAY_PARAM_CUSTOM(width)                       \
    OVERLAY_PARAM_CUSTOM(height)                      \
    OVERLAY_PARAM_CUSTOM(no_display)                  \
+   OVERLAY_PARAM_CUSTOM(control)                     \
    OVERLAY_PARAM_CUSTOM(help)
 
 enum overlay_param_position {
@@ -91,6 +94,7 @@ struct overlay_params {
    bool enabled[OVERLAY_PARAM_ENABLED_MAX];
    enum overlay_param_position position;
    FILE *output_file;
+   int control;
    uint32_t fps_sampling_period; /* us */
    bool help;
    bool no_display;

@@ -45,12 +45,16 @@
 void util_set_vertex_buffers_mask(struct pipe_vertex_buffer *dst,
                                   uint32_t *enabled_buffers,
                                   const struct pipe_vertex_buffer *src,
-                                  unsigned start_slot, unsigned count)
+                                  unsigned start_slot, unsigned count,
+                                  unsigned unbind_num_trailing_slots,
+                                  bool take_ownership)
 {
    unsigned i;
    uint32_t bitmask = 0;
 
    dst += start_slot;
+
+   *enabled_buffers &= ~u_bit_consecutive(start_slot, count);
 
    if (src) {
       for (i = 0; i < count; i++) {
@@ -59,23 +63,23 @@ void util_set_vertex_buffers_mask(struct pipe_vertex_buffer *dst,
 
          pipe_vertex_buffer_unreference(&dst[i]);
 
-         if (!src[i].is_user_buffer)
+         if (!take_ownership && !src[i].is_user_buffer)
             pipe_resource_reference(&dst[i].buffer.resource, src[i].buffer.resource);
       }
 
       /* Copy over the other members of pipe_vertex_buffer. */
       memcpy(dst, src, count * sizeof(struct pipe_vertex_buffer));
 
-      *enabled_buffers &= ~(((1ull << count) - 1) << start_slot);
       *enabled_buffers |= bitmask << start_slot;
    }
    else {
       /* Unreference the buffers. */
       for (i = 0; i < count; i++)
          pipe_vertex_buffer_unreference(&dst[i]);
-
-      *enabled_buffers &= ~(((1ull << count) - 1) << start_slot);
    }
+
+   for (i = 0; i < unbind_num_trailing_slots; i++)
+      pipe_vertex_buffer_unreference(&dst[count + i]);
 }
 
 /**
@@ -85,7 +89,9 @@ void util_set_vertex_buffers_mask(struct pipe_vertex_buffer *dst,
 void util_set_vertex_buffers_count(struct pipe_vertex_buffer *dst,
                                    unsigned *dst_count,
                                    const struct pipe_vertex_buffer *src,
-                                   unsigned start_slot, unsigned count)
+                                   unsigned start_slot, unsigned count,
+                                   unsigned unbind_num_trailing_slots,
+                                   bool take_ownership)
 {
    unsigned i;
    uint32_t enabled_buffers = 0;
@@ -96,7 +102,8 @@ void util_set_vertex_buffers_count(struct pipe_vertex_buffer *dst,
    }
 
    util_set_vertex_buffers_mask(dst, &enabled_buffers, src, start_slot,
-                                count);
+                                count, unbind_num_trailing_slots,
+                                take_ownership);
 
    *dst_count = util_last_bit(enabled_buffers);
 }
@@ -144,55 +151,19 @@ void util_set_shader_buffers_mask(struct pipe_shader_buffer *dst,
 bool
 util_upload_index_buffer(struct pipe_context *pipe,
                          const struct pipe_draw_info *info,
+                         const struct pipe_draw_start_count_bias *draw,
                          struct pipe_resource **out_buffer,
-                         unsigned *out_offset)
+                         unsigned *out_offset, unsigned alignment)
 {
-   unsigned start_offset = info->start * info->index_size;
+   unsigned start_offset = draw->start * info->index_size;
 
    u_upload_data(pipe->stream_uploader, start_offset,
-                 info->count * info->index_size, 4,
+                 draw->count * info->index_size, alignment,
                  (char*)info->index.user + start_offset,
                  out_offset, out_buffer);
    u_upload_unmap(pipe->stream_uploader);
    *out_offset -= start_offset;
    return *out_buffer != NULL;
-}
-
-/**
- * Called by MakeCurrent. Used to notify the driver that the application
- * thread may have been changed.
- *
- * The function pins the current thread and driver threads to a group of
- * CPU cores that share the same L3 cache. This is needed for good multi-
- * threading performance on AMD Zen CPUs.
- *
- * \param upper_thread  thread in the state tracker that also needs to be
- *                      pinned.
- */
-void
-util_pin_driver_threads_to_random_L3(struct pipe_context *ctx,
-                                     thrd_t *upper_thread)
-{
-   /* If pinning has no effect, don't do anything. */
-   if (util_cpu_caps.nr_cpus == util_cpu_caps.cores_per_L3)
-      return;
-
-   unsigned num_L3_caches = util_cpu_caps.nr_cpus /
-                            util_cpu_caps.cores_per_L3;
-
-   /* Get a semi-random number. */
-   int64_t t = os_time_get_nano();
-   unsigned cache = (t ^ (t >> 8) ^ (t >> 16)) % num_L3_caches;
-
-   /* Tell the driver to pin its threads to the selected L3 cache. */
-   if (ctx->set_context_param) {
-      ctx->set_context_param(ctx, PIPE_CONTEXT_PARAM_PIN_THREADS_TO_L3_CACHE,
-                             cache);
-   }
-
-   /* Do the same for the upper level thread if there is any (e.g. glthread) */
-   if (upper_thread)
-      util_pin_thread_to_L3(*upper_thread, cache, util_cpu_caps.cores_per_L3);
 }
 
 /* This is a helper for hardware bring-up. Don't remove. */
@@ -245,6 +216,33 @@ util_end_pipestat_query(struct pipe_context *ctx, struct pipe_query *q,
            stats.hs_invocations,
            stats.ds_invocations,
            stats.cs_invocations);
+}
+
+/* This is a helper for profiling. Don't remove. */
+struct pipe_query *
+util_begin_time_query(struct pipe_context *ctx)
+{
+   struct pipe_query *q =
+      ctx->create_query(ctx, PIPE_QUERY_TIME_ELAPSED, 0);
+   if (!q)
+      return NULL;
+
+   ctx->begin_query(ctx, q);
+   return q;
+}
+
+/* This is a helper for profiling. Don't remove. */
+void
+util_end_time_query(struct pipe_context *ctx, struct pipe_query *q, FILE *f,
+                    const char *name)
+{
+   union pipe_query_result result;
+
+   ctx->end_query(ctx, q);
+   ctx->get_query_result(ctx, q, true, &result);
+   ctx->destroy_query(ctx, q);
+
+   fprintf(f, "Time elapsed: %s - %"PRIu64".%u us\n", name, result.u64 / 1000, (unsigned)(result.u64 % 1000) / 100);
 }
 
 /* This is a helper for hardware bring-up. Don't remove. */
@@ -375,4 +373,42 @@ util_throttle_memory_usage(struct pipe_context *pipe,
    }
 
    t->ring[t->flush_index].mem_usage += memory_size;
+}
+
+bool
+util_lower_clearsize_to_dword(const void *clearValue, int *clearValueSize, uint32_t *clamped)
+{
+   /* Reduce a large clear value size if possible. */
+   if (*clearValueSize > 4) {
+      bool clear_dword_duplicated = true;
+      const uint32_t *clear_value = clearValue;
+
+      /* See if we can lower large fills to dword fills. */
+      for (unsigned i = 1; i < *clearValueSize / 4; i++) {
+         if (clear_value[0] != clear_value[i]) {
+            clear_dword_duplicated = false;
+            break;
+         }
+      }
+      if (clear_dword_duplicated) {
+         *clamped = *clear_value;
+         *clearValueSize = 4;
+      }
+      return clear_dword_duplicated;
+   }
+
+   /* Expand a small clear value size. */
+   if (*clearValueSize <= 2) {
+      if (*clearValueSize == 1) {
+         *clamped = *(uint8_t *)clearValue;
+         *clamped |=
+            (*clamped << 8) | (*clamped << 16) | (*clamped << 24);
+      } else {
+         *clamped = *(uint16_t *)clearValue;
+         *clamped |= *clamped << 16;
+      }
+      *clearValueSize = 4;
+      return true;
+   }
+   return false;
 }

@@ -34,7 +34,7 @@
 #define PIPE_LOADER_H
 
 #include "pipe/p_compiler.h"
-#include "state_tracker/drm_driver.h"
+#include "frontend/drm_driver.h"
 #include "util/xmlconfig.h"
 
 #ifdef __cplusplus
@@ -81,6 +81,15 @@ struct pipe_loader_device {
  */
 int
 pipe_loader_probe(struct pipe_loader_device **devs, int ndev);
+
+/**
+ * Create a pipe_screen for the specified device.
+ *
+ * \param dev Device the screen will be created for.
+ * \param sw_vk Device is for software vulkan
+ */
+struct pipe_screen *
+pipe_loader_create_screen_vk(struct pipe_loader_device *dev, bool sw_vk);
 
 /**
  * Create a pipe_screen for the specified device.
@@ -199,14 +208,12 @@ bool
 pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd);
 
 /**
- * Get the driinfo XML used for the DRM driver of the given name, if any.
+ * Get the dri options used for the DRM driver of the given name, if any.
  *
- * The returned string is heap-allocated.
+ * The returned array is heap-allocated.
  */
-char *
-pipe_loader_drm_get_driinfo_xml(const char *driver_name);
-
-extern const char gallium_driinfo_xml[];
+const struct driOptionDescription *
+pipe_loader_drm_get_driconf_by_name(const char *driver_name, unsigned *count);
 
 #ifdef __cplusplus
 }

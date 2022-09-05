@@ -43,7 +43,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include <errno.h>
 #include "main/glheader.h"
-#include "main/imports.h"
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/fbobject.h"
@@ -370,7 +369,7 @@ void radeon_viewport(struct gl_context *ctx)
 
 	if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
 		if (_mesa_is_front_buffer_drawing(ctx->DrawBuffer)) {
-			ctx->Driver.Flush(ctx);
+			ctx->Driver.Flush(ctx, 0);
 		}
 		radeon_update_renderbuffers(driContext, driContext->driDrawablePriv, GL_FALSE);
 		if (driContext->driDrawablePriv != driContext->driReadablePriv)
@@ -524,7 +523,7 @@ void radeonEmitState(radeonContextPtr radeon)
 }
 
 
-void radeonFlush(struct gl_context *ctx)
+void radeonFlush(struct gl_context *ctx, unsigned gallium_flush_flags)
 {
 	radeonContextPtr radeon = RADEON_CONTEXT(ctx);
 	if (RADEON_DEBUG & RADEON_IOCTL)
@@ -573,7 +572,7 @@ void radeonFinish(struct gl_context * ctx)
 	int i;
 
 	if (ctx->Driver.Flush)
-		ctx->Driver.Flush(ctx); /* +r6/r7 */
+		ctx->Driver.Flush(ctx, 0); /* +r6/r7 */
 
 	for (i = 0; i < fb->_NumColorDrawBuffers; i++) {
 		struct radeon_renderbuffer *rrb;

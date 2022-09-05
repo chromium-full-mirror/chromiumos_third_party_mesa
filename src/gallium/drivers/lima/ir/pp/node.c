@@ -225,14 +225,6 @@ const ppir_op_info ppir_op_infos[] = {
          PPIR_INSTR_SLOT_END
       },
    },
-   [ppir_op_sel_cond] = {
-      /* effectively mov, but must be scheduled only to
-       * PPIR_INSTR_SLOT_ALU_SCL_MUL */
-      .name = "sel_cond",
-      .slots = (int []) {
-         PPIR_INSTR_SLOT_ALU_SCL_MUL, PPIR_INSTR_SLOT_END
-      },
-   },
    [ppir_op_select] = {
       .name = "select",
       .slots = (int []) {
@@ -255,6 +247,13 @@ const ppir_op_info ppir_op_infos[] = {
    },
    [ppir_op_load_coords] = {
       .name = "ld_coords",
+      .type = ppir_node_type_load,
+      .slots = (int []) {
+         PPIR_INSTR_SLOT_VARYING, PPIR_INSTR_SLOT_END
+      },
+   },
+   [ppir_op_load_coords_reg] = {
+      .name = "ld_coords_reg",
       .type = ppir_node_type_load,
       .slots = (int []) {
          PPIR_INSTR_SLOT_VARYING, PPIR_INSTR_SLOT_END
@@ -306,10 +305,6 @@ const ppir_op_info ppir_op_infos[] = {
       .name = "const",
       .type = ppir_node_type_const,
    },
-   [ppir_op_store_color] = {
-      .name = "st_col",
-      .type = ppir_node_type_store,
-   },
    [ppir_op_store_temp] = {
       .name = "st_temp",
       .type = ppir_node_type_store,
@@ -329,6 +324,18 @@ const ppir_op_info ppir_op_infos[] = {
       .type = ppir_node_type_branch,
       .slots = (int []) {
          PPIR_INSTR_SLOT_BRANCH, PPIR_INSTR_SLOT_END
+      },
+   },
+   [ppir_op_undef] = {
+      .name = "undef",
+      .type = ppir_node_type_alu,
+      .slots = (int []) {
+      },
+   },
+   [ppir_op_dummy] = {
+      .name = "dummy",
+      .type = ppir_node_type_alu,
+      .slots = (int []) {
       },
    },
 };
@@ -357,7 +364,7 @@ void *ppir_node_create(ppir_block *block, ppir_op op, int index, unsigned mask)
 
    if (index >= 0) {
       if (mask) {
-         /* reg has 4 slots for each componemt write node */
+         /* reg has 4 slots for each component write node */
          while (mask)
             comp->var_nodes[(index << 2) + comp->reg_base + u_bit_scan(&mask)] = node;
          snprintf(node->name, sizeof(node->name), "reg%d", index);
@@ -377,11 +384,14 @@ void *ppir_node_create(ppir_block *block, ppir_op op, int index, unsigned mask)
    return node;
 }
 
-void ppir_node_add_dep(ppir_node *succ, ppir_node *pred)
+void ppir_node_add_dep(ppir_node *succ, ppir_node *pred,
+                       ppir_dep_type type)
 {
    /* don't add dep for two nodes from different block */
-   if (succ->block != pred->block)
+   if (succ->block != pred->block) {
+      pred->succ_different_block = true;
       return;
+   }
 
    /* don't add duplicated dep */
    ppir_node_foreach_pred(succ, dep) {
@@ -392,6 +402,7 @@ void ppir_node_add_dep(ppir_node *succ, ppir_node *pred)
    ppir_dep *dep = ralloc(succ, ppir_dep);
    dep->pred = pred;
    dep->succ = succ;
+   dep->type = type;
    list_addtail(&dep->pred_link, &succ->pred_list);
    list_addtail(&dep->succ_link, &pred->succ_list);
 }
@@ -437,7 +448,8 @@ void ppir_node_replace_child(ppir_node *parent, ppir_node *old_child, ppir_node 
    case ppir_node_type_load_texture:
    {
       ppir_load_texture_node *load_texture = ppir_node_to_load_texture(parent);
-      _ppir_node_replace_child(&load_texture->src_coords, old_child, new_child);
+      for (int i = 0; i < load_texture->num_src; i++)
+         _ppir_node_replace_child(ppir_node_get_src(parent, i), old_child, new_child);
       break;
    }
    case ppir_node_type_store:
@@ -457,6 +469,21 @@ void ppir_node_replace_pred(ppir_dep *dep, ppir_node *new_pred)
    list_del(&dep->succ_link);
    dep->pred = new_pred;
    list_addtail(&dep->succ_link, &new_pred->succ_list);
+}
+
+ppir_dep *ppir_dep_for_pred(ppir_node *node, ppir_node *pred)
+{
+   if (!pred)
+      return NULL;
+
+   if (node->block != pred->block)
+      return NULL;
+
+   ppir_node_foreach_pred(node, dep) {
+      if (dep->pred == pred)
+         return dep;
+   }
+   return NULL;
 }
 
 void ppir_node_replace_all_succ(ppir_node *dst, ppir_node *src)
@@ -563,11 +590,77 @@ void ppir_node_print_prog(ppir_compiler *comp)
 
    printf("========prog========\n");
    list_for_each_entry(ppir_block, block, &comp->block_list, list) {
-      printf("-------block------\n");
+      printf("-------block %3d-------\n", block->index);
       list_for_each_entry(ppir_node, node, &block->node_list, list) {
          if (ppir_node_is_root(node))
             ppir_node_print_node(node, 0);
       }
    }
    printf("====================\n");
+}
+
+static ppir_node *ppir_node_insert_mov_local(ppir_node *node)
+{
+   ppir_node *move = ppir_node_create(node->block, ppir_op_mov, -1, 0);
+   if (unlikely(!move))
+      return NULL;
+
+   ppir_dest *dest = ppir_node_get_dest(node);
+   ppir_alu_node *alu = ppir_node_to_alu(move);
+   alu->dest = *dest;
+   alu->num_src = 1;
+   ppir_node_target_assign(alu->src, node);
+
+   for (int s = 0; s < 4; s++)
+      alu->src->swizzle[s] = s;
+
+   ppir_node_replace_all_succ(move, node);
+   ppir_node_add_dep(move, node, ppir_dep_src);
+   list_addtail(&move->list, &node->list);
+
+   if (node->is_end) {
+      node->is_end = false;
+      move->is_end = true;
+   }
+
+   return move;
+}
+
+ppir_node *ppir_node_insert_mov(ppir_node *old)
+{
+   ppir_node *move = ppir_node_insert_mov_local(old);
+   ppir_compiler *comp = old->block->comp;
+
+   list_for_each_entry(ppir_block, block, &comp->block_list, list) {
+      if (old->block == block)
+         continue;
+      list_for_each_entry_safe(ppir_node, node, &block->node_list, list) {
+         for (int i = 0; i < ppir_node_get_src_num(node); i++){
+            ppir_src *src = ppir_node_get_src(node, i);
+            if (!src)
+               continue;
+            if (src->node == old)
+               ppir_node_target_assign(src, move);
+         }
+      }
+   }
+
+   return move;
+}
+
+bool ppir_node_has_single_src_succ(ppir_node *node)
+{
+   if (ppir_node_has_single_succ(node) &&
+       list_first_entry(&node->succ_list,
+                        ppir_dep, succ_link)->type == ppir_dep_src)
+      return true;
+
+   int cnt = 0;
+   ppir_node_foreach_succ(node, dep) {
+      if (dep->type != ppir_dep_src)
+         continue;
+      cnt++;
+   }
+
+   return cnt == 1;
 }

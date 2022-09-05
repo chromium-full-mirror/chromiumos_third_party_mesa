@@ -13,20 +13,16 @@ matrix:
   include:
     - env:
       - BUILD=meson
-    - env:
-      - BUILD=scons
 
 before_install:
   - HOMEBREW_NO_AUTO_UPDATE=1 brew install expat gettext
   - if test "x$BUILD" = xmeson; then
-      HOMEBREW_NO_AUTO_UPDATE=1 brew install python3 ninja;
-    fi
-  - if test "x$BUILD" = xscons; then
-      HOMEBREW_NO_AUTO_UPDATE=1 brew install python2 scons;
+      HOMEBREW_NO_AUTO_UPDATE=1 brew install ninja;
     fi
 
   # Set PATH for homebrew pip3 installs
-  - PATH="$HOME/Library/Python/3.6/bin:${PATH}"
+  - PYTHON_VERSION=$(python3 -V | awk '{print $2}' | cut -d. -f1-2)
+  - PATH="$HOME/Library/Python/$PYTHON_VERSION/bin:${PATH}"
   # Set PKG_CONFIG_PATH for keg-only expat
   - PKG_CONFIG_PATH="/usr/local/opt/expat/lib/pkgconfig:${PKG_CONFIG_PATH}"
   # Set PATH for keg-only gettext
@@ -34,7 +30,7 @@ before_install:
 
   # Install xquartz for prereqs ...
   - XQUARTZ_VERSION="2.7.11"
-  - wget -nv https://dl.bintray.com/xquartz/downloads/XQuartz-${XQUARTZ_VERSION}.dmg
+  - wget -nv https://github.com/XQuartz/XQuartz/releases/download/XQuartz-${XQUARTZ_VERSION}/XQuartz-${XQUARTZ_VERSION}.dmg
   - hdiutil attach XQuartz-${XQUARTZ_VERSION}.dmg
   - sudo installer -pkg /Volumes/XQuartz-${XQUARTZ_VERSION}/XQuartz.pkg -target /
   - hdiutil detach /Volumes/XQuartz-${XQUARTZ_VERSION}
@@ -46,17 +42,11 @@ install:
       pip3 install --user meson;
       pip3 install --user mako;
     fi
-  - if test "x$BUILD" = xscons; then
-      pip2 install --user mako;
-    fi
 
 script:
   - if test "x$BUILD" = xmeson; then
       meson _build -Dbuild-tests=true;
       ninja -C _build || travis_terminate 1;
       ninja -C _build test || travis_terminate 1;
-    fi
-  - if test "x$BUILD" = xscons; then
-      scons || travis_terminate 1;
-      scons check || travis_terminate 1;
+      ninja -C _build install || travis_terminate 1;
     fi

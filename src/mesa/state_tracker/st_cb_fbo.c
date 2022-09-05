@@ -33,7 +33,7 @@
  */
 
 
-#include "main/imports.h"
+
 #include "main/context.h"
 #include "main/fbobject.h"
 #include "main/framebuffer.h"
@@ -56,7 +56,7 @@
 #include "st_util.h"
 #include "st_manager.h"
 
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_surface.h"
 
@@ -114,7 +114,7 @@ st_renderbuffer_alloc_storage(struct gl_context * ctx,
                               GLuint width, GLuint height)
 {
    struct st_context *st = st_context(ctx);
-   struct pipe_screen *screen = st->pipe->screen;
+   struct pipe_screen *screen = st->screen;
    struct st_renderbuffer *strb = st_renderbuffer(rb);
    enum pipe_format format = PIPE_FORMAT_NONE;
    struct pipe_resource templ;
@@ -355,6 +355,7 @@ st_new_renderbuffer_fb(enum pipe_format format, unsigned samples, boolean sw)
    case PIPE_FORMAT_R8G8B8X8_UNORM:
    case PIPE_FORMAT_B8G8R8X8_UNORM:
    case PIPE_FORMAT_X8R8G8B8_UNORM:
+   case PIPE_FORMAT_R8G8B8_UNORM:
       strb->Base.InternalFormat = GL_RGB8;
       break;
    case PIPE_FORMAT_R8G8B8A8_SRGB:
@@ -400,6 +401,9 @@ st_new_renderbuffer_fb(enum pipe_format format, unsigned samples, boolean sw)
    case PIPE_FORMAT_R16G16B16A16_UNORM:
       strb->Base.InternalFormat = GL_RGBA16;
       break;
+   case PIPE_FORMAT_R16G16B16_UNORM:
+      strb->Base.InternalFormat = GL_RGB16;
+      break;
    case PIPE_FORMAT_R8_UNORM:
       strb->Base.InternalFormat = GL_R8;
       break;
@@ -416,6 +420,7 @@ st_new_renderbuffer_fb(enum pipe_format format, unsigned samples, boolean sw)
       strb->Base.InternalFormat = GL_RGBA32F;
       break;
    case PIPE_FORMAT_R32G32B32X32_FLOAT:
+   case PIPE_FORMAT_R32G32B32_FLOAT:
       strb->Base.InternalFormat = GL_RGB32F;
       break;
    case PIPE_FORMAT_R16G16B16A16_FLOAT:
@@ -442,6 +447,30 @@ st_new_renderbuffer_fb(enum pipe_format format, unsigned samples, boolean sw)
    return &strb->Base;
 }
 
+void
+st_regen_renderbuffer_surface(struct st_context *st,
+                              struct st_renderbuffer *strb)
+{
+   struct pipe_context *pipe = st->pipe;
+   struct pipe_resource *resource = strb->texture;
+
+   struct pipe_surface **psurf =
+      strb->surface_srgb ? &strb->surface_srgb : &strb->surface_linear;
+   struct pipe_surface *surf = *psurf;
+   /* create a new pipe_surface */
+   struct pipe_surface surf_tmpl;
+   memset(&surf_tmpl, 0, sizeof(surf_tmpl));
+   surf_tmpl.format = surf->format;
+   surf_tmpl.nr_samples = strb->rtt_nr_samples;
+   surf_tmpl.u.tex.level = surf->u.tex.level;
+   surf_tmpl.u.tex.first_layer = surf->u.tex.first_layer;
+   surf_tmpl.u.tex.last_layer = surf->u.tex.last_layer;
+
+   pipe_surface_release(pipe, psurf);
+
+   *psurf = pipe->create_surface(pipe, resource, &surf_tmpl);
+   strb->surface = *psurf;
+}
 
 /**
  * Create or update the pipe_surface of a FBO renderbuffer.
@@ -508,11 +537,12 @@ st_update_renderbuffer_surface(struct st_context *st,
    if (strb->is_rtt && resource->array_size > 1 &&
        stTexObj->base.Immutable) {
       const struct gl_texture_object *tex = &stTexObj->base;
-      first_layer += tex->MinLayer;
+      first_layer += tex->Attrib.MinLayer;
       if (!strb->rtt_layered)
-         last_layer += tex->MinLayer;
+         last_layer += tex->Attrib.MinLayer;
       else
-         last_layer = MIN2(first_layer + tex->NumLayers - 1, last_layer);
+         last_layer = MIN2(first_layer + tex->Attrib.NumLayers - 1,
+                           last_layer);
    }
 
    struct pipe_surface **psurf =
@@ -697,7 +727,7 @@ static void
 st_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
 {
    struct st_context *st = st_context(ctx);
-   struct pipe_screen *screen = st->pipe->screen;
+   struct pipe_screen *screen = st->screen;
    const struct gl_renderbuffer_attachment *depth =
          &fb->Attachment[BUFFER_DEPTH];
    const struct gl_renderbuffer_attachment *stencil =
@@ -778,7 +808,7 @@ st_discard_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb,
    struct st_context *st = st_context(ctx);
    struct pipe_resource *prsc;
 
-   if (!att->Renderbuffer)
+   if (!att->Renderbuffer || !att->Complete)
       return;
 
    prsc = st_renderbuffer(att->Renderbuffer)->surface->texture;
@@ -863,12 +893,9 @@ st_MapRenderbuffer(struct gl_context *ctx,
    struct st_context *st = st_context(ctx);
    struct st_renderbuffer *strb = st_renderbuffer(rb);
    struct pipe_context *pipe = st->pipe;
-   const GLboolean invert = rb->Name == 0;
+   const GLboolean invert = flip_y;
    GLuint y2;
    GLubyte *map;
-
-   /* driver does not support GL_FRAMEBUFFER_FLIP_Y_MESA */
-   assert((rb->Name == 0) == flip_y);
 
    if (strb->software) {
       /* software-allocated renderbuffer (probably an accum buffer) */
@@ -891,7 +918,7 @@ st_MapRenderbuffer(struct gl_context *ctx,
                     GL_MAP_WRITE_BIT |
                     GL_MAP_INVALIDATE_RANGE_BIT)) == 0);
 
-   const enum pipe_transfer_usage transfer_flags =
+   const enum pipe_map_flags transfer_flags =
       st_access_flags_to_transfer_flags(mode, false);
 
    /* Note: y=0=bottom of buffer while y2=0=top of buffer.
@@ -903,7 +930,7 @@ st_MapRenderbuffer(struct gl_context *ctx,
    else
       y2 = y;
 
-    map = pipe_transfer_map(pipe,
+    map = pipe_texture_map(pipe,
                             strb->texture,
                             strb->surface->u.tex.level,
                             strb->surface->u.tex.first_layer,
@@ -941,7 +968,7 @@ st_UnmapRenderbuffer(struct gl_context *ctx,
       return;
    }
 
-   pipe_transfer_unmap(pipe, strb->transfer);
+   pipe_texture_unmap(pipe, strb->transfer);
    strb->transfer = NULL;
 }
 

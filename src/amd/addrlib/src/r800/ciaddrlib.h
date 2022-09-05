@@ -151,7 +151,6 @@ protected:
         UINT_32 mipLevel, UINT_32 numSamples, ADDR_COMPUTE_SURFACE_INFO_OUTPUT* pOut) const;
 
 private:
-
     VOID ReadGbTileMode(
         UINT_32 regValue, TileConfig* pCfg) const;
 
@@ -189,6 +188,11 @@ private:
         return ((m_settings.isVolcanicIslands == TRUE) || (m_configFlags.forceDccAndTcCompat == TRUE));
     }
 
+    BOOL_32 AltTilingEnabled() const
+    {
+        return (m_configFlags.enableAltTiling == TRUE);
+    }
+
     static const UINT_32    MacroTileTableSize = 16;
     static const UINT_32    PrtMacroModeOffset = MacroTileTableSize / 2;
     static const INT_32     MinDepth2DThinIndex = 0;
@@ -204,3 +208,5 @@ private:
 } // Addr
 
 #endif
+
+
