@@ -46,39 +46,58 @@ mir_pipeline_ins(
         unsigned pipeline_count)
 {
         midgard_instruction *ins = bundle->instructions[i];
-        unsigned dest = ins->ssa_args.dest;
 
-        /* We could be pipelining a register, so we need to make sure that all
-         * of the components read in this bundle are written in this bundle,
-         * and that no components are written before this bundle */
+        /* Our goal is to create a pipeline register. Pipeline registers are
+         * created at the start of the bundle and are destroyed at the end. So
+         * we conservatively require:
+         *
+         *  1. Each component read in the second stage is written in the first stage.
+         *  2. The index is not live after the bundle.
+         *  3. We're not a special index (writeout, conditionals, ..)
+         *
+         * Rationale: #1 ensures that there is no need to go before the
+         * creation of the bundle, so the pipeline register can exist. #2 is
+         * since the pipeline register will be destroyed at the end. This
+         * ensures that nothing will try to read/write the pipeline register
+         * once it is not live, and that there's no need to go earlier. */
 
-        unsigned node = ins->ssa_args.dest;
+        unsigned node = ins->dest;
         unsigned read_mask = 0;
 
-        /* Analyze the bundle for a read mask */
+        if (node >= SSA_FIXED_MINIMUM)
+                return false;
 
-        for (unsigned i = 0; i < bundle->instruction_count; ++i) {
-                midgard_instruction *q = bundle->instructions[i];
-                read_mask |= mir_mask_of_read_components(q, node);
+        if (node == ctx->blend_src1)
+                return false;
+
+        /* Analyze the bundle for a per-byte read mask */
+
+        for (unsigned j = 0; j < bundle->instruction_count; ++j) {
+                midgard_instruction *q = bundle->instructions[j];
+
+                /* The fragment colour can't be pipelined (well, it is
+                 * pipelined in r0, but this is a delicate dance with
+                 * scheduling and RA, not for us to worry about) */
+
+                if (q->compact_branch && q->writeout && mir_has_arg(q, node))
+                        return false;
+
+                if (q->unit < UNIT_VADD) continue;
+                read_mask |= mir_bytemask_of_read_components(q, node);
         }
 
-        /* Now analyze for a write mask */
-        for (unsigned i = 0; i < bundle->instruction_count; ++i) {
-                midgard_instruction *q = bundle->instructions[i];
-                if (q->ssa_args.dest != node) continue;
+        /* Now check what's written in the beginning stage  */
+        for (unsigned j = 0; j < bundle->instruction_count; ++j) {
+                midgard_instruction *q = bundle->instructions[j];
+                if (q->unit >= UNIT_VADD) break;
+                if (q->dest != node) continue;
 
                 /* Remove the written mask from the read requirements */
-                read_mask &= ~q->mask;
+                read_mask &= ~mir_bytemask(q);
         }
 
         /* Check for leftovers */
         if (read_mask)
-                return false;
-
-        /* Now, check outside the bundle */
-        midgard_instruction *start = bundle->instructions[0];
-
-        if (mir_is_written_before(ctx, start, node))
                 return false;
 
         /* We want to know if we live after this bundle, so check if
@@ -87,12 +106,20 @@ mir_pipeline_ins(
         midgard_instruction *end = bundle->instructions[
                                     bundle->instruction_count - 1];
 
-        if (mir_is_live_after(ctx, block, end, ins->ssa_args.dest))
+        if (mir_is_live_after(ctx, block, end, ins->dest))
                 return false;
 
         /* We're only live in this bundle -- pipeline! */
+        unsigned preg = SSA_FIXED_REGISTER(24 + pipeline_count);
 
-        mir_rewrite_index(ctx, dest, SSA_FIXED_REGISTER(24 + pipeline_count));
+        for (unsigned j = 0; j < bundle->instruction_count; ++j) {
+                midgard_instruction *q = bundle->instructions[j];
+
+                if (q->unit >= UNIT_VADD)
+                        mir_rewrite_index_src_single(q, node, preg);
+                else
+                        mir_rewrite_index_dst_single(q, node, preg);
+        }
 
         return true;
 }
@@ -100,7 +127,11 @@ mir_pipeline_ins(
 void
 mir_create_pipeline_registers(compiler_context *ctx)
 {
-        mir_foreach_block(ctx, block) {
+        mir_invalidate_liveness(ctx);
+
+        mir_foreach_block(ctx, _block) {
+                midgard_block *block = (midgard_block *) _block;
+
                 mir_foreach_bundle_in_block(block, bundle) {
                         if (!mir_is_alu_bundle(bundle)) continue;
                         if (bundle->instruction_count < 2) continue;

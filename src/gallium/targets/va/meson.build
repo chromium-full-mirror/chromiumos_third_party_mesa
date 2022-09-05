@@ -33,12 +33,11 @@ endif
 
 libva_gallium = shared_library(
   'gallium_drv_video',
-  ['target.c', xmlpool_options_h],
-  c_args : c_vis_args,
-  cpp_args : cpp_vis_args,
+  'target.c',
+  gnu_symbol_visibility : 'hidden',
   link_args : [va_link_args, ld_args_gc_sections],
   include_directories : [
-    inc_common, inc_util, inc_gallium_winsys, inc_gallium_drivers,
+    inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_util, inc_gallium_winsys, inc_gallium_drivers,
   ],
   link_whole : [libva_st],
   link_with : [
@@ -65,8 +64,7 @@ foreach d : [[with_gallium_r600, 'r600'],
 endforeach
 
 meson.add_install_script(
-  prog_python.path(),
-  join_paths(meson.source_root(), 'bin/install_megadrivers.py'),
+  install_megadrivers_py.path(),
   libva_gallium.full_path(),
   va_drivers_path,
   va_drivers,

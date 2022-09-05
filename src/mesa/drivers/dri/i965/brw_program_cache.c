@@ -37,23 +37,25 @@
  *  data) in return.  Objects in the cache may not have relocations
  * (pointers to other BOs) in them.
  *
- * The inner workings are a simple hash table based on a CRC of the
+ * The inner workings are a simple hash table based on a FNV-1a of the
  * key data.
  *
  * Replacement is not implemented.  Instead, when the cache gets too
  * big we throw out all of the cache data and let it get regenerated.
  */
 
-#include "main/imports.h"
 #include "main/streaming-load-memcpy.h"
 #include "x86/common_x86_asm.h"
-#include "intel_batchbuffer.h"
+#include "brw_batch.h"
 #include "brw_state.h"
 #include "brw_wm.h"
 #include "brw_gs.h"
 #include "brw_cs.h"
 #include "brw_program.h"
 #include "compiler/brw_eu.h"
+#include "util/u_memory.h"
+#define XXH_INLINE_ALL
+#include "util/xxhash.h"
 
 #define FILE_DEBUG_FLAG DEBUG_STATE
 
@@ -96,17 +98,9 @@ brw_stage_cache_id(gl_shader_stage stage)
 static GLuint
 hash_key(struct brw_cache_item *item)
 {
-   GLuint *ikey = (GLuint *)item->key;
-   GLuint hash = item->cache_id, i;
-
-   assert(item->key_size % 4 == 0);
-
-   /* I'm sure this can be improved on:
-    */
-   for (i = 0; i < item->key_size/4; i++) {
-      hash ^= ikey[i];
-      hash = (hash << 5) | (hash >> 27);
-   }
+    uint32_t hash = 0;
+    hash = XXH32(&item->cache_id, sizeof(item->cache_id), hash);
+    hash = XXH32(item->key, item->key_size, hash);
 
    return hash;
 }
@@ -238,7 +232,7 @@ brw_cache_new_bo(struct brw_cache *cache, uint32_t new_size)
    cache->map = map;
 
    /* Since we have a new BO in place, we need to signal the units
-    * that depend on it (state base address on gen5+, or unit state before).
+    * that depend on it (state base address on gfx5+, or unit state before).
     */
    brw->ctx.NewDriverState |= BRW_NEW_PROGRAM_CACHE;
    brw->batch.state_base_address_emitted = false;
@@ -442,7 +436,7 @@ brw_clear_cache(struct brw_context *brw, struct brw_cache *cache)
    brw->wm.base.prog_data = NULL;
    brw->cs.base.prog_data = NULL;
 
-   intel_batchbuffer_flush(brw);
+   brw_batch_flush(brw);
 }
 
 void
@@ -522,8 +516,8 @@ brw_print_program_cache(struct brw_context *brw)
    for (unsigned i = 0; i < cache->size; i++) {
       for (item = cache->items[i]; item; item = item->next) {
          fprintf(stderr, "%s:\n", cache_name(i));
-         brw_disassemble(&brw->screen->devinfo, cache->map,
-                         item->offset, item->size, stderr);
+         brw_disassemble_with_labels(&brw->screen->devinfo, cache->map,
+                                     item->offset, item->size, stderr);
       }
    }
 }

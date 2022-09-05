@@ -81,7 +81,7 @@ point_persp_coeff(struct lp_setup_context *setup,
 {
    /*
     * Fragment shader expects pre-multiplied w for LP_INTERP_PERSPECTIVE. A
-    * better stratergy would be to take the primitive in consideration when
+    * better strategy would be to take the primitive in consideration when
     * generating the fragment shader key, and therefore avoid the per-fragment
     * perspective divide.
     */
@@ -224,10 +224,10 @@ setup_point_coefficients( struct lp_setup_context *setup,
       boolean perspective = !!(interp == LP_INTERP_PERSPECTIVE);
       unsigned i;
 
-      if (perspective & usage_mask) {
+      if (perspective && usage_mask) {
          fragcoord_usage_mask |= TGSI_WRITEMASK_W;
       }
-      
+
       switch (interp) {
       case LP_INTERP_POSITION:
          /*
@@ -240,29 +240,37 @@ setup_point_coefficients( struct lp_setup_context *setup,
 
       case LP_INTERP_LINEAR:
          /* Sprite tex coords may use linear interpolation someday */
-         /* fall-through */
-      case LP_INTERP_PERSPECTIVE:
+         FALLTHROUGH;
+      case LP_INTERP_PERSPECTIVE: {
          /* check if the sprite coord flag is set for this attribute.
           * If so, set it up so it up so x and y vary from 0 to 1.
           */
-         if (shader->info.base.input_semantic_name[slot] == TGSI_SEMANTIC_GENERIC) {
+         bool do_texcoord_coef = false;
+         if (shader->info.base.input_semantic_name[slot] == TGSI_SEMANTIC_PCOORD) {
+            do_texcoord_coef = true;
+         }
+         else if (shader->info.base.input_semantic_name[slot] == TGSI_SEMANTIC_TEXCOORD) {
             unsigned semantic_index = shader->info.base.input_semantic_index[slot];
             /* Note that sprite_coord enable is a bitfield of
              * PIPE_MAX_SHADER_OUTPUTS bits.
              */
             if (semantic_index < PIPE_MAX_SHADER_OUTPUTS &&
                 (setup->sprite_coord_enable & (1u << semantic_index))) {
-               for (i = 0; i < NUM_CHANNELS; i++) {
-                  if (usage_mask & (1 << i)) {
-                     texcoord_coef(setup, info, slot + 1, i,
-                                   setup->sprite_coord_origin,
-                                   perspective);
-                  }
-               }
-               break;
+               do_texcoord_coef = true;
             }
          }
-         /* fall-through */
+         if (do_texcoord_coef) {
+            for (i = 0; i < NUM_CHANNELS; i++) {
+               if (usage_mask & (1 << i)) {
+                  texcoord_coef(setup, info, slot + 1, i,
+                                setup->sprite_coord_origin,
+                                perspective);
+               }
+            }
+            break;
+         }
+      }
+         FALLTHROUGH;
       case LP_INTERP_CONSTANT:
          for (i = 0; i < NUM_CHANNELS; i++) {
             if (usage_mask & (1 << i)) {
@@ -329,9 +337,12 @@ try_setup_point( struct lp_setup_context *setup,
    /* x/y positions in fixed point */
    const struct lp_setup_variant_key *key = &setup->setup.variant->key;
    const int sizeAttr = setup->psize_slot;
-   const float size
+   float size
       = (setup->point_size_per_vertex && sizeAttr > 0) ? v0[sizeAttr][0]
       : setup->point_size;
+
+   if (size > LP_MAX_POINT_WIDTH)
+      size = LP_MAX_POINT_WIDTH;
 
    /* Yes this is necessary to accurately calculate bounding boxes
     * with the two fill-conventions we support.  GL (normally) ends
@@ -339,11 +350,12 @@ try_setup_point( struct lp_setup_context *setup,
     * slightly different rounding.
     */
    int adj = (setup->bottom_edge_rule != 0) ? 1 : 0;
-
+   float pixel_offset = setup->multisample ? 0.0 : setup->pixel_offset;
    struct lp_scene *scene = setup->scene;
    struct lp_rast_triangle *point;
    unsigned bytes;
    struct u_rect bbox;
+   int x[2], y[2];
    unsigned nr_planes = 4;
    struct point_info info;
    unsigned viewport_index = 0;
@@ -363,8 +375,7 @@ try_setup_point( struct lp_setup_context *setup,
       print_point(setup, v0, size);
 
    /* Bounding rectangle (in pixels) */
-   if (!lp_context->rasterizer ||
-       lp_context->rasterizer->point_quad_rasterization) {
+   if (!setup->legacy_points || setup->multisample) {
       /*
        * Rasterize points as quads.
        */
@@ -374,13 +385,17 @@ try_setup_point( struct lp_setup_context *setup,
        */
       fixed_width = MAX2(FIXED_ONE, subpixel_snap(size));
 
-      x0 = subpixel_snap(v0[0][0] - setup->pixel_offset) - fixed_width/2;
-      y0 = subpixel_snap(v0[0][1] - setup->pixel_offset) - fixed_width/2;
+      x0 = subpixel_snap(v0[0][0] - pixel_offset) - fixed_width/2;
+      y0 = subpixel_snap(v0[0][1] - pixel_offset) - fixed_width/2;
 
-      bbox.x0 = (x0 + (FIXED_ONE-1)) >> FIXED_ORDER;
-      bbox.x1 = (x0 + fixed_width + (FIXED_ONE-1)) >> FIXED_ORDER;
-      bbox.y0 = (y0 + (FIXED_ONE-1) + adj) >> FIXED_ORDER;
-      bbox.y1 = (y0 + fixed_width + (FIXED_ONE-1) + adj) >> FIXED_ORDER;
+      x[0] = x0;
+      x[1] = x0 + fixed_width;
+      y[0] = y0;
+      y[1] = y0 + fixed_width;
+      bbox.x0 = x[0] >> FIXED_ORDER;
+      bbox.x1 = (x[1] + (FIXED_ONE-1)) >> FIXED_ORDER;
+      bbox.y0 = (y[0] + adj) >> FIXED_ORDER;
+      bbox.y1 = (y[1] + (FIXED_ONE-1) + adj) >> FIXED_ORDER;
 
       /* Inclusive coordinates:
        */
@@ -393,7 +408,7 @@ try_setup_point( struct lp_setup_context *setup,
        * Per OpenGL 2.1 spec, section 3.3.1, "Basic Point Rasterization".
        *
        * This type of point rasterization is only available in pre 3.0 contexts
-       * (or compatibilility contexts which we don't support) anyway.
+       * (or compatibility contexts which we don't support) anyway.
        */
 
       const int x0 = subpixel_snap(v0[0][0]);
@@ -428,12 +443,21 @@ try_setup_point( struct lp_setup_context *setup,
          bbox.x1 = bbox.x0 + int_width - 1;
          bbox.y1 = bbox.y0 + int_width - 1;
       }
+
+      x[0] = (bbox.x0 - 1) << 8;
+      x[1] = (bbox.x1 + 1) << 8;
+      y[0] = (bbox.y0 - 1) << 8;
+      y[1] = (bbox.y1 + 1) << 8;
    }
 
    if (0) {
       debug_printf("  bbox: (%i, %i) - (%i, %i)\n",
                    bbox.x0, bbox.y0,
                    bbox.x1, bbox.y1);
+   }
+
+   if (lp_context->active_statistics_queries) {
+      lp_context->pipeline_statistics.c_primitives++;
    }
 
    if (!u_rect_test_intersection(&setup->draw_regions[viewport_index], &bbox)) {
@@ -457,10 +481,6 @@ try_setup_point( struct lp_setup_context *setup,
 #endif
 
    LP_COUNT(nr_tris);
-
-   if (lp_context->active_statistics_queries) {
-      lp_context->pipeline_statistics.c_primitives++;
-   }
 
    if (draw_will_inject_frontface(lp_context->draw) &&
        setup->face_slot > 0) {
@@ -487,29 +507,39 @@ try_setup_point( struct lp_setup_context *setup,
    point->inputs.opaque = FALSE;
    point->inputs.layer = layer;
    point->inputs.viewport_index = viewport_index;
+   point->inputs.view_index = setup->view_index;
 
    {
       struct lp_rast_plane *plane = GET_PLANES(point);
 
-      plane[0].dcdx = -1 << 8;
+      plane[0].dcdx = ~0U << 8;
       plane[0].dcdy = 0;
-      plane[0].c = (1-bbox.x0) << 8;
+      plane[0].c = -x[0];
       plane[0].eo = 1 << 8;
 
       plane[1].dcdx = 1 << 8;
       plane[1].dcdy = 0;
-      plane[1].c = (bbox.x1+1) << 8;
+      plane[1].c = x[1];
       plane[1].eo = 0;
 
       plane[2].dcdx = 0;
       plane[2].dcdy = 1 << 8;
-      plane[2].c = (1-bbox.y0) << 8;
+      plane[2].c = -y[0];
       plane[2].eo = 1 << 8;
 
       plane[3].dcdx = 0;
-      plane[3].dcdy = -1 << 8;
-      plane[3].c = (bbox.y1+1) << 8;
+      plane[3].dcdy = ~0U << 8;
+      plane[3].c = y[1];
       plane[3].eo = 0;
+
+      if (!setup->legacy_points || setup->multisample) {
+         /* adjust for fill-rule*/
+         plane[0].c++; /* left */
+         if (setup->bottom_edge_rule == 0)
+            plane[2].c++; /* top-left */
+         else
+            plane[3].c++; /* bottom-left */
+      }
    }
 
    return lp_setup_bin_triangle(setup, point, &bbox, &bbox, nr_planes, viewport_index);

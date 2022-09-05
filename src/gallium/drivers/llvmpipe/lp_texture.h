@@ -45,6 +45,7 @@ enum lp_texture_usage
 struct pipe_context;
 struct pipe_screen;
 struct llvmpipe_context;
+struct llvmpipe_screen;
 
 struct sw_displaytarget;
 
@@ -60,14 +61,17 @@ struct llvmpipe_resource
 {
    struct pipe_resource base;
 
+   /** an extra screen pointer to avoid crashing in driver trace */
+   struct llvmpipe_screen *screen;
+
    /** Row stride in bytes */
    unsigned row_stride[LP_MAX_TEXTURE_LEVELS];
    /** Image stride (for cube maps, array or 3D textures) in bytes */
-   unsigned img_stride[LP_MAX_TEXTURE_LEVELS];
+   uint64_t img_stride[LP_MAX_TEXTURE_LEVELS];
    /** Offset to start of mipmap level, in bytes */
-   unsigned mip_offsets[LP_MAX_TEXTURE_LEVELS];
+   uint64_t mip_offsets[LP_MAX_TEXTURE_LEVELS];
    /** allocated total size (for non-display target texture resources only) */
-   unsigned total_alloc_size;
+   uint64_t total_alloc_size;
 
    /**
     * Display target, for textures with the PIPE_BIND_DISPLAY_TARGET
@@ -90,6 +94,11 @@ struct llvmpipe_resource
 
    unsigned id;  /**< temporary, for debugging */
 
+   unsigned sample_stride;
+
+   uint64_t size_required;
+   uint64_t backing_offset;
+   bool backable;
 #ifdef DEBUG
    /** for linked list */
    struct llvmpipe_resource *prev, *next;
@@ -194,6 +203,12 @@ llvmpipe_resource_stride(struct pipe_resource *resource,
    return lpr->row_stride[level];
 }
 
+static inline unsigned
+llvmpipe_sample_stride(struct pipe_resource *resource)
+{
+   struct llvmpipe_resource *lpr = llvmpipe_resource(resource);
+   return lpr->sample_stride;
+}
 
 void *
 llvmpipe_resource_map(struct pipe_resource *resource,
@@ -236,4 +251,12 @@ llvmpipe_is_resource_referenced( struct pipe_context *pipe,
 unsigned
 llvmpipe_get_format_alignment(enum pipe_format format);
 
+void *
+llvmpipe_transfer_map_ms( struct pipe_context *pipe,
+			  struct pipe_resource *resource,
+			  unsigned level,
+			  unsigned usage,
+			  unsigned sample,
+			  const struct pipe_box *box,
+			  struct pipe_transfer **transfer );
 #endif /* LP_TEXTURE_H */

@@ -55,33 +55,43 @@ pb_slab_reclaim(struct pb_slabs *slabs, struct pb_slab_entry *entry)
 {
    struct pb_slab *slab = entry->slab;
 
-   LIST_DEL(&entry->head); /* remove from reclaim list */
-   LIST_ADD(&entry->head, &slab->free);
+   list_del(&entry->head); /* remove from reclaim list */
+   list_add(&entry->head, &slab->free);
    slab->num_free++;
 
    /* Add slab to the group's list if it isn't already linked. */
-   if (!slab->head.next) {
+   if (!list_is_linked(&slab->head)) {
       struct pb_slab_group *group = &slabs->groups[entry->group_index];
-      LIST_ADDTAIL(&slab->head, &group->slabs);
+      list_addtail(&slab->head, &group->slabs);
    }
 
    if (slab->num_free >= slab->num_entries) {
-      LIST_DEL(&slab->head);
+      list_del(&slab->head);
       slabs->slab_free(slabs->priv, slab);
    }
 }
 
+#define MAX_FAILED_RECLAIMS 2
+
 static void
 pb_slabs_reclaim_locked(struct pb_slabs *slabs)
 {
-   while (!LIST_IS_EMPTY(&slabs->reclaim)) {
-      struct pb_slab_entry *entry =
-         LIST_ENTRY(struct pb_slab_entry, slabs->reclaim.next, head);
-
-      if (!slabs->can_reclaim(slabs->priv, entry))
+   struct pb_slab_entry *entry, *next;
+   unsigned num_failed_reclaims = 0;
+   LIST_FOR_EACH_ENTRY_SAFE(entry, next, &slabs->reclaim, head) {
+      if (slabs->can_reclaim(slabs->priv, entry)) {
+         pb_slab_reclaim(slabs, entry);
+      /* there are typically three possible scenarios when reclaiming:
+       * - all entries reclaimed
+       * - no entries reclaimed
+       * - all but one entry reclaimed
+       * in the scenario where a slab contains many (10+) unused entries,
+       * the driver should not walk the entire list, as this is likely to
+       * result in zero reclaims if the first few entries fail to reclaim
+       */
+      } else if (++num_failed_reclaims >= MAX_FAILED_RECLAIMS) {
          break;
-
-      pb_slab_reclaim(slabs, entry);
+      }
    }
 }
 
@@ -102,11 +112,22 @@ pb_slab_alloc(struct pb_slabs *slabs, unsigned size, unsigned heap)
    struct pb_slab_group *group;
    struct pb_slab *slab;
    struct pb_slab_entry *entry;
+   unsigned entry_size = 1 << order;
+   bool three_fourths = false;
+
+   /* If the size is <= 3/4 of the entry size, use a slab with entries using
+    * 3/4 sizes to reduce overallocation.
+    */
+   if (slabs->allow_three_fourths_allocations && size <= entry_size * 3 / 4) {
+      entry_size = entry_size * 3 / 4;
+      three_fourths = true;
+   }
 
    assert(order < slabs->min_order + slabs->num_orders);
    assert(heap < slabs->num_heaps);
 
-   group_index = heap * slabs->num_orders + (order - slabs->min_order);
+   group_index = (heap * slabs->num_orders + (order - slabs->min_order)) *
+                 (1 + slabs->allow_three_fourths_allocations) + three_fourths;
    group = &slabs->groups[group_index];
 
    mtx_lock(&slabs->mutex);
@@ -114,20 +135,20 @@ pb_slab_alloc(struct pb_slabs *slabs, unsigned size, unsigned heap)
    /* If there is no candidate slab at all, or the first slab has no free
     * entries, try reclaiming entries.
     */
-   if (LIST_IS_EMPTY(&group->slabs) ||
-       LIST_IS_EMPTY(&LIST_ENTRY(struct pb_slab, group->slabs.next, head)->free))
+   if (list_is_empty(&group->slabs) ||
+       list_is_empty(&LIST_ENTRY(struct pb_slab, group->slabs.next, head)->free))
       pb_slabs_reclaim_locked(slabs);
 
    /* Remove slabs without free entries. */
-   while (!LIST_IS_EMPTY(&group->slabs)) {
+   while (!list_is_empty(&group->slabs)) {
       slab = LIST_ENTRY(struct pb_slab, group->slabs.next, head);
-      if (!LIST_IS_EMPTY(&slab->free))
+      if (!list_is_empty(&slab->free))
          break;
 
-      LIST_DEL(&slab->head);
+      list_del(&slab->head);
    }
 
-   if (LIST_IS_EMPTY(&group->slabs)) {
+   if (list_is_empty(&group->slabs)) {
       /* Drop the mutex temporarily to prevent a deadlock where the allocation
        * calls back into slab functions (most likely to happen for
        * pb_slab_reclaim if memory is low).
@@ -136,16 +157,16 @@ pb_slab_alloc(struct pb_slabs *slabs, unsigned size, unsigned heap)
        * slabs for the same group, but that doesn't hurt correctness.
        */
       mtx_unlock(&slabs->mutex);
-      slab = slabs->slab_alloc(slabs->priv, heap, 1 << order, group_index);
+      slab = slabs->slab_alloc(slabs->priv, heap, entry_size, group_index);
       if (!slab)
          return NULL;
       mtx_lock(&slabs->mutex);
 
-      LIST_ADD(&slab->head, &group->slabs);
+      list_add(&slab->head, &group->slabs);
    }
 
    entry = LIST_ENTRY(struct pb_slab_entry, slab->free.next, head);
-   LIST_DEL(&entry->head);
+   list_del(&entry->head);
    slab->num_free--;
 
    mtx_unlock(&slabs->mutex);
@@ -163,7 +184,7 @@ void
 pb_slab_free(struct pb_slabs* slabs, struct pb_slab_entry *entry)
 {
    mtx_lock(&slabs->mutex);
-   LIST_ADDTAIL(&entry->head, &slabs->reclaim);
+   list_addtail(&entry->head, &slabs->reclaim);
    mtx_unlock(&slabs->mutex);
 }
 
@@ -191,7 +212,7 @@ pb_slabs_reclaim(struct pb_slabs *slabs)
 bool
 pb_slabs_init(struct pb_slabs *slabs,
               unsigned min_order, unsigned max_order,
-              unsigned num_heaps,
+              unsigned num_heaps, bool allow_three_fourth_allocations,
               void *priv,
               slab_can_reclaim_fn *can_reclaim,
               slab_alloc_fn *slab_alloc,
@@ -206,22 +227,24 @@ pb_slabs_init(struct pb_slabs *slabs,
    slabs->min_order = min_order;
    slabs->num_orders = max_order - min_order + 1;
    slabs->num_heaps = num_heaps;
+   slabs->allow_three_fourths_allocations = allow_three_fourth_allocations;
 
    slabs->priv = priv;
    slabs->can_reclaim = can_reclaim;
    slabs->slab_alloc = slab_alloc;
    slabs->slab_free = slab_free;
 
-   LIST_INITHEAD(&slabs->reclaim);
+   list_inithead(&slabs->reclaim);
 
-   num_groups = slabs->num_orders * slabs->num_heaps;
+   num_groups = slabs->num_orders * slabs->num_heaps *
+                (1 + allow_three_fourth_allocations);
    slabs->groups = CALLOC(num_groups, sizeof(*slabs->groups));
    if (!slabs->groups)
       return false;
 
    for (i = 0; i < num_groups; ++i) {
       struct pb_slab_group *group = &slabs->groups[i];
-      LIST_INITHEAD(&group->slabs);
+      list_inithead(&group->slabs);
    }
 
    (void) mtx_init(&slabs->mutex, mtx_plain);
@@ -241,7 +264,7 @@ pb_slabs_deinit(struct pb_slabs *slabs)
    /* Reclaim all slab entries (even those that are still in flight). This
     * implicitly calls slab_free for everything.
     */
-   while (!LIST_IS_EMPTY(&slabs->reclaim)) {
+   while (!list_is_empty(&slabs->reclaim)) {
       struct pb_slab_entry *entry =
          LIST_ENTRY(struct pb_slab_entry, slabs->reclaim.next, head);
       pb_slab_reclaim(slabs, entry);

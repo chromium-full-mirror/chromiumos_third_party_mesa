@@ -53,7 +53,8 @@
 #include "glxconfig.h"
 #include "glxhash.h"
 #include "util/macros.h"
-
+#include "util/u_thread.h"
+#include "loader.h"
 #include "glxextensions.h"
 
 #if defined(USE_LIBGLVND)
@@ -66,11 +67,16 @@
 extern "C" {
 #endif
 
+extern void glx_message(int level, const char *f, ...) PRINTFLIKE(2, 3);
+
+#define DebugMessageF(...) glx_message(_LOADER_DEBUG, __VA_ARGS__)
+#define InfoMessageF(...) glx_message(_LOADER_INFO, __VA_ARGS__)
+#define ErrorMessageF(...) glx_message(_LOADER_WARNING, __VA_ARGS__)
+#define CriticalErrorMessageF(...) glx_message(_LOADER_FATAL, __VA_ARGS__)
+
 
 #define GLX_MAJOR_VERSION 1       /* current version numbers */
 #define GLX_MINOR_VERSION 4
-
-#define __GLX_MAX_TEXTURE_UNITS 32
 
 struct glx_display;
 struct glx_context;
@@ -108,11 +114,6 @@ struct __GLXDRIscreenRec {
 
    void (*destroyScreen)(struct glx_screen *psc);
 
-   struct glx_context *(*createContext)(struct glx_screen *psc,
-					struct glx_config *config,
-					struct glx_context *shareList,
-					int renderType);
-
    __GLXDRIdrawable *(*createDrawable)(struct glx_screen *psc,
 				       XID drawable,
 				       GLXDrawable glxDrawable,
@@ -132,6 +133,8 @@ struct __GLXDRIscreenRec {
    int (*setSwapInterval)(__GLXDRIdrawable *pdraw, int interval);
    int (*getSwapInterval)(__GLXDRIdrawable *pdraw);
    int (*getBufferAge)(__GLXDRIdrawable *pdraw);
+   void (*bindTexImage)(__GLXDRIdrawable *pdraw, int buffer, const int *attribs);
+   void (*releaseTexImage)(__GLXDRIdrawable *pdraw, int buffer);
 };
 
 struct __GLXDRIdrawableRec
@@ -152,7 +155,6 @@ struct __GLXDRIdrawableRec
 ** dependent methods.
 */
 extern __GLXDRIdisplay *driswCreateDisplay(Display * dpy);
-extern __GLXDRIdisplay *driCreateDisplay(Display * dpy);
 extern __GLXDRIdisplay *dri2CreateDisplay(Display * dpy);
 extern __GLXDRIdisplay *dri3_create_display(Display * dpy);
 extern __GLXDRIdisplay *driwindowsCreateDisplay(Display * dpy);
@@ -233,13 +235,6 @@ struct glx_context_vtable {
    void (*unbind)(struct glx_context *context, struct glx_context *new_ctx);
    void (*wait_gl)(struct glx_context *ctx);
    void (*wait_x)(struct glx_context *ctx);
-   void (*use_x_font)(struct glx_context *ctx,
-		      Font font, int first, int count, int listBase);
-   void (*bind_tex_image)(Display * dpy,
-			  GLXDrawable drawable,
-			  int buffer, const int *attrib_list);
-   void (*release_tex_image)(Display * dpy, GLXDrawable drawable, int buffer);
-   void * (*get_proc_address)(const char *symbol);
    int (*interop_query_device_info)(struct glx_context *ctx,
                                     struct mesa_glinterop_device_info *out);
    int (*interop_export_object)(struct glx_context *ctx,
@@ -326,13 +321,6 @@ struct glx_context
    GLfloat *feedbackBuf;
    GLuint *selectBuf;
    /*@} */
-
-    /**
-     * Fill newImage with the unpacked form of \c oldImage getting it
-     * ready for transport to the server.
-     */
-   void (*fillImage) (struct glx_context *, GLint, GLint, GLint, GLint, GLenum,
-                      GLenum, const GLvoid *, GLubyte *, GLubyte *);
 
     /**
      * Client side attribs.
@@ -507,6 +495,8 @@ struct glx_screen_vtable {
    int (*query_renderer_string)(struct glx_screen *psc,
                                 int attribute,
                                 const char **value);
+
+   char *(*get_driver_name)(struct glx_screen *psc);
 };
 
 struct glx_screen
@@ -514,9 +504,13 @@ struct glx_screen
    const struct glx_screen_vtable *vtable;
 
     /**
-     * GLX extension string reported by the X-server.
+     * \name Storage for the GLX vendor, version, and extension strings
      */
+   /*@{ */
    const char *serverGLXexts;
+   const char *serverGLXvendor;
+   const char *serverGLXversion;
+   /*@} */
 
     /**
      * GLX extension string to be reported to applications.  This is the
@@ -549,8 +543,14 @@ struct glx_screen
      * libGL.
      */
    /*@{ */
-   unsigned char direct_support[8];
+   unsigned char direct_support[__GLX_EXT_BYTES];
    GLboolean ext_list_first_time;
+
+   unsigned char glx_force_enabled[__GLX_EXT_BYTES];
+   unsigned char glx_force_disabled[__GLX_EXT_BYTES];
+
+   unsigned char gl_force_enabled[__GL_EXT_BYTES];
+   unsigned char gl_force_disabled[__GL_EXT_BYTES];
    /*@} */
 
 };
@@ -561,9 +561,10 @@ struct glx_screen
  */
 struct glx_display
 {
-   /* The extension protocol codes */
-   XExtCodes *codes;
    struct glx_display *next;
+
+   /* The extension protocol codes */
+   XExtCodes codes;
 
     /**
      * Back pointer to the display
@@ -571,29 +572,13 @@ struct glx_display
    Display *dpy;
 
     /**
-     * The \c majorOpcode is common to all connections to the same server.
-     * It is also copied into the context structure.
-     */
-   int majorOpcode;
-
-    /**
-     * \name Server Version
+     * \name Minor Version
      *
-     * Major and minor version returned by the server during initialization.
+     * Minor version returned by the server during initialization. The major
+     * version is asserted to be 1 during extension setup.
      */
    /*@{ */
-   int majorVersion, minorVersion;
-   /*@} */
-
-    /**
-     * \name Storage for the servers GLX vendor and versions strings.
-     *
-     * These are the same for all screens on this display. These fields will
-     * be filled in on demand.
-     */
-   /*@{ */
-   const char *serverGLXvendor;
-   const char *serverGLXversion;
+   int minorVersion;
    /*@} */
 
     /**
@@ -612,7 +597,6 @@ struct glx_display
      * Per display direct rendering interface functions and data.
      */
    __GLXDRIdisplay *driswDisplay;
-   __GLXDRIdisplay *driDisplay;
    __GLXDRIdisplay *dri2Display;
    __GLXDRIdisplay *dri3Display;
 #endif
@@ -662,8 +646,7 @@ extern void __glXSetCurrentContext(struct glx_context * c);
 
 # if defined( USE_ELF_TLS )
 
-extern __thread void *__glX_tls_Context
-   __attribute__ ((tls_model("initial-exec")));
+extern __THREAD_INITIAL_EXEC void *__glX_tls_Context;
 
 #  define __glXGetCurrentContext() __glX_tls_Context
 
@@ -747,12 +730,6 @@ extern void __glEmptyImage(struct glx_context *, GLint, GLint, GLint, GLint, GLe
 extern void __glXInitVertexArrayState(struct glx_context *);
 extern void __glXFreeVertexArrayState(struct glx_context *);
 
-/*
-** Inform the Server of the major and minor numbers and of the client
-** libraries extension string.
-*/
-extern void __glXClientInfo(Display * dpy, int opcode);
-
 _X_HIDDEN void
 __glX_send_client_info(struct glx_display *glx_dpy);
 
@@ -774,16 +751,8 @@ extern void __glXInitializeVisualConfigFromTags(struct glx_config * config,
                                                 Bool tagged_only,
                                                 Bool fbconfig_style_tags);
 
-extern char *__glXQueryServerString(Display * dpy, int opcode,
-                                    CARD32 screen, CARD32 name);
-extern char *__glXGetString(Display * dpy, int opcode,
-                            CARD32 screen, CARD32 name);
-
-extern const char __glXGLClientVersion[];
-extern const char __glXGLClientExtensions[];
-
-/* Get the unadjusted system time */
-extern int __glXGetUST(int64_t * ust);
+extern char *__glXQueryServerString(Display *dpy, CARD32 screen, CARD32 name);
+extern char *__glXGetString(Display *dpy, CARD32 screen, CARD32 name);
 
 extern GLboolean __glXGetMscRateOML(Display * dpy, GLXDrawable drawable,
                                     int32_t * numerator,
@@ -818,6 +787,9 @@ applegl_create_context(struct glx_screen *psc,
 
 extern int
 applegl_create_display(struct glx_display *display);
+
+extern void *
+applegl_get_proc_address(const char *symbol);
 #endif
 
 extern Bool validate_renderType_against_config(const struct glx_config *config,

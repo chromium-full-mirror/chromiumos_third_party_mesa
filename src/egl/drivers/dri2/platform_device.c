@@ -40,8 +40,8 @@
 #include <unistd.h>
 
 #include "egl_dri2.h"
-#include "egl_dri2_fallbacks.h"
 #include "loader.h"
+#include "util/debug.h"
 
 static __DRIimage*
 device_alloc_image(struct dri2_egl_display *dri2_dpy,
@@ -66,6 +66,9 @@ device_free_images(struct dri2_egl_surface *dri2_surf)
       dri2_dpy->image->destroyImage(dri2_surf->front);
       dri2_surf->front = NULL;
    }
+
+   free(dri2_surf->swrast_device_buffer);
+   dri2_surf->swrast_device_buffer = NULL;
 }
 
 static int
@@ -112,8 +115,8 @@ device_image_get_buffers(__DRIdrawable *driDrawable,
 }
 
 static _EGLSurface *
-dri2_device_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
-                           _EGLConfig *conf, const EGLint *attrib_list)
+dri2_device_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
+                           const EGLint *attrib_list)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
@@ -142,15 +145,12 @@ dri2_device_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
       goto cleanup_surface;
    }
 
-   if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
+   dri2_surf->visual = dri2_image_format_for_pbuffer_config(dri2_dpy, config);
+   if (dri2_surf->visual == __DRI_IMAGE_FORMAT_NONE)
       goto cleanup_surface;
 
-   if (conf->RedSize == 5)
-      dri2_surf->visual = __DRI_IMAGE_FORMAT_RGB565;
-   else if (conf->AlphaSize == 0)
-      dri2_surf->visual = __DRI_IMAGE_FORMAT_XRGB8888;
-   else
-      dri2_surf->visual = __DRI_IMAGE_FORMAT_ARGB8888;
+   if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
+      goto cleanup_surface;
 
    return &dri2_surf->base;
 
@@ -160,7 +160,7 @@ dri2_device_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
 }
 
 static EGLBoolean
-device_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
+device_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
@@ -175,65 +175,16 @@ device_destroy_surface(_EGLDriver *drv, _EGLDisplay *disp, _EGLSurface *surf)
 }
 
 static _EGLSurface *
-dri2_device_create_pbuffer_surface(_EGLDriver *drv, _EGLDisplay *disp,
-                                   _EGLConfig *conf, const EGLint *attrib_list)
+dri2_device_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
+                                   const EGLint *attrib_list)
 {
-   return dri2_device_create_surface(drv, disp, EGL_PBUFFER_BIT, conf,
-                                     attrib_list);
-}
-
-static EGLBoolean
-device_add_configs_for_visuals(_EGLDriver *drv, _EGLDisplay *disp)
-{
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
-   static const struct {
-      const char *format_name;
-      unsigned int rgba_masks[4];
-   } visuals[] = {
-      { "ARGB8888", { 0xff0000, 0xff00, 0xff, 0xff000000 } },
-      { "RGB888",   { 0xff0000, 0xff00, 0xff, 0x0 } },
-      { "RGB565",   { 0x00f800, 0x07e0, 0x1f, 0x0 } },
-   };
-   unsigned int format_count[ARRAY_SIZE(visuals)] = { 0 };
-   unsigned int config_count = 0;
-
-   for (unsigned i = 0; dri2_dpy->driver_configs[i] != NULL; i++) {
-      for (unsigned j = 0; j < ARRAY_SIZE(visuals); j++) {
-         struct dri2_egl_config *dri2_conf;
-
-         dri2_conf = dri2_add_config(disp, dri2_dpy->driver_configs[i],
-               config_count + 1, EGL_PBUFFER_BIT, NULL,
-               visuals[j].rgba_masks);
-
-         if (dri2_conf) {
-            if (dri2_conf->base.ConfigID == config_count + 1)
-               config_count++;
-            format_count[j]++;
-         }
-      }
-   }
-
-   for (unsigned i = 0; i < ARRAY_SIZE(format_count); i++) {
-      if (!format_count[i]) {
-         _eglLog(_EGL_DEBUG, "No DRI config supports native format %s",
-               visuals[i].format_name);
-      }
-   }
-
-   return (config_count != 0);
+   return dri2_device_create_surface(disp, EGL_PBUFFER_BIT, conf, attrib_list);
 }
 
 static const struct dri2_egl_display_vtbl dri2_device_display_vtbl = {
-   .create_pixmap_surface = dri2_fallback_create_pixmap_surface,
    .create_pbuffer_surface = dri2_device_create_pbuffer_surface,
    .destroy_surface = device_destroy_surface,
    .create_image = dri2_create_image_khr,
-   .swap_buffers_region = dri2_fallback_swap_buffers_region,
-   .post_sub_buffer = dri2_fallback_post_sub_buffer,
-   .copy_buffers = dri2_fallback_copy_buffers,
-   .query_buffer_age = dri2_fallback_query_buffer_age,
-   .create_wayland_buffer_from_image = dri2_fallback_create_wayland_buffer_from_image,
-   .get_sync_values = dri2_fallback_get_sync_values,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -300,9 +251,10 @@ device_get_fd(_EGLDisplay *disp, _EGLDevice *dev)
 static bool
 device_probe_device(_EGLDisplay *disp)
 {
-   struct dri2_egl_display *dri2_dpy = disp->DriverData;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   bool request_software = env_var_as_boolean("LIBGL_ALWAYS_SOFTWARE", false);
 
-   if (disp->Options.ForceSoftware)
+   if (request_software)
       _eglLog(_EGL_WARNING, "Not allowed to force software rendering when "
                             "API explicitly selects a hardware device.");
    dri2_dpy->fd = device_get_fd(disp, disp->Device);
@@ -312,6 +264,18 @@ device_probe_device(_EGLDisplay *disp)
    dri2_dpy->driver_name = loader_get_driver_for_fd(dri2_dpy->fd);
    if (!dri2_dpy->driver_name)
       goto err_name;
+
+   /* When doing software rendering, some times user still want to explicitly
+    * choose the render node device since cross node import doesn't work between
+    * vgem/virtio_gpu yet. It would be nice to have a new EXTENSION for this.
+    * For now, just fallback to kms_swrast. */
+   if (disp->Options.ForceSoftware && !request_software &&
+       (strcmp(dri2_dpy->driver_name, "vgem") == 0 ||
+        strcmp(dri2_dpy->driver_name, "virtio_gpu") == 0)) {
+      free(dri2_dpy->driver_name);
+      _eglLog(_EGL_WARNING, "NEEDS EXTENSION: falling back to kms_swrast");
+      dri2_dpy->driver_name = strdup("kms_swrast");
+   }
 
    if (!dri2_load_driver_dri3(disp))
       goto err_load;
@@ -333,7 +297,7 @@ err_name:
 static bool
 device_probe_device_sw(_EGLDisplay *disp)
 {
-   struct dri2_egl_display *dri2_dpy = disp->DriverData;
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
    dri2_dpy->fd = -1;
    dri2_dpy->driver_name = strdup("swrast");
@@ -352,7 +316,7 @@ device_probe_device_sw(_EGLDisplay *disp)
 }
 
 EGLBoolean
-dri2_initialize_device(_EGLDriver *drv, _EGLDisplay *disp)
+dri2_initialize_device(_EGLDisplay *disp)
 {
    _EGLDevice *dev;
    struct dri2_egl_display *dri2_dpy;
@@ -391,8 +355,12 @@ dri2_initialize_device(_EGLDriver *drv, _EGLDisplay *disp)
    }
 
    dri2_setup_screen(disp);
+#ifdef HAVE_WAYLAND_PLATFORM
+   dri2_dpy->device_name = loader_get_device_name_for_fd(dri2_dpy->fd);
+#endif
+   dri2_set_WL_bind_wayland_display(disp);
 
-   if (!device_add_configs_for_visuals(drv, disp)) {
+   if (!dri2_add_pbuffer_configs_for_visuals(disp)) {
       err = "DRI2: failed to add configs";
       goto cleanup;
    }

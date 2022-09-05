@@ -39,7 +39,7 @@
 #include "util/u_dump.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_cpu_detect.h"
 #include "lp_bld_debug.h"
 #include "lp_bld_type.h"
@@ -602,7 +602,7 @@ lp_build_sample_fetch_image_linear(struct lp_build_sample_context *bld,
       r_fpart = LLVMBuildBitCast(builder, r_fpart, u8n_vec_type, "");
 
    for (j = 0; j < u8n.type.length; j += 4) {
-#ifdef PIPE_ARCH_LITTLE_ENDIAN
+#if UTIL_ARCH_LITTLE_ENDIAN
       unsigned subindex = 0;
 #else
       unsigned subindex = 3;
@@ -705,34 +705,43 @@ lp_build_sample_fetch_image_linear(struct lp_build_sample_context *bld,
    else {
       /* general 1/2/3-D lerping */
       if (dims == 1) {
-         packed = lp_build_lerp(&u8n,
+         lp_build_reduce_filter(&u8n,
+                                bld->static_sampler_state->reduction_mode,
+                                LP_BLD_LERP_PRESCALED_WEIGHTS,
+                                1,
                                 s_fpart,
-                                neighbors[0][0][0],
-                                neighbors[0][0][1],
-                                LP_BLD_LERP_PRESCALED_WEIGHTS);
+                                &neighbors[0][0][0],
+                                &neighbors[0][0][1],
+                                &packed);
       } else if (dims == 2) {
          /* 2-D lerp */
-         packed = lp_build_lerp_2d(&u8n,
+         lp_build_reduce_filter_2d(&u8n,
+                                   bld->static_sampler_state->reduction_mode,
+                                   LP_BLD_LERP_PRESCALED_WEIGHTS,
+                                   1,
                                    s_fpart, t_fpart,
-                                   neighbors[0][0][0],
-                                   neighbors[0][0][1],
-                                   neighbors[0][1][0],
-                                   neighbors[0][1][1],
-                                   LP_BLD_LERP_PRESCALED_WEIGHTS);
+                                   &neighbors[0][0][0],
+                                   &neighbors[0][0][1],
+                                   &neighbors[0][1][0],
+                                   &neighbors[0][1][1],
+                                   &packed);
       } else {
          /* 3-D lerp */
          assert(dims == 3);
-         packed = lp_build_lerp_3d(&u8n,
+         lp_build_reduce_filter_3d(&u8n,
+                                   bld->static_sampler_state->reduction_mode,
+                                   LP_BLD_LERP_PRESCALED_WEIGHTS,
+                                   1,
                                    s_fpart, t_fpart, r_fpart,
-                                   neighbors[0][0][0],
-                                   neighbors[0][0][1],
-                                   neighbors[0][1][0],
-                                   neighbors[0][1][1],
-                                   neighbors[1][0][0],
-                                   neighbors[1][0][1],
-                                   neighbors[1][1][0],
-                                   neighbors[1][1][1],
-                                   LP_BLD_LERP_PRESCALED_WEIGHTS);
+                                   &neighbors[0][0][0],
+                                   &neighbors[0][0][1],
+                                   &neighbors[0][1][0],
+                                   &neighbors[0][1][1],
+                                   &neighbors[1][0][0],
+                                   &neighbors[1][0][1],
+                                   &neighbors[1][1][0],
+                                   &neighbors[1][1][1],
+                                   &packed);
       }
    }
 
@@ -1092,9 +1101,14 @@ lp_build_sample_mipmap(struct lp_build_sample_context *bld,
                                                LLVMConstVector(shuffle, u8n_bld.type.length), "");
          }
 
-         colors0 = lp_build_lerp(&u8n_bld, lod_fpart,
-                                 colors0, colors1,
-                                 LP_BLD_LERP_PRESCALED_WEIGHTS);
+         lp_build_reduce_filter(&u8n_bld,
+                                bld->static_sampler_state->reduction_mode,
+                                LP_BLD_LERP_PRESCALED_WEIGHTS,
+                                1,
+                                lod_fpart,
+                                &colors0,
+                                &colors1,
+                                &colors0);
 
          LLVMBuildStore(builder, colors0, colors_var);
       }

@@ -72,14 +72,21 @@ v3d_begin_query(struct pipe_context *pctx, struct pipe_query *query)
 
         switch (q->type) {
         case PIPE_QUERY_PRIMITIVES_GENERATED:
+                /* If we are using PRIMITIVE_COUNTS_FEEDBACK to retrieve
+                 * primitive counts from the GPU (which we need when a GS
+                 * is present), then we need to update our counters now
+                 * to discard any primitives generated before this.
+                 */
+                if (v3d->prog.gs)
+                        v3d_update_primitive_counters(v3d);
                 q->start = v3d->prims_generated;
                 break;
         case PIPE_QUERY_PRIMITIVES_EMITTED:
                 /* If we are inside transform feedback we need to update the
-                 * primitive counts to skip primtives recorded before this.
+                 * primitive counts to skip primitives recorded before this.
                  */
                 if (v3d->streamout.num_targets > 0)
-                        v3d_tf_update_counters(v3d);
+                        v3d_update_primitive_counters(v3d);
                 q->start = v3d->tf_prims_generated;
                 break;
         case PIPE_QUERY_OCCLUSION_COUNTER:
@@ -90,7 +97,7 @@ v3d_begin_query(struct pipe_context *pctx, struct pipe_query *query)
                 *map = 0;
 
                 v3d->current_oq = q->bo;
-                v3d->dirty |= VC5_DIRTY_OQ;
+                v3d->dirty |= V3D_DIRTY_OQ;
                 break;
         default:
                 unreachable("unsupported query type");
@@ -107,6 +114,12 @@ v3d_end_query(struct pipe_context *pctx, struct pipe_query *query)
 
         switch (q->type) {
         case PIPE_QUERY_PRIMITIVES_GENERATED:
+                /* If we are using PRIMITIVE_COUNTS_FEEDBACK to retrieve
+                 * primitive counts from the GPU (which we need when a GS
+                 * is present), then we need to update our counters now.
+                 */
+                if (v3d->prog.gs)
+                        v3d_update_primitive_counters(v3d);
                 q->end = v3d->prims_generated;
                 break;
         case PIPE_QUERY_PRIMITIVES_EMITTED:
@@ -115,14 +128,14 @@ v3d_end_query(struct pipe_context *pctx, struct pipe_query *query)
                  * time. Otherwise, we have to do it now.
                  */
                 if (v3d->streamout.num_targets > 0)
-                        v3d_tf_update_counters(v3d);
+                        v3d_update_primitive_counters(v3d);
                 q->end = v3d->tf_prims_generated;
                 break;
         case PIPE_QUERY_OCCLUSION_COUNTER:
         case PIPE_QUERY_OCCLUSION_PREDICATE:
         case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
                 v3d->current_oq = NULL;
-                v3d->dirty |= VC5_DIRTY_OQ;
+                v3d->dirty |= V3D_DIRTY_OQ;
                 break;
         default:
                 unreachable("unsupported query type");
@@ -182,8 +195,8 @@ v3d_set_active_query_state(struct pipe_context *pctx, bool enable)
         struct v3d_context *v3d = v3d_context(pctx);
 
         v3d->active_queries = enable;
-        v3d->dirty |= VC5_DIRTY_OQ;
-        v3d->dirty |= VC5_DIRTY_STREAMOUT;
+        v3d->dirty |= V3D_DIRTY_OQ;
+        v3d->dirty |= V3D_DIRTY_STREAMOUT;
 }
 
 void

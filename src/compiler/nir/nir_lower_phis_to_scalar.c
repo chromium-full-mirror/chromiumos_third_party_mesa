@@ -36,6 +36,8 @@ struct lower_phis_to_scalar_state {
    void *mem_ctx;
    void *dead_ctx;
 
+   bool lower_all;
+
    /* Hash table marking which phi nodes are scalarizable.  The key is
     * pointers to phi instructions and the entry is either NULL for not
     * scalarizable or non-null for scalarizable.
@@ -65,9 +67,7 @@ is_phi_src_scalarizable(nir_phi_src *src,
        * are ok too.
        */
       return nir_op_infos[src_alu->op].output_size == 0 ||
-             src_alu->op == nir_op_vec2 ||
-             src_alu->op == nir_op_vec3 ||
-             src_alu->op == nir_op_vec4;
+             nir_op_is_vec(src_alu->op);
    }
 
    case nir_instr_type_phi:
@@ -89,27 +89,30 @@ is_phi_src_scalarizable(nir_phi_src *src,
 
       switch (src_intrin->intrinsic) {
       case nir_intrinsic_load_deref: {
+         /* Don't scalarize if we see a load of a local variable because it
+          * might turn into one of the things we can't scalarize.
+          */
          nir_deref_instr *deref = nir_src_as_deref(src_intrin->src[0]);
-         return deref->mode == nir_var_shader_in ||
-                deref->mode == nir_var_uniform ||
-                deref->mode == nir_var_mem_ubo ||
-                deref->mode == nir_var_mem_ssbo ||
-                deref->mode == nir_var_mem_global;
+         return !nir_deref_mode_may_be(deref, nir_var_function_temp |
+                                              nir_var_shader_temp);
       }
 
       case nir_intrinsic_interp_deref_at_centroid:
       case nir_intrinsic_interp_deref_at_sample:
       case nir_intrinsic_interp_deref_at_offset:
+      case nir_intrinsic_interp_deref_at_vertex:
       case nir_intrinsic_load_uniform:
       case nir_intrinsic_load_ubo:
       case nir_intrinsic_load_ssbo:
       case nir_intrinsic_load_global:
+      case nir_intrinsic_load_global_constant:
       case nir_intrinsic_load_input:
          return true;
       default:
          break;
       }
    }
+   FALLTHROUGH;
 
    default:
       /* We can't scalarize this type of instruction */
@@ -120,7 +123,7 @@ is_phi_src_scalarizable(nir_phi_src *src,
 /**
  * Determines if the given phi node should be lowered.  The only phi nodes
  * we will scalarize at the moment are those where all of the sources are
- * scalarizable.
+ * scalarizable, unless lower_all is set.
  *
  * The reason for this comes down to coalescing.  Since phi sources can't
  * swizzle, swizzles on phis have to be resolved by inserting a mov right
@@ -144,6 +147,9 @@ should_lower_phi(nir_phi_instr *phi, struct lower_phis_to_scalar_state *state)
    /* Already scalar */
    if (phi->dest.ssa.num_components == 1)
       return false;
+
+   if (state->lower_all)
+      return true;
 
    struct hash_entry *entry = _mesa_hash_table_search(state->phi_table, phi);
    if (entry)
@@ -211,13 +217,7 @@ lower_phis_to_scalar_block(nir_block *block,
        * will be redundant, but copy propagation should clean them up for
        * us.  No need to add the complexity here.
        */
-      nir_op vec_op;
-      switch (phi->dest.ssa.num_components) {
-      case 2: vec_op = nir_op_vec2; break;
-      case 3: vec_op = nir_op_vec3; break;
-      case 4: vec_op = nir_op_vec4; break;
-      default: unreachable("Invalid number of components");
-      }
+      nir_op vec_op = nir_op_vec(phi->dest.ssa.num_components);
 
       nir_alu_instr *vec = nir_alu_instr_create(state->mem_ctx, vec_op);
       nir_ssa_dest_init(&vec->instr, &vec->dest.dest,
@@ -261,7 +261,7 @@ lower_phis_to_scalar_block(nir_block *block,
       nir_instr_insert_after(&last_phi->instr, &vec->instr);
 
       nir_ssa_def_rewrite_uses(&phi->dest.ssa,
-                               nir_src_for_ssa(&vec->dest.dest.ssa));
+                               &vec->dest.dest.ssa);
 
       ralloc_steal(state->dead_ctx, phi);
       nir_instr_remove(&phi->instr);
@@ -282,7 +282,7 @@ lower_phis_to_scalar_block(nir_block *block,
 }
 
 static bool
-lower_phis_to_scalar_impl(nir_function_impl *impl)
+lower_phis_to_scalar_impl(nir_function_impl *impl, bool lower_all)
 {
    struct lower_phis_to_scalar_state state;
    bool progress = false;
@@ -290,6 +290,7 @@ lower_phis_to_scalar_impl(nir_function_impl *impl)
    state.mem_ctx = ralloc_parent(impl);
    state.dead_ctx = ralloc_context(NULL);
    state.phi_table = _mesa_pointer_hash_table_create(state.dead_ctx);
+   state.lower_all = lower_all;
 
    nir_foreach_block(block, impl) {
       progress = lower_phis_to_scalar_block(block, &state) || progress;
@@ -310,13 +311,13 @@ lower_phis_to_scalar_impl(nir_function_impl *impl)
  * don't bother lowering because that would generate hard-to-coalesce movs.
  */
 bool
-nir_lower_phis_to_scalar(nir_shader *shader)
+nir_lower_phis_to_scalar(nir_shader *shader, bool lower_all)
 {
    bool progress = false;
 
    nir_foreach_function(function, shader) {
       if (function->impl)
-         progress = lower_phis_to_scalar_impl(function->impl) || progress;
+         progress = lower_phis_to_scalar_impl(function->impl, lower_all) || progress;
    }
 
    return progress;

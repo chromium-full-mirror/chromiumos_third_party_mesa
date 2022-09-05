@@ -30,11 +30,12 @@
 static bool
 virgl_resource_cache_entry_is_compatible(struct virgl_resource_cache_entry *entry,
                                          uint32_t size, uint32_t bind,
-                                         uint32_t format)
+                                         uint32_t format, uint32_t flags)
 {
    return (entry->bind == bind &&
            entry->format == format &&
            entry->size >= size &&
+           entry->flags == flags &&
            /* We don't want to waste space, so don't reuse resource storage to
             * hold much smaller (< 50%) sizes.
             */
@@ -45,7 +46,7 @@ static void
 virgl_resource_cache_entry_release(struct virgl_resource_cache *cache,
                                    struct virgl_resource_cache_entry *entry)
 {
-      LIST_DEL(&entry->head);
+      list_del(&entry->head);
       cache->entry_release_func(entry, cache->user_data);
 }
 
@@ -70,7 +71,7 @@ virgl_resource_cache_init(struct virgl_resource_cache *cache,
                           virgl_resource_cache_entry_release_func destroy_func,
                           void *user_data)
 {
-   LIST_INITHEAD(&cache->resources);
+   list_inithead(&cache->resources);
    cache->timeout_usecs = timeout_usecs;
    cache->entry_is_busy_func = is_busy_func;
    cache->entry_release_func = destroy_func;
@@ -91,12 +92,13 @@ virgl_resource_cache_add(struct virgl_resource_cache *cache,
 
    entry->timeout_start = now;
    entry->timeout_end = entry->timeout_start + cache->timeout_usecs;
-   LIST_ADDTAIL(&entry->head, &cache->resources);
+   list_addtail(&entry->head, &cache->resources);
 }
 
 struct virgl_resource_cache_entry *
 virgl_resource_cache_remove_compatible(struct virgl_resource_cache *cache,
-                                       uint32_t size, uint32_t bind, uint32_t format)
+                                       uint32_t size, uint32_t bind,
+                                       uint32_t format, uint32_t flags)
 {
    const int64_t now = os_time_get();
    struct virgl_resource_cache_entry *compat_entry = NULL;
@@ -108,7 +110,8 @@ virgl_resource_cache_remove_compatible(struct virgl_resource_cache *cache,
    list_for_each_entry_safe(struct virgl_resource_cache_entry,
                             entry, &cache->resources, head) {
       const bool compatible =
-         virgl_resource_cache_entry_is_compatible(entry, size, bind, format);
+         virgl_resource_cache_entry_is_compatible(entry, size, bind, format,
+						  flags);
 
       if (compatible) {
          if (!cache->entry_is_busy_func(entry, cache->user_data))
@@ -135,7 +138,7 @@ virgl_resource_cache_remove_compatible(struct virgl_resource_cache *cache,
    }
 
    if (compat_entry)
-      LIST_DEL(&compat_entry->head);
+      list_del(&compat_entry->head);
 
    return compat_entry;
 }

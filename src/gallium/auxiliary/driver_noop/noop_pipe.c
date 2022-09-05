@@ -28,7 +28,7 @@
 #include "pipe/p_screen.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
-#include "util/u_format.h"
+#include "util/format/u_format.h"
 #include "util/u_upload_mgr.h"
 #include "noop_public.h"
 
@@ -161,6 +161,7 @@ static bool noop_resource_get_param(struct pipe_screen *pscreen,
                                     struct pipe_resource *resource,
                                     unsigned plane,
                                     unsigned layer,
+                                    unsigned level,
                                     enum pipe_resource_param param,
                                     unsigned handle_usage,
                                     uint64_t *value)
@@ -175,7 +176,7 @@ static bool noop_resource_get_param(struct pipe_screen *pscreen,
    if (!tex)
       return false;
 
-   result = screen->resource_get_param(screen, NULL, tex, 0, 0, param,
+   result = screen->resource_get_param(screen, NULL, tex, 0, 0, 0, param,
                                        handle_usage, value);
    pipe_resource_reference(&tex, NULL);
    return result;
@@ -253,7 +254,7 @@ static void noop_texture_subdata(struct pipe_context *pipe,
 /*
  * clear/copy
  */
-static void noop_clear(struct pipe_context *ctx, unsigned buffers,
+static void noop_clear(struct pipe_context *ctx, unsigned buffers, const struct pipe_scissor_state *scissor_state,
                        const union pipe_color_union *color, double depth, unsigned stencil)
 {
 }
@@ -343,6 +344,10 @@ static void noop_set_context_param(struct pipe_context *ctx,
 {
 }
 
+static void noop_set_frontend_noop(struct pipe_context *ctx, bool enable)
+{
+}
+
 static struct pipe_context *noop_create_context(struct pipe_screen *screen,
                                                 void *priv, unsigned flags)
 {
@@ -376,13 +381,16 @@ static struct pipe_context *noop_create_context(struct pipe_screen *screen,
    ctx->end_query = noop_end_query;
    ctx->get_query_result = noop_get_query_result;
    ctx->set_active_query_state = noop_set_active_query_state;
-   ctx->transfer_map = noop_transfer_map;
+   ctx->buffer_map = noop_transfer_map;
+   ctx->texture_map = noop_transfer_map;
    ctx->transfer_flush_region = noop_transfer_flush_region;
-   ctx->transfer_unmap = noop_transfer_unmap;
+   ctx->buffer_unmap = noop_transfer_unmap;
+   ctx->texture_unmap = noop_transfer_unmap;
    ctx->buffer_subdata = noop_buffer_subdata;
    ctx->texture_subdata = noop_texture_subdata;
    ctx->invalidate_resource = noop_invalidate_resource;
    ctx->set_context_param = noop_set_context_param;
+   ctx->set_frontend_noop = noop_set_frontend_noop;
    noop_init_state_functions(ctx);
 
    return ctx;
@@ -393,6 +401,7 @@ static struct pipe_context *noop_create_context(struct pipe_screen *screen,
  * pipe_screen
  */
 static void noop_flush_frontbuffer(struct pipe_screen *_screen,
+                                   struct pipe_context *ctx,
                                    struct pipe_resource *resource,
                                    unsigned level, unsigned layer,
                                    void *context_private, struct pipe_box *box)
@@ -498,6 +507,29 @@ static void noop_query_memory_info(struct pipe_screen *pscreen,
    screen->query_memory_info(screen, info);
 }
 
+static struct disk_cache *noop_get_disk_shader_cache(struct pipe_screen *pscreen)
+{
+   struct pipe_screen *screen = ((struct noop_pipe_screen*)pscreen)->oscreen;
+
+   return screen->get_disk_shader_cache(screen);
+}
+
+static const void *noop_get_compiler_options(struct pipe_screen *pscreen,
+                                             enum pipe_shader_ir ir,
+                                             enum pipe_shader_type shader)
+{
+   struct pipe_screen *screen = ((struct noop_pipe_screen*)pscreen)->oscreen;
+
+   return screen->get_compiler_options(screen, ir, shader);
+}
+
+static void noop_finalize_nir(struct pipe_screen *pscreen, void *nir, bool optimize)
+{
+   struct pipe_screen *screen = ((struct noop_pipe_screen*)pscreen)->oscreen;
+
+   screen->finalize_nir(screen, nir, optimize);
+}
+
 struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
 {
    struct noop_pipe_screen *noop_screen;
@@ -535,6 +567,9 @@ struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
    screen->fence_reference = noop_fence_reference;
    screen->fence_finish = noop_fence_finish;
    screen->query_memory_info = noop_query_memory_info;
+   screen->get_disk_shader_cache = noop_get_disk_shader_cache;
+   screen->get_compiler_options = noop_get_compiler_options;
+   screen->finalize_nir = noop_finalize_nir;
 
    return screen;
 }

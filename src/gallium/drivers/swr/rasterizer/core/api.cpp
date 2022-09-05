@@ -82,6 +82,7 @@ HANDLE SwrCreateContext(SWR_CREATECONTEXT_INFO* pCreateInfo)
     pContext->pfnUpdateSoWriteOffset     = pCreateInfo->pfnUpdateSoWriteOffset;
     pContext->pfnUpdateStats             = pCreateInfo->pfnUpdateStats;
     pContext->pfnUpdateStatsFE           = pCreateInfo->pfnUpdateStatsFE;
+    pContext->pfnUpdateStreamOut         = pCreateInfo->pfnUpdateStreamOut;
 
 
     pContext->hExternalMemory = pCreateInfo->hExternalMemory;
@@ -141,8 +142,8 @@ HANDLE SwrCreateContext(SWR_CREATECONTEXT_INFO* pCreateInfo)
         pContext->workerPrivateState = *pCreateInfo->pWorkerPrivateState;
     }
 
-    memset(&pContext->WaitLock, 0, sizeof(pContext->WaitLock));
-    memset(&pContext->FifosNotEmpty, 0, sizeof(pContext->FifosNotEmpty));
+    memset((void*)&pContext->WaitLock, 0, sizeof(pContext->WaitLock));
+    memset((void*)&pContext->FifosNotEmpty, 0, sizeof(pContext->FifosNotEmpty));
     new (&pContext->WaitLock) std::mutex();
     new (&pContext->FifosNotEmpty) std::condition_variable();
 
@@ -229,7 +230,7 @@ HANDLE SwrCreateContext(SWR_CREATECONTEXT_INFO* pCreateInfo)
 
 void CopyState(DRAW_STATE& dst, const DRAW_STATE& src)
 {
-    memcpy(&dst.state, &src.state, sizeof(API_STATE));
+    memcpy((void*)&dst.state, (void*)&src.state, sizeof(API_STATE));
 }
 
 template <bool IsDraw>
@@ -477,7 +478,7 @@ void SWR_API SwrSaveState(HANDLE hContext, void* pOutputStateBlock, size_t memSi
 {
     SWR_CONTEXT* pContext = GetContext(hContext);
     auto         pSrc     = GetDrawState(pContext);
-    SWR_ASSERT(pOutputStateBlock && memSize >= sizeof(*pSrc));
+    assert(pOutputStateBlock && memSize >= sizeof(*pSrc));
 
     memcpy(pOutputStateBlock, pSrc, sizeof(*pSrc));
 }
@@ -486,9 +487,9 @@ void SWR_API SwrRestoreState(HANDLE hContext, const void* pStateBlock, size_t me
 {
     SWR_CONTEXT* pContext = GetContext(hContext);
     auto         pDst     = GetDrawState(pContext);
-    SWR_ASSERT(pStateBlock && memSize >= sizeof(*pDst));
+    assert(pStateBlock && memSize >= sizeof(*pDst));
 
-    memcpy(pDst, pStateBlock, sizeof(*pDst));
+    memcpy((void*)pDst, (void*)pStateBlock, sizeof(*pDst));
 }
 
 void SetupDefaultState(SWR_CONTEXT* pContext)
@@ -616,9 +617,17 @@ void SwrSetSoBuffers(HANDLE hContext, SWR_STREAMOUT_BUFFER* pSoBuffer, uint32_t 
 {
     API_STATE* pState = GetDrawState(GetContext(hContext));
 
-    SWR_ASSERT((slot < 4), "There are only 4 SO buffer slots [0, 3]\nSlot requested: %d", slot);
+    SWR_ASSERT((slot < MAX_SO_STREAMS), "There are only 4 SO buffer slots [0, 3]\nSlot requested: %d", slot);
 
-    pState->soBuffer[slot] = *pSoBuffer;
+    // remember buffer status in case of future resume StreamOut
+    if ((pState->soBuffer[slot].pBuffer != 0) && (pSoBuffer->pBuffer == 0))
+	pState->soPausedBuffer[slot] = pState->soBuffer[slot];
+
+    // resume
+    if (pState->soPausedBuffer[slot].pBuffer == pSoBuffer->pBuffer)
+	pState->soBuffer[slot] = pState->soPausedBuffer[slot];
+    else
+        pState->soBuffer[slot] = *pSoBuffer;
 }
 
 void SwrSetVertexFunc(HANDLE hContext, PFN_VERTEX_FUNC pfnVertexFunc)
@@ -739,7 +748,7 @@ void SwrSetRastState(HANDLE hContext, const SWR_RASTSTATE* pRastState)
     SWR_CONTEXT* pContext = GetContext(hContext);
     API_STATE*   pState   = GetDrawState(pContext);
 
-    memcpy(&pState->rastState, pRastState, sizeof(SWR_RASTSTATE));
+    memcpy((void*)&pState->rastState, (void*)pRastState, sizeof(SWR_RASTSTATE));
 }
 
 void SwrSetViewports(HANDLE                       hContext,
@@ -978,7 +987,7 @@ void SetupPipeline(DRAW_CONTEXT* pDC)
             streamMasks |= pState->state.soState.streamMasks[i];
         }
 
-        DWORD maxAttrib;
+        unsigned long maxAttrib;
         if (_BitScanReverse64(&maxAttrib, streamMasks))
         {
             pState->state.feNumAttributes =
@@ -1018,7 +1027,7 @@ void SetupPipeline(DRAW_CONTEXT* pDC)
     // Disable hottile for surfaces with no writes
     if (psState.pfnPixelShader != nullptr)
     {
-        DWORD    rt;
+        unsigned long rt;
         uint32_t rtMask = pState->state.psState.renderTargetMask;
         while (_BitScanForward(&rt, rtMask))
         {
@@ -1054,7 +1063,7 @@ void SetupPipeline(DRAW_CONTEXT* pDC)
             pState->state.pfnQuantizeDepth = QuantizeDepth<R16_UNORM>;
             break;
         default:
-            SWR_INVALID("Unsupported depth format for depth quantiztion.");
+            SWR_INVALID("Unsupported depth format for depth quantization.");
             pState->state.pfnQuantizeDepth = QuantizeDepth<R32_FLOAT>;
         }
     }

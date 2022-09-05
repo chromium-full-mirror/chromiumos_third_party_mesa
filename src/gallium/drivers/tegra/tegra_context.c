@@ -25,6 +25,7 @@
 #include <stdlib.h>
 
 #include "util/u_debug.h"
+#include "util/u_draw.h"
 #include "util/u_inlines.h"
 #include "util/u_upload_mgr.h"
 
@@ -46,19 +47,32 @@ tegra_destroy(struct pipe_context *pcontext)
 
 static void
 tegra_draw_vbo(struct pipe_context *pcontext,
-               const struct pipe_draw_info *pinfo)
+               const struct pipe_draw_info *pinfo,
+               unsigned drawid_offset,
+               const struct pipe_draw_indirect_info *pindirect,
+               const struct pipe_draw_start_count_bias *draws,
+               unsigned num_draws)
 {
+   if (num_draws > 1) {
+      util_draw_multi(pcontext, pinfo, drawid_offset, pindirect, draws, num_draws);
+      return;
+   }
+
+   if (!pindirect && (!draws[0].count || !pinfo->instance_count))
+      return;
+
    struct tegra_context *context = to_tegra_context(pcontext);
    struct pipe_draw_indirect_info indirect;
    struct pipe_draw_info info;
 
-   if (pinfo && (pinfo->indirect || pinfo->index_size)) {
+   if (pinfo && ((pindirect && pindirect->buffer) || pinfo->index_size)) {
       memcpy(&info, pinfo, sizeof(info));
 
-      if (pinfo->indirect) {
-         memcpy(&indirect, pinfo->indirect, sizeof(indirect));
-         indirect.buffer = tegra_resource_unwrap(info.indirect->buffer);
-         info.indirect = &indirect;
+      if (pindirect && pindirect->buffer) {
+         memcpy(&indirect, pindirect, sizeof(indirect));
+         indirect.buffer = tegra_resource_unwrap(pindirect->buffer);
+         indirect.indirect_draw_count = tegra_resource_unwrap(pindirect->indirect_draw_count);
+         pindirect = &indirect;
       }
 
       if (pinfo->index_size && !pinfo->has_user_indices)
@@ -67,7 +81,7 @@ tegra_draw_vbo(struct pipe_context *pcontext,
       pinfo = &info;
    }
 
-   context->gpu->draw_vbo(context->gpu, pinfo);
+   context->gpu->draw_vbo(context->gpu, pinfo, drawid_offset, pindirect, draws, num_draws);
 }
 
 static void
@@ -428,7 +442,7 @@ tegra_set_blend_color(struct pipe_context *pcontext,
 
 static void
 tegra_set_stencil_ref(struct pipe_context *pcontext,
-                      const struct pipe_stencil_ref *ref)
+                      const struct pipe_stencil_ref ref)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
 
@@ -462,7 +476,7 @@ tegra_set_clip_state(struct pipe_context *pcontext,
 
 static void
 tegra_set_constant_buffer(struct pipe_context *pcontext, unsigned int shader,
-                          unsigned int index,
+                          unsigned int index, bool take_ownership,
                           const struct pipe_constant_buffer *buf)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
@@ -474,7 +488,7 @@ tegra_set_constant_buffer(struct pipe_context *pcontext, unsigned int shader,
       buf = &buffer;
    }
 
-   context->gpu->set_constant_buffer(context->gpu, shader, index, buf);
+   context->gpu->set_constant_buffer(context->gpu, shader, index, take_ownership, buf);
 }
 
 static void
@@ -547,6 +561,7 @@ tegra_set_viewport_states(struct pipe_context *pcontext, unsigned start_slot,
 static void
 tegra_set_sampler_views(struct pipe_context *pcontext, unsigned shader,
                         unsigned start_slot, unsigned num_views,
+                        unsigned unbind_num_trailing_slots,
                         struct pipe_sampler_view **pviews)
 {
    struct pipe_sampler_view *views[PIPE_MAX_SHADER_SAMPLER_VIEWS];
@@ -557,7 +572,8 @@ tegra_set_sampler_views(struct pipe_context *pcontext, unsigned shader,
       views[i] = tegra_sampler_view_unwrap(pviews[i]);
 
    context->gpu->set_sampler_views(context->gpu, shader, start_slot,
-                                   num_views, views);
+                                   num_views, unbind_num_trailing_slots,
+                                   views);
 }
 
 static void
@@ -595,17 +611,19 @@ tegra_set_shader_buffers(struct pipe_context *pcontext, unsigned int shader,
 static void
 tegra_set_shader_images(struct pipe_context *pcontext, unsigned int shader,
                         unsigned start, unsigned count,
+                        unsigned unbind_num_trailing_slots,
                         const struct pipe_image_view *images)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
 
    context->gpu->set_shader_images(context->gpu, shader, start, count,
-                                   images);
+                                   unbind_num_trailing_slots, images);
 }
 
 static void
 tegra_set_vertex_buffers(struct pipe_context *pcontext, unsigned start_slot,
-                         unsigned num_buffers,
+                         unsigned num_buffers, unsigned unbind_num_trailing_slots,
+                         bool take_ownership,
                          const struct pipe_vertex_buffer *buffers)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
@@ -624,7 +642,8 @@ tegra_set_vertex_buffers(struct pipe_context *pcontext, unsigned start_slot,
    }
 
    context->gpu->set_vertex_buffers(context->gpu, start_slot, num_buffers,
-                                    buffers);
+                                    unbind_num_trailing_slots,
+                                    take_ownership, buffers);
 }
 
 static struct pipe_stream_output_target *
@@ -700,13 +719,13 @@ tegra_blit(struct pipe_context *pcontext, const struct pipe_blit_info *pinfo)
 }
 
 static void
-tegra_clear(struct pipe_context *pcontext, unsigned buffers,
+tegra_clear(struct pipe_context *pcontext, unsigned buffers, const struct pipe_scissor_state *scissor_state,
             const union pipe_color_union *color, double depth,
             unsigned stencil)
 {
    struct tegra_context *context = to_tegra_context(pcontext);
 
-   context->gpu->clear(context->gpu, buffers, color, depth, stencil);
+   context->gpu->clear(context->gpu, buffers, NULL, color, depth, stencil);
 }
 
 static void
@@ -897,9 +916,15 @@ tegra_transfer_map(struct pipe_context *pcontext,
    if (!transfer)
       return NULL;
 
-   transfer->map = context->gpu->transfer_map(context->gpu, resource->gpu,
-                                              level, usage, box,
-                                              &transfer->gpu);
+   if (presource->target == PIPE_BUFFER) {
+      transfer->map = context->gpu->buffer_map(context->gpu, resource->gpu,
+                                                 level, usage, box,
+                                                 &transfer->gpu);
+   } else {
+      transfer->map = context->gpu->texture_map(context->gpu, resource->gpu,
+                                                 level, usage, box,
+                                                 &transfer->gpu);
+   }
    memcpy(&transfer->base, transfer->gpu, sizeof(*transfer->gpu));
    transfer->base.resource = NULL;
    pipe_resource_reference(&transfer->base.resource, presource);
@@ -927,7 +952,10 @@ tegra_transfer_unmap(struct pipe_context *pcontext,
    struct tegra_transfer *transfer = to_tegra_transfer(ptransfer);
    struct tegra_context *context = to_tegra_context(pcontext);
 
-   context->gpu->transfer_unmap(context->gpu, transfer->gpu);
+   if (ptransfer->resource->target == PIPE_BUFFER)
+      context->gpu->buffer_unmap(context->gpu, transfer->gpu);
+   else
+      context->gpu->texture_unmap(context->gpu, transfer->gpu);
    pipe_resource_reference(&transfer->base.resource, NULL);
    free(transfer);
 }
@@ -1340,9 +1368,11 @@ tegra_screen_context_create(struct pipe_screen *pscreen, void *priv,
    context->base.create_surface = tegra_create_surface;
    context->base.surface_destroy = tegra_surface_destroy;
 
-   context->base.transfer_map = tegra_transfer_map;
+   context->base.buffer_map = tegra_transfer_map;
+   context->base.texture_map = tegra_transfer_map;
    context->base.transfer_flush_region = tegra_transfer_flush_region;
-   context->base.transfer_unmap = tegra_transfer_unmap;
+   context->base.buffer_unmap = tegra_transfer_unmap;
+   context->base.texture_unmap = tegra_transfer_unmap;
    context->base.buffer_subdata = tegra_buffer_subdata;
    context->base.texture_subdata = tegra_texture_subdata;
 

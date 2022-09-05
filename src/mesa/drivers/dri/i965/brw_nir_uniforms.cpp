@@ -222,7 +222,7 @@ brw_nir_setup_glsl_uniforms(void *mem_ctx, nir_shader *shader,
    stage_prog_data->nr_params = nr_params;
    stage_prog_data->param = rzalloc_array(mem_ctx, uint32_t, nr_params);
 
-   nir_foreach_variable(var, &shader->uniforms) {
+   nir_foreach_uniform_variable(var, shader) {
       /* UBO's, atomics and samplers don't take up space in the
          uniform file */
       if (var->interface_type != NULL || var->type->contains_atomic())
@@ -306,7 +306,7 @@ brw_nir_lower_gl_images(nir_shader *shader,
                         const struct gl_program *prog)
 {
    /* We put image uniforms at the end */
-   nir_foreach_variable(var, &shader->uniforms) {
+   nir_foreach_uniform_variable(var, shader) {
       if (!var->type->contains_image())
          continue;
 
@@ -333,8 +333,10 @@ brw_nir_lower_gl_images(nir_shader *shader,
          case nir_intrinsic_image_deref_load:
          case nir_intrinsic_image_deref_store:
          case nir_intrinsic_image_deref_atomic_add:
-         case nir_intrinsic_image_deref_atomic_min:
-         case nir_intrinsic_image_deref_atomic_max:
+         case nir_intrinsic_image_deref_atomic_imin:
+         case nir_intrinsic_image_deref_atomic_umin:
+         case nir_intrinsic_image_deref_atomic_imax:
+         case nir_intrinsic_image_deref_atomic_umax:
          case nir_intrinsic_image_deref_atomic_and:
          case nir_intrinsic_image_deref_atomic_or:
          case nir_intrinsic_image_deref_atomic_xor:
@@ -385,7 +387,7 @@ brw_nir_lower_gl_images(nir_shader *shader,
             nir_builder_instr_insert(&b, &load->instr);
 
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                     nir_src_for_ssa(&load->dest.ssa));
+                                     &load->dest.ssa);
             break;
          }
 
@@ -405,7 +407,8 @@ brw_nir_lower_legacy_clipping(nir_shader *nir, int nr_userclip_plane_consts,
 
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
 
-   nir_lower_clip_vs(nir, (1 << nr_userclip_plane_consts) - 1, true);
+   nir_lower_clip_vs(nir, (1 << nr_userclip_plane_consts) - 1, true, false,
+                     NULL);
    nir_lower_io_to_temporaries(nir, impl, true, false);
    nir_lower_global_vars_to_local(nir);
    nir_lower_vars_to_ssa(nir);
@@ -446,7 +449,7 @@ brw_nir_lower_legacy_clipping(nir_shader *nir, int nr_userclip_plane_consts,
          nir_builder_instr_insert(&b, &load->instr);
 
          nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
-                                  nir_src_for_ssa(&load->dest.ssa));
+                                  &load->dest.ssa);
          nir_instr_remove(instr);
       }
    }

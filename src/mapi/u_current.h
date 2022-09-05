@@ -29,11 +29,8 @@ struct _glapi_table;
 
 #ifdef USE_ELF_TLS
 
-extern __thread struct _glapi_table *u_current_table
-    __attribute__((tls_model("initial-exec")));
-
-extern __thread void *u_current_context
-    __attribute__((tls_model("initial-exec")));
+extern __THREAD_INITIAL_EXEC struct _glapi_table *u_current_table;
+extern __THREAD_INITIAL_EXEC void *u_current_context;
 
 #else /* USE_ELF_TLS */
 
@@ -61,26 +58,5 @@ u_current_set_context(const void *ptr);
 
 void *
 u_current_get_context_internal(void);
-
-static inline const struct _glapi_table *
-u_current_get_table(void)
-{
-#ifdef USE_ELF_TLS
-   return u_current_table;
-#else
-   return (likely(u_current_table) ?
-         u_current_table : u_current_get_table_internal());
-#endif
-}
-
-static inline const void *
-u_current_get_context(void)
-{
-#ifdef USE_ELF_TLS
-   return u_current_context;
-#else
-   return likely(u_current_context) ? u_current_context : u_current_get_context_internal();
-#endif
-}
 
 #endif /* _U_CURRENT_H_ */

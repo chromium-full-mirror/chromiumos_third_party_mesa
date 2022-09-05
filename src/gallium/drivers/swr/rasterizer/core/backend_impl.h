@@ -29,6 +29,9 @@
 #pragma once
 
 #include "tilemgr.h"
+#include "state.h"
+#include "context.h"
+
 
 void InitBackendSingleFuncTable(PFN_BACKEND_FUNC (&table)[SWR_INPUT_COVERAGE_COUNT][2][2]);
 void InitBackendSampleFuncTable(
@@ -606,7 +609,7 @@ inline void SetupRenderBuffers(uint8_t*             pColorBuffer[SWR_NUM_RENDERT
                                uint32_t             colorHotTileMask,
                                RenderOutputBuffers& renderBuffers)
 {
-    DWORD index;
+    unsigned long index;
     while (_BitScanForward(&index, colorHotTileMask))
     {
         assert(index < SWR_NUM_RENDERTARGETS);
@@ -648,6 +651,7 @@ void SetupPixelShaderContext(SWR_PS_CONTEXT*            psContext,
     psContext->pPerspAttribs          = work.pPerspAttribs;
     psContext->frontFace              = work.triFlags.frontFacing;
     psContext->renderTargetArrayIndex = work.triFlags.renderTargetArrayIndex;
+    psContext->viewportIndex          = work.triFlags.viewportIndex;
 
     // save Ia/Ib/Ic and Ja/Jb/Jc if we need to reevaluate i/j/k in the shader because of pull
     // attribs
@@ -933,7 +937,7 @@ INLINE void OutputMerger8x2(DRAW_CONTEXT*   pDC,
     simdvector blendSrc;
     simdvector blendOut;
 
-    DWORD rt;
+    unsigned long rt;
     while (_BitScanForward(&rt, renderTargetMask))
     {
         renderTargetMask &= ~(1 << rt);
@@ -1246,7 +1250,7 @@ void BackendPixelRate(DRAW_CONTEXT*        pDC,
 
             if (useAlternateOffset)
             {
-                DWORD    rt;
+                unsigned long rt;
                 uint32_t rtMask = state.colorHottileEnable;
                 while (_BitScanForward(&rt, rtMask))
                 {

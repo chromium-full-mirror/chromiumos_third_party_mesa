@@ -28,7 +28,6 @@
 #include "etnaviv_drmif.h"
 
 void _etna_bo_del(struct etna_bo *bo);
-extern pthread_mutex_t etna_drm_table_lock;
 
 static void add_bucket(struct etna_bo_cache *cache, int size)
 {
@@ -78,7 +77,7 @@ void etna_bo_cache_cleanup(struct etna_bo_cache *cache, time_t time)
 		struct etna_bo_bucket *bucket = &cache->cache_bucket[i];
 		struct etna_bo *bo;
 
-		while (!LIST_IS_EMPTY(&bucket->list)) {
+		while (!list_is_empty(&bucket->list)) {
 			bo = LIST_ENTRY(struct etna_bo, bucket->list.next, list);
 
 			/* keep things in cache for at least 1 second: */
@@ -123,9 +122,9 @@ static struct etna_bo *find_in_bucket(struct etna_bo_bucket *bucket, uint32_t fl
 {
 	struct etna_bo *bo = NULL, *tmp;
 
-	pthread_mutex_lock(&etna_drm_table_lock);
+	simple_mtx_lock(&etna_drm_table_lock);
 
-	if (LIST_IS_EMPTY(&bucket->list))
+	if (list_is_empty(&bucket->list))
 		goto out_unlock;
 
 	LIST_FOR_EACH_ENTRY_SAFE(bo, tmp, &bucket->list, list) {
@@ -147,7 +146,7 @@ static struct etna_bo *find_in_bucket(struct etna_bo_bucket *bucket, uint32_t fl
 	bo = NULL;
 
 out_unlock:
-	pthread_mutex_unlock(&etna_drm_table_lock);
+	simple_mtx_unlock(&etna_drm_table_lock);
 
 	return bo;
 }
@@ -182,7 +181,11 @@ struct etna_bo *etna_bo_cache_alloc(struct etna_bo_cache *cache, uint32_t *size,
 
 int etna_bo_cache_free(struct etna_bo_cache *cache, struct etna_bo *bo)
 {
-	struct etna_bo_bucket *bucket = get_bucket(cache, bo->size);
+	struct etna_bo_bucket *bucket;
+
+	simple_mtx_assert_locked(&etna_drm_table_lock);
+
+	bucket = get_bucket(cache, bo->size);
 
 	/* see if we can be green and recycle: */
 	if (bucket) {

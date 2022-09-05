@@ -22,14 +22,10 @@ subdir('common')
 
 _dri_drivers = []
 _dri_link = []
-if with_dri_swrast
-  subdir('swrast')
-  _dri_drivers += libswrast_dri
-  _dri_link += 'swrast_dri.so'
-endif
 if with_dri_i915
   subdir('i915')
   _dri_drivers += libi915
+  _dri_link += 'i830_dri.so'
   _dri_link += 'i915_dri.so'
 endif
 if with_dri_i965
@@ -74,8 +70,7 @@ if _dri_drivers != []
   )
 
   meson.add_install_script(
-    prog_python.path(),
-    join_paths(meson.source_root(), 'bin/install_megadrivers.py'),
+    install_megadrivers_py.path(),
     libmesa_dri_drivers.full_path(),
     dri_drivers_path,
     _dri_link,
@@ -87,7 +82,7 @@ endif
 if with_dri
   dri_req_private = []
   if dep_libdrm.found()
-    dri_req_private = ['libdrm >= ' + dep_libdrm.version()]
+    dri_req_private = ['libdrm >= ' + _drm_ver]
   endif
 
   pkg.generate(

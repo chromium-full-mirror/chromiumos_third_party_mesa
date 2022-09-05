@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2019 Collabora, Ltd.
+ * Copyright (C) 2019 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -26,7 +27,11 @@
  */
 
 #include "pan_context.h"
+#include "panfrost-quirks.h"
+#include "pan_bo.h"
+#include "pan_shader.h"
 #include "util/u_memory.h"
+#include "nir_serialize.h"
 
 /* Compute CSOs are tracked like graphics shader CSOs, but are
  * considerably simpler. We do not implement multiple
@@ -39,23 +44,34 @@ panfrost_create_compute_state(
         const struct pipe_compute_state *cso)
 {
         struct panfrost_context *ctx = pan_context(pctx);
+        struct panfrost_device *dev = pan_device(pctx->screen);
 
         struct panfrost_shader_variants *so = CALLOC_STRUCT(panfrost_shader_variants);
         so->cbase = *cso;
         so->is_compute = true;
 
-        struct panfrost_shader_state *v = &so->variants[0];
+        struct panfrost_shader_state *v = calloc(1, sizeof(*v));
+        so->variants = v;
 
         so->variant_count = 1;
         so->active_variant = 0;
 
-        v->tripipe = malloc(sizeof(struct mali_shader_meta));
+        if (cso->ir_type == PIPE_SHADER_IR_NIR_SERIALIZED) {
+                struct blob_reader reader;
+                const struct pipe_binary_program_header *hdr = cso->prog;
 
-        panfrost_shader_compile(ctx, v->tripipe,
-                        cso->ir_type, cso->prog,
-                        MESA_SHADER_COMPUTE, v, NULL);
+                blob_reader_init(&reader, hdr->blob, hdr->num_bytes);
 
+                const struct nir_shader_compiler_options *options =
+                        pan_shader_get_compiler_options(dev);
 
+                so->cbase.prog = nir_deserialize(NULL, options, &reader);
+                so->cbase.ir_type = PIPE_SHADER_IR_NIR;
+        }
+
+        panfrost_shader_compile(pctx->screen, &ctx->shaders, &ctx->descs,
+                        so->cbase.ir_type, so->cbase.prog, MESA_SHADER_COMPUTE,
+                        v);
 
         return so;
 }
@@ -64,11 +80,7 @@ static void
 panfrost_bind_compute_state(struct pipe_context *pipe, void *cso)
 {
         struct panfrost_context *ctx = pan_context(pipe);
-
-        struct panfrost_shader_variants *variants =
-                (struct panfrost_shader_variants *) cso;
-
-        ctx->shader[PIPE_SHADER_COMPUTE] = variants;
+        ctx->shader[PIPE_SHADER_COMPUTE] = cso;
 }
 
 static void
@@ -77,63 +89,44 @@ panfrost_delete_compute_state(struct pipe_context *pipe, void *cso)
         free(cso);
 }
 
-/* Launch grid is the compute equivalent of draw_vbo, so in this routine, we
- * construct the COMPUTE job and some of its payload.
- */
+static void
+panfrost_set_compute_resources(struct pipe_context *pctx,
+                         unsigned start, unsigned count,
+                         struct pipe_surface **resources)
+{
+        /* TODO */
+}
 
 static void
-panfrost_launch_grid(struct pipe_context *pipe,
-                const struct pipe_grid_info *info)
+panfrost_set_global_binding(struct pipe_context *pctx,
+                      unsigned first, unsigned count,
+                      struct pipe_resource **resources,
+                      uint32_t **handles)
 {
-        struct panfrost_context *ctx = pan_context(pipe);
+        if (!resources)
+                return;
 
-        ctx->compute_grid = info;
+        struct panfrost_context *ctx = pan_context(pctx);
+        struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
 
-        struct mali_job_descriptor_header job = {
-                .job_type = JOB_TYPE_COMPUTE,
-                .job_descriptor_size = 1,
-                .job_barrier = 1
-        };
+        for (unsigned i = first; i < first + count; ++i) {
+                struct panfrost_resource *rsrc = pan_resource(resources[i]);
+                panfrost_batch_write_rsrc(batch, rsrc, PIPE_SHADER_COMPUTE);
 
-        /* TODO: Stub */
-        struct midgard_payload_vertex_tiler *payload = &ctx->payloads[PIPE_SHADER_COMPUTE];
+                util_range_add(&rsrc->base, &rsrc->valid_buffer_range,
+                                0, rsrc->base.width0);
 
-        panfrost_emit_for_draw(ctx, false);
+                /* The handle points to uint32_t, but space is allocated for 64 bits */
+                memcpy(handles[i], &rsrc->image.data.bo->ptr.gpu, sizeof(mali_ptr));
+        }
+}
 
-        /* Compute jobs have a "compute FBD". It's not a real framebuffer
-         * descriptor - there is no framebuffer - but it takes the place of
-         * one. As far as I can tell, it's actually the beginning of a
-         * single-render-target framebuffer descriptor with almost everything
-         * zeroed out.
-         */
-        struct mali_compute_fbd compute_fbd = {
-                .unknown1 = {
-                        0, 0x1F, 0, 0, 0, 0, 0, 0
-                }
-        };
-
-        payload->postfix.framebuffer =
-                panfrost_upload_transient(ctx, &compute_fbd, sizeof(compute_fbd));
-
-        /* Invoke according to the grid info */
-
-        panfrost_pack_work_groups_compute(&payload->prefix,
-                        info->grid[0], info->grid[1], info->grid[2],
-                        info->block[0], info->block[1], info->block[2]);
-
-        /* Upload the payload */
-
-        struct panfrost_transfer transfer = panfrost_allocate_transient(ctx, sizeof(job) + sizeof(*payload));
-        memcpy(transfer.cpu, &job, sizeof(job));
-        memcpy(transfer.cpu + sizeof(job), payload, sizeof(*payload));
-
-        /* TODO: Do we want a special compute-only batch? */
-        struct panfrost_job *batch = panfrost_get_job_for_fbo(ctx);
-
-        /* Queue the job */
-        panfrost_scoreboard_queue_compute_job(batch, transfer);
-
-        panfrost_flush(pipe, NULL, PIPE_FLUSH_END_OF_FRAME);
+static void
+panfrost_memory_barrier(struct pipe_context *pctx, unsigned flags)
+{
+        /* TODO: Be smart and only flush the minimum needed, maybe emitting a
+         * cache flush job if that would help */
+        panfrost_flush_all_batches(pan_context(pctx));
 }
 
 void
@@ -143,7 +136,8 @@ panfrost_compute_context_init(struct pipe_context *pctx)
         pctx->bind_compute_state = panfrost_bind_compute_state;
         pctx->delete_compute_state = panfrost_delete_compute_state;
 
-        pctx->launch_grid = panfrost_launch_grid;
+        pctx->set_compute_resources = panfrost_set_compute_resources;
+        pctx->set_global_binding = panfrost_set_global_binding;
+
+        pctx->memory_barrier = panfrost_memory_barrier;
 }
-
-

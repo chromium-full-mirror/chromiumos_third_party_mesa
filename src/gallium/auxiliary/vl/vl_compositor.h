@@ -50,9 +50,11 @@ struct pipe_context;
 /* deinterlace allgorithem */
 enum vl_compositor_deinterlace
 {
+   VL_COMPOSITOR_NONE,
    VL_COMPOSITOR_WEAVE,
    VL_COMPOSITOR_BOB_TOP,
-   VL_COMPOSITOR_BOB_BOTTOM
+   VL_COMPOSITOR_BOB_BOTTOM,
+   VL_COMPOSITOR_MOTION_ADAPTIVE
 };
 
 /* clockwise degree */
@@ -97,6 +99,7 @@ struct vl_compositor_state
 
    unsigned used_layers:VL_COMPOSITOR_MAX_LAYERS;
    struct vl_compositor_layer layers[VL_COMPOSITOR_MAX_LAYERS];
+   bool interlaced;
 };
 
 struct vl_compositor
@@ -123,6 +126,8 @@ struct vl_compositor
 
    bool pipe_cs_composit_supported;
    bool pipe_gfx_supported;
+
+   enum vl_compositor_deinterlace deinterlace;
 
    struct {
       struct {

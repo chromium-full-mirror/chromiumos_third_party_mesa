@@ -42,6 +42,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include <string.h>
+#include <limits.h>
 
 #include "util/macros.h" // PRINTFLIKE
 
@@ -50,7 +51,7 @@
 extern "C" {
 #endif
 
-#ifndef _GNU_SOURCE
+#if !defined(_GNU_SOURCE) || defined(__APPLE__)
 
 #define strchrnul util_strchrnul
 static inline char *
@@ -72,7 +73,7 @@ util_sprintf(char *str, const char *format, ...)
 {
    va_list ap;
    va_start(ap, format);
-   vsnprintf(str, (size_t)-1, format, ap);
+   vsnprintf(str, INT_MAX, format, ap);
    va_end(ap);
 }
 
@@ -110,8 +111,15 @@ util_asprintf(char **str, const char *fmt, ...)
    return ret;
 }
 
+#ifndef strcasecmp
 #define strcasecmp stricmp
+#endif
+
 #define strdup _strdup
+
+#if defined(_WIN32) && !defined(HAVE_STRTOK_R)
+#define strtok_r strtok_s
+#endif
 
 #endif
 

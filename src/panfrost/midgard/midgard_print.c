@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2018-2019 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+ * Copyright (C) 2019-2020 Collabora, Ltd.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -21,6 +22,10 @@
  * SOFTWARE.
  */
 
+#include <math.h>
+
+#include "util/bitscan.h"
+#include "util/half_float.h"
 #include "compiler.h"
 #include "helpers.h"
 #include "midgard_ops.h"
@@ -34,7 +39,7 @@
 static void
 mir_print_index(int source)
 {
-        if (source < 0) {
+        if (source == ~0) {
                 printf("_");
                 return;
         }
@@ -66,6 +71,20 @@ mir_print_mask(unsigned mask)
         }
 }
 
+static void
+mir_print_swizzle(unsigned *swizzle, nir_alu_type T)
+{
+        unsigned comps = mir_components_for_type(T);
+
+        printf(".");
+
+        for (unsigned i = 0; i < comps; ++i) {
+                unsigned C = swizzle[i];
+                assert(C < comps);
+                putchar(components[C]);
+        }
+}
+
 static const char *
 mir_get_unit(unsigned unit)
 {
@@ -89,14 +108,102 @@ mir_get_unit(unsigned unit)
         }
 }
 
+static void
+mir_print_embedded_constant(midgard_instruction *ins, unsigned src_idx)
+{
+        assert(src_idx <= 1);
+
+        unsigned base_size = max_bitsize_for_alu(ins);
+        unsigned sz = nir_alu_type_get_type_size(ins->src_types[src_idx]);
+        bool half = (sz == (base_size >> 1));
+        unsigned mod = mir_pack_mod(ins, src_idx, false);
+        unsigned *swizzle = ins->swizzle[src_idx];
+        midgard_reg_mode reg_mode = reg_mode_for_bitsize(max_bitsize_for_alu(ins));
+        unsigned comp_mask = effective_writemask(ins->op, ins->mask);
+        unsigned num_comp = util_bitcount(comp_mask);
+        unsigned max_comp = mir_components_for_type(ins->dest_type);
+        bool first = true;
+
+        printf("#");
+
+        if (num_comp > 1)
+                printf("vec%d(", num_comp);
+
+        for (unsigned comp = 0; comp < max_comp; comp++) {
+                if (!(comp_mask & (1 << comp)))
+                        continue;
+
+                if (first)
+                        first = false;
+                else
+                        printf(", ");
+
+                mir_print_constant_component(stdout, &ins->constants,
+                                             swizzle[comp], reg_mode,
+                                             half, mod, ins->op);
+        }
+
+        if (num_comp > 1)
+                printf(")");
+}
+
+#define PRINT_SRC(ins, c) \
+        do { mir_print_index(ins->src[c]); \
+             if (ins->src[c] != ~0 && ins->src_types[c] != nir_type_invalid) { \
+                     pan_print_alu_type(ins->src_types[c], stdout); \
+                     mir_print_swizzle(ins->swizzle[c], ins->src_types[c]); \
+             } } while (0)
+
 void
 mir_print_instruction(midgard_instruction *ins)
 {
         printf("\t");
 
+        if (midgard_is_branch_unit(ins->unit)) {
+                const char *branch_target_names[] = {
+                        "goto", "break", "continue", "discard"
+                };
+
+                printf("%s.", mir_get_unit(ins->unit));
+                if (ins->branch.target_type == TARGET_DISCARD)
+                        printf("discard.");
+                else if (ins->writeout)
+                        printf("write.");
+                else if (ins->unit == ALU_ENAB_BR_COMPACT &&
+                         !ins->branch.conditional)
+                        printf("uncond.");
+                else
+                        printf("cond.");
+
+                if (!ins->branch.conditional)
+                        printf("always");
+                else if (ins->branch.invert_conditional)
+                        printf("false");
+                else
+                        printf("true");
+
+                if (ins->writeout) {
+                        printf(" (c: ");
+                        PRINT_SRC(ins, 0);
+                        printf(", z: ");
+                        PRINT_SRC(ins, 2);
+                        printf(", s: ");
+                        PRINT_SRC(ins, 3);
+                        printf(")");
+                }
+
+                if (ins->branch.target_type != TARGET_DISCARD)
+                        printf(" %s -> block(%d)\n",
+                               ins->branch.target_type < 4 ?
+                                       branch_target_names[ins->branch.target_type] : "??",
+                               ins->branch.target_block);
+
+                return;
+        }
+
         switch (ins->type) {
         case TAG_ALU_4: {
-                midgard_alu_op op = ins->alu.op;
+                midgard_alu_op op = ins->op;
                 const char *name = alu_opcode_props[op].name;
 
                 if (ins->unit)
@@ -107,8 +214,8 @@ mir_print_instruction(midgard_instruction *ins)
         }
 
         case TAG_LOAD_STORE_4: {
-                midgard_load_store_op op = ins->load_store.op;
-                const char *name = load_store_opcode_names[op];
+                midgard_load_store_op op = ins->op;
+                const char *name = load_store_opcode_props[op].name;
 
                 assert(name);
                 printf("%s", name);
@@ -116,7 +223,14 @@ mir_print_instruction(midgard_instruction *ins)
         }
 
         case TAG_TEXTURE_4: {
-                printf("texture");
+                printf("TEX");
+
+                if (ins->helper_terminate)
+                        printf(".terminate");
+
+                if (ins->helper_execute)
+                        printf(".execute");
+
                 break;
         }
 
@@ -124,32 +238,42 @@ mir_print_instruction(midgard_instruction *ins)
                 assert(0);
         }
 
-        if (ins->invert)
+        if (ins->compact_branch && ins->branch.invert_conditional)
                 printf(".not");
 
-        ssa_args *args = &ins->ssa_args;
-
         printf(" ");
-        mir_print_index(args->dest);
+        mir_print_index(ins->dest);
 
-        if (ins->mask != 0xF)
+        if (ins->dest != ~0) {
+                pan_print_alu_type(ins->dest_type, stdout);
                 mir_print_mask(ins->mask);
+        }
 
         printf(", ");
 
-        mir_print_index(args->src[0]);
-        printf(", ");
+        /* Only ALU can have an embedded constant, r26 as read on load/store is
+         * something else entirely */
+        bool is_alu = ins->type == TAG_ALU_4;
+        unsigned r_constant = SSA_FIXED_REGISTER(REGISTER_CONSTANT);
 
-        if (args->inline_constant)
-                printf("#%d", ins->inline_constant);
+        if (ins->src[0] == r_constant && is_alu)
+                mir_print_embedded_constant(ins, 0);
         else
-                mir_print_index(args->src[1]);
+                PRINT_SRC(ins, 0);
 
         printf(", ");
-        mir_print_index(args->src[2]);
 
-        if (ins->has_constants)
-                printf(" <%f, %f, %f, %f>", ins->constants[0], ins->constants[1], ins->constants[2], ins->constants[3]);
+        if (ins->has_inline_constant)
+                printf("#%d", ins->inline_constant);
+        else if (ins->src[1] == r_constant && is_alu)
+                mir_print_embedded_constant(ins, 1);
+        else
+                PRINT_SRC(ins, 1);
+
+        for (unsigned c = 2; c <= 3; ++c) {
+                printf(", ");
+                PRINT_SRC(ins, c);
+        }
 
         if (ins->no_spill)
                 printf(" /* no spill */");
@@ -162,25 +286,32 @@ mir_print_instruction(midgard_instruction *ins)
 void
 mir_print_block(midgard_block *block)
 {
-        printf("block%d: {\n", block->source_id);
+        printf("block%u: {\n", block->base.name);
 
-        mir_foreach_instr_in_block(block, ins) {
-                mir_print_instruction(ins);
+        if (block->scheduled) {
+                mir_foreach_bundle_in_block(block, bundle) {
+                        for (unsigned i = 0; i < bundle->instruction_count; ++i)
+                                mir_print_instruction(bundle->instructions[i]);
+
+                        printf("\n");
+                }
+        } else {
+                mir_foreach_instr_in_block(block, ins) {
+                        mir_print_instruction(ins);
+                }
         }
 
         printf("}");
 
-        if (block->nr_successors) {
+        if (block->base.successors[0]) {
                 printf(" -> ");
-                for (unsigned i = 0; i < block->nr_successors; ++i) {
-                        printf("block%d%s", block->successors[i]->source_id,
-                                        (i + 1) != block->nr_successors ? ", " : "");
-                }
+                pan_foreach_successor((&block->base), succ)
+                        printf(" block%u ", succ->name);
         }
 
         printf(" from { ");
         mir_foreach_predecessor(block, pred)
-                printf("block%d ", pred->source_id);
+                printf("block%u ", pred->base.name);
         printf("}");
 
         printf("\n\n");
@@ -190,19 +321,6 @@ void
 mir_print_shader(compiler_context *ctx)
 {
         mir_foreach_block(ctx, block) {
-                mir_print_block(block);
+                mir_print_block((midgard_block *) block);
         }
-}
-
-void
-mir_print_bundle(midgard_bundle *bundle)
-{
-        printf("[\n");
-
-        for (unsigned i = 0; i < bundle->instruction_count; ++i) {
-                midgard_instruction *ins = bundle->instructions[i];
-                mir_print_instruction(ins);
-        }
-
-        printf("]\n");
 }

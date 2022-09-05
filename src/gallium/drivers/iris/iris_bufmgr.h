@@ -28,13 +28,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/types.h>
+#include "c11/threads.h"
 #include "util/macros.h"
 #include "util/u_atomic.h"
 #include "util/list.h"
 #include "pipe/p_defines.h"
 
-struct gen_device_info;
+struct iris_batch;
+struct intel_device_info;
 struct pipe_debug_callback;
+struct isl_surf;
 
 /**
  * Memory zones.  When allocating a buffer, you can request that it is
@@ -66,6 +69,7 @@ struct pipe_debug_callback;
 enum iris_memory_zone {
    IRIS_MEMZONE_SHADER,
    IRIS_MEMZONE_BINDER,
+   IRIS_MEMZONE_BINDLESS,
    IRIS_MEMZONE_SURFACE,
    IRIS_MEMZONE_DYNAMIC,
    IRIS_MEMZONE_OTHER,
@@ -78,15 +82,51 @@ enum iris_memory_zone {
 
 #define IRIS_BINDER_SIZE (64 * 1024)
 #define IRIS_MAX_BINDERS 100
+#define IRIS_BINDLESS_SIZE (8 * 1024 * 1024)
 
 #define IRIS_MEMZONE_SHADER_START     (0ull * (1ull << 32))
 #define IRIS_MEMZONE_BINDER_START     (1ull * (1ull << 32))
-#define IRIS_MEMZONE_SURFACE_START    (IRIS_MEMZONE_BINDER_START + IRIS_MAX_BINDERS * IRIS_BINDER_SIZE)
+#define IRIS_MEMZONE_BINDLESS_START   (IRIS_MEMZONE_BINDER_START + IRIS_MAX_BINDERS * IRIS_BINDER_SIZE)
+#define IRIS_MEMZONE_SURFACE_START    (IRIS_MEMZONE_BINDLESS_START + IRIS_BINDLESS_SIZE)
 #define IRIS_MEMZONE_DYNAMIC_START    (2ull * (1ull << 32))
 #define IRIS_MEMZONE_OTHER_START      (3ull * (1ull << 32))
 
 #define IRIS_BORDER_COLOR_POOL_ADDRESS IRIS_MEMZONE_DYNAMIC_START
 #define IRIS_BORDER_COLOR_POOL_SIZE (64 * 1024)
+
+/**
+ * Classification of the various incoherent caches of the GPU into a number of
+ * caching domains.
+ */
+enum iris_domain {
+   /** Render color cache. */
+   IRIS_DOMAIN_RENDER_WRITE = 0,
+   /** (Hi)Z/stencil cache. */
+   IRIS_DOMAIN_DEPTH_WRITE,
+   /** Any other read-write cache. */
+   IRIS_DOMAIN_OTHER_WRITE,
+   /** Any other read-only cache. */
+   IRIS_DOMAIN_OTHER_READ,
+   /** Number of caching domains. */
+   NUM_IRIS_DOMAINS,
+   /** Not a real cache, use to opt out of the cache tracking mechanism. */
+   IRIS_DOMAIN_NONE = NUM_IRIS_DOMAINS
+};
+
+/**
+ * Whether a caching domain is guaranteed not to write any data to memory.
+ */
+static inline bool
+iris_domain_is_read_only(enum iris_domain access)
+{
+   return access == IRIS_DOMAIN_OTHER_READ;
+}
+
+enum iris_mmap_mode {
+   IRIS_MMAP_UC, /**< Fully uncached memory map */
+   IRIS_MMAP_WC, /**< Write-combining map with no caching of reads */
+   IRIS_MMAP_WB, /**< Write-back mapping with CPU caches enabled */
+};
 
 struct iris_bo {
    /**
@@ -100,6 +140,9 @@ struct iris_bo {
    /** Buffer manager context associated with this buffer object */
    struct iris_bufmgr *bufmgr;
 
+   /** Pre-computed hash using _mesa_hash_pointer for cache tracking sets */
+   uint32_t hash;
+
    /** The GEM handle for this buffer object. */
    uint32_t gem_handle;
 
@@ -111,6 +154,11 @@ struct iris_bo {
     * same address in all contexts, for simplicity.
     */
    uint64_t gtt_offset;
+
+   /**
+    * If non-zero, then this bo has an aux-map translation to this address.
+    */
+   uint64_t aux_map_address;
 
    /**
     * The validation list index for this buffer, or -1 when not in a batch.
@@ -126,6 +174,41 @@ struct iris_bo {
     */
    unsigned index;
 
+   int refcount;
+   const char *name;
+
+   uint64_t kflags;
+
+   /**
+    * Kernel-assigned global name for this object
+    *
+    * List contains both flink named and prime fd'd objects
+    */
+   unsigned global_name;
+
+   time_t free_time;
+
+   /** Mapped address for the buffer, saved across map/unmap cycles */
+   void *map;
+
+   /** BO cache list */
+   struct list_head head;
+
+   /** List of GEM handle exports of this buffer (bo_export) */
+   struct list_head exports;
+
+   /**
+    * Synchronization sequence number of most recent access of this BO from
+    * each caching domain.
+    *
+    * Although this is a global field, use in multiple contexts should be
+    * safe, see iris_emit_buffer_barrier_for() for details.
+    *
+    * Also align it to 64 bits. This will make atomic operations faster on 32
+    * bit platforms.
+    */
+   uint64_t last_seqnos[NUM_IRIS_DOMAINS] __attribute__ ((aligned (8)));
+
    /**
     * Boolean of whether the GPU is definitely not accessing the buffer.
     *
@@ -135,63 +218,34 @@ struct iris_bo {
     */
    bool idle;
 
-   int refcount;
-   const char *name;
-
-   uint64_t kflags;
-
-   /**
-    * Kenel-assigned global name for this object
-    *
-    * List contains both flink named and prime fd'd objects
-    */
-   unsigned global_name;
-
-   /**
-    * Current tiling mode
-    */
-   uint32_t tiling_mode;
-   uint32_t swizzle_mode;
-   uint32_t stride;
-
-   time_t free_time;
-
-   /** Mapped address for the buffer, saved across map/unmap cycles */
-   void *map_cpu;
-   /** GTT virtual address for the buffer, saved across map/unmap cycles */
-   void *map_gtt;
-   /** WC CPU address for the buffer, saved across map/unmap cycles */
-   void *map_wc;
-
-   /** BO cache list */
-   struct list_head head;
-
    /**
     * Boolean of whether this buffer can be re-used
     */
    bool reusable;
 
-   /**
-    * Boolean of whether this buffer has been shared with an external client.
-    */
-   bool external;
+   /** Was this buffer imported from an external client? */
+   bool imported;
 
-   /**
-    * Boolean of whether this buffer is cache coherent
-    */
-   bool cache_coherent;
+   /** Has this buffer been exported to external clients? */
+   bool exported;
 
    /**
     * Boolean of whether this buffer points into user memory
     */
    bool userptr;
 
-   /** Pre-computed hash using _mesa_hash_pointer for cache tracking sets */
-   uint32_t hash;
+   /** The mmap coherency mode selected at BO allocation time */
+   enum iris_mmap_mode mmap_mode;
+
+   /**
+    * Boolean of whether this was allocated from local memory
+    */
+   bool local;
 };
 
 #define BO_ALLOC_ZEROED     (1<<0)
 #define BO_ALLOC_COHERENT   (1<<1)
+#define BO_ALLOC_SMEM       (1<<2)
 
 /**
  * Allocate a buffer object.
@@ -203,27 +257,9 @@ struct iris_bo {
 struct iris_bo *iris_bo_alloc(struct iris_bufmgr *bufmgr,
                               const char *name,
                               uint64_t size,
-                              enum iris_memory_zone memzone);
-
-/**
- * Allocate a tiled buffer object.
- *
- * Alignment for tiled objects is set automatically; the 'flags'
- * argument provides a hint about how the object will be used initially.
- *
- * Valid tiling formats are:
- *  I915_TILING_NONE
- *  I915_TILING_X
- *  I915_TILING_Y
- */
-struct iris_bo *iris_bo_alloc_tiled(struct iris_bufmgr *bufmgr,
-                                    const char *name,
-                                    uint64_t size,
-                                    uint32_t alignment,
-                                    enum iris_memory_zone memzone,
-                                    uint32_t tiling_mode,
-                                    uint32_t pitch,
-                                    unsigned flags);
+                              uint32_t alignment,
+                              enum iris_memory_zone memzone,
+                              unsigned flags);
 
 struct iris_bo *
 iris_bo_create_userptr(struct iris_bufmgr *bufmgr, const char *name,
@@ -243,14 +279,14 @@ iris_bo_reference(struct iris_bo *bo)
  */
 void iris_bo_unreference(struct iris_bo *bo);
 
-#define MAP_READ          PIPE_TRANSFER_READ
-#define MAP_WRITE         PIPE_TRANSFER_WRITE
-#define MAP_ASYNC         PIPE_TRANSFER_UNSYNCHRONIZED
-#define MAP_PERSISTENT    PIPE_TRANSFER_PERSISTENT
-#define MAP_COHERENT      PIPE_TRANSFER_COHERENT
+#define MAP_READ          PIPE_MAP_READ
+#define MAP_WRITE         PIPE_MAP_WRITE
+#define MAP_ASYNC         PIPE_MAP_UNSYNCHRONIZED
+#define MAP_PERSISTENT    PIPE_MAP_PERSISTENT
+#define MAP_COHERENT      PIPE_MAP_COHERENT
 /* internal */
-#define MAP_INTERNAL_MASK (0xff << 24)
-#define MAP_RAW           (0x01 << 24)
+#define MAP_RAW           (PIPE_MAP_DRV_PRV << 0)
+#define MAP_INTERNAL_MASK (MAP_RAW)
 
 #define MAP_FLAGS         (MAP_READ | MAP_WRITE | MAP_ASYNC | \
                            MAP_PERSISTENT | MAP_COHERENT | MAP_INTERNAL_MASK)
@@ -279,20 +315,11 @@ static inline int iris_bo_unmap(struct iris_bo *bo) { return 0; }
  */
 void iris_bo_wait_rendering(struct iris_bo *bo);
 
-/**
- * Tears down the buffer manager instance.
- */
-void iris_bufmgr_destroy(struct iris_bufmgr *bufmgr);
 
 /**
- * Get the current tiling (and resulting swizzling) mode for the bo.
- *
- * \param buf Buffer to get tiling mode for
- * \param tiling_mode returned tiling mode
- * \param swizzle_mode returned swizzling mode
+ * Unref a buffer manager instance.
  */
-int iris_bo_get_tiling(struct iris_bo *bo, uint32_t *tiling_mode,
-                      uint32_t *swizzle_mode);
+void iris_bufmgr_unref(struct iris_bufmgr *bufmgr);
 
 /**
  * Create a visible name for a buffer which can be used by other apps
@@ -301,6 +328,20 @@ int iris_bo_get_tiling(struct iris_bo *bo, uint32_t *tiling_mode,
  * \param name Returned name
  */
 int iris_bo_flink(struct iris_bo *bo, uint32_t *name);
+
+/**
+ * Is this buffer shared with external clients (imported or exported)?
+ */
+static inline bool
+iris_bo_is_external(const struct iris_bo *bo)
+{
+   return bo->exported || bo->imported;
+}
+
+/**
+ * Mark a buffer as being shared with other external clients.
+ */
+void iris_bo_mark_exported(struct iris_bo *bo);
 
 /**
  * Returns 1 if mapping the buffer for write could cause the process
@@ -323,11 +364,15 @@ int iris_bo_busy(struct iris_bo *bo);
 int iris_bo_madvise(struct iris_bo *bo, int madv);
 
 /* drm_bacon_bufmgr_gem.c */
-struct iris_bufmgr *iris_bufmgr_init(struct gen_device_info *devinfo, int fd);
+struct iris_bufmgr *iris_bufmgr_get_for_fd(struct intel_device_info *devinfo,
+                                           int fd, bool bo_reuse);
+int iris_bufmgr_get_fd(struct iris_bufmgr *bufmgr);
+
 struct iris_bo *iris_bo_gem_create_from_name(struct iris_bufmgr *bufmgr,
                                              const char *name,
                                              unsigned handle);
-void iris_bufmgr_enable_reuse(struct iris_bufmgr *bufmgr);
+
+void* iris_bufmgr_get_aux_map_context(struct iris_bufmgr *bufmgr);
 
 int iris_bo_wait(struct iris_bo *bo, int64_t timeout_ns);
 
@@ -343,8 +388,23 @@ int iris_hw_context_set_priority(struct iris_bufmgr *bufmgr,
 
 void iris_destroy_hw_context(struct iris_bufmgr *bufmgr, uint32_t ctx_id);
 
+int iris_gem_get_tiling(struct iris_bo *bo, uint32_t *tiling);
+int iris_gem_set_tiling(struct iris_bo *bo, const struct isl_surf *surf);
+
 int iris_bo_export_dmabuf(struct iris_bo *bo, int *prime_fd);
 struct iris_bo *iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd);
+
+/**
+ * Exports a bo as a GEM handle into a given DRM file descriptor
+ * \param bo Buffer to export
+ * \param drm_fd File descriptor where the new handle is created
+ * \param out_handle Pointer to store the new handle
+ *
+ * Returns 0 if the buffer was successfully exported, a non zero error code
+ * otherwise.
+ */
+int iris_bo_export_gem_handle_for_device(struct iris_bo *bo, int drm_fd,
+                                         uint32_t *out_handle);
 
 uint32_t iris_bo_export_gem_handle(struct iris_bo *bo);
 
@@ -367,6 +427,24 @@ iris_bo_offset_from_base_address(struct iris_bo *bo)
     */
    assert(bo->gtt_offset < IRIS_MEMZONE_OTHER_START);
    return bo->gtt_offset;
+}
+
+/**
+ * Track access of a BO from the specified caching domain and sequence number.
+ *
+ * Can be used without locking.  Only the most recent access (i.e. highest
+ * seqno) is tracked.
+ */
+static inline void
+iris_bo_bump_seqno(struct iris_bo *bo, uint64_t seqno,
+                   enum iris_domain type)
+{
+   uint64_t *const last_seqno = &bo->last_seqnos[type];
+   uint64_t tmp, prev_seqno = p_atomic_read(last_seqno);
+
+   while (prev_seqno < seqno &&
+          prev_seqno != (tmp = p_atomic_cmpxchg(last_seqno, prev_seqno, seqno)))
+      prev_seqno = tmp;
 }
 
 enum iris_memory_zone iris_memzone_for_address(uint64_t address);

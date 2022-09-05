@@ -276,6 +276,7 @@ OSALIGNLINE(struct) API_STATE
     // Streamout state
     SWR_STREAMOUT_STATE          soState;
     mutable SWR_STREAMOUT_BUFFER soBuffer[MAX_SO_STREAMS];
+    mutable SWR_STREAMOUT_BUFFER soPausedBuffer[MAX_SO_STREAMS];
 
     // Tessellation State
     PFN_HS_FUNC  pfnHsFunc;
@@ -422,6 +423,7 @@ struct DRAW_DYNAMIC_STATE
 
     SWR_STATS_FE statsFE; // Only one FE thread per DC.
     SWR_STATS*   pStats;
+    uint64_t     soPrims; // number of primitives written to StreamOut buffer
 };
 
 // Draw Context
@@ -478,7 +480,7 @@ class HotTileMgr;
 struct SWR_CONTEXT
 {
     // Draw Context Ring
-    //  Each draw needs its own state in order to support mulitple draws in flight across multiple
+    //  Each draw needs its own state in order to support multiple draws in flight across multiple
     //  threads. We maintain N draw contexts configured as a ring. The size of the ring limits the
     //  maximum number of draws that can be in flight at any given time.
     //
@@ -540,6 +542,7 @@ struct SWR_CONTEXT
     PFN_UPDATE_SO_WRITE_OFFSET     pfnUpdateSoWriteOffset;
     PFN_UPDATE_STATS               pfnUpdateStats;
     PFN_UPDATE_STATS_FE            pfnUpdateStatsFE;
+    PFN_UPDATE_STREAMOUT           pfnUpdateStreamOut;
 
 
     // Global Stats
@@ -560,7 +563,7 @@ struct SWR_CONTEXT
     // ArchRast thread contexts.
     HANDLE* pArContext;
 
-    // handle to external memory for worker datas to create memory contexts
+    // handle to external memory for worker data to create memory contexts
     HANDLE hExternalMemory;
 
     BucketManager *pBucketMgr;

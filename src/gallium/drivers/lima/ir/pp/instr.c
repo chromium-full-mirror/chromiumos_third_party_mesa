@@ -186,9 +186,18 @@ bool ppir_instr_insert_node(ppir_instr *instr, ppir_node *node)
          uint8_t swizzle[4] = {0};
 
          if (ppir_instr_insert_const(&ic, nc, swizzle)) {
+            ppir_node *succ = ppir_node_first_succ(node);
+            ppir_src *src = NULL;
+            for (int s = 0; s < ppir_node_get_src_num(succ); s++) {
+               src = ppir_node_get_src(succ, s);
+               if (src->node == node)
+                  break;
+            }
+            assert(src->node == node);
+
             instr->constant[i] = ic;
-            ppir_instr_update_src_pipeline(
-               instr, ppir_pipeline_reg_const0 + i, &c->dest, swizzle);
+            ppir_update_src_pipeline(ppir_pipeline_reg_const0 + i, src,
+                                     &c->dest, swizzle);
             break;
          }
       }
@@ -212,10 +221,19 @@ bool ppir_instr_insert_node(ppir_instr *instr, ppir_node *node)
                continue;
          }
 
+         /* ^fmul dests (e.g. condition for select) can only be
+          * scheduled to ALU_SCL_MUL */
+         if (pos == PPIR_INSTR_SLOT_ALU_SCL_ADD) {
+            ppir_dest *dest = ppir_node_get_dest(node);
+            if (dest && dest->type == ppir_target_pipeline &&
+                dest->pipeline == ppir_pipeline_reg_fmul)
+            continue;
+         }
+
          if (pos == PPIR_INSTR_SLOT_ALU_SCL_MUL ||
              pos == PPIR_INSTR_SLOT_ALU_SCL_ADD) {
             ppir_dest *dest = ppir_node_get_dest(node);
-            if (!ppir_target_is_scaler(dest))
+            if (!ppir_target_is_scalar(dest))
                continue;
          }
 
@@ -264,6 +282,7 @@ void ppir_instr_print_list(ppir_compiler *comp)
    printf("const0|1\n");
 
    list_for_each_entry(ppir_block, block, &comp->block_list, list) {
+      printf("-------block %3d-------\n", block->index);
       list_for_each_entry(ppir_instr, instr, &block->instr_list, list) {
          printf("%c%03d: ", instr->is_end ? '*' : ' ', instr->index);
          for (int i = 0; i < PPIR_INSTR_SLOT_NUM; i++) {
@@ -282,8 +301,8 @@ void ppir_instr_print_list(ppir_compiler *comp)
          }
          printf("\n");
       }
-      printf("------------------------\n");
    }
+   printf("===========================\n");
 }
 
 static void ppir_instr_print_sub(ppir_instr *instr)
@@ -316,12 +335,13 @@ void ppir_instr_print_dep(ppir_compiler *comp)
 
    printf("======ppir instr depend======\n");
    list_for_each_entry(ppir_block, block, &comp->block_list, list) {
+      printf("-------block %3d-------\n", block->index);
       list_for_each_entry(ppir_instr, instr, &block->instr_list, list) {
          if (ppir_instr_is_root(instr)) {
             ppir_instr_print_sub(instr);
             printf("\n");
          }
       }
-      printf("------------------------\n");
    }
+   printf("=============================\n");
 }

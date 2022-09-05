@@ -77,6 +77,16 @@ rbug_screen_get_device_vendor(struct pipe_screen *_screen)
    return screen->get_device_vendor(screen);
 }
 
+static const void *
+rbug_screen_get_compiler_options(struct pipe_screen *_screen,
+                                 enum pipe_shader_ir ir,
+                                 enum pipe_shader_type shader)
+{
+   struct pipe_screen *screen = rbug_screen(_screen)->screen;
+
+   return screen->get_compiler_options(screen, ir, shader);
+}
+
 static struct disk_cache *
 rbug_screen_get_disk_shader_cache(struct pipe_screen *_screen)
 {
@@ -138,6 +148,49 @@ rbug_screen_is_format_supported(struct pipe_screen *_screen,
                                       tex_usage);
 }
 
+static void
+rbug_screen_query_dmabuf_modifiers(struct pipe_screen *_screen,
+                                   enum pipe_format format, int max,
+                                   uint64_t *modifiers,
+                                   unsigned int *external_only, int *count)
+{
+   struct rbug_screen *rb_screen = rbug_screen(_screen);
+   struct pipe_screen *screen = rb_screen->screen;
+
+   screen->query_dmabuf_modifiers(screen,
+                                  format,
+                                  max,
+                                  modifiers,
+                                  external_only,
+                                  count);
+}
+
+static bool
+rbug_screen_is_dmabuf_modifier_supported(struct pipe_screen *_screen,
+                                         uint64_t modifier,
+                                         enum pipe_format format,
+                                         bool *external_only)
+{
+   struct rbug_screen *rb_screen = rbug_screen(_screen);
+   struct pipe_screen *screen = rb_screen->screen;
+
+   return screen->is_dmabuf_modifier_supported(screen,
+                                               modifier,
+                                               format,
+                                               external_only);
+}
+
+static unsigned int
+rbug_screen_get_dmabuf_modifier_planes(struct pipe_screen *_screen,
+                                       uint64_t modifier,
+                                       enum pipe_format format)
+{
+   struct rbug_screen *rb_screen = rbug_screen(_screen);
+   struct pipe_screen *screen = rb_screen->screen;
+
+   return screen->get_dmabuf_modifier_planes(screen, modifier, format);
+}
+
 static struct pipe_context *
 rbug_screen_context_create(struct pipe_screen *_screen,
                            void *priv, unsigned flags)
@@ -152,6 +205,17 @@ rbug_screen_context_create(struct pipe_screen *_screen,
    return NULL;
 }
 
+static bool
+rbug_screen_can_create_resource(struct pipe_screen *_screen,
+                                const struct pipe_resource *templat)
+{
+   struct rbug_screen *rb_screen = rbug_screen(_screen);
+   struct pipe_screen *screen = rb_screen->screen;
+
+   return screen->can_create_resource(screen,
+                                      templat);
+}
+
 static struct pipe_resource *
 rbug_screen_resource_create(struct pipe_screen *_screen,
                             const struct pipe_resource *templat)
@@ -162,6 +226,25 @@ rbug_screen_resource_create(struct pipe_screen *_screen,
 
    result = screen->resource_create(screen,
                                     templat);
+
+   if (result)
+      return rbug_resource_create(rb_screen, result);
+   return NULL;
+}
+
+static struct pipe_resource *
+rbug_screen_resource_create_with_modifiers(struct pipe_screen *_screen,
+                                           const struct pipe_resource *templat,
+                                           const uint64_t *modifiers, int count)
+{
+   struct rbug_screen *rb_screen = rbug_screen(_screen);
+   struct pipe_screen *screen = rb_screen->screen;
+   struct pipe_resource *result;
+
+   result = screen->resource_create_with_modifiers(screen,
+                                                   templat,
+                                                   modifiers,
+                                                   count);
 
    if (result)
       return rbug_resource_create(rb_screen, result);
@@ -221,6 +304,7 @@ rbug_screen_resource_get_param(struct pipe_screen *_screen,
                                struct pipe_resource *_resource,
                                unsigned plane,
                                unsigned layer,
+                               unsigned level,
                                enum pipe_resource_param param,
                                unsigned handle_usage,
                                uint64_t *value)
@@ -232,7 +316,7 @@ rbug_screen_resource_get_param(struct pipe_screen *_screen,
    struct pipe_resource *resource = rb_resource->resource;
 
    return screen->resource_get_param(screen, rb_pipe ? rb_pipe->pipe : NULL,
-                                     resource, plane, layer, param,
+                                     resource, plane, layer, level, param,
                                      handle_usage, value);
 }
 
@@ -260,8 +344,7 @@ rbug_screen_resource_changed(struct pipe_screen *_screen,
    struct pipe_screen *screen = rb_screen->screen;
    struct pipe_resource *resource = rb_resource->resource;
 
-   if (screen->resource_changed)
-      screen->resource_changed(screen, resource);
+   screen->resource_changed(screen, resource);
 }
 
 static void
@@ -273,6 +356,7 @@ rbug_screen_resource_destroy(struct pipe_screen *screen,
 
 static void
 rbug_screen_flush_frontbuffer(struct pipe_screen *_screen,
+                              struct pipe_context *_ctx,
                               struct pipe_resource *_resource,
                               unsigned level, unsigned layer,
                               void *context_private, struct pipe_box *sub_box)
@@ -281,8 +365,10 @@ rbug_screen_flush_frontbuffer(struct pipe_screen *_screen,
    struct rbug_resource *rb_resource = rbug_resource(_resource);
    struct pipe_screen *screen = rb_screen->screen;
    struct pipe_resource *resource = rb_resource->resource;
+   struct pipe_context *ctx = _ctx ? rbug_context(_ctx)->pipe : NULL;
 
    screen->flush_frontbuffer(screen,
+                             ctx,
                              resource,
                              level, layer,
                              context_private, sub_box);
@@ -312,6 +398,24 @@ rbug_screen_fence_finish(struct pipe_screen *_screen,
    struct pipe_context *ctx = _ctx ? rbug_context(_ctx)->pipe : NULL;
 
    return screen->fence_finish(screen, ctx, fence, timeout);
+}
+
+static int
+rbug_screen_fence_get_fd(struct pipe_screen *_screen,
+                         struct pipe_fence_handle *fence)
+{
+   struct rbug_screen *rb_screen = rbug_screen(_screen);
+   struct pipe_screen *screen = rb_screen->screen;
+
+   return screen->fence_get_fd(screen, fence);
+}
+
+static void
+rbug_screen_finalize_nir(struct pipe_screen *_screen, void *nir, bool optimize)
+{
+   struct pipe_screen *screen = rbug_screen(_screen)->screen;
+
+   screen->finalize_nir(screen, nir, optimize);
 }
 
 bool
@@ -344,14 +448,20 @@ rbug_screen_create(struct pipe_screen *screen)
    rb_screen->base.destroy = rbug_screen_destroy;
    rb_screen->base.get_name = rbug_screen_get_name;
    rb_screen->base.get_vendor = rbug_screen_get_vendor;
+   SCR_INIT(get_compiler_options);
    SCR_INIT(get_disk_shader_cache);
    rb_screen->base.get_device_vendor = rbug_screen_get_device_vendor;
    rb_screen->base.get_param = rbug_screen_get_param;
    rb_screen->base.get_shader_param = rbug_screen_get_shader_param;
    rb_screen->base.get_paramf = rbug_screen_get_paramf;
    rb_screen->base.is_format_supported = rbug_screen_is_format_supported;
+   SCR_INIT(query_dmabuf_modifiers);
+   SCR_INIT(is_dmabuf_modifier_supported);
+   SCR_INIT(get_dmabuf_modifier_planes);
    rb_screen->base.context_create = rbug_screen_context_create;
+   SCR_INIT(can_create_resource);
    rb_screen->base.resource_create = rbug_screen_resource_create;
+   SCR_INIT(resource_create_with_modifiers);
    rb_screen->base.resource_from_handle = rbug_screen_resource_from_handle;
    SCR_INIT(check_resource_capability);
    rb_screen->base.resource_get_handle = rbug_screen_resource_get_handle;
@@ -362,6 +472,8 @@ rbug_screen_create(struct pipe_screen *screen)
    rb_screen->base.flush_frontbuffer = rbug_screen_flush_frontbuffer;
    rb_screen->base.fence_reference = rbug_screen_fence_reference;
    rb_screen->base.fence_finish = rbug_screen_fence_finish;
+   rb_screen->base.fence_get_fd = rbug_screen_fence_get_fd;
+   SCR_INIT(finalize_nir);
 
    rb_screen->screen = screen;
 

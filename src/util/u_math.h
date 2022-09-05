@@ -45,6 +45,7 @@
 #include <stdarg.h>
 
 #include "bitscan.h"
+#include "u_endian.h" /* for UTIL_ARCH_BIG_ENDIAN */
 
 #ifdef __cplusplus
 extern "C" {
@@ -54,12 +55,6 @@ extern "C" {
 #ifndef M_SQRT2
 #define M_SQRT2 1.41421356237309504880
 #endif
-
-#define POW2_TABLE_SIZE_LOG2 9
-#define POW2_TABLE_SIZE (1 << POW2_TABLE_SIZE_LOG2)
-#define POW2_TABLE_OFFSET (POW2_TABLE_SIZE/2)
-#define POW2_TABLE_SCALE ((float)(POW2_TABLE_SIZE/2))
-extern float pow2_table[POW2_TABLE_SIZE];
 
 
 /**
@@ -98,55 +93,7 @@ util_get_float32_exponent(float x)
 }
 
 
-/**
- * Fast version of 2^x
- * Identity: exp2(a + b) = exp2(a) * exp2(b)
- * Let ipart = int(x)
- * Let fpart = x - ipart;
- * So, exp2(x) = exp2(ipart) * exp2(fpart)
- * Compute exp2(ipart) with i << ipart
- * Compute exp2(fpart) with lookup table.
- */
-static inline float
-util_fast_exp2(float x)
-{
-   int32_t ipart;
-   float fpart, mpart;
-   union fi epart;
-
-   if(x > 129.00000f)
-      return 3.402823466e+38f;
-
-   if (x < -126.99999f)
-      return 0.0f;
-
-   ipart = (int32_t) x;
-   fpart = x - (float) ipart;
-
-   /* same as
-    *   epart.f = (float) (1 << ipart)
-    * but faster and without integer overflow for ipart > 31
-    */
-   epart.i = (ipart + 127 ) << 23;
-
-   mpart = pow2_table[POW2_TABLE_OFFSET + (int)(fpart * POW2_TABLE_SCALE)];
-
-   return epart.f * mpart;
-}
-
-
-/**
- * Fast approximation to exp(x).
- */
-static inline float
-util_fast_exp(float x)
-{
-   const float k = 1.44269f; /* = log2(e) */
-   return util_fast_exp2(k * x);
-}
-
-
-#define LOG2_TABLE_SIZE_LOG2 16
+#define LOG2_TABLE_SIZE_LOG2 8
 #define LOG2_TABLE_SCALE (1 << LOG2_TABLE_SIZE_LOG2)
 #define LOG2_TABLE_SIZE (LOG2_TABLE_SCALE + 1)
 extern float log2_table[LOG2_TABLE_SIZE];
@@ -169,21 +116,28 @@ util_fast_log2(float x)
 
 
 /**
- * Fast approximation to x^y.
- */
-static inline float
-util_fast_pow(float x, float y)
-{
-   return util_fast_exp2(util_fast_log2(x) * y);
-}
-
-
-/**
  * Floor(x), returned as int.
  */
 static inline int
 util_ifloor(float f)
 {
+#if defined(USE_X86_ASM) && defined(__GNUC__) && defined(__i386__)
+   /*
+    * IEEE floor for computers that round to nearest or even.
+    * 'f' must be between -4194304 and 4194303.
+    * This floor operation is done by "(iround(f + .5) + iround(f - .5)) >> 1",
+    * but uses some IEEE specific tricks for better speed.
+    * Contributed by Josh Vanderhoof
+    */
+   int ai, bi;
+   double af, bf;
+   af = (3 << 22) + 0.5 + (double)f;
+   bf = (3 << 22) + 0.5 - (double)f;
+   /* GCC generates an extra fstp/fld without this. */
+   __asm__ ("fstps %0" : "=m" (ai) : "t" (af) : "st");
+   __asm__ ("fstps %0" : "=m" (bi) : "t" (bf) : "st");
+   return (ai - bi) >> 1;
+#else
    int ai, bi;
    double af, bf;
    union fi u;
@@ -192,6 +146,7 @@ util_ifloor(float f)
    u.f = (float) af;  ai = u.i;
    u.f = (float) bf;  bi = u.i;
    return (ai - bi) >> 1;
+#endif
 }
 
 
@@ -548,42 +503,6 @@ util_next_power_of_two64(uint64_t x)
 #endif
 }
 
-
-/**
- * Return number of bits set in n.
- */
-static inline unsigned
-util_bitcount(unsigned n)
-{
-#if defined(HAVE___BUILTIN_POPCOUNT)
-   return __builtin_popcount(n);
-#else
-   /* K&R classic bitcount.
-    *
-    * For each iteration, clear the LSB from the bitfield.
-    * Requires only one iteration per set bit, instead of
-    * one iteration per bit less than highest set bit.
-    */
-   unsigned bits;
-   for (bits = 0; n; bits++) {
-      n &= n - 1;
-   }
-   return bits;
-#endif
-}
-
-
-static inline unsigned
-util_bitcount64(uint64_t n)
-{
-#ifdef HAVE___BUILTIN_POPCOUNTLL
-   return __builtin_popcountll(n);
-#else
-   return util_bitcount(n) + util_bitcount(n >> 32);
-#endif
-}
-
-
 /**
  * Reverse bits in n
  * Algorithm taken from:
@@ -604,7 +523,7 @@ util_bitreverse(unsigned n)
  * Convert from little endian to CPU byte order.
  */
 
-#ifdef PIPE_ARCH_BIG_ENDIAN
+#if UTIL_ARCH_BIG_ENDIAN
 #define util_le64_to_cpu(x) util_bswap64(x)
 #define util_le32_to_cpu(x) util_bswap32(x)
 #define util_le16_to_cpu(x) util_bswap16(x)
@@ -659,10 +578,24 @@ util_bswap16(uint16_t n)
           (n << 8);
 }
 
+/**
+ * Extend sign.
+ */
+static inline int64_t
+util_sign_extend(uint64_t val, unsigned width)
+{
+	assert(width > 0);
+	if (val & (UINT64_C(1) << (width - 1))) {
+		return -(int64_t)((UINT64_C(1) << width) - val);
+	} else {
+		return val;
+	}
+}
+
 static inline void*
 util_memcpy_cpu_to_le32(void * restrict dest, const void * restrict src, size_t n)
 {
-#ifdef PIPE_ARCH_BIG_ENDIAN
+#if UTIL_ARCH_BIG_ENDIAN
    size_t i, e;
    assert(n % 4 == 0);
 
@@ -684,6 +617,9 @@ util_memcpy_cpu_to_le32(void * restrict dest, const void * restrict src, size_t 
  */
 #define CLAMP( X, MIN, MAX )  ( (X)>(MIN) ? ((X)>(MAX) ? (MAX) : (X)) : (MIN) )
 
+/* Syntax sugar occuring frequently in graphics code */
+#define SATURATE( X ) CLAMP(X, 0.0f, 1.0f)
+
 #define MIN2( A, B )   ( (A)<(B) ? (A) : (B) )
 #define MAX2( A, B )   ( (A)>(B) ? (A) : (B) )
 
@@ -693,6 +629,56 @@ util_memcpy_cpu_to_le32(void * restrict dest, const void * restrict src, size_t 
 #define MIN4( A, B, C, D ) ((A) < (B) ? MIN3(A, C, D) : MIN3(B, C, D))
 #define MAX4( A, B, C, D ) ((A) > (B) ? MAX3(A, C, D) : MAX3(B, C, D))
 
+
+/**
+ * Align a value up to an alignment value
+ *
+ * If \c value is not already aligned to the requested alignment value, it
+ * will be rounded up.
+ *
+ * \param value  Value to be rounded
+ * \param alignment  Alignment value to be used.  This must be a power of two.
+ *
+ * \sa ROUND_DOWN_TO()
+ */
+
+#if defined(ALIGN)
+#undef ALIGN
+#endif
+static inline uintptr_t
+ALIGN(uintptr_t value, int32_t alignment)
+{
+   assert(util_is_power_of_two_nonzero(alignment));
+   return (((value) + (alignment) - 1) & ~((alignment) - 1));
+}
+
+/**
+ * Like ALIGN(), but works with a non-power-of-two alignment.
+ */
+static inline uintptr_t
+ALIGN_NPOT(uintptr_t value, int32_t alignment)
+{
+   assert(alignment > 0);
+   return (value + alignment - 1) / alignment * alignment;
+}
+
+/**
+ * Align a value down to an alignment value
+ *
+ * If \c value is not already aligned to the requested alignment value, it
+ * will be rounded down.
+ *
+ * \param value  Value to be rounded
+ * \param alignment  Alignment value to be used.  This must be a power of two.
+ *
+ * \sa ALIGN()
+ */
+static inline uint64_t
+ROUND_DOWN_TO(uint64_t value, int32_t alignment)
+{
+   assert(util_is_power_of_two_nonzero(alignment));
+   return ((value) & ~(alignment - 1));
+}
 
 /**
  * Align a value, only works pot alignemnts.
@@ -772,7 +758,41 @@ util_fpstate_set_denorms_to_zero(unsigned current_fpstate);
 void
 util_fpstate_set(unsigned fpstate);
 
+/**
+ * For indexed draw calls, return true if the vertex count to be drawn is
+ * much lower than the vertex count that has to be uploaded, meaning
+ * that the driver should flatten indices instead of trying to upload
+ * a too big range.
+ *
+ * This is used by vertex upload code in u_vbuf and glthread.
+ */
+static inline bool
+util_is_vbo_upload_ratio_too_large(unsigned draw_vertex_count,
+                                   unsigned upload_vertex_count)
+{
+   if (draw_vertex_count > 1024)
+      return upload_vertex_count > draw_vertex_count * 4;
+   else if (draw_vertex_count > 32)
+      return upload_vertex_count > draw_vertex_count * 8;
+   else
+      return upload_vertex_count > draw_vertex_count * 16;
+}
 
+bool util_invert_mat4x4(float *out, const float *m);
+
+/* Quantize the lod bias value to reduce the number of sampler state
+ * variants in gallium because apps use it for smooth mipmap transitions,
+ * thrashing cso_cache and degrading performance.
+ *
+ * This quantization matches the AMD hw specification, so having more
+ * precision would have no effect anyway.
+ */
+static inline float
+util_quantize_lod_bias(float lod)
+{
+   lod = CLAMP(lod, -16, 16);
+   return roundf(lod * 256) / 256;
+}
 
 #ifdef __cplusplus
 }
