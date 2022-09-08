@@ -74,6 +74,7 @@ static const struct debug_named_value etna_debug_options[] = {
    {"no_singlebuffer",ETNA_DBG_NO_SINGLEBUF, "Disable single buffer feature"},
    {"deqp",           ETNA_DBG_DEQP, "Hacks to run dEQP GLES3 tests"}, /* needs MESA_GLES_VERSION_OVERRIDE=3.0 */
    {"nocache",        ETNA_DBG_NOCACHE,    "Disable shader cache"},
+   {"no_linear_pe",   ETNA_DBG_NO_LINEAR_PE, "Disable linear PE"},
    DEBUG_NAMED_VALUE_END
 };
 
@@ -205,6 +206,7 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 255;
    case PIPE_CAP_MAX_VERTEX_BUFFERS:
       return screen->specs.stream_count;
+   case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
       return VIV_FEATURE(screen, chipMinorFeatures4, HALTI2);
 
@@ -214,9 +216,12 @@ etna_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS: /* TODO: verify */
-      return screen->specs.max_texture_size;
-   case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
+      return screen->specs.halti >= 0 ? screen->specs.max_texture_size : 0;
    case PIPE_CAP_MAX_TEXTURE_3D_LEVELS:
+      if (screen->specs.halti < 0)
+         return 0;
+      FALLTHROUGH;
+   case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
    {
       int log2_max_tex_size = util_last_bit(screen->specs.max_texture_size);
       assert(log2_max_tex_size > 0);
@@ -922,6 +927,12 @@ etna_get_specs(struct etna_screen *screen)
 
    screen->specs.use_blt = VIV_FEATURE(screen, chipMinorFeatures5, BLT_ENGINE);
 
+   /* Only allow fast clear with MC2.0, as the TS unit bypasses the memory
+    * offset on MC1.0 and we have no way to fixup the address.
+    */
+   if (!VIV_FEATURE(screen, chipMinorFeatures0, MC20))
+      screen->features[viv_chipFeatures] &= ~chipFeatures_FAST_CLEAR;
+
    return true;
 
 fail:
@@ -1106,6 +1117,8 @@ etna_screen_create(struct etna_device *dev, struct etna_gpu *gpu,
       screen->specs.can_supertile = 0;
    if (DBG_ENABLED(ETNA_DBG_NO_SINGLEBUF))
       screen->specs.single_buffer = 0;
+   if (DBG_ENABLED(ETNA_DBG_NO_LINEAR_PE))
+      screen->features[viv_chipMinorFeatures2] &= ~chipMinorFeatures2_LINEAR_PE;
 
    pscreen->destroy = etna_screen_destroy;
    pscreen->get_param = etna_screen_get_param;

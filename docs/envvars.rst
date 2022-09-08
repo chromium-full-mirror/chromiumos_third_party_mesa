@@ -192,6 +192,19 @@ Core Mesa environment variables
    not they ever see a wait-before-signal condition.
 :envvar:`MESA_LOADER_DRIVER_OVERRIDE`
    chooses a different driver binary such as ``etnaviv`` or ``zink``.
+:envvar:`DRI_PRIME`
+   the default GPU is the one used by Wayland/Xorg or the one connected to a
+   display. This variable allows to select a different GPU. It applies to OpenGL
+   and Vulkan (in this case "select" means the GPU will be first in the reported
+   physical devices list). The supported syntaxes are:
+
+   - ``DRI_PRIME=1``: selects the first non-default GPU.
+   - ``DRI_PRIME=pci-0000_02_00_0``: selects the GPU connected to this PCIe bus
+   - ``DRI_PRIME=vendor_id:device_id``: selects the first GPU matching these ids
+
+   .. note::
+
+      ``lspci -nn | grep VGA`` can be used to know the PCIe bus or ids to use.
 
 NIR passes environment variables
 --------------------------------
@@ -757,6 +770,9 @@ RADV driver environment variables
       rt extensions with older hardware.
    ``gewave32``
       enable wave32 for vertex/tess/geometry shaders (GFX10+)
+   ``gpl``
+      enable experimental (and suboptimal) graphics pipeline library (still
+      under active development)
    ``localbos``
       enable local BOs
    ``nosam``
@@ -795,6 +811,19 @@ RADV driver environment variables
    enable trigger file based SQTT/RGP captures (eg.
    `export RADV_THREAD_TRACE_TRIGGER=/tmp/radv_sqtt_trigger` and then
    `touch /tmp/radv_sqtt_trigger` to capture a frame)
+
+:envvar:`RADV_RRA_TRACE`
+   enable frame based Radeon Raytracing Analyzer captures
+   (e.g. `export RADV_RRA_TRACE=100` will capture the frame #100)
+
+:envvar:`RADV_RRA_TRACE_TRIGGER`
+   enable trigger file based RRA captures (eg.
+   `export RADV_RRA_TRACE_TRIGGER=/tmp/radv_rra_trigger` and then
+   `touch /tmp/radv_rra_trigger` to capture a frame)
+
+:envvar:`RADV_RRA_TRACE_VALIDATE`
+   enable validation of captured acceleration structures. Can be
+   useful if RRA crashes upon opening a trace.
 
 :envvar:`ACO_DEBUG`
    a comma-separated list of named flags, which do various things:

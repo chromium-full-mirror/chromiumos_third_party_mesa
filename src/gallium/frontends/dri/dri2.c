@@ -957,7 +957,7 @@ dri2_create_image_from_winsys(__DRIscreen *_screen,
        * content protection status of tex and img.
        */
       const struct driOptionCache *optionCache = &screen->dev->option_cache;
-      if (!driQueryOptionb(optionCache, "disable_protected_content_check") &&
+      if (driQueryOptionb(optionCache, "force_protected_content_check") &&
           (tex->bind & PIPE_BIND_PROTECTED) != (bind & PIPE_BIND_PROTECTED)) {
          pipe_resource_reference(&img->texture, NULL);
          pipe_resource_reference(&tex, NULL);
@@ -1146,6 +1146,8 @@ dri2_create_image_common(__DRIscreen *_screen,
       tex_usage |= PIPE_BIND_PROTECTED;
    if (use & __DRI_IMAGE_USE_PRIME_BUFFER)
       tex_usage |= PIPE_BIND_PRIME_BLIT_DST;
+   if (use & __DRI_IMAGE_USE_FRONT_RENDERING)
+      tex_usage |= PIPE_BIND_USE_FRONT_RENDERING;
 
    img = CALLOC_STRUCT(__DRIimageRec);
    if (!img)

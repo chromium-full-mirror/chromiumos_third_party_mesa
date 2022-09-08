@@ -1811,7 +1811,8 @@ aco_opcode get_inverse(aco_opcode op);
 aco_opcode get_f32_cmp(aco_opcode op);
 aco_opcode get_vcmpx(aco_opcode op);
 unsigned get_cmp_bitsize(aco_opcode op);
-bool is_cmp(aco_opcode op);
+bool is_fp_cmp(aco_opcode op);
+bool is_cmpx(aco_opcode op);
 
 bool can_swap_operands(aco_ptr<Instruction>& instr, aco_opcode* new_op);
 
@@ -1835,6 +1836,7 @@ enum block_kind {
    block_kind_branch = 1 << 8,
    block_kind_merge = 1 << 9,
    block_kind_invert = 1 << 10,
+   block_kind_discard_early_exit = 1 << 11,
    block_kind_uses_discard = 1 << 12,
    block_kind_needs_lowering = 1 << 13,
    block_kind_export_end = 1 << 15,

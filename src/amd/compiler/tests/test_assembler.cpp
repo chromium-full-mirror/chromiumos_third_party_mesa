@@ -226,6 +226,39 @@ BEGIN_TEST(assembler.long_jump.constaddr)
    finish_assembler_test();
 END_TEST
 
+BEGIN_TEST(assembler.long_jump.discard_early_exit)
+   if (!setup_cs(NULL, (amd_gfx_level)GFX10))
+      return;
+
+   //! BB0:
+   //! s_cbranch_scc1 BB1                                          ; bf850006
+   //! s_getpc_b64 s[0:1]                                          ; be801f00
+   //! s_addc_u32 s0, s0, 0x20014                                  ; 8200ff00 00020014
+   //! s_bitcmp1_b32 s0, 0                                         ; bf0d8000
+   //! s_bitset0_b32 s0, 0                                         ; be801b80
+   //! s_setpc_b64 s[0:1]                                          ; be802000
+   bld.sopp(aco_opcode::s_cbranch_scc0, 2);
+
+   bld.reset(program->create_and_insert_block());
+
+   //! BB1:
+   //! s_nop 1                                                     ; bf800001
+   //!(then repeated 32766 times)
+   //! s_endpgm                                                    ; bf810000
+   for (unsigned i = 0; i < INT16_MAX; i++)
+      bld.sopp(aco_opcode::s_nop, -1, 1);
+
+   //! BB2:
+   //! s_endpgm                                                    ; bf810000
+   bld.reset(program->create_and_insert_block());
+
+   program->blocks[1].linear_preds.push_back(0u);
+   program->blocks[2].linear_preds.push_back(0u);
+   program->blocks[2].kind = block_kind_discard_early_exit;
+
+   finish_assembler_test();
+END_TEST
+
 BEGIN_TEST(assembler.v_add3)
    for (unsigned i = GFX9; i <= GFX10; i++) {
       if (!setup_cs(NULL, (amd_gfx_level)i))
@@ -307,4 +340,36 @@ BEGIN_TEST(assembler.p_constaddr)
 
    aco::lower_to_hw_instr(program.get());
    finish_assembler_test();
+END_TEST
+
+BEGIN_TEST(assembler.vopc_sdwa)
+   for (unsigned i = GFX9; i <= GFX10; i++) {
+      if (!setup_cs(NULL, (amd_gfx_level)i))
+         continue;
+
+      //~gfx9>> v_cmp_lt_u32_sdwa vcc, 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d9300f9 86860080
+      //~gfx10>> v_cmp_lt_u32_sdwa vcc, 0, 0 src0_sel:DWORD src1_sel:DWORD   ; 7d8300f9 86860080
+      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(vcc, s2), Operand::zero(), Operand::zero());
+
+      //~gfx9! v_cmp_lt_u32_sdwa s[44:45], 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d9300f9 8686ac80
+      //~gfx10! v_cmp_lt_u32_sdwa s[44:45], 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d8300f9 8686ac80
+      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(PhysReg(0x2c), s2), Operand::zero(), Operand::zero());
+
+      //~gfx9! v_cmp_lt_u32_sdwa exec, 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d9300f9 8686fe80
+      //~gfx10! v_cmp_lt_u32_sdwa exec, 0, 0 src0_sel:DWORD src1_sel:DWORD  ; 7d8300f9 8686fe80
+      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(exec, s2), Operand::zero(), Operand::zero());
+
+      if (i == GFX10) {
+         //~gfx10! v_cmpx_lt_u32_sdwa 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7da300f9 86860080
+         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(exec, s2), Operand::zero(), Operand::zero());
+      } else {
+         //~gfx9! v_cmpx_lt_u32_sdwa vcc, 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7db300f9 86860080
+         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(vcc, s2), Definition(exec, s2), Operand::zero(), Operand::zero());
+
+         //~gfx9! v_cmpx_lt_u32_sdwa s[44:45], 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7db300f9 8686ac80
+         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(PhysReg(0x2c), s2), Definition(exec, s2), Operand::zero(), Operand::zero());
+      }
+
+      finish_assembler_test();
+   }
 END_TEST

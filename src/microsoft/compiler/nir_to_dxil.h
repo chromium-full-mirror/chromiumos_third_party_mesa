@@ -85,6 +85,11 @@ enum dxil_shader_model {
    SHADER_MODEL_6_0 = 0x60000,
    SHADER_MODEL_6_1,
    SHADER_MODEL_6_2,
+   SHADER_MODEL_6_3,
+   SHADER_MODEL_6_4,
+   SHADER_MODEL_6_5,
+   SHADER_MODEL_6_6,
+   SHADER_MODEL_6_7,
 };
 
 struct nir_to_dxil_options {
@@ -101,9 +106,16 @@ struct nir_to_dxil_options {
    uint32_t validator_version_max;
 };
 
+typedef void (*dxil_msg_callback)(void *priv, const char *msg);
+
+struct dxil_logger {
+   void *priv;
+   dxil_msg_callback log;
+};
+
 bool
 nir_to_dxil(struct nir_shader *s, const struct nir_to_dxil_options *opts,
-            struct blob *blob);
+            const struct dxil_logger *logger, struct blob *blob);
 
 const nir_shader_compiler_options*
 dxil_get_nir_compiler_options(void);

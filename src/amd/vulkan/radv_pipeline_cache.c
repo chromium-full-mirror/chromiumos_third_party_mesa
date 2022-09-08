@@ -69,6 +69,7 @@ radv_is_cache_disabled(struct radv_device *device)
     * when ACO_DEBUG is used. MESA_GLSL_CACHE_DISABLE is done elsewhere.
     */
    return (device->instance->debug_flags & RADV_DEBUG_NO_CACHE) ||
+          (device->instance->perftest_flags & RADV_PERFTEST_GPL) ||
           (device->physical_device->use_llvm ? 0 : aco_get_codegen_flags());
 }
 
@@ -104,7 +105,7 @@ radv_pipeline_cache_finish(struct radv_pipeline_cache *cache)
       if (cache->hash_table[i]) {
          for (int j = 0; j < MESA_VULKAN_SHADER_STAGES; ++j) {
             if (cache->hash_table[i]->shaders[j])
-               radv_shader_destroy(cache->device, cache->hash_table[i]->shaders[j]);
+               radv_shader_unref(cache->device, cache->hash_table[i]->shaders[j]);
          }
          if (cache->hash_table[i]->slab)
             radv_pipeline_slab_destroy(cache->device, cache->hash_table[i]->slab);
@@ -432,7 +433,7 @@ radv_create_shaders_from_pipeline_cache(
    else {
       for (int i = 0; i < MESA_VULKAN_SHADER_STAGES; ++i)
          if (entry->shaders[i])
-            p_atomic_inc(&entry->shaders[i]->ref_count);
+            radv_shader_ref(entry->shaders[i]);
       p_atomic_inc(&entry->slab->ref_count);
    }
 
@@ -458,10 +459,10 @@ radv_pipeline_cache_insert_shaders(struct radv_device *device, struct radv_pipel
          if (!entry->shaders[i])
             continue;
 
-         radv_shader_destroy(cache->device, pipeline->shaders[i]);
+         radv_shader_unref(cache->device, pipeline->shaders[i]);
 
          pipeline->shaders[i] = entry->shaders[i];
-         p_atomic_inc(&pipeline->shaders[i]->ref_count);
+         radv_shader_ref(pipeline->shaders[i]);
       }
 
       radv_pipeline_slab_destroy(cache->device, pipeline->slab);
@@ -548,7 +549,7 @@ radv_pipeline_cache_insert_shaders(struct radv_device *device, struct radv_pipel
          continue;
 
       entry->shaders[i] = pipeline->shaders[i];
-      p_atomic_inc(&pipeline->shaders[i]->ref_count);
+      radv_shader_ref(pipeline->shaders[i]);
    }
 
    entry->slab = pipeline->slab;

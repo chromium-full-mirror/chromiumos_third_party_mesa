@@ -686,19 +686,16 @@ struct gl_constants
    GLboolean ForceIntegerTexNearest;
 
    /**
+    * Treat 32-bit floating-point textures using GL_LINEAR filters as
+    * GL_NEAREST.
+    */
+   GLboolean ForceFloat32TexNearest;
+
+   /**
     * Does the driver support real 32-bit integers?  (Otherwise, integers are
     * simulated via floats.)
     */
    GLboolean NativeIntegers;
-
-   /**
-    * Does VertexID count from zero or from base vertex?
-    *
-    * \note
-    * If desktop GLSL 1.30 or GLSL ES 3.00 are not supported, this field is
-    * ignored and need not be set.
-    */
-   bool VertexID_is_zero_based;
 
    /**
     * If the driver supports real 32-bit integers, what integer value should be
@@ -910,9 +907,6 @@ struct gl_constants
    GLuint MaxTessControlTotalOutputComponents;
    bool LowerTessLevel; /**< Lower gl_TessLevel* from float[n] to vecn? */
    bool PrimitiveRestartForPatches;
-   bool LowerCsDerivedVariables;    /**< Lower gl_GlobalInvocationID and
-                                     *   gl_LocalInvocationIndex based on
-                                     *   other builtin variables. */
 
    /** GL_OES_primitive_bounding_box */
    bool NoPrimitiveBoundingBoxOutput;

@@ -54,7 +54,7 @@ static size_t
 asahi_size_resource(struct pipe_resource *prsrc, unsigned level)
 {
    struct agx_resource *rsrc = agx_resource(prsrc);
-   size_t size = rsrc->slices[level].size;
+   size_t size = rsrc->layout.size_B;
 
    if (rsrc->separate_stencil)
       size += asahi_size_resource(&rsrc->separate_stencil->base, level);
@@ -98,7 +98,7 @@ asahi_classify_attachment(enum pipe_format format)
 static uint64_t
 agx_map_surface_resource(struct pipe_surface *surf, struct agx_resource *rsrc)
 {
-   return agx_map_texture_gpu(rsrc, surf->u.tex.level, surf->u.tex.first_layer);
+   return agx_map_texture_gpu(rsrc, surf->u.tex.first_layer);
 }
 
 static uint64_t
@@ -118,7 +118,7 @@ asahi_pack_iogpu_attachment(void *out, struct agx_resource *rsrc,
    agx_pack(out, IOGPU_ATTACHMENT, cfg) {
       cfg.type = asahi_classify_attachment(rsrc->base.format);
       cfg.address = agx_map_surface_resource(surf, rsrc);
-      cfg.size = rsrc->slices[surf->u.tex.level].size;
+      cfg.size = rsrc->layout.size_B;
       cfg.percent = (100 * cfg.size) / total_size;
    }
 }
@@ -167,9 +167,13 @@ demo_cmdbuf(uint64_t *buf, size_t size,
             uint32_t pipeline_load,
             uint32_t pipeline_store,
             bool clear_pipeline_textures,
+            unsigned clear_buffers,
             double clear_depth,
             unsigned clear_stencil)
 {
+   bool should_clear_depth = clear_buffers & PIPE_CLEAR_DEPTH;
+   bool should_clear_stencil = clear_buffers & PIPE_CLEAR_STENCIL;
+
    uint32_t *map = (uint32_t *) buf;
    memset(map, 0, 518 * 4);
 
@@ -197,28 +201,41 @@ demo_cmdbuf(uint64_t *buf, size_t size,
          const struct util_format_description *desc =
             util_format_description(zsbuf->texture->format);
 
-         // note: setting 0x4 bit here breaks partial render with depth 
-         cfg.depth_flags = 0x80000; // no compression, clear
-
          cfg.depth_width = framebuffer->width;
          cfg.depth_height = framebuffer->height;
 
          if (util_format_has_depth(desc)) {
             depth_buffer = agx_map_surface(zsbuf);
+
+            cfg.depth_reload = !should_clear_depth;
+            cfg.depth_flags |= 0x80000;
+            if (!should_clear_depth) cfg.depth_flags |= 0x8000;
          } else {
             stencil_buffer = agx_map_surface(zsbuf);
+            cfg.depth_flags |= 0x40000;
+            if (!should_clear_stencil) cfg.depth_flags |= 0x4000;
          }
 
          if (agx_resource(zsbuf->texture)->separate_stencil) {
             stencil_buffer = agx_map_surface_resource(zsbuf,
                   agx_resource(zsbuf->texture)->separate_stencil);
+
+            cfg.depth_flags |= 0x40000;
+            if (!should_clear_stencil) cfg.depth_flags |= 0x4000;
          }
 
+         cfg.depth_buffer_if_clearing = depth_buffer;
          cfg.stencil_buffer = stencil_buffer;
-         cfg.stencil_buffer_2 = stencil_buffer;
+
+         /* It's unclear how tile size is conveyed for depth/stencil targets,
+          * which interactions with mipmapping (for example of a 33x33
+          * depth/stencil attachment)
+          */
+         if (zsbuf->u.tex.level != 0)
+            unreachable("todo: mapping other levels");
 
          cfg.depth_buffer = depth_buffer;
-         cfg.depth_buffer_if_clearing = depth_buffer;
+         cfg.stencil_buffer_2 = stencil_buffer;
       }
    }
 
@@ -229,10 +246,20 @@ demo_cmdbuf(uint64_t *buf, size_t size,
    }
 
    agx_pack(map + 292, IOGPU_CLEAR_Z_S, cfg) {
-      cfg.set_when_reloading_z_1 = clear_pipeline_textures;
+      cfg.set_when_reloading_z_or_s_1 = clear_pipeline_textures;
+
+      if (depth_buffer && !should_clear_depth) {
+         cfg.set_when_reloading_z_or_s_1 = true;
+         cfg.set_when_reloading_z_or_s_2 = true;
+      }
+
+      if (stencil_buffer && !should_clear_stencil) {
+         cfg.set_when_reloading_z_or_s_1 = true;
+         cfg.set_when_reloading_z_or_s_2 = true;
+      }
 
       cfg.depth_clear_value = fui(clear_depth);
-      cfg.stencil_clear_value = clear_stencil;
+      cfg.stencil_clear_value = clear_stencil & 0xff;
 
       cfg.partial_reload_pipeline_bind = 0xffff8212;
       cfg.partial_reload_pipeline = pipeline_load;
@@ -268,6 +295,7 @@ demo_cmdbuf(uint64_t *buf, size_t size,
       cfg.attachment_length = nr_attachments * AGX_IOGPU_ATTACHMENT_LENGTH;
       cfg.unknown_offset = offset_unk;
       cfg.encoder = encoder_ptr;
+      cfg.opengl_depth_clipping = true;
 
       cfg.deflake_1 = deflake_1;
       cfg.deflake_2 = deflake_2;

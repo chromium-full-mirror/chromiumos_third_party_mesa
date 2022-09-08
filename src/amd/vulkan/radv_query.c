@@ -907,8 +907,6 @@ radv_device_init_meta_query_state_internal(struct radv_device *device)
       &pg_pipeline_info, NULL, &device->meta_state.query.pg_query_pipeline);
 
 fail:
-   if (result != VK_SUCCESS)
-      radv_device_finish_meta_query_state(device);
    ralloc_free(occlusion_cs);
    ralloc_free(pipeline_statistics_cs);
    ralloc_free(tfb_cs);
@@ -977,7 +975,7 @@ radv_query_shader(struct radv_cmd_buffer *cmd_buffer, VkPipeline *pipeline,
    if (!*pipeline) {
       VkResult ret = radv_device_init_meta_query_state_internal(device);
       if (ret != VK_SUCCESS) {
-         cmd_buffer->record_result = ret;
+         vk_command_buffer_set_error(&cmd_buffer->vk, ret);
          return;
       }
    }
@@ -1500,6 +1498,12 @@ radv_CmdCopyQueryPoolResults(VkCommandBuffer commandBuffer, VkQueryPool queryPoo
 
    radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, pool->bo);
    radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_buffer->bo);
+
+   /* Workaround engines that forget to properly specify WAIT_BIT because some driver implicitly
+    * synchronizes before query copy.
+    */
+   if (cmd_buffer->device->instance->flush_before_query_copy)
+      cmd_buffer->state.flush_bits |= cmd_buffer->active_query_flush_bits;
 
    /* From the Vulkan spec 1.1.108:
     *

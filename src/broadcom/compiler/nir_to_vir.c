@@ -324,6 +324,7 @@ ntq_add_pending_tmu_flush(struct v3d_compile *c,
         c->tmu.flush[c->tmu.flush_count].dest = dest;
         c->tmu.flush[c->tmu.flush_count].component_mask = component_mask;
         c->tmu.flush_count++;
+        c->tmu.total_count++;
 
         if (c->disable_tmu_pipelining)
                 ntq_flush_tmu(c);
@@ -1312,7 +1313,7 @@ f2f16_rtz(struct v3d_compile *c, struct qreg f32)
          * the default RTE conversion.
          */
         static bool _first = true;
-        if (_first && unlikely(V3D_DEBUG & V3D_DEBUG_PERF)) {
+        if (_first && V3D_DBG(PERF)) {
                 fprintf(stderr, "Shader uses round-toward-zero f32->f16 "
                         "conversion which is not supported in hardware.\n");
                 _first = false;
@@ -3000,18 +3001,18 @@ ntq_get_barycentric_centroid(struct v3d_compile *c,
         /* sN = TRUE if sample N enabled in sample mask, FALSE otherwise */
         struct qreg F = vir_uniform_ui(c, 0);
         struct qreg T = vir_uniform_ui(c, ~0);
-        struct qreg s0 = vir_XOR(c, vir_AND(c, sample_mask, i1), i1);
+        struct qreg s0 = vir_AND(c, sample_mask, i1);
         vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), s0), V3D_QPU_PF_PUSHZ);
-        s0 = vir_SEL(c, V3D_QPU_COND_IFA, T, F);
-        struct qreg s1 = vir_XOR(c, vir_AND(c, sample_mask, i2), i2);
+        s0 = vir_SEL(c, V3D_QPU_COND_IFNA, T, F);
+        struct qreg s1 = vir_AND(c, sample_mask, i2);
         vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), s1), V3D_QPU_PF_PUSHZ);
-        s1 = vir_SEL(c, V3D_QPU_COND_IFA, T, F);
-        struct qreg s2 = vir_XOR(c, vir_AND(c, sample_mask, i4), i4);
+        s1 = vir_SEL(c, V3D_QPU_COND_IFNA, T, F);
+        struct qreg s2 = vir_AND(c, sample_mask, i4);
         vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), s2), V3D_QPU_PF_PUSHZ);
-        s2 = vir_SEL(c, V3D_QPU_COND_IFA, T, F);
-        struct qreg s3 = vir_XOR(c, vir_AND(c, sample_mask, i8), i8);
+        s2 = vir_SEL(c, V3D_QPU_COND_IFNA, T, F);
+        struct qreg s3 = vir_AND(c, sample_mask, i8);
         vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), s3), V3D_QPU_PF_PUSHZ);
-        s3 = vir_SEL(c, V3D_QPU_COND_IFA, T, F);
+        s3 = vir_SEL(c, V3D_QPU_COND_IFNA, T, F);
 
         /* sample_idx = s0 ? 0 : s2 ? 2 : s1 ? 1 : 3 */
         struct qreg sample_idx = i3;
@@ -4567,8 +4568,8 @@ vir_check_payload_w(struct v3d_compile *c)
 void
 v3d_nir_to_vir(struct v3d_compile *c)
 {
-        if (V3D_DEBUG & (V3D_DEBUG_NIR |
-                         v3d_debug_flag_for_shader_stage(c->s->info.stage))) {
+        if (V3D_DBG(NIR) ||
+            v3d_debug_flag_for_shader_stage(c->s->info.stage)) {
                 fprintf(stderr, "%s prog %d/%d NIR:\n",
                         vir_get_stage_name(c),
                         c->program_id, c->variant_id);
@@ -4602,8 +4603,8 @@ v3d_nir_to_vir(struct v3d_compile *c)
                 unreachable("bad stage");
         }
 
-        if (V3D_DEBUG & (V3D_DEBUG_VIR |
-                         v3d_debug_flag_for_shader_stage(c->s->info.stage))) {
+        if (V3D_DBG(VIR) ||
+            v3d_debug_flag_for_shader_stage(c->s->info.stage)) {
                 fprintf(stderr, "%s prog %d/%d pre-opt VIR:\n",
                         vir_get_stage_name(c),
                         c->program_id, c->variant_id);
@@ -4624,8 +4625,8 @@ v3d_nir_to_vir(struct v3d_compile *c)
          * instructions until the results are needed.
          */
 
-        if (V3D_DEBUG & (V3D_DEBUG_VIR |
-                         v3d_debug_flag_for_shader_stage(c->s->info.stage))) {
+        if (V3D_DBG(VIR) ||
+            v3d_debug_flag_for_shader_stage(c->s->info.stage)) {
                 fprintf(stderr, "%s prog %d/%d VIR:\n",
                         vir_get_stage_name(c),
                         c->program_id, c->variant_id);
@@ -4646,7 +4647,7 @@ v3d_nir_to_vir(struct v3d_compile *c)
                 }
 
                 if (c->threads == min_threads &&
-                    (V3D_DEBUG & V3D_DEBUG_RA)) {
+                    V3D_DBG(RA)) {
                         fprintf(stderr,
                                 "Failed to register allocate using %s\n",
                                 c->fallback_scheduler ? "the fallback scheduler:" :
@@ -4663,7 +4664,7 @@ v3d_nir_to_vir(struct v3d_compile *c)
                 }
 
                 if (c->threads <= MAX2(c->min_threads_for_reg_alloc, min_threads)) {
-                        if (V3D_DEBUG & V3D_DEBUG_PERF) {
+                        if (V3D_DBG(PERF)) {
                                 fprintf(stderr,
                                         "Failed to register allocate %s "
                                         "prog %d/%d at %d threads.\n",
@@ -4690,8 +4691,8 @@ v3d_nir_to_vir(struct v3d_compile *c)
                 vir_restore_last_thrsw(c, restore_last_thrsw, restore_scoreboard_lock);
 
         if (c->spills &&
-            (V3D_DEBUG & (V3D_DEBUG_VIR |
-                          v3d_debug_flag_for_shader_stage(c->s->info.stage)))) {
+            (V3D_DBG(VIR) ||
+             v3d_debug_flag_for_shader_stage(c->s->info.stage))) {
                 fprintf(stderr, "%s prog %d/%d spilled VIR:\n",
                         vir_get_stage_name(c),
                         c->program_id, c->variant_id);

@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "util/mesa-sha1.h"
+#include "radv_acceleration_structure.h"
 #include "radv_private.h"
 #include "sid.h"
 #include "vk_descriptors.h"
@@ -563,14 +564,8 @@ radv_CreatePipelineLayout(VkDevice _device, const VkPipelineLayoutCreateInfo *pC
    for (uint32_t set = 0; set < pCreateInfo->setLayoutCount; set++) {
       RADV_FROM_HANDLE(radv_descriptor_set_layout, set_layout, pCreateInfo->pSetLayouts[set]);
 
-      /* From the Vulkan spec 1.3.211:
-       *
-       * "VUID-VkPipelineLayoutCreateInfo-flags-06562
-       *  If flags: does not include VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT, elements of
-       *  pSetLayouts must be valid VkDescriptorSetLayout objects"
-       */
       if (set_layout == NULL) {
-         assert(layout->independent_sets);
+         layout->set[set].layout = NULL;
          continue;
       }
 
@@ -673,11 +668,15 @@ radv_descriptor_set_create(struct radv_device *device, struct radv_descriptor_po
       set->header.bo = pool->bo;
       set->header.mapped_ptr = (uint32_t *)(pool->mapped_ptr + pool->current_offset);
       set->header.va = pool->bo ? (radv_buffer_get_va(set->header.bo) + pool->current_offset) : 0;
+
       if (!pool->host_memory_base) {
          pool->entries[pool->entry_count].offset = pool->current_offset;
          pool->entries[pool->entry_count].size = layout_size;
+         pool->entries[pool->entry_count].set = set;
+      } else {
+         pool->layouts[pool->entry_count] = layout;
       }
-      pool->entries[pool->entry_count].set = set;
+
       pool->current_offset += layout_size;
    } else if (!pool->host_memory_base) {
       uint64_t offset = 0;
@@ -733,10 +732,9 @@ static void
 radv_descriptor_set_destroy(struct radv_device *device, struct radv_descriptor_pool *pool,
                             struct radv_descriptor_set *set, bool free_bo)
 {
-   vk_descriptor_set_layout_unref(&device->vk, &set->header.layout->vk);
+   assert(!pool->host_memory_base);
 
-   if (pool->host_memory_base)
-      return;
+   vk_descriptor_set_layout_unref(&device->vk, &set->header.layout->vk);
 
    if (free_bo && !pool->host_memory_base) {
       for (int i = 0; i < pool->entry_count; ++i) {
@@ -756,8 +754,15 @@ static void
 radv_destroy_descriptor_pool(struct radv_device *device, const VkAllocationCallbacks *pAllocator,
                              struct radv_descriptor_pool *pool)
 {
-   for (int i = 0; i < pool->entry_count; ++i) {
-      radv_descriptor_set_destroy(device, pool, pool->entries[i].set, false);
+
+   if (!pool->host_memory_base) {
+      for (uint32_t i = 0; i < pool->entry_count; ++i) {
+         radv_descriptor_set_destroy(device, pool, pool->entries[i].set, false);
+      }
+   } else {
+      for (uint32_t i = 0; i < pool->entry_count; ++i) {
+         vk_descriptor_set_layout_unref(&device->vk, &pool->layouts[i]->vk);
+      }
    }
 
    if (pool->bo)
@@ -851,14 +856,17 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
       }
    }
 
-   uint64_t entries_size = sizeof(struct radv_descriptor_pool_entry) * pCreateInfo->maxSets;
-   size += entries_size;
+   uint64_t layouts_size = 0;
 
    if (!(pCreateInfo->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)) {
-      uint64_t host_size = pCreateInfo->maxSets * sizeof(struct radv_descriptor_set);
-      host_size += sizeof(struct radeon_winsys_bo *) * bo_count;
-      host_size += sizeof(struct radv_descriptor_range) * range_count;
-      size += host_size;
+      size += pCreateInfo->maxSets * sizeof(struct radv_descriptor_set);
+      size += sizeof(struct radeon_winsys_bo *) * bo_count;
+      size += sizeof(struct radv_descriptor_range) * range_count;
+
+      layouts_size = sizeof(struct radv_descriptor_set_layout *) * pCreateInfo->maxSets;
+      size += layouts_size;
+   } else {
+      size += sizeof(struct radv_descriptor_pool_entry) * pCreateInfo->maxSets;
    }
 
    pool = vk_alloc2(&device->vk.alloc, pAllocator, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -870,7 +878,7 @@ radv_CreateDescriptorPool(VkDevice _device, const VkDescriptorPoolCreateInfo *pC
    vk_object_base_init(&device->vk, &pool->base, VK_OBJECT_TYPE_DESCRIPTOR_POOL);
 
    if (!(pCreateInfo->flags & VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT)) {
-      pool->host_memory_base = (uint8_t *)pool + sizeof(struct radv_descriptor_pool) + entries_size;
+      pool->host_memory_base = (uint8_t *)pool + sizeof(struct radv_descriptor_pool) + layouts_size;
       pool->host_memory_ptr = pool->host_memory_base;
       pool->host_memory_end = (uint8_t *)pool + size;
    }
@@ -932,9 +940,16 @@ radv_ResetDescriptorPool(VkDevice _device, VkDescriptorPool descriptorPool,
    RADV_FROM_HANDLE(radv_device, device, _device);
    RADV_FROM_HANDLE(radv_descriptor_pool, pool, descriptorPool);
 
-   for (int i = 0; i < pool->entry_count; ++i) {
-      radv_descriptor_set_destroy(device, pool, pool->entries[i].set, false);
+   if (!pool->host_memory_base) {
+      for (uint32_t i = 0; i < pool->entry_count; ++i) {
+         radv_descriptor_set_destroy(device, pool, pool->entries[i].set, false);
+      }
+   } else {
+      for (uint32_t i = 0; i < pool->entry_count; ++i) {
+         vk_descriptor_set_layout_unref(&device->vk, &pool->layouts[i]->vk);
+      }
    }
+
    pool->entry_count = 0;
 
    pool->current_offset = 0;

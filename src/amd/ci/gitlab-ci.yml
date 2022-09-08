@@ -1,10 +1,10 @@
 ############### LAVA
-# Run three jobs in parallel each running 1/30th of the test suite
+# Run four jobs in parallel each running 1/40th of the test suite
 radv_stoney_vkcts:amd64:
   extends:
     - .lava-test:amd64
     - .radv-rules
-  parallel: 3
+  parallel: 4
   variables:
     DEQP_VER: vk
     DEQP_FRACTION: 10
@@ -115,6 +115,7 @@ radv_stoney_vkcts:amd64:
     FDO_CI_CONCURRENT: 8
     B2C_TIMEOUT_BOOT_MINUTES: 85
     B2C_TIMEOUT_OVERALL_MINUTES: 120
+    B2C_TIMEOUT_MINUTES: 3
     B2C_KERNEL_CMDLINE_EXTRAS: 'b2c.swap=16g'
   tags:
     - amdgpu:codename:VANGOGH
@@ -131,7 +132,7 @@ radv_stoney_vkcts:amd64:
     - .deqp-test-valve
   variables:
     DEQP_VER: vk
-    RADV_PERFTEST: nv_ms
+    RADV_PERFTEST: nv_ms,ext_ms
 
 # VKCTS never finishes on gfx7 due to all the GPU resets and hangs.
 # Hence, disable it for now.
@@ -166,7 +167,7 @@ vkcts-kabini-valve:
   tags:
     - amdgpu:codename:STONEY
 
-vkcts-polaris10-valve:
+.vkcts-polaris10-valve:
   extends:
     - .vkcts-test-valve
     - .polaris10-test-valve
@@ -211,6 +212,7 @@ vkcts-navi21-llvm-valve:
     RADV_DEBUG: llvm,checkir
 
 vkcts-vangogh-valve:
+  parallel: 2
   extends:
     - .vkcts-test-valve
     - .vangogh-test-valve
@@ -288,14 +290,14 @@ radv-fossils:
     B2C_JOB_SUCCESS_REGEX: 'SUCCESS: No changes found!\r$'
     B2C_TEST_SCRIPT: ./install/vkd3d-proton/run.sh
 
-vkd3d-kabini-valve:
+.vkd3d-kabini-valve:
   extends:
     - .vkd3d-test-valve
     - .kabini-test-valve
   variables:
     VKD3D_PROTON_RESULTS: radv-kabini-vkd3d
 
-vkd3d-polaris10-valve:
+.vkd3d-polaris10-valve:
   extends:
     - .vkd3d-test-valve
     - .polaris10-test-valve

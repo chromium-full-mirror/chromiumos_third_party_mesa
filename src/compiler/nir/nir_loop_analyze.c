@@ -1035,7 +1035,7 @@ try_find_trip_count_vars_in_iand(nir_ssa_scalar *cond,
    bool found_induction_var = false;
    for (unsigned i = 0; i < 2; i++) {
       nir_ssa_scalar src = nir_ssa_scalar_chase_alu_src(iand, i);
-      if (nir_is_supported_terminator_condition(src) &&
+      if (nir_is_terminator_condition_with_two_inputs(src) &&
           get_induction_and_limit_vars(src, ind, limit, limit_rhs, state)) {
          *cond = src;
          found_induction_var = true;
@@ -1098,6 +1098,13 @@ find_trip_count(loop_info_state *state, unsigned execution_mode)
 
       if (!basic_ind.def) {
          if (nir_is_supported_terminator_condition(cond)) {
+            /* Extract and inverse the comparision if it is wrapped in an inot
+             */
+            if (alu_op == nir_op_inot) {
+               cond = nir_ssa_scalar_chase_alu_src(cond, 0);
+               alu_op = inverse_comparison(nir_ssa_scalar_alu_op(cond));
+            }
+
             get_induction_and_limit_vars(cond, &basic_ind,
                                          &limit, &limit_rhs, state);
          }

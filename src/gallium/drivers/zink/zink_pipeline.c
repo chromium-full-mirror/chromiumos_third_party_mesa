@@ -104,7 +104,6 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       }
    }
 
-   VkPipelineColorBlendAttachmentState blend_att[PIPE_MAX_COLOR_BUFS];
    VkPipelineColorBlendStateCreateInfo blend_state = {0};
    blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
    if (state->blend_state) {
@@ -113,22 +112,14 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
                                  state->rendering_info.colorAttachmentCount;
       if (state->render_pass && state->render_pass->state.have_zsbuf)
          num_attachments--;
-      if (state->void_alpha_attachments) {
-         for (unsigned i = 0; i < num_attachments; i++) {
-            blend_att[i] = state->blend_state->attachments[i];
-            if (state->void_alpha_attachments & BITFIELD_BIT(i)) {
-               blend_att[i].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-               blend_att[i].srcColorBlendFactor = clamp_void_blend_factor(blend_att[i].srcColorBlendFactor);
-               blend_att[i].dstColorBlendFactor = clamp_void_blend_factor(blend_att[i].dstColorBlendFactor);
-            }
-         }
-         blend_state.pAttachments = blend_att;
-      } else
-         blend_state.pAttachments = state->blend_state->attachments;
+      blend_state.pAttachments = state->blend_state->attachments;
       blend_state.attachmentCount = num_attachments;
       blend_state.logicOpEnable = state->blend_state->logicop_enable;
       blend_state.logicOp = state->blend_state->logicop_func;
    }
+   if (screen->info.have_EXT_rasterization_order_attachment_access &&
+       prog->shaders[MESA_SHADER_FRAGMENT]->nir->info.fs.uses_fbfetch_output)
+      blend_state.flags |= VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT;
 
    VkPipelineMultisampleStateCreateInfo ms_state = {0};
    ms_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -151,6 +142,9 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    if (hw_rast_state->force_persample_interp) {
       ms_state.sampleShadingEnable = VK_TRUE;
       ms_state.minSampleShading = 1.0;
+   } else if (state->min_samples > 0) {
+      ms_state.sampleShadingEnable = VK_TRUE;
+      ms_state.minSampleShading = (float)(state->rast_samples + 1) / (state->min_samples + 1);
    }
 
    VkPipelineViewportStateCreateInfo viewport_state = {0};
@@ -274,12 +268,12 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
          break;
       default: break;
       }
-      if (prog->nir[PIPE_SHADER_TESS_EVAL]) {
-         check_warn |= !prog->nir[PIPE_SHADER_TESS_EVAL]->info.tess.point_mode &&
-                       prog->nir[PIPE_SHADER_TESS_EVAL]->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES;
+      if (prog->nir[MESA_SHADER_TESS_EVAL]) {
+         check_warn |= !prog->nir[MESA_SHADER_TESS_EVAL]->info.tess.point_mode &&
+                       prog->nir[MESA_SHADER_TESS_EVAL]->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES;
       }
-      if (prog->nir[PIPE_SHADER_GEOMETRY]) {
-         switch (prog->nir[PIPE_SHADER_GEOMETRY]->info.gs.output_primitive) {
+      if (prog->nir[MESA_SHADER_GEOMETRY]) {
+         switch (prog->nir[MESA_SHADER_GEOMETRY]->info.gs.output_primitive) {
          case SHADER_PRIM_LINES:
          case SHADER_PRIM_LINE_LOOP:
          case SHADER_PRIM_LINE_STRIP:
@@ -346,7 +340,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
 
    VkPipelineTessellationStateCreateInfo tci = {0};
    VkPipelineTessellationDomainOriginStateCreateInfo tdci = {0};
-   if (prog->shaders[PIPE_SHADER_TESS_CTRL] && prog->shaders[PIPE_SHADER_TESS_EVAL]) {
+   if (prog->shaders[MESA_SHADER_TESS_CTRL] && prog->shaders[MESA_SHADER_TESS_EVAL]) {
       tci.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
       tci.patchControlPoints = state->dyn_state2.vertices_per_patch;
       pci.pTessellationState = &tci;
@@ -355,15 +349,15 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
       tdci.domainOrigin = VK_TESSELLATION_DOMAIN_ORIGIN_LOWER_LEFT;
    }
 
-   VkPipelineShaderStageCreateInfo shader_stages[ZINK_SHADER_COUNT];
+   VkPipelineShaderStageCreateInfo shader_stages[ZINK_GFX_SHADER_COUNT];
    uint32_t num_stages = 0;
-   for (int i = 0; i < ZINK_SHADER_COUNT; ++i) {
+   for (int i = 0; i < ZINK_GFX_SHADER_COUNT; ++i) {
       if (!prog->modules[i])
          continue;
 
       VkPipelineShaderStageCreateInfo stage = {0};
       stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-      stage.stage = zink_shader_stage(i);
+      stage.stage = mesa_to_vk_shader_stage(i);
       stage.module = prog->modules[i]->shader;
       stage.pName = "main";
       shader_stages[num_stages++] = stage;
@@ -399,7 +393,7 @@ zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_pro
 
    VkSpecializationInfo sinfo = {0};
    VkSpecializationMapEntry me[3];
-   if (state->use_local_size) {
+   if (comp->use_local_size) {
       stage.pSpecializationInfo = &sinfo;
       sinfo.mapEntryCount = 3;
       sinfo.pMapEntries = &me[0];
@@ -422,7 +416,6 @@ zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_pro
       mesa_loge("ZINK: vkCreateComputePipelines failed (%s)", vk_Result_to_str(result));
       return VK_NULL_HANDLE;
    }
-   zink_screen_update_pipeline_cache(screen, &comp->base);
 
    return pipeline;
 }
@@ -436,23 +429,11 @@ zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipe
       VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_OUTPUT_INTERFACE_BIT_EXT,
    };
 
-   VkPipelineColorBlendAttachmentState blend_att[PIPE_MAX_COLOR_BUFS];
    VkPipelineColorBlendStateCreateInfo blend_state = {0};
    blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
    if (state->blend_state) {
       unsigned num_attachments = state->rendering_info.colorAttachmentCount;
-      if (state->void_alpha_attachments) {
-         for (unsigned i = 0; i < num_attachments; i++) {
-            blend_att[i] = state->blend_state->attachments[i];
-            if (state->void_alpha_attachments & BITFIELD_BIT(i)) {
-               blend_att[i].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-               blend_att[i].srcColorBlendFactor = clamp_void_blend_factor(blend_att[i].srcColorBlendFactor);
-               blend_att[i].dstColorBlendFactor = clamp_void_blend_factor(blend_att[i].dstColorBlendFactor);
-            }
-         }
-         blend_state.pAttachments = blend_att;
-      } else
-         blend_state.pAttachments = state->blend_state->attachments;
+      blend_state.pAttachments = state->blend_state->attachments;
       blend_state.attachmentCount = num_attachments;
       blend_state.logicOpEnable = state->blend_state->logicop_enable;
       blend_state.logicOp = state->blend_state->logicop_func;
@@ -479,6 +460,9 @@ zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipe
    if (state->force_persample_interp) {
       ms_state.sampleShadingEnable = VK_TRUE;
       ms_state.minSampleShading = 1.0;
+   } else if (state->min_samples > 0) {
+      ms_state.sampleShadingEnable = VK_TRUE;
+      ms_state.minSampleShading = (float)(state->rast_samples + 1) / (state->min_samples + 1);
    }
 
    VkDynamicState dynamicStateEnables[30] = {
@@ -688,12 +672,12 @@ zink_create_gfx_pipeline_library(struct zink_screen *screen, struct zink_gfx_pro
       rast_line_state.lineRasterizationMode = VK_LINE_RASTERIZATION_MODE_DEFAULT_EXT;
 
       bool check_warn = line;
-      if (prog->nir[PIPE_SHADER_TESS_EVAL]) {
-         check_warn |= !prog->nir[PIPE_SHADER_TESS_EVAL]->info.tess.point_mode &&
-                       prog->nir[PIPE_SHADER_TESS_EVAL]->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES;
+      if (prog->nir[MESA_SHADER_TESS_EVAL]) {
+         check_warn |= !prog->nir[MESA_SHADER_TESS_EVAL]->info.tess.point_mode &&
+                       prog->nir[MESA_SHADER_TESS_EVAL]->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES;
       }
-      if (prog->nir[PIPE_SHADER_GEOMETRY]) {
-         switch (prog->nir[PIPE_SHADER_GEOMETRY]->info.gs.output_primitive) {
+      if (prog->nir[MESA_SHADER_GEOMETRY]) {
+         switch (prog->nir[MESA_SHADER_GEOMETRY]->info.gs.output_primitive) {
          case SHADER_PRIM_LINES:
          case SHADER_PRIM_LINE_LOOP:
          case SHADER_PRIM_LINE_STRIP:
@@ -754,24 +738,29 @@ zink_create_gfx_pipeline_library(struct zink_screen *screen, struct zink_gfx_pro
 
    VkPipelineTessellationStateCreateInfo tci = {0};
    VkPipelineTessellationDomainOriginStateCreateInfo tdci = {0};
-   if (prog->shaders[PIPE_SHADER_TESS_CTRL] && prog->shaders[PIPE_SHADER_TESS_EVAL]) {
+   if (prog->shaders[MESA_SHADER_TESS_CTRL] && prog->shaders[MESA_SHADER_TESS_EVAL]) {
       tci.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
-      tci.patchControlPoints = 3; //this is a wild guess; pray for extendedDynamicState2PatchControlPoints
+      //this is a wild guess; pray for extendedDynamicState2PatchControlPoints
+      if (!screen->info.dynamic_state2_feats.extendedDynamicState2PatchControlPoints) {
+         static bool warned = false;
+         warn_missing_feature(warned, "extendedDynamicState2PatchControlPoints");
+      }
+      tci.patchControlPoints = prog->shaders[MESA_SHADER_TESS_EVAL]->nir->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES ? 2 : 3;
       pci.pTessellationState = &tci;
       tci.pNext = &tdci;
       tdci.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_DOMAIN_ORIGIN_STATE_CREATE_INFO;
       tdci.domainOrigin = VK_TESSELLATION_DOMAIN_ORIGIN_LOWER_LEFT;
    }
 
-   VkPipelineShaderStageCreateInfo shader_stages[ZINK_SHADER_COUNT];
+   VkPipelineShaderStageCreateInfo shader_stages[ZINK_GFX_SHADER_COUNT];
    uint32_t num_stages = 0;
-   for (int i = 0; i < ZINK_SHADER_COUNT; ++i) {
+   for (int i = 0; i < ZINK_GFX_SHADER_COUNT; ++i) {
       if (!prog->modules[i])
          continue;
 
       VkPipelineShaderStageCreateInfo stage = {0};
       stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-      stage.stage = zink_shader_stage(i);
+      stage.stage = mesa_to_vk_shader_stage(i);
       stage.module = prog->modules[i]->shader;
       stage.pName = "main";
       shader_stages[num_stages++] = stage;

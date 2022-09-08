@@ -123,11 +123,8 @@ static void pvr_cmd_buffer_free_sub_cmds(struct pvr_cmd_buffer *cmd_buffer)
    }
 }
 
-static void pvr_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
+static void pvr_cmd_buffer_free_resources(struct pvr_cmd_buffer *cmd_buffer)
 {
-   struct pvr_cmd_buffer *cmd_buffer =
-      container_of(vk_cmd_buffer, struct pvr_cmd_buffer, vk);
-
    vk_free(&cmd_buffer->vk.pool->alloc,
            cmd_buffer->state.render_pass_info.attachments);
    vk_free(&cmd_buffer->vk.pool->alloc,
@@ -142,10 +139,40 @@ static void pvr_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
 
    util_dynarray_fini(&cmd_buffer->scissor_array);
    util_dynarray_fini(&cmd_buffer->depth_bias_array);
+}
 
+static void pvr_cmd_buffer_reset(struct pvr_cmd_buffer *cmd_buffer)
+{
+   if (cmd_buffer->status != PVR_CMD_BUFFER_STATUS_INITIAL) {
+      /* FIXME: For now we always free all resources as if
+       * VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT was set.
+       */
+      pvr_cmd_buffer_free_resources(cmd_buffer);
+
+      vk_command_buffer_reset(&cmd_buffer->vk);
+
+      memset(&cmd_buffer->state, 0, sizeof(cmd_buffer->state));
+      memset(cmd_buffer->scissor_words, 0, sizeof(cmd_buffer->scissor_words));
+
+      cmd_buffer->usage_flags = 0;
+      cmd_buffer->state.status = VK_SUCCESS;
+      cmd_buffer->status = PVR_CMD_BUFFER_STATUS_INITIAL;
+   }
+}
+
+static void pvr_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
+{
+   struct pvr_cmd_buffer *cmd_buffer =
+      container_of(vk_cmd_buffer, struct pvr_cmd_buffer, vk);
+
+   pvr_cmd_buffer_free_resources(cmd_buffer);
    vk_command_buffer_finish(&cmd_buffer->vk);
    vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer);
 }
+
+static const struct vk_command_buffer_ops cmd_buffer_ops = {
+   .destroy = pvr_cmd_buffer_destroy,
+};
 
 static VkResult pvr_cmd_buffer_create(struct pvr_device *device,
                                       struct vk_command_pool *pool,
@@ -162,13 +189,13 @@ static VkResult pvr_cmd_buffer_create(struct pvr_device *device,
    if (!cmd_buffer)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   result = vk_command_buffer_init(&cmd_buffer->vk, pool, level);
+   result =
+      vk_command_buffer_init(pool, &cmd_buffer->vk, &cmd_buffer_ops, level);
    if (result != VK_SUCCESS) {
       vk_free(&pool->alloc, cmd_buffer);
       return result;
    }
 
-   cmd_buffer->vk.destroy = pvr_cmd_buffer_destroy;
    cmd_buffer->device = device;
 
    util_dynarray_init(&cmd_buffer->depth_bias_array, NULL);
@@ -713,7 +740,7 @@ static void pvr_setup_pbe_state(
    uint32_t pbe_cs_words[static const ROGUE_NUM_PBESTATE_STATE_WORDS],
    uint64_t pbe_reg_words[static const ROGUE_NUM_PBESTATE_REG_WORDS])
 {
-   const struct pvr_image *image = iview->image;
+   const struct pvr_image *image = vk_to_pvr_image(iview->vk.image);
    uint32_t level_pitch = image->mip_levels[iview->vk.base_mip_level].pitch;
 
    struct pvr_pbe_surf_params surface_params;
@@ -899,8 +926,21 @@ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
          &hw_render->eot_setup.mrt_resources[surface->mrt_index];
       uint32_t samples = 1;
 
-      if (surface->need_resolve)
-         pvr_finishme("Set up job resolve information.");
+      if (surface->need_resolve) {
+         const struct pvr_image_view *resolve_src =
+            render_pass_info->attachments[surface->src_attachment_index];
+
+         /* Attachments that are the destination of resolve operations must be
+          * loaded before their next use.
+          */
+         render_pass_info->enable_bg_tag = true;
+         render_pass_info->process_empty_tiles = true;
+
+         if (surface->resolve_type != PVR_RESOLVE_TYPE_PBE)
+            continue;
+
+         samples = (uint32_t)resolve_src->vk.image->samples;
+      }
 
       pvr_setup_pbe_state(dev_info,
                           render_pass_info->framebuffer,
@@ -974,10 +1014,11 @@ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
                                       sub_cmd->hw_render_idx,
                                       dev_info);
 
+   /* Setup depth/stencil job information. */
    if (hw_render->ds_surface_id != -1) {
       struct pvr_image_view *iview =
          render_pass_info->attachments[hw_render->ds_surface_id];
-      const struct pvr_image *image = iview->image;
+      const struct pvr_image *image = vk_to_pvr_image(iview->vk.image);
 
       if (vk_format_has_depth(image->vk.format)) {
          uint32_t level_pitch =
@@ -1025,11 +1066,7 @@ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
       } else {
          job->stencil_addr = PVR_DEV_ADDR_INVALID;
       }
-
-      job->samples = image->vk.samples;
    } else {
-      pvr_finishme("Set up correct number of samples for render job");
-
       job->depth_addr = PVR_DEV_ADDR_INVALID;
       job->depth_stride = 0;
       job->depth_height = 0;
@@ -1041,8 +1078,39 @@ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
       job->depth_memlayout = PVR_MEMLAYOUT_LINEAR;
 
       job->stencil_addr = PVR_DEV_ADDR_INVALID;
+   }
 
-      job->samples = 1;
+   if (hw_render->ds_surface_id != -1) {
+      struct pvr_image_view *iview =
+         render_pass_info->attachments[hw_render->ds_surface_id];
+      const struct pvr_image *image = vk_to_pvr_image(iview->vk.image);
+
+      /* If the HW render pass has a valid depth/stencil surface, determine the
+       * sample count from the attachment's image.
+       */
+      job->samples = image->vk.samples;
+   } else if (hw_render->output_regs_count) {
+      /* If the HW render pass has output registers, we have color attachments
+       * to write to, so determine the sample count from the count specified for
+       * every color attachment in this render.
+       */
+      job->samples = hw_render->sample_count;
+   } else if (cmd_buffer->state.gfx_pipeline) {
+      /* If the HW render pass has no color or depth/stencil attachments, we
+       * determine the sample count from the count given during pipeline
+       * creation.
+       */
+      job->samples = cmd_buffer->state.gfx_pipeline->rasterization_samples;
+   } else if (render_pass_info->pass->attachment_count > 0) {
+      /* If we get here, we have a render pass with subpasses containing no
+       * attachments. The next best thing is largest of the sample counts
+       * specified by the render pass attachment descriptions.
+       */
+      job->samples = render_pass_info->pass->max_sample_count;
+   } else {
+      /* No appropriate framebuffer attachment is available. */
+      mesa_logw("Defaulting render job sample count to 1.");
+      job->samples = VK_SAMPLE_COUNT_1_BIT;
    }
 
    if (sub_cmd->max_tiles_in_flight ==
@@ -1682,13 +1750,6 @@ VkResult pvr_cmd_buffer_alloc_mem(struct pvr_cmd_buffer *cmd_buffer,
 
    *pvr_bo_out = pvr_bo;
 
-   return VK_SUCCESS;
-}
-
-VkResult pvr_ResetCommandBuffer(VkCommandBuffer commandBuffer,
-                                VkCommandBufferResetFlags flags)
-{
-   assert(!"Unimplemented");
    return VK_SUCCESS;
 }
 
@@ -2481,27 +2542,6 @@ void pvr_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
    }
 }
 
-static void pvr_cmd_buffer_reset(struct pvr_cmd_buffer *cmd_buffer)
-{
-   if (cmd_buffer->status != PVR_CMD_BUFFER_STATUS_INITIAL) {
-      /* FIXME: For now we always free all resources as if
-       * VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT was set.
-       */
-      pvr_cmd_buffer_free_sub_cmds(cmd_buffer);
-
-      list_for_each_entry_safe (struct pvr_bo, bo, &cmd_buffer->bo_list, link) {
-         list_del(&bo->link);
-         pvr_bo_free(cmd_buffer->device, bo);
-      }
-
-      util_dynarray_clear(&cmd_buffer->scissor_array);
-      util_dynarray_clear(&cmd_buffer->depth_bias_array);
-
-      cmd_buffer->state.status = VK_SUCCESS;
-      cmd_buffer->status = PVR_CMD_BUFFER_STATUS_INITIAL;
-   }
-}
-
 VkResult pvr_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                                 const VkCommandBufferBeginInfo *pBeginInfo)
 {
@@ -2557,6 +2597,16 @@ VkResult pvr_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    return VK_SUCCESS;
 }
 
+VkResult pvr_ResetCommandBuffer(VkCommandBuffer commandBuffer,
+                                VkCommandBufferResetFlags flags)
+{
+   PVR_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
+
+   pvr_cmd_buffer_reset(cmd_buffer);
+
+   return VK_SUCCESS;
+}
+
 VkResult pvr_cmd_buffer_add_transfer_cmd(struct pvr_cmd_buffer *cmd_buffer,
                                          struct pvr_transfer_cmd *transfer_cmd)
 {
@@ -2572,15 +2622,6 @@ VkResult pvr_cmd_buffer_add_transfer_cmd(struct pvr_cmd_buffer *cmd_buffer,
    list_addtail(&transfer_cmd->link, &sub_cmd->transfer_cmds);
 
    return VK_SUCCESS;
-}
-
-static void
-pvr_validate_push_descriptors(struct pvr_cmd_buffer *cmd_buffer,
-                              bool *const push_descriptors_dirty_out)
-{
-   /* TODO: Implement this function, based on ValidatePushDescriptors. */
-   pvr_finishme("Add support for push descriptors!");
-   *push_descriptors_dirty_out = false;
 }
 
 #define PVR_WRITE(_buffer, _value, _offset, _max)                \
@@ -2788,8 +2829,6 @@ static VkResult pvr_setup_descriptor_mappings(
          const struct pvr_descriptor *descriptor;
          pvr_dev_addr_t buffer_addr;
 
-         /* TODO: Handle push descriptors. */
-
          assert(desc_set < PVR_MAX_DESCRIPTOR_SETS);
          descriptor_set = desc_state->descriptor_sets[desc_set];
 
@@ -2860,8 +2899,6 @@ static VkResult pvr_setup_descriptor_mappings(
          }
 
          descriptor_set = desc_state->descriptor_sets[desc_set_num];
-
-         pvr_finishme("Handle push descriptor entry.");
 
          desc_set_addr = descriptor_set->pvr_bo->vma->dev_addr;
 
@@ -3114,7 +3151,6 @@ void pvr_CmdDispatch(VkCommandBuffer commandBuffer,
       state->compute_pipeline;
    const VkShaderStageFlags push_consts_stage_mask =
       compute_pipeline->base.layout->push_constants_shader_stages;
-   bool push_descriptors_dirty;
    struct pvr_sub_cmd_compute *sub_cmd;
    VkResult result;
 
@@ -3138,8 +3174,6 @@ void pvr_CmdDispatch(VkCommandBuffer commandBuffer,
       pvr_finishme("Add support for push constants.");
    }
 
-   pvr_validate_push_descriptors(cmd_buffer, &push_descriptors_dirty);
-
    if (compute_pipeline->state.shader.uses_num_workgroups) {
       struct pvr_bo *num_workgroups_bo;
 
@@ -3161,7 +3195,7 @@ void pvr_CmdDispatch(VkCommandBuffer commandBuffer,
    } else if ((compute_pipeline->base.layout
                   ->per_stage_descriptor_masks[PVR_STAGE_ALLOCATION_COMPUTE] &&
                state->dirty.compute_desc_dirty) ||
-              state->dirty.compute_pipeline_binding || push_descriptors_dirty) {
+              state->dirty.compute_pipeline_binding) {
       result = pvr_setup_descriptor_mappings(
          cmd_buffer,
          PVR_STAGE_ALLOCATION_COMPUTE,
@@ -4415,12 +4449,13 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
 {
    struct pvr_cmd_buffer_state *const state = &cmd_buffer->state;
    const struct pvr_graphics_pipeline *const gfx_pipeline = state->gfx_pipeline;
+   const struct pvr_pipeline_layout *const pipeline_layout =
+      gfx_pipeline->base.layout;
    const struct pvr_pipeline_stage_state *const fragment_state =
       &gfx_pipeline->fragment_shader_state.stage_state;
    struct pvr_sub_cmd_gfx *sub_cmd;
    bool fstencil_writemask_zero;
    bool bstencil_writemask_zero;
-   bool push_descriptors_dirty;
    bool fstencil_keep;
    bool bstencil_keep;
    VkResult result;
@@ -4513,11 +4548,19 @@ static VkResult pvr_validate_draw_state(struct pvr_cmd_buffer *cmd_buffer)
 
    /* TODO: Check for dirty push constants */
 
-   pvr_validate_push_descriptors(cmd_buffer, &push_descriptors_dirty);
-
-   state->dirty.vertex_descriptors = push_descriptors_dirty ||
-                                     state->dirty.gfx_pipeline_binding;
+   state->dirty.vertex_descriptors = state->dirty.gfx_pipeline_binding;
    state->dirty.fragment_descriptors = state->dirty.vertex_descriptors;
+
+   /* Account for dirty descriptor set. */
+   state->dirty.vertex_descriptors |=
+      state->dirty.gfx_desc_dirty &&
+      pipeline_layout
+         ->per_stage_descriptor_masks[PVR_STAGE_ALLOCATION_VERTEX_GEOMETRY];
+   state->dirty.fragment_descriptors |=
+      state->dirty.gfx_desc_dirty &&
+      pipeline_layout->per_stage_descriptor_masks[PVR_STAGE_ALLOCATION_FRAGMENT];
+
+   state->dirty.fragment_descriptors |= state->dirty.blend_constants;
 
    if (state->dirty.fragment_descriptors) {
       result = pvr_setup_descriptor_mappings(

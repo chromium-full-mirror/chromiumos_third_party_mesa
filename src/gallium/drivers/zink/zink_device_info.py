@@ -63,6 +63,7 @@ EXTENSIONS = [
         required=True),
     Extension("VK_KHR_maintenance2"),
     Extension("VK_KHR_maintenance3"),
+    Extension("VK_KHR_maintenance4", alias="maint4", features=True),
     Extension("VK_KHR_external_memory"),
     Extension("VK_KHR_external_memory_fd"),
     Extension("VK_KHR_vulkan_memory_model"),
@@ -205,6 +206,10 @@ EXTENSIONS = [
         features=True,
         conditions=["$feats.scalarBlockLayout"]),
     Extension("VK_KHR_swapchain"),
+    Extension("VK_EXT_rasterization_order_attachment_access",
+              alias="rast_order_access",
+              features=True,
+              conditions=["$feats.rasterizationOrderColorAttachmentAccess"]),
     Extension("VK_KHR_shader_float16_int8",
               alias="shader_float16_int8",
               features=True),
@@ -225,7 +230,7 @@ EXTENSIONS = [
         alias="push",
         properties=True),
     Extension("VK_KHR_descriptor_update_template",
-        alias="template"),
+        alias="template", required=True),
     Extension("VK_EXT_line_rasterization",
         alias="line_rast",
         properties=True,
@@ -248,6 +253,10 @@ EXTENSIONS = [
     Extension("VK_EXT_depth_clip_enable",
         alias="depth_clip_enable",
         features=True),
+    Extension("VK_EXT_shader_demote_to_helper_invocation",
+        alias="demote",
+        features=True,
+        conditions=["$feats.shaderDemoteToHelperInvocation"]),
 ]
 
 # constructor: Versions(device_version(major, minor, patch), struct_version(major, minor))

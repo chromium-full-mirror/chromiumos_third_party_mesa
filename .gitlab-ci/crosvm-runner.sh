@@ -54,9 +54,10 @@ VM_SOCKET=crosvm-${THREAD}.sock
 # was terminated due to timeouts.  This "vm stop" may fail if the crosvm died
 # without cleaning itself up.
 if [ -e $VM_SOCKET ]; then
-   crosvm stop $VM_SOCKET || rm -rf $VM_SOCKET
+   crosvm stop $VM_SOCKET || true
    # Wait for socats from that invocation to drain
    sleep 5
+   rm -rf $VM_SOCKET || true
 fi
 
 set_vsock_context || { echo "Could not generate crosvm vsock CID" >&2; exit 1; }
