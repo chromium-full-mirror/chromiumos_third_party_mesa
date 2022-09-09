@@ -1,4 +1,5 @@
 #!/bin/bash
+# shellcheck disable=SC2086 # we want word splitting
 
 set -e
 set -o xtrace
@@ -53,6 +54,9 @@ add-apt-repository "deb https://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-1
 apt-get update
 apt-get dist-upgrade -y
 
+apt-get install -y \
+      sysvinit-core
+
 apt-get install -y --no-remove \
       git \
       git-lfs \
@@ -62,7 +66,6 @@ apt-get install -y --no-remove \
       libexpat1 \
       libllvm13 \
       libllvm11 \
-      libllvm9 \
       liblz4-1 \
       libpng16-16 \
       libpython3.9 \
@@ -83,7 +86,6 @@ apt-get install -y --no-remove \
       python3-six \
       python3-yaml \
       socat \
-      sysvinit-core \
       vulkan-tools \
       waffle-utils \
       wget \

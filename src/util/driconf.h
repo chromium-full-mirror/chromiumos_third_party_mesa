@@ -282,9 +282,9 @@
    DRI_CONF_OPT_S_NODEF(indirect_gl_extension_override, \
                   "Allow enabling/disabling a list of indirect-GL extensions")
 
-#define DRI_CONF_DISABLE_PROTECTED_CONTENT_CHECK(def) \
-   DRI_CONF_OPT_B(disable_protected_content_check, def, \
-                  "Don't reject image import if protected_content attribute doesn't match")
+#define DRI_CONF_FORCE_PROTECTED_CONTENT_CHECK(def) \
+   DRI_CONF_OPT_B(force_protected_content_check, def, \
+                  "Reject image import if protected_content attribute doesn't match")
 
 #define DRI_CONF_IGNORE_MAP_UNSYNCHRONIZED(def) \
    DRI_CONF_OPT_B(ignore_map_unsynchronized, def, \
@@ -581,6 +581,11 @@
 #define DRI_CONF_RADV_DGC(def) \
    DRI_CONF_OPT_B(radv_dgc, def, \
                   "Expose an experimental implementation of VK_NV_device_generated_commands")
+
+#define DRI_CONF_RADV_FLUSH_BEFORE_QUERY_COPY(def) \
+  DRI_CONF_OPT_B( \
+      radv_flush_before_query_copy, def, \
+      "Wait for timestamps to be written before a query copy command")
 
 /**
  * \brief ANV specific configuration options

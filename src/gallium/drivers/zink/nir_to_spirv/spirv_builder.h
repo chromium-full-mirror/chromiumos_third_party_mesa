@@ -268,6 +268,12 @@ spirv_builder_set_phi_operand(struct spirv_builder *b, size_t position,
 void
 spirv_builder_emit_kill(struct spirv_builder *b);
 
+void
+spirv_builder_emit_demote(struct spirv_builder *b);
+
+SpvId
+spirv_is_helper_invocation(struct spirv_builder *b);
+
 SpvId
 spirv_builder_emit_vote(struct spirv_builder *b, SpvOp op, SpvId src);
 
@@ -412,6 +418,11 @@ SpvId
 spirv_builder_type_function(struct spirv_builder *b, SpvId return_type,
                             const SpvId parameter_types[],
                             size_t num_parameter_types);
+
+SpvId
+spirv_builder_function_call(struct spirv_builder *b, SpvId result_type,
+                            SpvId function, const SpvId arguments[],
+                            size_t num_arguments);
 
 SpvId
 spirv_builder_const_bool(struct spirv_builder *b, bool val);

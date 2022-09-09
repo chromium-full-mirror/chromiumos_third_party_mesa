@@ -48,6 +48,9 @@ extern "C" {
 #define ATI_VENDOR_ID         0x1002
 #define SI_NOT_QUERY          0xffffffff
 
+/* special primitive types */
+#define SI_PRIM_RECTANGLE_LIST PIPE_PRIM_MAX
+
 /* The base vertex and primitive restart can be any number, but we must pick
  * one which will mean "unknown" for the purpose of state tracking and
  * the number shouldn't be a commonly-used one. */
@@ -1055,10 +1058,10 @@ struct si_context {
    union {
       struct {
          struct si_shader_ctx_state vs;
-         struct si_shader_ctx_state ps;
-         struct si_shader_ctx_state gs;
          struct si_shader_ctx_state tcs;
          struct si_shader_ctx_state tes;
+         struct si_shader_ctx_state gs;
+         struct si_shader_ctx_state ps;
       } shader;
       /* indexed access using pipe_shader_type (not by MESA_SHADER_*) */
       struct si_shader_ctx_state shaders[SI_NUM_GRAPHICS_SHADERS];
@@ -1111,14 +1114,14 @@ struct si_context {
 
    /* Vertex buffers. */
    bool vertex_buffers_dirty;
-   bool vertex_buffer_pointer_dirty;
-   bool vertex_buffer_user_sgprs_dirty;
-   struct pipe_vertex_buffer vertex_buffer[SI_NUM_VERTEX_BUFFERS];
    uint16_t vertex_buffer_unaligned; /* bitmask of not dword-aligned buffers */
-   uint32_t *vb_descriptors_gpu_list;
-   struct si_resource *vb_descriptors_buffer;
-   unsigned vb_descriptors_offset;
-   unsigned vb_descriptor_user_sgprs[5 * 4];
+   struct pipe_vertex_buffer vertex_buffer[SI_NUM_VERTEX_BUFFERS];
+
+   /* Even though we don't need this variable, u_upload_alloc has an optimization that skips
+    * reference counting when the new upload buffer is the same as the last one. So keep
+    * the last upload buffer here and always pass &last_const_upload_buffer to u_upload_alloc.
+    */
+   struct si_resource *last_const_upload_buffer;
 
    /* MSAA config state. */
    int ps_iter_samples;
@@ -1163,6 +1166,7 @@ struct si_context {
    unsigned last_vs_state;
    unsigned last_gs_state;
    enum pipe_prim_type current_rast_prim; /* primitive type after TES, GS */
+   unsigned gs_out_prim;
 
    struct si_small_prim_cull_info last_small_prim_cull_info;
    struct si_resource *small_prim_cull_info_buf;
@@ -1183,7 +1187,7 @@ struct si_context {
    unsigned last_num_tcs_input_cp;
    unsigned last_tes_sh_base;
    bool last_tess_uses_primid;
-   unsigned last_num_patches;
+   unsigned num_patches_per_workgroup;
    unsigned last_ls_hs_config;
 
    /* Debug state. */
@@ -2101,6 +2105,52 @@ void si_check_dirty_buffers_textures(struct si_context *sctx)
    }
 }
 
+/* Update these two GS_STATE fields. They depend on whatever the last shader before PS is
+ * and the rasterizer state.
+ *
+ * It's expected that hw_vs and ngg are inline constants in draw_vbo after optimizations.
+ */
+static inline void
+si_update_ngg_prim_state_sgpr(struct si_context *sctx, struct si_shader *hw_vs, bool ngg)
+{
+   if (!ngg || !hw_vs)
+      return;
+
+   if (hw_vs->uses_vs_state_provoking_vertex) {
+      unsigned vtx_index = sctx->queued.named.rasterizer->flatshade_first ? 0 : sctx->gs_out_prim;
+
+      SET_FIELD(sctx->current_gs_state, GS_STATE_PROVOKING_VTX_INDEX, vtx_index);
+   }
+
+   if (hw_vs->uses_gs_state_outprim) {
+      SET_FIELD(sctx->current_gs_state, GS_STATE_OUTPRIM, sctx->gs_out_prim);
+   }
+}
+
+/* Set the primitive type seen by the rasterizer. GS and tessellation affect this.
+ * It's expected that hw_vs and ngg are inline constants in draw_vbo after optimizations.
+ */
+static inline void
+si_set_rasterized_prim(struct si_context *sctx, enum pipe_prim_type rast_prim,
+                       struct si_shader *hw_vs, bool ngg)
+{
+   if (rast_prim != sctx->current_rast_prim) {
+      bool is_rect = rast_prim == SI_PRIM_RECTANGLE_LIST;
+      bool is_points = rast_prim == PIPE_PRIM_POINTS;
+      bool is_lines = util_prim_is_lines(rast_prim);
+      bool is_triangles = util_rast_prim_is_triangles(rast_prim);
+
+      if ((is_points || is_lines) != util_prim_is_points_or_lines(sctx->current_rast_prim))
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.guardband);
+
+      sctx->current_rast_prim = rast_prim;
+      sctx->gs_out_prim = is_triangles ? V_028A6C_TRISTRIP :
+                          is_lines ? V_028A6C_LINESTRIP :
+                          is_rect ? V_028A6C_RECTLIST : V_028A6C_POINTLIST;
+      sctx->do_update_shaders = true;
+      si_update_ngg_prim_state_sgpr(sctx, hw_vs, ngg);
+   }
+}
 
 #define PRINT_ERR(fmt, args...)                                                                    \
    fprintf(stderr, "EE %s:%d %s - " fmt, __FILE__, __LINE__, __func__, ##args)

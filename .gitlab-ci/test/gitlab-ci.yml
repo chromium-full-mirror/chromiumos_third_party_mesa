@@ -181,11 +181,6 @@
     HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
     FDO_CI_CONCURRENT: 0 # Default to number of CPUs
 
-.baremetal-skqp-test:
-  variables:
-    HWCI_START_XORG: 1
-    HWCI_TEST_SCRIPT: "/install/skqp-runner.sh"
-
 # For Valve's bare-metal testing farm jobs.
 .b2c-test:
   # It would be nice to use ci-templates within Mesa CI for this job's
@@ -205,7 +200,7 @@
     GIT_STRATEGY: none
     # boot2container initrd configuration parameters.
     B2C_KERNEL_URL: 'https://gitlab.freedesktop.org/mupuf/valve-infra/-/package_files/144/download'  # 5.17.1
-    B2C_INITRAMFS_URL: 'https://gitlab.freedesktop.org/mupuf/boot2container/-/releases/v0.9.6/downloads/initramfs.linux_amd64.cpio.xz'
+    B2C_INITRAMFS_URL: 'https://gitlab.freedesktop.org/mupuf/boot2container/-/releases/v0.9.8/downloads/initramfs.linux_amd64.cpio.xz'
     B2C_JOB_SUCCESS_REGEX: '\[.*\]: Execution is over, pipeline status: 0\r$'
     B2C_JOB_WARN_REGEX: '\*ERROR\* ring .* timeout, but soft recovered'
     B2C_LOG_LEVEL: 6

@@ -33,6 +33,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "util/macros.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -309,6 +311,8 @@ struct ac_task_info {
 
 void ac_get_task_info(struct radeon_info *info,
                       struct ac_task_info *task_info);
+
+uint32_t ac_memory_ops_per_clock(uint32_t vram_type);
 
 #ifdef __cplusplus
 }

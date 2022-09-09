@@ -639,6 +639,9 @@ tu_render_pass_gmem_config(struct tu_render_pass *pass,
 static void
 tu_render_pass_bandwidth_config(struct tu_render_pass *pass)
 {
+   pass->gmem_bandwidth_per_pixel = 0;
+   pass->sysmem_bandwidth_per_pixel = 0;
+
    for (uint32_t i = 0; i < pass->attachment_count; i++) {
       const struct tu_render_pass_attachment *att = &pass->attachments[i];
 
@@ -833,9 +836,9 @@ tu_CreateRenderPass2(VkDevice _device,
       subpass->srgb_cntl = 0;
 
       const VkSubpassDescriptionFlagBits raster_order_access_bits =
-         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_ARM |
-         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_ARM |
-         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_BIT_ARM;
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_EXT |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_BIT_EXT;
 
       subpass->raster_order_attachment_access = desc->flags & raster_order_access_bits;
 

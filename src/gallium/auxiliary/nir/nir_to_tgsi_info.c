@@ -282,6 +282,7 @@ static void scan_instruction(const struct nir_shader *nir,
          info->writes_memory = true;
          break;
       case nir_intrinsic_image_deref_store:
+      case nir_intrinsic_image_store:
          info->writes_memory = true;
          break;
       case nir_intrinsic_bindless_image_atomic_add:
@@ -313,6 +314,16 @@ static void scan_instruction(const struct nir_shader *nir,
       case nir_intrinsic_image_deref_atomic_xor:
       case nir_intrinsic_image_deref_atomic_exchange:
       case nir_intrinsic_image_deref_atomic_comp_swap:
+      case nir_intrinsic_image_atomic_add:
+      case nir_intrinsic_image_atomic_imin:
+      case nir_intrinsic_image_atomic_imax:
+      case nir_intrinsic_image_atomic_umin:
+      case nir_intrinsic_image_atomic_umax:
+      case nir_intrinsic_image_atomic_and:
+      case nir_intrinsic_image_atomic_or:
+      case nir_intrinsic_image_atomic_xor:
+      case nir_intrinsic_image_atomic_exchange:
+      case nir_intrinsic_image_atomic_comp_swap:
          info->writes_memory = true;
          break;
       case nir_intrinsic_store_ssbo:
@@ -783,9 +794,6 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
    info->num_outputs = num_outputs;
 
    info->const_file_max[0] = nir->num_uniforms - 1;
-   info->const_buffers_declared = u_bit_consecutive(1, nir->info.num_ubos);
-   if (nir->num_uniforms > 0)
-      info->const_buffers_declared |= 1;
    info->images_declared = nir->info.images_used[0];
    info->samplers_declared = nir->info.textures_used[0];
 
