@@ -456,6 +456,47 @@ handleVAEncSequenceParameterBufferType(vlVaDriver *drv, vlVaContext *context, vl
 }
 
 static VAStatus
+handleVAEncMiscParameterTypeQualityLevel(vlVaContext *context, VAEncMiscParameterBuffer *misc)
+{
+   VAStatus status = VA_STATUS_SUCCESS;
+
+   switch (u_reduce_video_profile(context->templat.profile)) {
+   case PIPE_VIDEO_FORMAT_MPEG4_AVC:
+      status = vlVaHandleVAEncMiscParameterTypeQualityLevelH264(context, misc);
+      break;
+
+   case PIPE_VIDEO_FORMAT_HEVC:
+      status = vlVaHandleVAEncMiscParameterTypeQualityLevelHEVC(context, misc);
+      break;
+
+   default:
+      break;
+   }
+
+   return status;
+}
+
+static VAStatus
+handleVAEncMiscParameterTypeMaxFrameSize(vlVaContext *context, VAEncMiscParameterBuffer *misc)
+{
+   VAStatus status = VA_STATUS_SUCCESS;
+
+   switch (u_reduce_video_profile(context->templat.profile)) {
+   case PIPE_VIDEO_FORMAT_MPEG4_AVC:
+      status = vlVaHandleVAEncMiscParameterTypeMaxFrameSizeH264(context, misc);
+      break;
+
+   case PIPE_VIDEO_FORMAT_HEVC:
+      status = vlVaHandleVAEncMiscParameterTypeMaxFrameSizeHEVC(context, misc);
+      break;
+
+   default:
+      break;
+   }
+
+   return status;
+}
+static VAStatus
 handleVAEncMiscParameterBufferType(vlVaContext *context, vlVaBuffer *buf)
 {
    VAStatus vaStatus = VA_STATUS_SUCCESS;
@@ -473,6 +514,14 @@ handleVAEncMiscParameterBufferType(vlVaContext *context, vlVaBuffer *buf)
 
    case VAEncMiscParameterTypeTemporalLayerStructure:
       vaStatus = handleVAEncMiscParameterTypeTemporalLayer(context, misc);
+      break;
+
+   case VAEncMiscParameterTypeQualityLevel:
+      vaStatus = handleVAEncMiscParameterTypeQualityLevel(context, misc);
+      break;
+
+   case VAEncMiscParameterTypeMaxFrameSize:
+      vaStatus = handleVAEncMiscParameterTypeMaxFrameSize(context, misc);
       break;
 
    default:
