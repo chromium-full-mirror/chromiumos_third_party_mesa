@@ -437,7 +437,6 @@ struct pipe_h264_enc_picture_desc
    unsigned ref_idx_l0_list[32];
    unsigned ref_idx_l1_list[32];
    unsigned gop_size;
-   unsigned ref_pic_mode;
    unsigned num_temporal_layers;
 
    bool not_referenced;
