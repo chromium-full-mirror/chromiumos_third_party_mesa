@@ -559,6 +559,9 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
                                   PIPE_TEXTURE_2D, 0, 0,
                                   PIPE_BIND_SAMPLER_VIEW);
 
+   ctx->Const.QueryCounterBits.Timestamp =
+      screen->get_param(screen, PIPE_CAP_QUERY_TIMESTAMP_BITS);
+
    st->has_stencil_export =
       screen->get_param(screen, PIPE_CAP_SHADER_STENCIL_EXPORT);
    st->has_etc1 = screen->is_format_supported(screen, PIPE_FORMAT_ETC1_RGB8,
@@ -584,6 +587,15 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st->has_astc_5x5_ldr =
       screen->is_format_supported(screen, PIPE_FORMAT_ASTC_5x5_SRGB,
                                   PIPE_TEXTURE_2D, 0, 0, PIPE_BIND_SAMPLER_VIEW);
+   st->has_s3tc = screen->is_format_supported(screen, PIPE_FORMAT_DXT5_RGBA,
+                                              PIPE_TEXTURE_2D, 0, 0,
+                                              PIPE_BIND_SAMPLER_VIEW);
+   st->has_rgtc = screen->is_format_supported(screen, PIPE_FORMAT_RGTC2_UNORM,
+                                              PIPE_TEXTURE_2D, 0, 0,
+                                              PIPE_BIND_SAMPLER_VIEW);
+   st->has_bptc = screen->is_format_supported(screen, PIPE_FORMAT_BPTC_SRGBA,
+                                              PIPE_TEXTURE_2D, 0, 0,
+                                              PIPE_BIND_SAMPLER_VIEW);
    st->force_persample_in_shader =
       screen->get_param(screen, PIPE_CAP_SAMPLE_SHADING) &&
       !screen->get_param(screen, PIPE_CAP_FORCE_PERSAMPLE_INTERP);
@@ -598,6 +610,9 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st->use_format_with_border_color =
       !!(screen->get_param(screen, PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK) &
          PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_FREEDRENO);
+   st->alpha_border_color_is_not_w =
+      !!(screen->get_param(screen, PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK) &
+         PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_ALPHA_NOT_W);
    st->emulate_gl_clamp =
       !screen->get_param(screen, PIPE_CAP_GL_CLAMP);
    st->texture_buffer_sampler =
@@ -692,6 +707,9 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
 
    ctx->Const.NoClippingOnCopyTex = screen->get_param(screen,
                                                       PIPE_CAP_NO_CLIP_ON_COPY_TEX);
+
+   ctx->Const.ForceFloat32TexNearest =
+      !screen->get_param(screen, PIPE_CAP_TEXTURE_FLOAT_LINEAR);
 
    ctx->Const.ShaderCompilerOptions[MESA_SHADER_VERTEX].PositionAlwaysInvariant = options->vs_position_always_invariant;
 

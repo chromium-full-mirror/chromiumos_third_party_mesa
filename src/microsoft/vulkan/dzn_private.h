@@ -201,6 +201,7 @@ struct dzn_physical_device {
    mtx_t dev_lock;
    ID3D12Device2 *dev;
    D3D_FEATURE_LEVEL feature_level;
+   D3D_SHADER_MODEL shader_model;
    D3D12_FEATURE_DATA_ARCHITECTURE1 architecture;
    D3D12_FEATURE_DATA_D3D12_OPTIONS options;
    D3D12_FEATURE_DATA_D3D12_OPTIONS2 options2;
@@ -218,6 +219,9 @@ dzn_physical_device_get_format_support(struct dzn_physical_device *pdev,
 uint32_t
 dzn_physical_device_get_mem_type_mask_for_resource(const struct dzn_physical_device *pdev,
                                                    const D3D12_RESOURCE_DESC *desc);
+
+enum dxil_shader_model
+dzn_get_shader_model(const struct dzn_physical_device *pdev);
 
 #define dzn_debug_ignored_stype(sType) \
    mesa_logd("%s: ignored VkStructureType %u\n", __func__, (sType))
@@ -307,9 +311,9 @@ enum dzn_cmd_dirty {
    DZN_CMD_DIRTY_DEPTH_BOUNDS = 1 << 7,
 };
 
-#define MAX_VBS 16
-#define MAX_VP 16
-#define MAX_SCISSOR 16
+#define MAX_VBS D3D12_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT
+#define MAX_VP D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE
+#define MAX_SCISSOR D3D12_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE
 #define MAX_SETS 4
 #define MAX_DYNAMIC_UNIFORM_BUFFERS 8
 #define MAX_DYNAMIC_STORAGE_BUFFERS 4
@@ -553,7 +557,6 @@ struct dzn_cmd_buffer_dsv_entry {
 
 struct dzn_cmd_buffer {
    struct vk_command_buffer vk;
-   VkResult error;
    struct dzn_cmd_buffer_state state;
 
    struct {

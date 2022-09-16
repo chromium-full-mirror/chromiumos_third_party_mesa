@@ -214,8 +214,10 @@ pvr_process_graphics_cmd(struct pvr_device *device,
                            0U,
                            0UL,
                            &sync_geom);
-   if (result != VK_SUCCESS)
+   if (result != VK_SUCCESS) {
+      STACK_ARRAY_FINISH(bos);
       return result;
+   }
 
    result = vk_sync_create(&device->vk,
                            &device->pdevice->ws->syncobj_type,
@@ -224,6 +226,7 @@ pvr_process_graphics_cmd(struct pvr_device *device,
                            &sync_frag);
    if (result != VK_SUCCESS) {
       vk_sync_destroy(&device->vk, sync_geom);
+      STACK_ARRAY_FINISH(bos);
       return result;
    }
 
@@ -237,10 +240,13 @@ pvr_process_graphics_cmd(struct pvr_device *device,
 
    /* Get any imported buffers used in framebuffer attachments. */
    for (uint32_t i = 0U; i < framebuffer->attachment_count; i++) {
-      if (!framebuffer->attachments[i]->image->vma->bo->is_imported)
+      const struct pvr_image *image =
+         vk_to_pvr_image(framebuffer->attachments[i]->vk.image);
+
+      if (!image->vma->bo->is_imported)
          continue;
 
-      bos[bo_count].bo = framebuffer->attachments[i]->image->vma->bo;
+      bos[bo_count].bo = image->vma->bo;
       bos[bo_count].flags = PVR_WINSYS_JOB_BO_FLAG_WRITE;
       bo_count++;
    }
@@ -503,9 +509,14 @@ pvr_process_cmd_buffer(struct pvr_device *device,
                                             completions);
          break;
 
+      case PVR_SUB_CMD_TYPE_EVENT:
+         pvr_finishme("Add support to process event sub cmds.");
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         break;
+
       default:
-         pvr_finishme("Unsupported sub-command type %d", sub_cmd->type);
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         mesa_loge("Unsupported sub-command type %d", sub_cmd->type);
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
       }
 
       if (result != VK_SUCCESS) {

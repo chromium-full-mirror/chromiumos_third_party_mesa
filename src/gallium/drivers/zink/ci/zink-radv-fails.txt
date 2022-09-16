@@ -1,8 +1,3 @@
-# 3D isn't supported by radv yet: #5822
-KHR-GL46.sparse_texture_tests.InternalFormatQueries,Fail
-KHR-GL46.sparse_texture_tests.SparseTextureAllocation,Fail
-KHR-GL46.sparse_texture_tests.SparseTextureCommitment,Fail
-
 dEQP-GLES3.functional.shaders.texture_functions.textureprojlodoffset.sampler2dshadow_vertex,Fail
 dEQP-GLES3.functional.shaders.texture_functions.textureprojoffset.sampler2dshadow_vertex,Fail
 
@@ -60,7 +55,6 @@ spec@arb_arrays_of_arrays@execution@image_store@basic-imagestore-mixed-const-non
 spec@arb_arrays_of_arrays@execution@image_store@basic-imagestore-non-const-uniform-index,Fail
 spec@arb_bindless_texture@compiler@samplers@arith-bound-sampler-texture2d.frag,Crash
 spec@arb_depth_texture@depth-tex-modes,Fail
-spec@arb_enhanced_layouts@execution@component-layout@vs-fs-array-dvec3,Fail
 spec@arb_fragment_program_shadow@tex-shadow1d,Fail
 spec@arb_fragment_program_shadow@tex-shadow2d,Fail
 spec@arb_fragment_program_shadow@tex-shadow2drect,Fail
@@ -239,14 +233,6 @@ spec@arb_shader_texture_lod@execution@glsl-fs-shadow2dgradarb-cumulative,Fail
 spec@arb_shading_language_packing@execution@built-in-functions@fs-packhalf2x16,Fail
 spec@arb_shading_language_packing@execution@built-in-functions@vs-packhalf2x16,Fail
 spec@arb_tessellation_shader@arb_tessellation_shader-tes-gs-max-output -small -scan 1 50,Crash
-spec@arb_texture_buffer_object@formats (fs- arb),Crash
-spec@arb_texture_buffer_object@formats (vs- arb),Crash
-spec@arb_texture_float@fbo-blending-formats,Fail
-spec@arb_texture_float@fbo-blending-formats@GL_INTENSITY16F_ARB,Fail
-spec@arb_texture_float@fbo-blending-formats@GL_INTENSITY32F_ARB,Fail
-spec@arb_texture_float@fbo-blending-formats@GL_LUMINANCE16F_ARB,Fail
-spec@arb_texture_float@fbo-blending-formats@GL_LUMINANCE32F_ARB,Fail
-spec@arb_texture_float@fbo-blending-formats@GL_RGB32F,Fail
 spec@arb_texture_float@multisample-formats 2 gl_arb_texture_float,Fail
 spec@arb_texture_float@multisample-formats 4 gl_arb_texture_float,Fail
 spec@arb_texture_float@multisample-formats 6 gl_arb_texture_float,Fail
@@ -299,15 +285,6 @@ spec@ext_framebuffer_multisample@sample-alpha-to-one 2,Fail
 spec@ext_framebuffer_multisample@sample-alpha-to-one 4,Fail
 spec@ext_framebuffer_multisample@sample-alpha-to-one 6,Fail
 spec@ext_framebuffer_multisample@sample-alpha-to-one 8,Fail
-spec@ext_framebuffer_object@fbo-blending-formats,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_INTENSITY12,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_INTENSITY16,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_INTENSITY4,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_INTENSITY8,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_INTENSITY,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_LUMINANCE12,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_LUMINANCE16,Fail
-spec@ext_framebuffer_object@fbo-blending-formats@GL_RGB10,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-export,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_nv12,Fail
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_p010,Fail
@@ -327,13 +304,6 @@ spec@ext_texture_array@glsl-fs-shadow2darray-03,Fail
 spec@ext_texture_array@glsl-fs-shadow2darray-07,Fail
 spec@ext_texture_array@glsl-fs-shadow2darray-08,Fail
 spec@ext_texture_array@glsl-fs-shadow2darray,Fail
-spec@ext_texture_snorm@fbo-blending-formats,Fail
-spec@ext_texture_snorm@fbo-blending-formats@GL_INTENSITY16_SNORM,Fail
-spec@ext_texture_snorm@fbo-blending-formats@GL_INTENSITY8_SNORM,Fail
-spec@ext_texture_snorm@fbo-blending-formats@GL_INTENSITY_SNORM,Fail
-spec@ext_texture_snorm@fbo-blending-formats@GL_LUMINANCE16_SNORM,Fail
-spec@ext_texture_snorm@fbo-blending-formats@GL_LUMINANCE8_SNORM,Fail
-spec@ext_texture_snorm@fbo-blending-formats@GL_LUMINANCE_SNORM,Fail
 spec@ext_texture_swizzle@depth_texture_mode_and_swizzle,Fail
 spec@glsl-1.10@execution@glsl-fs-inline-explosion,Crash
 spec@glsl-1.10@execution@glsl-vs-inline-explosion,Crash

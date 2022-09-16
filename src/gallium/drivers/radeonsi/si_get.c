@@ -618,10 +618,13 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return 4;
          else
             return 0;
-      case PIPE_VIDEO_CAP_EFC_SUPPORTED:
-         return ((sscreen->info.family >= CHIP_RENOIR) &&
-                 (sscreen->info.family < CHIP_NAVI21) &&
-                 !(sscreen->debug_flags & DBG(NO_EFC)));
+      case PIPE_VIDEO_CAP_ENC_QUALITY_LEVEL:
+         if (sscreen->info.family >= CHIP_RAVEN)
+            return 32;
+         else
+            return 0;
+      case PIPE_VIDEO_CAP_ENC_SUPPORTS_MAX_FRAME_SIZE:
+         return (sscreen->info.family >= CHIP_RAVEN) ? 1 : 0;
       default:
          return 0;
       }

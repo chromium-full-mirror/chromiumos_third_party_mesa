@@ -173,7 +173,7 @@ setup_border_colors(struct fd_texture_stateobj *tex,
                   clamped = CLAMP(bc->ui[j], 0, 65535);
                break;
             default:
-               assert(!"Unexpected bit size");
+               unreachable("Unexpected bit size");
             case 32:
                clamped = 0;
                break;
@@ -646,7 +646,8 @@ compute_lrz_state(struct fd6_emit *emit, bool binning_pass) assert_dt
    lrz = zsa->lrz;
 
    /* normalize lrz state: */
-   if (blend->reads_dest || fs->writes_pos || fs->no_earlyz || fs->has_kill) {
+   if (blend->reads_dest || fs->writes_pos || fs->no_earlyz || fs->has_kill ||
+       blend->base.alpha_to_coverage) {
       lrz.write = false;
       if (binning_pass)
          lrz.enable = false;
@@ -1255,18 +1256,18 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
    OUT_WFI5(ring);
 
-   WRITE(REG_A6XX_RB_UNKNOWN_8E04, 0x0);
+   WRITE(REG_A6XX_RB_DBG_ECO_CNTL, 0x0);
    WRITE(REG_A6XX_SP_FLOAT_CNTL, A6XX_SP_FLOAT_CNTL_F16_NO_INF);
-   WRITE(REG_A6XX_SP_UNKNOWN_AE00, 0);
+   WRITE(REG_A6XX_SP_DBG_ECO_CNTL, 0);
    WRITE(REG_A6XX_SP_PERFCTR_ENABLE, 0x3f);
    WRITE(REG_A6XX_TPL1_UNKNOWN_B605, 0x44);
    WRITE(REG_A6XX_TPL1_DBG_ECO_CNTL, screen->info->a6xx.magic.TPL1_DBG_ECO_CNTL);
    WRITE(REG_A6XX_HLSQ_UNKNOWN_BE00, 0x80);
    WRITE(REG_A6XX_HLSQ_UNKNOWN_BE01, 0);
 
-   WRITE(REG_A6XX_VPC_UNKNOWN_9600, 0);
+   WRITE(REG_A6XX_VPC_DBG_ECO_CNTL, 0);
    WRITE(REG_A6XX_GRAS_DBG_ECO_CNTL, 0x880);
-   WRITE(REG_A6XX_HLSQ_UNKNOWN_BE04, 0x80000);
+   WRITE(REG_A6XX_HLSQ_DBG_ECO_CNTL, 0x80000);
    WRITE(REG_A6XX_SP_CHICKEN_BITS, 0x1430);
    WRITE(REG_A6XX_SP_IBO_COUNT, 0);
    WRITE(REG_A6XX_SP_UNKNOWN_B182, 0);

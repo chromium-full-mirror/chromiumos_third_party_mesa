@@ -51,15 +51,6 @@ anv_measure_device_init(struct anv_physical_device *device)
    case 90:
       device->cmd_emit_timestamp = &gfx9_cmd_emit_timestamp;
       break;
-   case 80:
-      device->cmd_emit_timestamp = &gfx8_cmd_emit_timestamp;
-      break;
-   case 75:
-      device->cmd_emit_timestamp = &gfx75_cmd_emit_timestamp;
-      break;
-   case 70:
-      device->cmd_emit_timestamp = &gfx7_cmd_emit_timestamp;
-      break;
    default:
       assert(false);
    }
@@ -323,7 +314,7 @@ anv_measure_reset(struct anv_cmd_buffer *cmd_buffer)
     * yet been processed
     */
    intel_measure_gather(&device->physical->measure_device,
-                        &device->info);
+                        device->info);
 
    assert(cmd_buffer->device != NULL);
 

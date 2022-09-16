@@ -27,7 +27,7 @@ project(
   ).stdout(),
   license : 'MIT',
   meson_version : '>= 0.53',
-  default_options : ['buildtype=debugoptimized', 'b_ndebug=if-release', 'c_std=c11', 'cpp_std=c++14']
+  default_options : ['buildtype=debugoptimized', 'b_ndebug=if-release', 'c_std=c11', 'cpp_std=c++17', 'rust_std=2021']
 )
 
 # In recent versions, meson can inject some extra arguments to get richer
@@ -63,6 +63,7 @@ cpp_args = []
 with_moltenvk_dir = get_option('moltenvk-dir')
 with_vulkan_icd_dir = get_option('vulkan-icd-dir')
 with_tests = get_option('build-tests')
+with_glcpp_tests = get_option('enable-glcpp-tests')
 with_aco_tests = get_option('build-aco-tests')
 with_glx_read_only_text = get_option('glx-read-only-text')
 with_glx_direct = get_option('glx-direct')
@@ -180,8 +181,6 @@ if dri_drivers.length() != 0
   error('Mesa\'s main branch no longer has any "classic" drivers, use the "amber" branch instead.')
 endif
 
-with_dri = dri_drivers.length() != 0
-
 gallium_drivers = get_option('gallium-drivers')
 if gallium_drivers.contains('auto')
   if system_has_kms_drm
@@ -193,7 +192,7 @@ if gallium_drivers.contains('auto')
       ]
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       gallium_drivers = [
-        'v3d', 'vc4', 'freedreno', 'etnaviv', 'nouveau',
+        'v3d', 'vc4', 'freedreno', 'etnaviv', 'nouveau', 'svga',
         'tegra', 'virgl', 'lima', 'panfrost', 'swrast'
       ]
     elif ['mips', 'mips64', 'riscv32', 'riscv64'].contains(host_machine.cpu_family())
@@ -238,6 +237,7 @@ endforeach
 with_gallium = gallium_drivers.length() != 0
 with_gallium_kmsro = with_gallium_v3d or with_gallium_vc4 or with_gallium_etnaviv or with_gallium_panfrost or with_gallium_lima or with_gallium_freedreno
 
+with_dri = false
 if with_gallium and system_has_kms_drm
   _glx = get_option('glx')
   _egl = get_option('egl')
@@ -250,7 +250,7 @@ _vulkan_drivers = get_option('vulkan-drivers')
 if _vulkan_drivers.contains('auto')
   if system_has_kms_drm
     if host_machine.cpu_family().startswith('x86')
-      _vulkan_drivers = ['amd', 'intel', 'swrast']
+      _vulkan_drivers = ['amd', 'intel', 'intel_hasvk', 'swrast']
     elif ['arm', 'aarch64'].contains(host_machine.cpu_family())
       _vulkan_drivers = ['swrast']
     elif ['mips', 'mips64', 'riscv32', 'riscv64'].contains(host_machine.cpu_family())
@@ -269,6 +269,7 @@ if _vulkan_drivers.contains('auto')
 endif
 
 with_intel_vk = _vulkan_drivers.contains('intel')
+with_intel_hasvk = _vulkan_drivers.contains('intel_hasvk')
 with_amd_vk = _vulkan_drivers.contains('amd')
 with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_panfrost_vk = _vulkan_drivers.contains('panfrost')
@@ -283,7 +284,7 @@ with_microsoft_vk = _vulkan_drivers.contains('microsoft-experimental')
 with_any_vk = _vulkan_drivers.length() != 0
 
 with_any_broadcom = with_gallium_vc4 or with_gallium_v3d or with_broadcom_vk
-with_any_intel = with_intel_vk or with_gallium_iris or with_gallium_crocus or with_intel_tools
+with_any_intel = with_intel_vk or with_intel_hasvk or with_gallium_iris or with_gallium_crocus or with_intel_tools
 
 if with_swrast_vk and not with_gallium_softpipe
   error('swrast vulkan requires gallium swrast')
@@ -823,9 +824,9 @@ if not system_has_kms_drm
   else
     _va = 'disabled'
   endif
-elif not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau or with_gallium_d3d12_video)
+elif not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau or with_gallium_d3d12_video or with_gallium_virgl)
   if _va == 'enabled'
-    error('VA state tracker requires at least one of the following gallium drivers: r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video).')
+    error('VA state tracker requires at least one of the following gallium drivers: r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video), virgl.')
   else
     _va = 'disabled'
   endif
@@ -950,6 +951,22 @@ if _opencl != 'disabled'
 else
   with_gallium_opencl = false
   with_opencl_icd = false
+endif
+
+with_gallium_rusticl = get_option('gallium-rusticl')
+if with_gallium_rusticl
+  if not with_gallium
+    error('rusticl requires at least one gallium driver.')
+  endif
+
+  if meson.version().version_compare('< 0.61.4')
+    error('rusticl requires meson 0.61.4 or newer')
+  endif
+
+  add_languages('rust', required: true)
+
+  with_clc = true
+  with_libclc = true
 endif
 
 dep_clc = null_dep
@@ -1450,6 +1467,15 @@ if cc.has_header_symbol('time.h', 'struct timespec')
    pre_args += '-DHAVE_STRUCT_TIMESPEC'
 endif
 
+with_c11_threads = false
+if cc.has_function('thrd_create', prefix: '#include <threads.h>')
+  if with_platform_android
+    # Current only Android's c11 <threads.h> are verified
+    pre_args += '-DHAVE_THRD_CREATE'
+    with_c11_threads = true
+  endif
+endif
+
 if cc.has_header_symbol('errno.h', 'program_invocation_name',
                         args : '-D_GNU_SOURCE')
    pre_args += '-DHAVE_PROGRAM_INVOCATION_NAME'
@@ -1512,14 +1538,14 @@ endif
 with_ld_version_script = false
 if cc.links('int main() { return 0; }',
             args : '-Wl,--version-script=@0@'.format(
-              join_paths(meson.source_root(), 'build-support/conftest.map')),
+              join_paths(meson.current_source_dir(), 'build-support/conftest.map')),
             name : 'version-script')
   with_ld_version_script = true
 endif
 with_ld_dynamic_list = false
 if cc.links('int main() { return 0; }',
             args : '-Wl,--dynamic-list=@0@'.format(
-              join_paths(meson.source_root(), 'build-support/conftest.dyn')),
+              join_paths(meson.current_source_dir(), 'build-support/conftest.dyn')),
             name : 'dynamic-list')
   with_ld_dynamic_list = true
 endif
@@ -1540,7 +1566,7 @@ endif
 
 if cc.has_function('dl_iterate_phdr')
   pre_args += '-DHAVE_DL_ITERATE_PHDR'
-elif with_intel_vk
+elif with_intel_vk or with_intel_hasvk
   error('Intel "Anvil" Vulkan driver requires the dl_iterate_phdr function')
 endif
 
@@ -1686,16 +1712,6 @@ if dep_libdrm.found()
   endif
 endif
 
-if with_dri
-  pre_args += '-DHAVE_DRI'
-endif
-if with_dri2
-  pre_args += '-DHAVE_DRI2'
-endif
-if with_gallium_drisw_kms
-  pre_args += '-DHAVE_DRISW_KMS'
-endif
-
 dep_libudev = dependency('libudev', required : false)
 if dep_libudev.found()
   pre_args += '-DHAVE_LIBUDEV'
@@ -1704,7 +1720,7 @@ endif
 llvm_modules = ['bitwriter', 'engine', 'mcdisassembler', 'mcjit', 'core', 'executionengine', 'scalaropts', 'transformutils', 'instcombine']
 llvm_optional_modules = ['coroutines']
 if with_amd_vk or with_gallium_radeonsi or with_gallium_r600
-  llvm_modules += ['amdgpu', 'native', 'bitreader', 'ipo']
+  llvm_modules += ['amdgpu', 'bitreader', 'ipo']
   if with_gallium_r600
     llvm_modules += 'asmparser'
   endif
@@ -1720,18 +1736,17 @@ if with_clc
   llvm_modules += ['coverage', 'target', 'linker', 'irreader', 'option', 'libdriver', 'lto']
   llvm_optional_modules += ['all-targets']
 endif
-if with_tests or with_gallium_softpipe
+draw_with_llvm = get_option('draw-use-llvm')
+if draw_with_llvm
   llvm_modules += 'native'
 endif
 
-if with_amd_vk or with_gallium_radeonsi
+if with_amd_vk or with_gallium_radeonsi or with_gallium_opencl
   _llvm_version = '>= 11.0.0'
 elif with_clc
   _llvm_version = '>= 10.0.0'
-elif with_gallium_opencl
-  _llvm_version = '>= 8.0.0'
 else
-  _llvm_version = '>= 3.9.0'
+  _llvm_version = '>= 5.0.0'
 endif
 
 _shared_llvm = get_option('shared-llvm')
@@ -1768,7 +1783,6 @@ endif
 
 dep_llvm = null_dep
 with_llvm = false
-draw_with_llvm = get_option('draw-use-llvm')
 if _llvm != 'disabled'
   dep_llvm = dependency(
     'llvm',
@@ -1950,7 +1964,7 @@ if build_machine.system() == 'windows'
     # _fileno functions)
     prog_flex = [prog_flex, '--wincompat']
   else
-    prog_flex = [find_program('flex', 'lex', required : with_any_opengl)]
+    prog_flex = [find_program('flex', 'lex', required : with_any_opengl, disabler : true)]
   endif
   # Force flex to use const keyword in prototypes, as relies on __cplusplus or
   # __STDC__ macro to determine whether it's safe to use const keyword
@@ -1965,13 +1979,13 @@ if build_machine.system() == 'windows'
 
   prog_bison = find_program('win_bison', required : false)
   if not prog_bison.found()
-    prog_bison = find_program('bison', 'yacc', required : with_any_opengl)
+    prog_bison = find_program('bison', 'yacc', required : with_any_opengl, disabler : true)
   endif
 else
   prog_bison = find_program('bison', required : false)
 
   if not prog_bison.found()
-    prog_bison = find_program('byacc', required : with_any_opengl)
+    prog_bison = find_program('byacc', required : with_any_opengl, disabler : true)
     yacc_is_bison = false
   endif
 
@@ -1982,7 +1996,7 @@ else
     prog_bison = [prog_bison, '-Wno-deprecated']
   endif
 
-  prog_flex = find_program('flex', required : with_any_opengl)
+  prog_flex = find_program('flex', required : with_any_opengl, disabler : true)
   prog_flex_cpp = prog_flex
 endif
 
@@ -2088,11 +2102,13 @@ if host_machine.cpu_family() == 'x86_64' and cc.get_id() == 'gcc'
   endif
 endif
 
+with_dri3_modifiers = false
 if with_platform_x11
   if with_glx == 'xlib' or with_glx == 'gallium-xlib'
     dep_x11 = dependency('x11')
     dep_xext = dependency('xext')
     dep_xcb = dependency('xcb')
+    dep_xcb_xrandr = dependency('xcb-randr')
   elif with_glx == 'dri'
     dep_x11 = dependency('x11')
     dep_xext = dependency('xext')
@@ -2113,13 +2129,12 @@ if with_platform_x11
     dep_xcb_dri2 = dependency('xcb-dri2', version : '>= 1.8')
 
     if with_dri3
-      pre_args += '-DHAVE_DRI3'
       dep_xcb_dri3 = dependency('xcb-dri3')
       dep_xcb_present = dependency('xcb-present')
       # until xcb-dri3 has been around long enough to make a hard-dependency:
       if (dep_xcb_dri3.version().version_compare('>= 1.13') and
           dep_xcb_present.version().version_compare('>= 1.13'))
-        pre_args += '-DHAVE_DRI3_MODIFIERS'
+        with_dri3_modifiers = true
       endif
       dep_xcb_shm = dependency('xcb-shm')
       dep_xcb_sync = dependency('xcb-sync')
@@ -2149,6 +2164,22 @@ if with_platform_x11
   if with_xlib_lease
     dep_xlib_xrandr = dependency('xrandr', version : '>= 1.3')
   endif
+endif
+
+if with_dri
+  pre_args += '-DHAVE_DRI'
+endif
+if with_dri2
+  pre_args += '-DHAVE_DRI2'
+endif
+if with_dri3
+  pre_args += '-DHAVE_DRI3'
+endif
+if with_dri3_modifiers
+  pre_args += '-DHAVE_DRI3_MODIFIERS'
+endif
+if with_gallium_drisw_kms
+  pre_args += '-DHAVE_DRISW_KMS'
 endif
 
 if get_option('gallium-extra-hud')
@@ -2246,6 +2277,8 @@ gcc_lto_quirk = (cc.get_id() == 'gcc') ? ['-fno-lto'] : []
 
 devenv = environment()
 
+dir_compiler_nir = join_paths(meson.current_source_dir(), 'src/compiler/nir/')
+
 subdir('include')
 subdir('bin')
 subdir('src')
@@ -2274,11 +2307,6 @@ endif
 if with_dri
   lines += ''
   lines += 'DRI platform:    ' + with_dri_platform
-  if dri_drivers.length() != 0 and dri_drivers != ['']
-    lines += 'DRI drivers:     ' + ' '.join(dri_drivers)
-  else
-    lines += 'DRI drivers:     no'
-  endif
   lines += 'DRI driver dir:  ' + dri_drivers_path
 endif
 

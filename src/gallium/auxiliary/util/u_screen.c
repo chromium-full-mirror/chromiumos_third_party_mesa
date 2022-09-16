@@ -226,7 +226,6 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
 
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
    case PIPE_CAP_CLIP_HALFZ:
-   case PIPE_CAP_VERTEXID_NOBASE:
    case PIPE_CAP_POLYGON_OFFSET_CLAMP:
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
@@ -371,7 +370,6 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
    case PIPE_CAP_PREFER_COMPUTE_FOR_MULTIMEDIA:
    case PIPE_CAP_FRAGMENT_SHADER_INTERLOCK:
-   case PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED:
    case PIPE_CAP_ATOMIC_FLOAT_MINMAX:
    case PIPE_CAP_SHADER_SAMPLES_IDENTICAL:
    case PIPE_CAP_IMAGE_ATOMIC_INC_WRAP:
@@ -516,6 +514,9 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
          pscreen->get_shader_param(pscreen, PIPE_SHADER_GEOMETRY,
                                    PIPE_SHADER_CAP_MAX_SHADER_BUFFERS);
    }
+
+   case PIPE_CAP_QUERY_TIMESTAMP_BITS:
+      return 64;
 
    default:
       unreachable("bad PIPE_CAP_*");

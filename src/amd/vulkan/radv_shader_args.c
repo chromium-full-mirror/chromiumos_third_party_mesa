@@ -92,13 +92,24 @@ count_vs_user_sgprs(const struct radv_shader_info *info)
 }
 
 static uint8_t
+count_tes_user_sgprs(const struct radv_pipeline_key *key)
+{
+   unsigned count = 0;
+
+   if (key->dynamic_patch_control_points)
+      count++; /* tes_num_patches */
+
+   return count;
+}
+
+static uint8_t
 count_ms_user_sgprs(const struct radv_shader_info *info)
 {
    uint8_t count = 1 + 3; /* firstTask + num_work_groups[3] */
 
    if (info->vs.needs_draw_id)
       count++;
-   if (info->cs.uses_task_rings)
+   if (info->ms.has_task)
       count++;
 
    return count;
@@ -152,6 +163,7 @@ static void
 allocate_user_sgprs(enum amd_gfx_level gfx_level, const struct radv_shader_info *info,
                     struct radv_shader_args *args, gl_shader_stage stage, bool has_previous_stage,
                     gl_shader_stage previous_stage, bool needs_view_index, bool has_ngg_query,
+                    const struct radv_pipeline_key *key,
                     struct user_sgpr_info *user_sgpr_info)
 {
    uint8_t user_sgpr_count = 0;
@@ -179,7 +191,7 @@ allocate_user_sgprs(enum amd_gfx_level gfx_level, const struct radv_shader_info 
          user_sgpr_count += 2;
       if (info->vs.needs_draw_id)
          user_sgpr_count += 1;
-      if (info->cs.uses_task_rings)
+      if (stage == MESA_SHADER_TASK)
          user_sgpr_count += 4; /* ring_entry, 2x ib_addr, ib_stride */
       break;
    case MESA_SHADER_FRAGMENT:
@@ -196,8 +208,11 @@ allocate_user_sgprs(enum amd_gfx_level gfx_level, const struct radv_shader_info 
          if (previous_stage == MESA_SHADER_VERTEX)
             user_sgpr_count += count_vs_user_sgprs(info);
       }
+      if (key->dynamic_patch_control_points)
+         user_sgpr_count += 1; /* tcs_offchip_layout */
       break;
    case MESA_SHADER_TESS_EVAL:
+      count_tes_user_sgprs(key);
       break;
    case MESA_SHADER_GEOMETRY:
       if (has_previous_stage) {
@@ -206,6 +221,8 @@ allocate_user_sgprs(enum amd_gfx_level gfx_level, const struct radv_shader_info 
 
          if (previous_stage == MESA_SHADER_VERTEX) {
             user_sgpr_count += count_vs_user_sgprs(info);
+         } else if (previous_stage == MESA_SHADER_TESS_EVAL) {
+            user_sgpr_count += count_tes_user_sgprs(key);
          } else if (previous_stage == MESA_SHADER_MESH) {
             user_sgpr_count += count_ms_user_sgprs(info);
          }
@@ -300,11 +317,11 @@ declare_vs_specific_input_sgprs(const struct radv_shader_info *info, struct radv
 
 static void
 declare_vs_input_vgprs(enum amd_gfx_level gfx_level, const struct radv_shader_info *info,
-                       struct radv_shader_args *args)
+                       struct radv_shader_args *args, bool merged_vs_tcs)
 {
    ac_add_arg(&args->ac, AC_ARG_VGPR, 1, AC_ARG_INT, &args->ac.vertex_id);
    if (!args->is_gs_copy_shader) {
-      if (info->vs.as_ls) {
+      if (info->vs.as_ls || merged_vs_tcs) {
 
          if (gfx_level >= GFX11) {
             ac_add_arg(&args->ac, AC_ARG_VGPR, 1, AC_ARG_INT, NULL); /* user VGPR */
@@ -340,7 +357,7 @@ declare_vs_input_vgprs(enum amd_gfx_level gfx_level, const struct radv_shader_in
 
    if (info->vs.dynamic_inputs) {
       assert(info->vs.use_per_attribute_vb_descs);
-      unsigned num_attributes = util_last_bit(info->vs.vb_desc_usage_mask);
+      unsigned num_attributes = util_last_bit(info->vs.input_slot_usage_mask);
       for (unsigned i = 0; i < num_attributes; i++)
          ac_add_arg(&args->ac, AC_ARG_VGPR, 4, AC_ARG_INT, &args->vs_inputs[i]);
       /* Ensure the main shader doesn't use less vgprs than the prolog. The prolog requires one
@@ -392,7 +409,7 @@ declare_ms_input_sgprs(const struct radv_shader_info *info, struct radv_shader_a
    if (info->vs.needs_draw_id) {
       ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.draw_id);
    }
-   if (info->cs.uses_task_rings) {
+   if (info->ms.has_task) {
       ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.task_ring_entry);
    }
 }
@@ -555,7 +572,7 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
       args->user_sgprs_locs.shader_data[i].sgpr_idx = -1;
 
    allocate_user_sgprs(gfx_level, info, args, stage, has_previous_stage, previous_stage,
-                       needs_view_index, has_ngg_query, &user_sgpr_info);
+                       needs_view_index, has_ngg_query, key, &user_sgpr_info);
 
    if (args->explicit_scratch_args) {
       ac_add_arg(&args->ac, AC_ARG_SGPR, 2, AC_ARG_CONST_DESC_PTR, &args->ring_offsets);
@@ -592,7 +609,7 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.draw_id);
       }
 
-      if (info->cs.uses_task_rings) {
+      if (stage == MESA_SHADER_TASK) {
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.task_ring_entry);
          ac_add_arg(&args->ac, AC_ARG_SGPR, 2, AC_ARG_INT, &args->task_ib_addr);
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->task_ib_stride);
@@ -645,7 +662,7 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.scratch_offset);
       }
 
-      declare_vs_input_vgprs(gfx_level, info, args);
+      declare_vs_input_vgprs(gfx_level, info, args, false);
       break;
    case MESA_SHADER_TESS_CTRL:
       if (has_previous_stage) {
@@ -671,15 +688,23 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
             ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.view_index);
          }
 
+         if (key->dynamic_patch_control_points) {
+            ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->tcs_offchip_layout);
+         }
+
          ac_add_arg(&args->ac, AC_ARG_VGPR, 1, AC_ARG_INT, &args->ac.tcs_patch_id);
          ac_add_arg(&args->ac, AC_ARG_VGPR, 1, AC_ARG_INT, &args->ac.tcs_rel_ids);
 
-         declare_vs_input_vgprs(gfx_level, info, args);
+         declare_vs_input_vgprs(gfx_level, info, args, true);
       } else {
          declare_global_input_sgprs(info, &user_sgpr_info, args);
 
          if (needs_view_index) {
             ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.view_index);
+         }
+
+         if (key->dynamic_patch_control_points) {
+            ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->tcs_offchip_layout);
          }
 
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.tess_offchip_offset);
@@ -699,6 +724,9 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
 
       if (needs_view_index)
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.view_index);
+
+      if (key->dynamic_patch_control_points)
+         ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->tes_num_patches);
 
       if (info->tes.as_es) {
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.tess_offchip_offset);
@@ -744,6 +772,9 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
             ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.view_index);
          }
 
+         if (previous_stage == MESA_SHADER_TESS_EVAL && key->dynamic_patch_control_points)
+            ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->tes_num_patches);
+
          if (info->force_vrs_per_vertex) {
             ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.force_vrs_rates);
          }
@@ -759,7 +790,7 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
          ac_add_arg(&args->ac, AC_ARG_VGPR, 1, AC_ARG_INT, &args->ac.gs_vtx_offset[2]);
 
          if (previous_stage == MESA_SHADER_VERTEX) {
-            declare_vs_input_vgprs(gfx_level, info, args);
+            declare_vs_input_vgprs(gfx_level, info, args, false);
          } else if (previous_stage == MESA_SHADER_TESS_EVAL) {
             declare_tes_input_vgprs(args);
          } else if (previous_stage == MESA_SHADER_MESH) {
@@ -861,14 +892,23 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
    case MESA_SHADER_TESS_CTRL:
       if (args->ac.view_index.used)
          set_loc_shader(args, AC_UD_VIEW_INDEX, &user_sgpr_idx, 1);
+
+      if (args->tcs_offchip_layout.used)
+         set_loc_shader(args, AC_UD_TCS_OFFCHIP_LAYOUT, &user_sgpr_idx, 1);
       break;
    case MESA_SHADER_TESS_EVAL:
       if (args->ac.view_index.used)
          set_loc_shader(args, AC_UD_VIEW_INDEX, &user_sgpr_idx, 1);
+
+      if (args->tes_num_patches.used)
+         set_loc_shader(args, AC_UD_TES_NUM_PATCHES, &user_sgpr_idx, 1);
       break;
    case MESA_SHADER_GEOMETRY:
       if (args->ac.view_index.used)
          set_loc_shader(args, AC_UD_VIEW_INDEX, &user_sgpr_idx, 1);
+
+      if (args->tes_num_patches.used)
+         set_loc_shader(args, AC_UD_TES_NUM_PATCHES, &user_sgpr_idx, 1);
 
       if (args->ac.force_vrs_rates.used)
          set_loc_shader(args, AC_UD_FORCE_VRS_RATES, &user_sgpr_idx, 1);

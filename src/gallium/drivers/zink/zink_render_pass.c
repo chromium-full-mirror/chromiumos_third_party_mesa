@@ -22,12 +22,14 @@
  */
 
 #include "zink_context.h"
+#include "zink_clear.h"
 #include "zink_framebuffer.h"
 #include "zink_kopper.h"
 #include "zink_query.h"
 #include "zink_render_pass.h"
 #include "zink_resource.h"
 #include "zink_screen.h"
+#include "zink_surface.h"
 
 #include "util/u_memory.h"
 #include "util/u_string.h"
@@ -191,6 +193,8 @@ create_render_pass2(struct zink_screen *screen, struct zink_render_pass_state *s
    };
 
    VkSubpassDescription2 subpass = {0};
+   if (pstate->fbfetch && screen->info.have_EXT_rasterization_order_attachment_access)
+      subpass.flags |= VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT;
    VkSubpassDescriptionDepthStencilResolve zsresolve;
    subpass.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -336,8 +340,8 @@ zink_init_zs_attachment(struct zink_context *ctx, struct zink_rt_attrib *rt)
    rt->clear_stencil = zink_fb_clear_enabled(ctx, PIPE_MAX_COLOR_BUFS) &&
                                            !zink_fb_clear_first_needs_explicit(fb_clear) &&
                                            (zink_fb_clear_element(fb_clear, 0)->zs.bits & PIPE_CLEAR_STENCIL);
-   const uint64_t outputs_written = ctx->gfx_stages[PIPE_SHADER_FRAGMENT] ?
-                                    ctx->gfx_stages[PIPE_SHADER_FRAGMENT]->nir->info.outputs_written : 0;
+   const uint64_t outputs_written = ctx->gfx_stages[MESA_SHADER_FRAGMENT] ?
+                                    ctx->gfx_stages[MESA_SHADER_FRAGMENT]->nir->info.outputs_written : 0;
    bool needs_write_z = (ctx->dsa_state && ctx->dsa_state->hw_state.depth_write) ||
                        outputs_written & BITFIELD64_BIT(FRAG_RESULT_DEPTH);
    needs_write_z |= transient || rt->clear_color ||

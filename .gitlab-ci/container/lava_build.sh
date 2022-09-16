@@ -1,4 +1,7 @@
 #!/bin/bash
+# shellcheck disable=SC1091 # The relative paths in this file only become valid at runtime.
+# shellcheck disable=SC2034 # Variables are used in scripts called from here
+# shellcheck disable=SC2086 # we want word splitting
 
 set -e
 set -o xtrace
@@ -47,6 +50,7 @@ elif [[ "$DEBIAN_ARCH" = "armhf" ]]; then
     DEVICE_TREES="arch/arm/boot/dts/rk3288-veyron-jaq.dtb"
     DEVICE_TREES+=" arch/arm/boot/dts/sun8i-h3-libretech-all-h3-cc.dtb"
     DEVICE_TREES+=" arch/arm/boot/dts/imx6q-cubox-i.dtb"
+    DEVICE_TREES+=" arch/arm/boot/dts/tegra124-jetson-tk1.dtb"
     KERNEL_IMAGE_NAME="zImage"
     . .gitlab-ci/container/create-cross-file.sh armhf
 else
@@ -112,7 +116,8 @@ apt-get install -y --no-remove \
                    python3-numpy \
                    python3-serial \
                    unzip \
-                   wget
+                   wget \
+                   zstd
 
 
 if [[ "$DEBIAN_ARCH" = "armhf" ]]; then
@@ -224,7 +229,8 @@ rm /lava-files/rootfs-${DEBIAN_ARCH}/create-rootfs.sh
 # Dependencies pulled during the creation of the rootfs may overwrite
 # the built libdrm. Hence, we add it after the rootfs has been already
 # created.
-find /libdrm/ -name lib\*\.so\* | xargs cp -t /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH/.
+find /libdrm/ -name lib\*\.so\* \
+  -exec cp -t /lava-files/rootfs-${DEBIAN_ARCH}/usr/lib/$GCC_ARCH/. {} \;
 mkdir -p /lava-files/rootfs-${DEBIAN_ARCH}/libdrm/
 cp -Rp /libdrm/share /lava-files/rootfs-${DEBIAN_ARCH}/libdrm/share
 rm -rf /libdrm
@@ -238,14 +244,14 @@ fi
 
 du -ah /lava-files/rootfs-${DEBIAN_ARCH} | sort -h | tail -100
 pushd /lava-files/rootfs-${DEBIAN_ARCH}
-  tar czf /lava-files/lava-rootfs.tgz .
+  tar --zstd -cf /lava-files/lava-rootfs.tar.zst .
 popd
 
 . .gitlab-ci/container/container_post_build.sh
 
 ############### Upload the files!
 ci-fairy minio login --token-file "${CI_JOB_JWT_FILE}"
-FILES_TO_UPLOAD="lava-rootfs.tgz \
+FILES_TO_UPLOAD="lava-rootfs.tar.zst \
                  $KERNEL_IMAGE_NAME"
 
 if [[ -n $DEVICE_TREES ]]; then

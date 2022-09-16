@@ -404,7 +404,9 @@ panfrost_shader_compile(struct pipe_screen *pscreen,
                         struct panfrost_pool *shader_pool,
                         struct panfrost_pool *desc_pool,
                         const nir_shader *ir,
-                        struct panfrost_shader_state *state);
+                        struct util_debug_callback *dbg,
+                        struct panfrost_shader_state *state,
+                        unsigned req_local_mem);
 
 void
 panfrost_analyze_sysvals(struct panfrost_shader_state *ss);

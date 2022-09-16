@@ -153,6 +153,8 @@ The integer capabilities:
   pipe_draw_info::start_instance.
 * ``PIPE_CAP_QUERY_TIMESTAMP``: Whether PIPE_QUERY_TIMESTAMP and
   the pipe_screen::get_timestamp hook are implemented.
+* ``PIPE_CAP_QUERY_TIMESTAMP_BITS``: How many bits the driver uses for the
+  results of GL_TIMESTAMP queries.
 * ``PIPE_CAP_TEXTURE_MULTISAMPLE``: Whether all MSAA resources supported
   for rendering are also supported for texturing.
 * ``PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT``: The minimum alignment that should be
@@ -276,13 +278,6 @@ The integer capabilities:
 * ``PIPE_CAP_CLIP_HALFZ``: Whether the driver supports the
   pipe_rasterizer_state::clip_halfz being set to true. This is required
   for enabling ARB_clip_control.
-* ``PIPE_CAP_VERTEXID_NOBASE``: If true, the driver only supports
-  TGSI_SEMANTIC_VERTEXID_NOBASE (and not TGSI_SEMANTIC_VERTEXID). This means
-  gallium frontends for APIs whose vertexIDs are offset by basevertex (such as GL)
-  will need to lower TGSI_SEMANTIC_VERTEXID to TGSI_SEMANTIC_VERTEXID_NOBASE
-  and TGSI_SEMANTIC_BASEVERTEX, so drivers setting this must handle both these
-  semantics. Only relevant if geometry shaders are supported.
-  (BASEVERTEX could be exposed separately too via ``PIPE_CAP_DRAW_PARAMETERS``).
 * ``PIPE_CAP_POLYGON_OFFSET_CLAMP``: If true, the driver implements support
   for ``pipe_rasterizer_state::offset_clamp``.
 * ``PIPE_CAP_MULTISAMPLE_Z_RESOLVE``: Whether the driver supports blitting
@@ -568,9 +563,6 @@ The integer capabilities:
   OpenMAX should use a compute-based blit instead of pipe_context::blit and compute pipeline for compositing images.
 * ``PIPE_CAP_FRAGMENT_SHADER_INTERLOCK``: True if fragment shader interlock
   functionality is supported.
-* ``PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED``: True if driver handles
-  gl_LocalInvocationIndex and gl_GlobalInvocationID.  Otherwise, gallium frontends will
-  lower those system values.
 * ``PIPE_CAP_ATOMIC_FLOAT_MINMAX``: Atomic float point minimum,
   maximum, exchange and compare-and-swap support to buffer and shared variables.
 * ``PIPE_CAP_TGSI_DIV``: Whether opcode DIV is supported

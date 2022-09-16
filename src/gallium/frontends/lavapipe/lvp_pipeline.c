@@ -88,30 +88,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipeline(
    simple_mtx_unlock(&device->queue.pipeline_lock);
 }
 
-static inline unsigned
-st_shader_stage_to_ptarget(gl_shader_stage stage)
-{
-   switch (stage) {
-   case MESA_SHADER_VERTEX:
-      return PIPE_SHADER_VERTEX;
-   case MESA_SHADER_FRAGMENT:
-      return PIPE_SHADER_FRAGMENT;
-   case MESA_SHADER_GEOMETRY:
-      return PIPE_SHADER_GEOMETRY;
-   case MESA_SHADER_TESS_CTRL:
-      return PIPE_SHADER_TESS_CTRL;
-   case MESA_SHADER_TESS_EVAL:
-      return PIPE_SHADER_TESS_EVAL;
-   case MESA_SHADER_COMPUTE:
-      return PIPE_SHADER_COMPUTE;
-   default:
-      break;
-   }
-
-   assert(!"should not be reached");
-   return PIPE_SHADER_VERTEX;
-}
-
 static void
 shared_var_info(const struct glsl_type *type, unsigned *size, unsigned *align)
 {
@@ -385,7 +361,8 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
 {
    struct lvp_device *pdevice = pipeline->device;
    gl_shader_stage stage = vk_to_mesa_shader_stage(sinfo->stage);
-   const nir_shader_compiler_options *drv_options = pdevice->pscreen->get_compiler_options(pipeline->device->pscreen, PIPE_SHADER_IR_NIR, st_shader_stage_to_ptarget(stage));
+   assert(stage <= MESA_SHADER_COMPUTE && stage != MESA_SHADER_NONE);
+   const nir_shader_compiler_options *drv_options = pdevice->pscreen->get_compiler_options(pipeline->device->pscreen, PIPE_SHADER_IR_NIR, (enum pipe_shader_type)stage);
    VkResult result;
    nir_shader *nir;
 
@@ -411,6 +388,7 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
          .device_group = true,
          .draw_parameters = true,
          .shader_viewport_index_layer = true,
+         .shader_clock = true,
          .multiview = true,
          .physical_storage_buffer_address = true,
          .int64_atomics = true,
@@ -469,6 +447,8 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    scan_pipeline_info(pipeline, nir);
 
    optimize(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+
    lvp_lower_pipeline_layout(pipeline->device, pipeline->layout, nir);
 
    NIR_PASS_V(nir, nir_lower_io_to_temporaries, nir_shader_get_entrypoint(nir), true, true);
@@ -509,8 +489,6 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    NIR_PASS_V(nir, nir_fold_16bit_tex_image, &fold_16bit_options);
 
    lvp_shader_optimize(nir);
-
-   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
    if (nir->info.stage != MESA_SHADER_VERTEX)
       nir_assign_io_var_locations(nir, nir_var_shader_in, &nir->num_inputs, nir->info.stage);

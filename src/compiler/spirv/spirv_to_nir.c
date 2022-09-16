@@ -2701,7 +2701,7 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
       return;
    } else if (opcode == SpvOpImageSparseTexelsResident) {
       nir_ssa_def *code = vtn_get_nir_ssa(b, w[3]);
-      vtn_push_nir_ssa(b, w[2], nir_is_sparse_texels_resident(&b->nb, code));
+      vtn_push_nir_ssa(b, w[2], nir_is_sparse_texels_resident(&b->nb, 1, code));
       return;
    }
 
@@ -2826,8 +2826,13 @@ vtn_handle_texture(struct vtn_builder *b, SpvOp opcode,
       break;
    case nir_texop_txf_ms_mcs_intel:
       vtn_fail("unexpected nir_texop_txf_ms_mcs");
+      break;
    case nir_texop_tex_prefetch:
       vtn_fail("unexpected nir_texop_tex_prefetch");
+      break;
+   case nir_texop_descriptor_amd:
+      vtn_fail("unexpected nir_texop_descriptor_amd");
+      break;
    }
 
    unsigned idx = 4;
@@ -4383,8 +4388,10 @@ stage_for_execution_model(struct vtn_builder *b, SpvExecutionModel model)
    case SpvExecutionModelCallableKHR:
        return MESA_SHADER_CALLABLE;
    case SpvExecutionModelTaskNV:
+   case SpvExecutionModelTaskEXT:
       return MESA_SHADER_TASK;
    case SpvExecutionModelMeshNV:
+   case SpvExecutionModelMeshEXT:
       return MESA_SHADER_MESH;
    default:
       vtn_fail("Unsupported execution model: %s (%u)",
@@ -4451,9 +4458,18 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
       break;
    }
 
+   case SpvOpExtension: {
+      /* Implementing both NV_mesh_shader and EXT_mesh_shader
+       * is difficult without knowing which we're dealing with.
+       * TODO: remove this when we stop supporting NV_mesh_shader.
+       */
+      const char *ext_name = (const char *)&w[1];
+      if (strcmp(ext_name, "SPV_NV_mesh_shader") == 0)
+         b->shader->info.mesh.nv = true;
+      break;
+   }
    case SpvOpSourceExtension:
    case SpvOpSourceContinued:
-   case SpvOpExtension:
    case SpvOpModuleProcessed:
       /* Unhandled, but these are for debug so that's ok. */
       break;
@@ -4499,7 +4515,6 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
             vtn_warn("Unsupported SPIR-V capability: %s",
                      spirv_capability_to_string(cap));
          spv_check_supported(linkage, cap);
-         vtn_warn("The SPIR-V Linkage capability is not fully supported");
          break;
 
       case SpvCapabilitySparseResidency:
@@ -4835,6 +4850,10 @@ vtn_handle_preamble_instruction(struct vtn_builder *b, SpvOp opcode,
 
       case SpvCapabilityAtomicFloat64MinMaxEXT:
          spv_check_supported(float64_atomic_min_max, cap);
+         break;
+
+      case SpvCapabilityMeshShadingEXT:
+         spv_check_supported(mesh_shading, cap);
          break;
 
       case SpvCapabilityMeshShadingNV:
@@ -6273,6 +6292,34 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpWritePackedPrimitiveIndices4x8NV:
       vtn_handle_write_packed_primitive_indices(b, opcode, w, count);
       break;
+
+   case SpvOpSetMeshOutputsEXT:
+      nir_set_vertex_and_primitive_count(
+         &b->nb, vtn_get_nir_ssa(b, w[1]), vtn_get_nir_ssa(b, w[2]));
+      break;
+
+   case SpvOpEmitMeshTasksEXT: {
+      /* Launches mesh shader workgroups from the task shader.
+       * Arguments are: vec(x, y, z), payload pointer
+       */
+      nir_ssa_def *dimensions =
+         nir_vec3(&b->nb, vtn_get_nir_ssa(b, w[1]),
+                          vtn_get_nir_ssa(b, w[2]),
+                          vtn_get_nir_ssa(b, w[3]));
+
+      /* The payload variable is optional.
+       * We don't have a NULL deref in NIR, so just emit the explicit
+       * intrinsic when there is no payload.
+       */
+      if (count == 4)
+         nir_launch_mesh_workgroups(&b->nb, dimensions);
+      else if (count == 5)
+         nir_launch_mesh_workgroups_with_payload_deref(&b->nb, dimensions,
+                                                       vtn_get_nir_ssa(b, w[4]));
+      else
+         vtn_fail("Invalid EmitMeshTasksEXT.");
+      break;
+   }
 
    default:
       vtn_fail_with_opcode("Unhandled opcode", opcode);

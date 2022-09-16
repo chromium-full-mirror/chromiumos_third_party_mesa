@@ -2214,7 +2214,7 @@ combine_comparison_ordering(opt_ctx& ctx, aco_ptr<Instruction>& instr)
    else if (get_f32_cmp(nan_test->opcode) != expected_nan_test)
       return false;
 
-   if (!is_cmp(cmp->opcode) || get_cmp_bitsize(cmp->opcode) != get_cmp_bitsize(nan_test->opcode))
+   if (!is_fp_cmp(cmp->opcode) || get_cmp_bitsize(cmp->opcode) != get_cmp_bitsize(nan_test->opcode))
       return false;
 
    if (!nan_test->operands[0].isTemp() || !nan_test->operands[1].isTemp())
@@ -2317,7 +2317,7 @@ combine_constant_comparison_ordering(opt_ctx& ctx, aco_ptr<Instruction>& instr)
       return false;
 
    unsigned bit_size = get_cmp_bitsize(cmp->opcode);
-   if (!is_cmp(cmp->opcode) || get_cmp_bitsize(nan_test->opcode) != bit_size)
+   if (!is_fp_cmp(cmp->opcode) || get_cmp_bitsize(nan_test->opcode) != bit_size)
       return false;
 
    if (!nan_test->operands[0].isTemp() || !nan_test->operands[1].isTemp())
@@ -4828,11 +4828,11 @@ optimize(Program* program)
 
    /* 4. Add literals to instructions */
    for (Block& block : program->blocks) {
-      ctx.instructions.clear();
+      ctx.instructions.reserve(block.instructions.size());
       ctx.fp_mode = block.fp_mode;
       for (aco_ptr<Instruction>& instr : block.instructions)
          apply_literals(ctx, instr);
-      block.instructions.swap(ctx.instructions);
+      block.instructions = std::move(ctx.instructions);
    }
 }
 

@@ -163,6 +163,8 @@ optimizations = [
    (('iadd', ('imul', a, b), ('imul', a, c)), ('imul', a, ('iadd', b, c))),
    (('iand', ('ior', a, b), ('ior', a, c)), ('ior', a, ('iand', b, c))),
    (('ior', ('iand', a, b), ('iand', a, c)), ('iand', a, ('ior', b, c))),
+   (('ieq', ('iand', a, '#b(is_pos_power_of_two)'), b), ('ine', ('iand', a, b), 0)),
+   (('ine', ('iand', a, '#b(is_pos_power_of_two)'), b), ('ieq', ('iand', a, b), 0)),
    (('~fadd', ('fneg', a), a), 0.0),
    (('iadd', ('ineg', a), a), 0),
    (('iadd', ('ineg', a), ('iadd', a, b)), b),
@@ -274,6 +276,11 @@ optimizations = [
     ('ffmaz', a, b, c), 'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
    (('ffma@32', a, ('bcsel', ignore_exact('feq', a, 0.0), 0.0, '#b(is_not_const_zero)'), c),
     ('ffmaz', a, b, c), 'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
+
+   # b == 0.0 ? 1.0 : fexp2(fmul(a, b)) -> fexp2(fmulz(a, b))
+   (('bcsel', ignore_exact('feq', b, 0.0), 1.0, ('fexp2', ('fmul@32', a, b))),
+    ('fexp2', ('fmulz', a, b)),
+    'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
 ]
 
 # Shorthand for the expansion of just the dot product part of the [iu]dp4a
@@ -1048,9 +1055,7 @@ optimizations.extend([
    (('ior', ('ieq', a, 0), ('ieq', a, 1)), ('uge', 1, a)),
    (('ior', ('uge', 1, a), ('ieq', a, 2)), ('uge', 2, a)),
    (('ior', ('uge', 2, a), ('ieq', a, 3)), ('uge', 3, a)),
-
    (('ior', a, ('ieq', a, False)), True),
-   (('ior', a, ('inot', a)), -1),
 
    (('ine', ('ineg', ('b2i', 'a@1')), ('ineg', ('b2i', 'b@1'))), ('ine', a, b)),
    (('b2i', ('ine', 'a@1', 'b@1')), ('b2i', ('ixor', a, b))),
@@ -1217,11 +1222,13 @@ optimizations.extend([
    (('fneu', 'a(is_a_number)', a), False),
    # Logical and bit operations
    (('iand', a, a), a),
-   (('iand', a, ~0), a),
    (('iand', a, 0), 0),
+   (('iand', a, -1), a),
+   (('iand', a, ('inot', a)), 0),
    (('ior', a, a), a),
    (('ior', a, 0), a),
-   (('ior', a, True), True),
+   (('ior', a, -1), -1),
+   (('ior', a, ('inot', a)), -1),
    (('ixor', a, a), 0),
    (('ixor', a, 0), a),
    (('ixor', a, ('ixor', a, b)), b),
@@ -1459,6 +1466,10 @@ optimizations.extend([
    (('unpack_64_2x32_split_y', ('pack_64_2x32_split', a, b)), b),
    (('unpack_64_2x32_split_x', ('pack_64_2x32', a)), 'a.x'),
    (('unpack_64_2x32_split_y', ('pack_64_2x32', a)), 'a.y'),
+   (('unpack_64_2x32_split_x', ('u2u64', 'a@32')), a),
+   (('unpack_64_2x32_split_y', ('u2u64', a)), 0),
+   (('unpack_64_2x32_split_x', ('i2i64', 'a@32')), a),
+   (('unpack_64_2x32_split_y', ('i2i64(is_used_once)', 'a@32')), ('ishr', a, 31)),
    (('unpack_64_2x32', ('pack_64_2x32_split', a, b)), ('vec2', a, b)),
    (('unpack_64_2x32', ('pack_64_2x32', a)), a),
    (('unpack_double_2x32_dxil', ('pack_double_2x32_dxil', a)), a),
@@ -1665,6 +1676,8 @@ optimizations.extend([
    (('~fmul', ('bcsel(is_used_once)', c, 1.0, -1.0), b), ('bcsel', c, b, ('fneg', b))),
    (('~fmulz', ('bcsel(is_used_once)', c, -1.0, 1.0), b), ('bcsel', c, ('fneg', b), b)),
    (('~fmulz', ('bcsel(is_used_once)', c, 1.0, -1.0), b), ('bcsel', c, b, ('fneg', b))),
+   (('fabs', ('bcsel(is_used_once)', b, ('fneg', a), a)), ('fabs', a)),
+   (('fabs', ('bcsel(is_used_once)', b, a, ('fneg', a))), ('fabs', a)),
    (('~bcsel', ('flt', a, 0.0), ('fneg', a), a), ('fabs', a)),
 
    (('bcsel', a, ('bcsel', b, c, d), d), ('bcsel', ('iand', a, b), c, d)),
@@ -1801,6 +1814,16 @@ optimizations.extend([
    (('ibfe', 'value', ('iand', 31, 'offset'), 'bits'), ('ibfe', 'value', 'offset', 'bits')),
    (('bfm', 'bits', ('iand', 31, 'offset')), ('bfm', 'bits', 'offset')),
    (('bfm', ('iand', 31, 'bits'), 'offset'), ('bfm', 'bits', 'offset')),
+
+   # Optimizations for ubitfield_extract(value, offset, umin(bits, 32-(offset&0x1f))) and such
+   (('ult', a, ('umin', ('iand', a, b), c)), False),
+   (('ult', 31, ('umin', '#bits(is_ult_32)', a)), False),
+   (('ubfe', 'value', 'offset', ('umin', 'width', ('iadd', 32, ('ineg', ('iand', 31, 'offset'))))),
+    ('ubfe', 'value', 'offset', 'width')),
+   (('ibfe', 'value', 'offset', ('umin', 'width', ('iadd', 32, ('ineg', ('iand', 31, 'offset'))))),
+    ('ibfe', 'value', 'offset', 'width')),
+   (('bfm', ('umin', 'width', ('iadd', 32, ('ineg', ('iand', 31, 'offset')))), 'offset'),
+    ('bfm', 'width', 'offset')),
 
    # Section 8.8 (Integer Functions) of the GLSL 4.60 spec says:
    #

@@ -714,8 +714,29 @@ si_intersect_scissor(const VkRect2D *a, const VkRect2D *b)
 }
 
 void
-si_write_scissors(struct radeon_cmdbuf *cs, int first, int count, const VkRect2D *scissors,
-                  const VkViewport *viewports, unsigned rast_prim, float line_width)
+si_write_scissors(struct radeon_cmdbuf *cs, int count, const VkRect2D *scissors,
+                  const VkViewport *viewports)
+{
+   int i;
+
+   if (!count)
+      return;
+
+   radeon_set_context_reg_seq(cs, R_028250_PA_SC_VPORT_SCISSOR_0_TL, count * 2);
+   for (i = 0; i < count; i++) {
+      VkRect2D viewport_scissor = si_scissor_from_viewport(viewports + i);
+      VkRect2D scissor = si_intersect_scissor(&scissors[i], &viewport_scissor);
+
+      radeon_emit(cs, S_028250_TL_X(scissor.offset.x) | S_028250_TL_Y(scissor.offset.y) |
+                         S_028250_WINDOW_OFFSET_DISABLE(1));
+      radeon_emit(cs, S_028254_BR_X(scissor.offset.x + scissor.extent.width) |
+                         S_028254_BR_Y(scissor.offset.y + scissor.extent.height));
+   }
+}
+
+void
+si_write_guardband(struct radeon_cmdbuf *cs, int count, const VkViewport *viewports,
+                   unsigned rast_prim, float line_width)
 {
    int i;
    float scale[3], translate[3], guardband_x = INFINITY, guardband_y = INFINITY;
@@ -724,11 +745,7 @@ si_write_scissors(struct radeon_cmdbuf *cs, int first, int count, const VkRect2D
    if (!count)
       return;
 
-   radeon_set_context_reg_seq(cs, R_028250_PA_SC_VPORT_SCISSOR_0_TL + first * 4 * 2, count * 2);
    for (i = 0; i < count; i++) {
-      VkRect2D viewport_scissor = si_scissor_from_viewport(viewports + i);
-      VkRect2D scissor = si_intersect_scissor(&scissors[i], &viewport_scissor);
-
       radv_get_viewport_xform(viewports + i, scale, translate);
       scale[0] = fabsf(scale[0]);
       scale[1] = fabsf(scale[1]);
@@ -740,11 +757,6 @@ si_write_scissors(struct radeon_cmdbuf *cs, int first, int count, const VkRect2D
 
       guardband_x = MIN2(guardband_x, (max_range - fabsf(translate[0])) / scale[0]);
       guardband_y = MIN2(guardband_y, (max_range - fabsf(translate[1])) / scale[1]);
-
-      radeon_emit(cs, S_028250_TL_X(scissor.offset.x) | S_028250_TL_Y(scissor.offset.y) |
-                         S_028250_WINDOW_OFFSET_DISABLE(1));
-      radeon_emit(cs, S_028254_BR_X(scissor.offset.x + scissor.extent.width) |
-                         S_028254_BR_Y(scissor.offset.y + scissor.extent.height));
 
       if (radv_rast_prim_is_points_or_lines(rast_prim)) {
          /* When rendering wide points or lines, we need to be more conservative about when to
@@ -803,7 +815,8 @@ static const struct radv_prim_vertex_count prim_size_table[] = {
 uint32_t
 si_get_ia_multi_vgt_param(struct radv_cmd_buffer *cmd_buffer, bool instanced_draw,
                           bool indirect_draw, bool count_from_stream_output,
-                          uint32_t draw_vertex_count, unsigned topology, bool prim_restart_enable)
+                          uint32_t draw_vertex_count, unsigned topology, bool prim_restart_enable,
+                          unsigned patch_control_points, unsigned num_tess_patches)
 {
    enum amd_gfx_level gfx_level = cmd_buffer->device->physical_device->rad_info.gfx_level;
    enum radeon_family family = cmd_buffer->device->physical_device->rad_info.family;
@@ -817,10 +830,27 @@ si_get_ia_multi_vgt_param(struct radv_cmd_buffer *cmd_buffer, bool instanced_dra
    bool partial_es_wave = cmd_buffer->state.graphics_pipeline->ia_multi_vgt_param.partial_es_wave;
    bool multi_instances_smaller_than_primgroup;
    struct radv_prim_vertex_count prim_vertex_count = prim_size_table[topology];
+   unsigned primgroup_size;
+
+   if (radv_pipeline_has_stage(cmd_buffer->state.graphics_pipeline, MESA_SHADER_TESS_CTRL)) {
+      primgroup_size = num_tess_patches;
+   } else if (radv_pipeline_has_stage(cmd_buffer->state.graphics_pipeline, MESA_SHADER_GEOMETRY)) {
+      primgroup_size = 64;
+   } else {
+      primgroup_size = 128; /* recommended without a GS */
+   }
+
+   /* GS requirement. */
+   if (radv_pipeline_has_stage(cmd_buffer->state.graphics_pipeline, MESA_SHADER_GEOMETRY) &&
+       gfx_level <= GFX8) {
+      unsigned gs_table_depth = cmd_buffer->device->physical_device->gs_table_depth;
+      if (SI_GS_PER_ES / primgroup_size >= gs_table_depth - 3)
+         partial_es_wave = true;
+   }
 
    if (radv_pipeline_has_stage(cmd_buffer->state.graphics_pipeline, MESA_SHADER_TESS_CTRL)) {
       if (topology == V_008958_DI_PT_PATCH) {
-         prim_vertex_count.min = cmd_buffer->state.graphics_pipeline->tess_patch_control_points;
+         prim_vertex_count.min = patch_control_points;
          prim_vertex_count.incr = 1;
       }
    }
@@ -828,7 +858,7 @@ si_get_ia_multi_vgt_param(struct radv_cmd_buffer *cmd_buffer, bool instanced_dra
    multi_instances_smaller_than_primgroup = indirect_draw;
    if (!multi_instances_smaller_than_primgroup && instanced_draw) {
       uint32_t num_prims = radv_prims_for_vertices(&prim_vertex_count, draw_vertex_count);
-      if (num_prims < cmd_buffer->state.graphics_pipeline->ia_multi_vgt_param.primgroup_size)
+      if (num_prims < primgroup_size)
          multi_instances_smaller_than_primgroup = true;
    }
 
@@ -917,6 +947,7 @@ si_get_ia_multi_vgt_param(struct radv_cmd_buffer *cmd_buffer, bool instanced_dra
    }
 
    return cmd_buffer->state.graphics_pipeline->ia_multi_vgt_param.base |
+          S_028AA8_PRIMGROUP_SIZE(primgroup_size - 1) |
           S_028AA8_SWITCH_ON_EOP(ia_switch_on_eop) | S_028AA8_SWITCH_ON_EOI(ia_switch_on_eoi) |
           S_028AA8_PARTIAL_VS_WAVE_ON(partial_vs_wave) |
           S_028AA8_PARTIAL_ES_WAVE_ON(partial_es_wave) |

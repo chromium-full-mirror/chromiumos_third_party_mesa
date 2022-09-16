@@ -401,6 +401,12 @@ st_nir_preprocess(struct st_context *st, struct gl_program *prog,
    NIR_PASS_V(nir, nir_split_var_copies);
    NIR_PASS_V(nir, nir_lower_var_copies);
 
+   enum pipe_shader_type pstage = pipe_shader_type_from_mesa(stage);
+   if (st->screen->get_shader_param(st->screen, pstage, PIPE_SHADER_CAP_FP16) &&
+         st->screen->get_shader_param(st->screen, pstage, PIPE_SHADER_CAP_INT16)) {
+      NIR_PASS_V(nir, nir_lower_mediump_vars, nir_var_function_temp | nir_var_shader_temp | nir_var_mem_shared);
+   }
+
    if (options->lower_to_scalar) {
      NIR_PASS_V(nir, nir_lower_alu_to_scalar,
                 options->lower_to_scalar_filter, NULL);
@@ -1029,10 +1035,13 @@ st_finalize_nir(struct st_context *st, struct gl_program *prog,
    NIR_PASS_V(nir, nir_split_var_copies);
    NIR_PASS_V(nir, nir_lower_var_copies);
 
-   if (st->lower_rect_tex) {
-      struct nir_lower_tex_options opts = { 0 };
+   const bool lower_tg4_offsets =
+      !st->screen->get_param(screen, PIPE_CAP_TEXTURE_GATHER_OFFSETS);
 
-      opts.lower_rect = true;
+   if (st->lower_rect_tex || lower_tg4_offsets) {
+      struct nir_lower_tex_options opts = {0};
+      opts.lower_rect = !!st->lower_rect_tex;
+      opts.lower_tg4_offsets = lower_tg4_offsets;
 
       NIR_PASS_V(nir, nir_lower_tex, &opts);
    }

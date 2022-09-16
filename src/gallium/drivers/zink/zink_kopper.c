@@ -22,16 +22,18 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
+#include "util/detect_os.h"
 
 #include "zink_context.h"
 #include "zink_screen.h"
+#include "zink_surface.h"
 #include "zink_resource.h"
 #include "zink_kopper.h"
 
 static void
 zink_kopper_set_present_mode_for_interval(struct kopper_displaytarget *cdt, int interval)
 {
-#ifdef WIN32
+#if DETECT_OS_WINDOWS
     // not hooked up yet so let's not sabotage benchmarks
     cdt->present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
 #else
@@ -591,6 +593,10 @@ zink_kopper_acquire_submit(struct zink_screen *screen, struct zink_resource *res
    if (cdt->swapchain->images[res->obj->dt_idx].dt_has_data)
       return VK_NULL_HANDLE;
    assert(res->obj->dt_idx != UINT32_MAX);
+   if (cdt->swapchain->images[res->obj->dt_idx].acquired) {
+      assert(!cdt->swapchain->images[res->obj->dt_idx].acquire);
+      return VK_NULL_HANDLE;
+   }
    assert(cdt->swapchain->images[res->obj->dt_idx].acquire);
    cdt->swapchain->images[res->obj->dt_idx].acquired = true;
    /* this is now owned by the batch */

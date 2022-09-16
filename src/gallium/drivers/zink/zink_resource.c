@@ -24,6 +24,7 @@
 #include "zink_resource.h"
 
 #include "zink_batch.h"
+#include "zink_clear.h"
 #include "zink_context.h"
 #include "zink_fence.h"
 #include "zink_program.h"
@@ -36,7 +37,6 @@
 #include "vulkan/wsi/wsi_common.h"
 
 #include "vk_format.h"
-#include "util/slab.h"
 #include "util/u_blitter.h"
 #include "util/u_debug.h"
 #include "util/format/u_format.h"
@@ -111,7 +111,6 @@ zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_ob
 #endif
    }
 
-   zink_descriptor_set_refs_clear(&obj->desc_set_refs, obj);
    if (obj->dt) {
       FREE(obj->bo); //this is a dummy struct
    } else
@@ -350,7 +349,7 @@ double_check_ici(struct zink_screen *screen, VkImageCreateInfo *ici, VkImageUsag
 }
 
 static VkImageUsageFlags
-get_image_usage(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe_resource *templ, unsigned bind, unsigned modifiers_count, const uint64_t *modifiers, uint64_t *mod)
+get_image_usage(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe_resource *templ, unsigned bind, unsigned modifiers_count, uint64_t *modifiers, uint64_t *mod)
 {
    VkImageTiling tiling = ici->tiling;
    bool need_extended = false;
@@ -359,6 +358,9 @@ get_image_usage(struct zink_screen *screen, VkImageCreateInfo *ici, const struct
       bool have_linear = false;
       const struct zink_modifier_prop *prop = &screen->modifier_props[templ->format];
       assert(tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT);
+      bool found = false;
+      uint64_t good_mod = 0;
+      VkImageUsageFlags good_usage = 0;
       for (unsigned i = 0; i < modifiers_count; i++) {
          if (modifiers[i] == DRM_FORMAT_MOD_LINEAR) {
             have_linear = true;
@@ -370,9 +372,20 @@ get_image_usage(struct zink_screen *screen, VkImageCreateInfo *ici, const struct
          if (feats) {
             VkImageUsageFlags usage = get_image_usage_for_feats(screen, feats, templ, bind, &need_extended);
             assert(!need_extended);
-            if (double_check_ici(screen, ici, usage, mod))
-               return usage;
+            if (double_check_ici(screen, ici, usage, mod)) {
+               if (!found) {
+                  found = true;
+                  good_mod = modifiers[i];
+                  good_usage = usage;
+               }
+            } else {
+               modifiers[i] = DRM_FORMAT_MOD_LINEAR;
+            }
          }
+      }
+      if (found) {
+         *mod = good_mod;
+         return good_usage;
       }
       /* only try linear if no other options available */
       if (have_linear) {
@@ -404,14 +417,16 @@ get_image_usage(struct zink_screen *screen, VkImageCreateInfo *ici, const struct
 }
 
 static uint64_t
-create_ici(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe_resource *templ, bool dmabuf, unsigned bind, unsigned modifiers_count, const uint64_t *modifiers, bool *success)
+create_ici(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe_resource *templ, bool dmabuf, unsigned bind, unsigned modifiers_count, uint64_t *modifiers, bool *success)
 {
    ici->sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
    /* pNext may already be set */
    if (util_format_get_num_planes(templ->format) > 1)
       ici->flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+   else if (bind & ZINK_BIND_MUTABLE)
+      ici->flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
    else
-      ici->flags = modifiers_count || dmabuf || bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DEPTH_STENCIL) ? 0 : VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+      ici->flags = 0;
    if (ici->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)
       /* unset VkImageFormatListCreateInfo if mutable */
       ici->pNext = NULL;
@@ -488,10 +503,6 @@ create_ici(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe
    if (templ->target == PIPE_TEXTURE_CUBE)
       ici->arrayLayers *= 6;
 
-   if (templ->usage == PIPE_USAGE_STAGING &&
-       templ->format != PIPE_FORMAT_B4G4R4A4_UNORM &&
-       templ->format != PIPE_FORMAT_B4G4R4A4_UINT)
-      ici->tiling = VK_IMAGE_TILING_LINEAR;
    if (ici->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
       modifiers_count = 0;
 
@@ -547,8 +558,8 @@ retry:
 }
 
 static struct zink_resource_object *
-resource_object_create(struct zink_screen *screen, const struct pipe_resource *templ, struct winsys_handle *whandle, bool *optimal_tiling,
-                       const uint64_t *modifiers, int modifiers_count, const void *loader_private)
+resource_object_create(struct zink_screen *screen, const struct pipe_resource *templ, struct winsys_handle *whandle, bool *linear,
+                       uint64_t *modifiers, int modifiers_count, const void *loader_private)
 {
    struct zink_resource_object *obj = CALLOC_STRUCT(zink_resource_object);
    if (!obj)
@@ -607,7 +618,6 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       export_types |= VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 
    pipe_reference_init(&obj->reference, 1);
-   util_dynarray_init(&obj->desc_set_refs.refs, NULL);
    if (loader_private) {
       obj->bo = CALLOC_STRUCT(zink_bo);
       obj->transfer_dst = true;
@@ -652,12 +662,16 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
          if (modifiers_count > 1)
             try_modifiers = true;
       }
-      const uint64_t *ici_modifiers = winsys_modifier ? &whandle->modifier : modifiers;
+      uint64_t *ici_modifiers = winsys_modifier ? &whandle->modifier : modifiers;
       unsigned ici_modifier_count = winsys_modifier ? 1 : modifiers_count;
       bool success = false;
       VkImageCreateInfo ici;
       enum pipe_format srgb = PIPE_FORMAT_NONE;
-      if (screen->info.have_KHR_swapchain_mutable_format) {
+      /* We use modifiers as a proxy for "this surface is used as a window system render target".
+       * For winsys, we need to be able to mutate between srgb and linear, but we don't need general
+       * image view/shader image format compatibility (that path means losing fast clears or compression on some hardware).
+       */
+      if (ici_modifier_count) {
          srgb = util_format_is_srgb(templ->format) ? util_format_linear(templ->format) : util_format_srgb(templ->format);
          /* why do these helpers have different default return values? */
          if (srgb == templ->format)
@@ -679,6 +693,12 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       }
       uint64_t mod = create_ici(screen, &ici, templ, external == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT,
                                 templ->bind, ici_modifier_count, ici_modifiers, &success);
+      if (ici.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT && srgb &&
+          util_format_get_nr_components(srgb) == 4 &&
+          !(ici.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT)) {
+         mesa_loge("zink: refusing to create possibly-srgb dmabuf due to missing driver support: %s not supported!", util_format_name(srgb));
+         goto fail1;
+      }
       VkExternalMemoryImageCreateInfo emici;
       VkImageDrmFormatModifierExplicitCreateInfoEXT idfmeci;
       VkImageDrmFormatModifierListCreateInfoEXT idfmlci;
@@ -733,8 +753,8 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
          }
       }
 
-      if (optimal_tiling)
-         *optimal_tiling = ici.tiling == VK_IMAGE_TILING_OPTIMAL;
+      if (linear)
+         *linear = ici.tiling == VK_IMAGE_TILING_LINEAR;
 
       if (ici.usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)
          obj->transfer_dst = true;
@@ -1107,7 +1127,7 @@ resource_create(struct pipe_screen *pscreen,
    pipe_reference_init(&res->base.b.reference, 1);
    res->base.b.screen = pscreen;
 
-   bool optimal_tiling = false;
+   bool linear = false;
    struct pipe_resource templ2 = *templ;
    if (templ2.flags & PIPE_RESOURCE_FLAG_SPARSE)
       templ2.bind |= PIPE_BIND_SHADER_IMAGE;
@@ -1115,7 +1135,7 @@ resource_create(struct pipe_screen *pscreen,
       templ2.flags &= ~PIPE_RESOURCE_FLAG_SPARSE;
       res->base.b.flags &= ~PIPE_RESOURCE_FLAG_SPARSE;
    }
-   res->obj = resource_object_create(screen, &templ2, whandle, &optimal_tiling, modifiers, modifiers_count, loader_private);
+   res->obj = resource_object_create(screen, &templ2, whandle, &linear, res->modifiers, res->modifiers_count, loader_private);
    if (!res->obj) {
       free(res->modifiers);
       FREE_CL(res);
@@ -1152,7 +1172,7 @@ resource_create(struct pipe_screen *pscreen,
       res->dmabuf_acquire = whandle && whandle->type == WINSYS_HANDLE_TYPE_FD;
       res->dmabuf = res->dmabuf_acquire = whandle && whandle->type == WINSYS_HANDLE_TYPE_FD;
       res->layout = res->dmabuf_acquire ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
-      res->optimal_tiling = optimal_tiling;
+      res->linear = linear;
       res->aspect = aspect_from_format(templ->format);
    }
 
@@ -1182,7 +1202,7 @@ resource_create(struct pipe_screen *pscreen,
          res->obj->vkflags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
       res->obj->vkusage = cdt->swapchain->scci.imageUsage;
       res->base.b.bind |= PIPE_BIND_DISPLAY_TARGET;
-      res->optimal_tiling = true;
+      res->linear = false;
       res->swapchain = true;
    }
    if (!res->obj->host_visible)
@@ -1231,12 +1251,11 @@ add_resource_bind(struct zink_context *ctx, struct zink_resource *res, unsigned 
    res->base.b.bind |= bind;
    struct zink_resource_object *old_obj = res->obj;
    if (bind & ZINK_BIND_DMABUF && !res->modifiers_count && screen->info.have_EXT_image_drm_format_modifier) {
-      res->modifiers_count = screen->modifier_props[res->base.b.format].drmFormatModifierCount;
+      res->modifiers_count = 1;
       res->modifiers = malloc(res->modifiers_count * sizeof(uint64_t));
-      for (unsigned i = 0; i < screen->modifier_props[res->base.b.format].drmFormatModifierCount; i++)
-         res->modifiers[i] = screen->modifier_props[res->base.b.format].pDrmFormatModifierProperties[i].drmFormatModifier;
+      res->modifiers[0] = DRM_FORMAT_MOD_LINEAR;
    }
-   struct zink_resource_object *new_obj = resource_object_create(screen, &res->base.b, NULL, &res->optimal_tiling, res->modifiers, res->modifiers_count, NULL);
+   struct zink_resource_object *new_obj = resource_object_create(screen, &res->base.b, NULL, &res->linear, res->modifiers, res->modifiers_count, NULL);
    if (!new_obj) {
       debug_printf("new backing resource alloc failed!");
       res->base.b.bind &= ~bind;
@@ -1254,7 +1273,6 @@ add_resource_bind(struct zink_context *ctx, struct zink_resource *res, unsigned 
       needs_unref = false;
    }
    res->obj = new_obj;
-   zink_descriptor_set_refs_clear(&old_obj->desc_set_refs, old_obj);
    for (unsigned i = 0; i <= res->base.b.last_level; i++) {
       struct pipe_box box = {0, 0, 0,
                              u_minify(res->base.b.width0, i),
@@ -1584,7 +1602,6 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
    if (!zink_resource_has_usage(res))
       return false;
 
-   struct zink_resource_object *old_obj = res->obj;
    struct zink_resource_object *new_obj = resource_object_create(screen, &res->base.b, NULL, NULL, NULL, 0, NULL);
    if (!new_obj) {
       debug_printf("new backing resource alloc failed!");
@@ -1594,7 +1611,6 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
    zink_batch_reference_resource_move(&ctx->batch, res);
    res->obj = new_obj;
    zink_resource_rebind(ctx, res);
-   zink_descriptor_set_refs_clear(&old_obj->desc_set_refs, old_obj);
    return true;
 }
 
@@ -1920,7 +1936,7 @@ zink_image_map(struct pipe_context *pctx,
    else if (usage & PIPE_MAP_READ)
       /* if the map region intersects with any clears then we have to apply them */
       zink_fb_clears_apply_region(ctx, pres, zink_rect_from_box(box));
-   if (res->optimal_tiling || !res->obj->host_visible) {
+   if (!res->linear || !res->obj->host_visible) {
       enum pipe_format format = pres->format;
       if (usage & PIPE_MAP_DEPTH_ONLY)
          format = util_format_get_depth_only(pres->format);
@@ -1960,7 +1976,7 @@ zink_image_map(struct pipe_context *pctx,
 
       ptr = map_resource(screen, staging_res);
    } else {
-      assert(!res->optimal_tiling);
+      assert(res->linear);
       ptr = map_resource(screen, res);
       if (!ptr)
          goto fail;
@@ -2150,11 +2166,11 @@ zink_resource_get_separate_stencil(struct pipe_resource *pres)
 
 }
 
-bool
-zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res)
+static bool
+resource_object_add_bind(struct zink_context *ctx, struct zink_resource *res, unsigned bind)
 {
    /* base resource already has the cap */
-   if (res->base.b.bind & PIPE_BIND_SHADER_IMAGE)
+   if (res->base.b.bind & bind)
       return true;
    if (res->obj->is_buffer) {
       unreachable("zink: all buffers should have this bit");
@@ -2162,11 +2178,23 @@ zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource
    }
    assert(!res->obj->dt);
    zink_fb_clears_apply_region(ctx, &res->base.b, (struct u_rect){0, res->base.b.width0, 0, res->base.b.height0});
-   bool ret = add_resource_bind(ctx, res, PIPE_BIND_SHADER_IMAGE);
+   bool ret = add_resource_bind(ctx, res, bind);
    if (ret)
       zink_resource_rebind(ctx, res);
 
    return ret;
+}
+
+bool
+zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource *res)
+{
+   return resource_object_add_bind(ctx, res, PIPE_BIND_SHADER_IMAGE);
+}
+
+bool
+zink_resource_object_init_mutable(struct zink_context *ctx, struct zink_resource *res)
+{
+   return resource_object_add_bind(ctx, res, ZINK_BIND_MUTABLE);
 }
 
 void
@@ -2256,11 +2284,14 @@ bool
 zink_screen_resource_init(struct pipe_screen *pscreen)
 {
    struct zink_screen *screen = zink_screen(pscreen);
-   pscreen->resource_create = zink_resource_create;
+   pscreen->resource_create = u_transfer_helper_resource_create;
    pscreen->resource_create_with_modifiers = zink_resource_create_with_modifiers;
    pscreen->resource_create_drawable = zink_resource_create_drawable;
-   pscreen->resource_destroy = zink_resource_destroy;
-   pscreen->transfer_helper = u_transfer_helper_create(&transfer_vtbl, true, true, false, false, !screen->have_D24_UNORM_S8_UINT);
+   pscreen->resource_destroy = u_transfer_helper_resource_destroy;
+   pscreen->transfer_helper = u_transfer_helper_create(&transfer_vtbl,
+      U_TRANSFER_HELPER_SEPARATE_Z32S8 | U_TRANSFER_HELPER_SEPARATE_STENCIL |
+      U_TRANSFER_HELPER_INTERLEAVE_IN_PLACE |
+      (!screen->have_D24_UNORM_S8_UINT ? U_TRANSFER_HELPER_Z24_IN_Z32F : 0));
 
    if (screen->info.have_KHR_external_memory_fd || screen->info.have_KHR_external_memory_win32) {
       pscreen->resource_get_handle = zink_resource_get_handle;
@@ -2280,8 +2311,8 @@ zink_context_resource_init(struct pipe_context *pctx)
 {
    pctx->buffer_map = zink_buffer_map;
    pctx->buffer_unmap = zink_buffer_unmap;
-   pctx->texture_map = u_transfer_helper_deinterleave_transfer_map;
-   pctx->texture_unmap = u_transfer_helper_deinterleave_transfer_unmap;
+   pctx->texture_map = u_transfer_helper_transfer_map;
+   pctx->texture_unmap = u_transfer_helper_transfer_unmap;
 
    pctx->transfer_flush_region = u_transfer_helper_transfer_flush_region;
    pctx->buffer_subdata = zink_buffer_subdata;

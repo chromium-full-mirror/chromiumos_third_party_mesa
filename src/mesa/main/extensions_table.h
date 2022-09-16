@@ -386,6 +386,7 @@ EXT(MESA_ycbcr_texture                      , MESA_ycbcr_texture                
 
 EXT(NVX_gpu_memory_info                     , NVX_gpu_memory_info                    , GLL, GLC,  x ,  x , 2013)
 
+EXT(NV_ES1_1_compatibility                  , dummy_true                             , GLL,  x ,  x ,  x , 2022)
 EXT(NV_alpha_to_coverage_dither_control     , NV_alpha_to_coverage_dither_control    , GLL, GLC,  x , ES2, 2017)
 EXT(NV_blend_square                         , dummy_true                             , GLL,  x ,  x ,  x , 1999)
 EXT(NV_compute_shader_derivatives           , NV_compute_shader_derivatives          , GLL, GLC,  x ,  32, 2018)
@@ -416,6 +417,7 @@ EXT(NV_read_stencil                         , dummy_true                        
 EXT(NV_sample_locations                     , ARB_sample_locations                   , GLL, GLC,  x , ES2, 2015)
 EXT(NV_shader_atomic_float                  , NV_shader_atomic_float                 , GLL, GLC,  x ,  x , 2012)
 EXT(NV_shader_atomic_int64                  , NV_shader_atomic_int64                 , GLL, GLC,  x ,  x , 2014)
+EXT(NV_shader_noperspective_interpolation   , EXT_gpu_shader4                        ,  x ,  x ,  x ,  30, 2014)
 EXT(NV_texgen_reflection                    , dummy_true                             , GLL,  x ,  x ,  x , 1999)
 EXT(NV_texture_barrier                      , NV_texture_barrier                     , GLL, GLC,  x ,  x , 2009)
 EXT(NV_texture_env_combine4                 , NV_texture_env_combine4                , GLL,  x ,  x ,  x , 1999)

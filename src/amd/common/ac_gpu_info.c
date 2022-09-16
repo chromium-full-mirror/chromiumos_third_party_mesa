@@ -86,6 +86,8 @@
 #define AMDGPU_VRAM_TYPE_DDR4  8
 #define AMDGPU_VRAM_TYPE_GDDR6 9
 #define AMDGPU_VRAM_TYPE_DDR5  10
+#define AMDGPU_VRAM_TYPE_LPDDR4 11
+#define AMDGPU_VRAM_TYPE_LPDDR5 12
 
 struct drm_amdgpu_heap_info {
    uint64_t total_heap_size;
@@ -852,7 +854,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
       info->gfx_level = GFX10_3;
    else if (info->ip[AMD_IP_GFX].ver_major == 10 && info->ip[AMD_IP_GFX].ver_minor == 1)
       info->gfx_level = GFX10;
-   else if (info->ip[AMD_IP_GFX].ver_major == 9)
+   else if (info->ip[AMD_IP_GFX].ver_major == 9 || info->ip[AMD_IP_COMPUTE].ver_major == 9)
       info->gfx_level = GFX9;
    else if (info->ip[AMD_IP_GFX].ver_major == 8)
       info->gfx_level = GFX8;
@@ -906,22 +908,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
    info->uvd_fw_version = info->ip[AMD_IP_UVD].num_queues ? uvd_version : 0;
    info->vce_fw_version = info->ip[AMD_IP_VCE].num_queues ? vce_version : 0;
 
-   /* Based on MemoryOpsPerClockTable from PAL. */
-   switch (info->vram_type) {
-   case AMDGPU_VRAM_TYPE_DDR2:
-   case AMDGPU_VRAM_TYPE_DDR3:
-   case AMDGPU_VRAM_TYPE_DDR4: /* same for LPDDR4 */
-   case AMDGPU_VRAM_TYPE_HBM: /* same for HBM2 and HBM3 */
-      info->memory_freq_mhz_effective *= 2;
-      break;
-   case AMDGPU_VRAM_TYPE_DDR5: /* same for LPDDR5 */
-   case AMDGPU_VRAM_TYPE_GDDR5:
-      info->memory_freq_mhz_effective *= 4;
-      break;
-   case AMDGPU_VRAM_TYPE_GDDR6:
-      info->memory_freq_mhz_effective *= 16;
-      break;
-   }
+   info->memory_freq_mhz_effective *= ac_memory_ops_per_clock(info->vram_type);
 
    /* unified ring */
    info->has_video_hw.vcn_decode
@@ -2007,4 +1994,29 @@ void ac_get_task_info(struct radeon_info *info,
    task_info->draw_ring_offset = ALIGN(AC_TASK_CTRLBUF_BYTES, 256);
    task_info->payload_ring_offset = ALIGN(task_info->draw_ring_offset + draw_ring_bytes, 256);
    task_info->bo_size_bytes = task_info->payload_ring_offset + payload_ring_bytes;
+}
+
+uint32_t ac_memory_ops_per_clock(uint32_t vram_type)
+{
+   /* Based on MemoryOpsPerClockTable from PAL. */
+   switch (vram_type) {
+   case AMDGPU_VRAM_TYPE_GDDR1:
+   case AMDGPU_VRAM_TYPE_GDDR3: /* last in low-end Evergreen */
+   case AMDGPU_VRAM_TYPE_GDDR4: /* last in R7xx, not used much */
+   case AMDGPU_VRAM_TYPE_UNKNOWN:
+   default:
+      return 0;
+   case AMDGPU_VRAM_TYPE_DDR2:
+   case AMDGPU_VRAM_TYPE_DDR3:
+   case AMDGPU_VRAM_TYPE_DDR4:
+   case AMDGPU_VRAM_TYPE_LPDDR4:
+   case AMDGPU_VRAM_TYPE_HBM: /* same for HBM2 and HBM3 */
+      return 2;
+   case AMDGPU_VRAM_TYPE_DDR5:
+   case AMDGPU_VRAM_TYPE_LPDDR5:
+   case AMDGPU_VRAM_TYPE_GDDR5: /* last in Polaris and low-end Navi14 */
+      return 4;
+   case AMDGPU_VRAM_TYPE_GDDR6:
+      return 16;
+   }
 }

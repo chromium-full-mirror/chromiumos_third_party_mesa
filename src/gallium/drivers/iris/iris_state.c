@@ -77,9 +77,6 @@
 #include <valgrind.h>
 #include <memcheck.h>
 #define VG(x) x
-#ifdef DEBUG
-#define __gen_validate_value(x) VALGRIND_CHECK_MEM_IS_DEFINED(&(x), sizeof(x))
-#endif
 #else
 #define VG(x)
 #endif
@@ -654,6 +651,7 @@ emit_pipeline_select(struct iris_batch *batch, uint32_t pipeline)
                                  PIPE_CONTROL_RENDER_TARGET_FLUSH |
                                  PIPE_CONTROL_DEPTH_CACHE_FLUSH |
                                  PIPE_CONTROL_DATA_CACHE_FLUSH |
+                                 PIPE_CONTROL_UNTYPED_DATAPORT_CACHE_FLUSH |
                                  PIPE_CONTROL_CS_STALL);
 
     iris_emit_pipe_control_flush(batch,
@@ -739,6 +737,9 @@ init_state_base_address(struct iris_batch *batch)
       sba.IndirectObjectBufferSize = 0xfffff;
       sba.InstructionBufferSize    = 0xfffff;
       sba.DynamicStateBufferSize   = 0xfffff;
+#if GFX_VERx10 >= 125
+      sba.L1CacheControl = L1CC_WB;
+#endif
    }
 
    flush_after_state_base_change(batch);
@@ -1056,6 +1057,14 @@ iris_init_render_context(struct iris_batch *batch)
    init_state_base_address(batch);
 
    iris_init_common_context(batch);
+
+#if GFX_VERx10 == 125
+   /* Wa_14015207028 */
+   iris_emit_reg(batch, GENX(VFG_PREEMPTION_CHICKEN_BITS), vfgc) {
+      vfgc.PolygonTrifanLineLoopPreemptionDisable = true;
+      vfgc.PolygonTrifanLineLoopPreemptionDisableMask = true;
+   };
+#endif
 
 #if GFX_VER >= 9
    iris_emit_reg(batch, GENX(CS_DEBUG_MODE2), reg) {
@@ -1674,7 +1683,8 @@ want_pma_fix(struct iris_context *ice)
    /* 3DSTATE_DEPTH_BUFFER::SURFACE_TYPE != NULL &&
     * 3DSTATE_DEPTH_BUFFER::HIZ Enable &&
     */
-   if (!zres || !iris_resource_level_has_hiz(zres, cso_fb->zsbuf->u.tex.level))
+   if (!zres ||
+       !iris_resource_level_has_hiz(devinfo, zres, cso_fb->zsbuf->u.tex.level))
       return false;
 
    /* 3DSTATE_WM::EDSC_Mode != EDSC_PREPS */
@@ -3212,6 +3222,7 @@ iris_set_framebuffer_state(struct pipe_context *ctx,
 {
    struct iris_context *ice = (struct iris_context *) ctx;
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    struct isl_device *isl_dev = &screen->isl_dev;
    struct pipe_framebuffer_state *cso = &ice->state.framebuffer;
    struct iris_resource *zres;
@@ -3281,7 +3292,7 @@ iris_set_framebuffer_state(struct pipe_context *ctx,
 
          view.format = zres->surf.format;
 
-         if (iris_resource_level_has_hiz(zres, view.base_level)) {
+         if (iris_resource_level_has_hiz(devinfo, zres, view.base_level)) {
             info.hiz_usage = zres->aux.usage;
             info.hiz_surf = &zres->aux.surf;
             info.hiz_address = zres->aux.bo->address + zres->aux.offset;
@@ -5501,6 +5512,9 @@ iris_update_binder_address(struct iris_batch *batch,
 #if GFX_VER >= 9
       sba.BindlessSurfaceStateMOCS    = mocs;
 #endif
+#if GFX_VERx10 >= 125
+      sba.L1CacheControl = L1CC_WB;
+#endif
    }
 #endif
 
@@ -6268,6 +6282,13 @@ iris_upload_dirty_render_state(struct iris_context *ice,
          uint32_t *decl_list =
             ice->state.streamout + GENX(3DSTATE_STREAMOUT_length);
          iris_batch_emit(batch, decl_list, 4 * ((decl_list[0] & 0xff) + 2));
+
+#if GFX_VERx10 == 125
+         /* Wa_14015946265: Send PC with CS stall after SO_DECL. */
+         iris_emit_pipe_control_flush(batch,
+                                      "workaround: cs stall after so_decl",
+                                      PIPE_CONTROL_CS_STALL);
+#endif
       }
 
       if (dirty & IRIS_DIRTY_STREAMOUT) {
@@ -8078,7 +8099,7 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
 
    if (INTEL_DEBUG(DEBUG_PIPE_CONTROL)) {
       fprintf(stderr,
-              "  PC [%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%"PRIx64"]: %s\n",
+              "  PC [%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%"PRIx64"]: %s\n",
               (flags & PIPE_CONTROL_FLUSH_ENABLE) ? "PipeCon " : "",
               (flags & PIPE_CONTROL_CS_STALL) ? "CS " : "",
               (flags & PIPE_CONTROL_STALL_AT_SCOREBOARD) ? "Scoreboard " : "",
@@ -8104,6 +8125,7 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
               (flags & PIPE_CONTROL_WRITE_TIMESTAMP) ? "WriteTimestamp " : "",
               (flags & PIPE_CONTROL_FLUSH_HDC) ? "HDC " : "",
               (flags & PIPE_CONTROL_PSS_STALL_SYNC) ? "PSS " : "",
+              (flags & PIPE_CONTROL_UNTYPED_DATAPORT_CACHE_FLUSH) ? "UntypedDataPortCache " : "",
               imm, reason);
    }
 
@@ -8125,6 +8147,12 @@ iris_emit_raw_pipe_control(struct iris_batch *batch,
 #endif
 #if GFX_VER >= 11
       pc.HDCPipelineFlushEnable = flags & PIPE_CONTROL_FLUSH_HDC;
+#endif
+#if GFX_VERx10 >= 125
+      pc.UntypedDataPortCacheFlushEnable =
+         (flags & PIPE_CONTROL_UNTYPED_DATAPORT_CACHE_FLUSH) &&
+         IS_COMPUTE_PIPELINE(batch);
+      pc.HDCPipelineFlushEnable |= pc.UntypedDataPortCacheFlushEnable;
 #endif
       pc.LRIPostSyncOperation = NoLRIOperation;
       pc.PipeControlFlushEnable = flags & PIPE_CONTROL_FLUSH_ENABLE;

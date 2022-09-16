@@ -104,9 +104,22 @@ tu_spirv_to_nir(struct tu_device *dev,
    NIR_PASS_V(nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
 
    NIR_PASS_V(nir, nir_lower_global_vars_to_local);
+
+   /* Older glslang missing bf6efd0316d8 ("SPV: Fix #2293: keep relaxed
+    * precision on arg passed to relaxed param") will pass function args through
+    * a highp temporary, so we need the nir_opt_find_array_copies() and a copy
+    * prop before we lower mediump vars, or you'll be unable to optimize out
+    * array copies after lowering.  We do this before splitting copies, since
+    * that works against nir_opt_find_array_copies().
+    * */
+   NIR_PASS_V(nir, nir_opt_find_array_copies);
+   NIR_PASS_V(nir, nir_opt_copy_prop_vars);
+   NIR_PASS_V(nir, nir_opt_dce);
+
    NIR_PASS_V(nir, nir_split_var_copies);
    NIR_PASS_V(nir, nir_lower_var_copies);
 
+   NIR_PASS_V(nir, nir_lower_mediump_vars, nir_var_function_temp | nir_var_shader_temp | nir_var_mem_shared);
    NIR_PASS_V(nir, nir_opt_copy_prop_vars);
    NIR_PASS_V(nir, nir_opt_combine_stores, nir_var_all);
 
@@ -183,9 +196,17 @@ lower_vulkan_resource_index(nir_builder *b, nir_intrinsic_instr *instr,
       break;
    }
 
-   unsigned stride = binding_layout->size / (4 * A6XX_TEX_CONST_DWORDS);
-   assert(util_is_power_of_two_nonzero(stride));
-   nir_ssa_def *shift = nir_imm_int(b, util_logbase2(stride));
+   nir_ssa_def *shift;
+
+   if (binding_layout->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
+      /* Inline uniform blocks cannot have arrays so the stride is unused */
+      shift = nir_imm_int(b, 0);
+   } else {
+      unsigned stride = binding_layout->size / (4 * A6XX_TEX_CONST_DWORDS);
+      assert(util_is_power_of_two_nonzero(stride));
+      shift = nir_imm_int(b, util_logbase2(stride));
+   }
+
    nir_ssa_def *def = nir_vec3(b, nir_imm_int(b, set),
                                nir_iadd(b, nir_imm_int(b, base),
                                         nir_ishl(b, vulkan_idx, shift)),

@@ -130,6 +130,7 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_viewport_x_offset:
    case nir_intrinsic_load_viewport_y_offset:
    case nir_intrinsic_load_viewport_z_offset:
+   case nir_intrinsic_load_viewport_xy_scale_and_offset:
    case nir_intrinsic_load_blend_const_color_a_float:
    case nir_intrinsic_load_blend_const_color_b_float:
    case nir_intrinsic_load_blend_const_color_g_float:
@@ -181,6 +182,10 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_ray_num_dss_rt_stacks_intel:
    case nir_intrinsic_load_lshs_vertex_stride_amd:
    case nir_intrinsic_load_hs_out_patch_data_offset_amd:
+   case nir_intrinsic_load_clip_half_line_width_amd:
+   case nir_intrinsic_load_num_vertices_per_primitive_amd:
+   case nir_intrinsic_load_streamout_buffer_amd:
+   case nir_intrinsic_load_ordered_id_amd:
       is_divergent = false;
       break;
 
@@ -323,6 +328,13 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
       is_divergent = instr->src[0].ssa->divergent && (nir_intrinsic_access(instr) & ACCESS_NON_UNIFORM);
       break;
 
+   case nir_intrinsic_image_samples_identical:
+   case nir_intrinsic_image_deref_samples_identical:
+   case nir_intrinsic_bindless_image_samples_identical:
+      is_divergent = (instr->src[0].ssa->divergent && (nir_intrinsic_access(instr) & ACCESS_NON_UNIFORM)) ||
+                     instr->src[1].ssa->divergent;
+      break;
+
    case nir_intrinsic_image_load:
    case nir_intrinsic_image_deref_load:
    case nir_intrinsic_bindless_image_load:
@@ -366,6 +378,9 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_image_size:
    case nir_intrinsic_image_deref_size:
    case nir_intrinsic_bindless_image_size:
+   case nir_intrinsic_image_descriptor_amd:
+   case nir_intrinsic_image_deref_descriptor_amd:
+   case nir_intrinsic_bindless_image_descriptor_amd:
    case nir_intrinsic_copy_deref:
    case nir_intrinsic_vulkan_resource_index:
    case nir_intrinsic_vulkan_resource_reindex:
@@ -616,6 +631,7 @@ visit_intrinsic(nir_shader *shader, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_btd_stack_id_intel:
    case nir_intrinsic_load_topology_id_intel:
    case nir_intrinsic_load_scratch_base_ptr:
+   case nir_intrinsic_ordered_xfb_counter_add_amd:
       is_divergent = true;
       break;
 

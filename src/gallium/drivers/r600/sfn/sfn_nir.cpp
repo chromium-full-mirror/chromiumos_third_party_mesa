@@ -40,6 +40,7 @@
 #include "sfn_nir_lower_fs_out_to_vector.h"
 #include "sfn_nir_lower_alu.h"
 #include "sfn_nir_lower_tex.h"
+#include "sfn_instr_tex.h"
 #include "sfn_optimizer.h"
 #include "sfn_ra.h"
 #include "sfn_scheduler.h"
@@ -620,6 +621,12 @@ bool r600_lower_to_scalar_instr_filter(const nir_instr *instr, const void *)
    case nir_op_fdot2:
    case nir_op_fdot3:
    case nir_op_fdot4:
+   case nir_op_fddx:
+   case nir_op_fddx_coarse:
+   case nir_op_fddx_fine:
+   case nir_op_fddy:
+   case nir_op_fddy_coarse:
+   case nir_op_fddy_fine:
       return nir_src_bit_size(alu->src[0].src) == 64;
    case nir_op_cube_r600:
       return false;
@@ -663,7 +670,6 @@ int r600_shader_from_nir(struct r600_context *rctx,
 
    NIR_PASS_V(sel->nir, nir_lower_regs_to_ssa);
    nir_lower_idiv_options idiv_options = {0};
-   idiv_options.imprecise_32bit_lowering = sel->nir->info.stage != MESA_SHADER_COMPUTE;
    idiv_options.allow_fp16 = true;
 
    NIR_PASS_V(sel->nir, nir_lower_idiv, &idiv_options);
@@ -682,6 +688,7 @@ int r600_shader_from_nir(struct r600_context *rctx,
    lower_tex_options.lower_txp = ~0u;
    lower_tex_options.lower_txf_offset = true;
    lower_tex_options.lower_invalid_implicit_lod = true;
+   lower_tex_options.lower_tg4_offsets = true;
 
    NIR_PASS_V(sel->nir, nir_lower_tex, &lower_tex_options);
    NIR_PASS_V(sel->nir, r600_nir_lower_txl_txf_array_or_cube);
@@ -748,6 +755,9 @@ int r600_shader_from_nir(struct r600_context *rctx,
    NIR_PASS_V(sh, nir_lower_alu_to_scalar, r600_lower_to_scalar_instr_filter, NULL);
    NIR_PASS_V(sh, nir_lower_phis_to_scalar, false);
    NIR_PASS_V(sh, nir_lower_alu_to_scalar, r600_lower_to_scalar_instr_filter, NULL);
+   NIR_PASS_V(sh, r600_nir_lower_int_tg4);
+   NIR_PASS_V(sh, r600::r600_nir_lower_tex_to_backend, rctx->b.gfx_level);
+
 
    NIR_PASS_V(sh, r600::r600_nir_split_64bit_io);
    NIR_PASS_V(sh, r600::r600_split_64bit_alu_and_phi);
@@ -778,7 +788,6 @@ int r600_shader_from_nir(struct r600_context *rctx,
    while (optimize_once(sh));
 
    NIR_PASS_V(sh, nir_lower_bool_to_int32);
-   NIR_PASS_V(sh, r600_nir_lower_int_tg4);
    NIR_PASS_V(sh, nir_opt_algebraic_late);
 
    if (sh->info.stage == MESA_SHADER_FRAGMENT)

@@ -392,8 +392,6 @@ void st_init_limits(struct pipe_screen *screen,
       screen->get_param(screen, PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS);
    c->LowerTessLevel =
       !screen->get_param(screen, PIPE_CAP_NIR_COMPACT_ARRAYS);
-   c->LowerCsDerivedVariables =
-      !screen->get_param(screen, PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED);
    c->PrimitiveRestartForPatches = false;
 
    c->MaxCombinedTextureImageUnits =
@@ -950,6 +948,13 @@ void st_init_extensions(struct pipe_screen *screen,
           PIPE_FORMAT_RGTC2_UNORM,
           PIPE_FORMAT_RGTC2_SNORM } },
 
+      /* RGTC software fallback support. */
+      { { o(ARB_texture_compression_rgtc) },
+        { PIPE_FORMAT_R8_UNORM,
+          PIPE_FORMAT_R8_SNORM,
+          PIPE_FORMAT_R8G8_UNORM,
+          PIPE_FORMAT_R8G8_SNORM } },
+
       { { o(EXT_texture_compression_latc) },
         { PIPE_FORMAT_LATC1_UNORM,
           PIPE_FORMAT_LATC1_SNORM,
@@ -963,17 +968,32 @@ void st_init_extensions(struct pipe_screen *screen,
           PIPE_FORMAT_DXT3_RGBA,
           PIPE_FORMAT_DXT5_RGBA } },
 
+      /* S3TC software fallback support. */
+      { { o(EXT_texture_compression_s3tc),
+          o(ANGLE_texture_compression_dxt) },
+        { PIPE_FORMAT_R8G8B8A8_UNORM } },
+
       { { o(EXT_texture_compression_s3tc_srgb) },
         { PIPE_FORMAT_DXT1_SRGB,
           PIPE_FORMAT_DXT1_SRGBA,
           PIPE_FORMAT_DXT3_SRGBA,
           PIPE_FORMAT_DXT5_SRGBA } },
 
+      /* S3TC SRGB software fallback support. */
+      { { o(EXT_texture_compression_s3tc_srgb) },
+        { PIPE_FORMAT_R8G8B8A8_SRGB } },
+
       { { o(ARB_texture_compression_bptc) },
         { PIPE_FORMAT_BPTC_RGBA_UNORM,
           PIPE_FORMAT_BPTC_SRGBA,
           PIPE_FORMAT_BPTC_RGB_FLOAT,
           PIPE_FORMAT_BPTC_RGB_UFLOAT } },
+
+      /* BPTC software fallback support. */
+      { { o(ARB_texture_compression_bptc) },
+        { PIPE_FORMAT_R8G8B8A8_UNORM,
+          PIPE_FORMAT_R8G8B8A8_SRGB,
+          PIPE_FORMAT_R16G16B16X16_FLOAT } },
 
       { { o(TDFX_texture_compression_FXT1) },
         { PIPE_FORMAT_FXT1_RGB,
@@ -1203,10 +1223,6 @@ void st_init_extensions(struct pipe_screen *screen,
       /* only override for > 1 - 0 if none, 1 is MAX, >2 overrides MAX */
       if (drv_clip_planes > 1)
          consts->MaxClipPlanes = drv_clip_planes;
-
-      if (screen->get_param(screen, PIPE_CAP_VERTEXID_NOBASE)) {
-         consts->VertexID_is_zero_based = GL_TRUE;
-      }
 
       /* Extensions that either depend on GLSL 1.30 or are a subset thereof. */
       extensions->ARB_conservative_depth = GL_TRUE;

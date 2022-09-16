@@ -19,8 +19,8 @@ struct vn_info_extension {
 };
 
 /* sorted by extension names for bsearch */
-static const uint32_t _vn_info_extension_count = 90;
-static const struct vn_info_extension _vn_info_extensions[90] = {
+static const uint32_t _vn_info_extension_count = 94;
+static const struct vn_info_extension _vn_info_extensions[94] = {
    { "VK_EXT_4444_formats", 341, 1 },
    { "VK_EXT_calibrated_timestamps", 185, 2 },
    { "VK_EXT_command_serialization", 384, 0 },
@@ -39,8 +39,10 @@ static const struct vn_info_extension _vn_info_extensions[90] = {
    { "VK_EXT_index_type_uint8", 266, 1 },
    { "VK_EXT_inline_uniform_block", 139, 1 },
    { "VK_EXT_line_rasterization", 260, 1 },
+   { "VK_EXT_multi_draw", 393, 1 },
    { "VK_EXT_pipeline_creation_cache_control", 298, 3 },
    { "VK_EXT_pipeline_creation_feedback", 193, 1 },
+   { "VK_EXT_primitive_topology_list_restart", 357, 1 },
    { "VK_EXT_private_data", 296, 1 },
    { "VK_EXT_provoking_vertex", 255, 1 },
    { "VK_EXT_queue_family_foreign", 127, 1 },
@@ -80,7 +82,8 @@ static const struct vn_info_extension _vn_info_extensions[90] = {
    { "VK_KHR_external_memory_fd", 75, 1 },
    { "VK_KHR_external_semaphore", 78, 1 },
    { "VK_KHR_external_semaphore_capabilities", 77, 1 },
-   { "VK_KHR_format_feature_flags2", 361, 1 },
+   { "VK_KHR_external_semaphore_fd", 80, 1 },
+   { "VK_KHR_format_feature_flags2", 361, 2 },
    { "VK_KHR_get_memory_requirements2", 147, 1 },
    { "VK_KHR_get_physical_device_properties2", 60, 2 },
    { "VK_KHR_image_format_list", 148, 1 },
@@ -111,6 +114,7 @@ static const struct vn_info_extension _vn_info_extensions[90] = {
    { "VK_KHR_vulkan_memory_model", 212, 3 },
    { "VK_KHR_zero_initialize_workgroup_memory", 326, 1 },
    { "VK_MESA_venus_protocol", 385, 100000 },
+   { "VK_VALVE_mutable_descriptor_type", 352, 1 },
 };
 
 static inline uint32_t
@@ -122,7 +126,7 @@ vn_info_wire_format_version(void)
 static inline uint32_t
 vn_info_vk_xml_version(void)
 {
-    return VK_MAKE_API_VERSION(0, 1, 3, 204);
+    return VK_MAKE_API_VERSION(0, 1, 3, 227);
 }
 
 static inline int

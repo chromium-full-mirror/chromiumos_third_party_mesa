@@ -586,12 +586,13 @@ radv_process_color_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *
 
       ret = radv_device_init_meta_fast_clear_flush_state_internal(device);
       if (ret != VK_SUCCESS) {
-         cmd_buffer->record_result = ret;
+         vk_command_buffer_set_error(&cmd_buffer->vk, ret);
          return;
       }
    }
 
-   radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_GRAPHICS_PIPELINE | RADV_META_SAVE_PASS);
+   radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_GRAPHICS_PIPELINE |
+                                            RADV_META_SAVE_RENDER);
 
    if (pred_offset) {
       pred_offset += 8 * subresourceRange->baseMipLevel;
@@ -725,7 +726,7 @@ radv_decompress_dcc_compute(struct radv_cmd_buffer *cmd_buffer, struct radv_imag
    if (!cmd_buffer->device->meta_state.fast_clear_flush.cmask_eliminate_pipeline) {
       VkResult ret = radv_device_init_meta_fast_clear_flush_state_internal(cmd_buffer->device);
       if (ret != VK_SUCCESS) {
-         cmd_buffer->record_result = ret;
+         vk_command_buffer_set_error(&cmd_buffer->vk, ret);
          return;
       }
    }

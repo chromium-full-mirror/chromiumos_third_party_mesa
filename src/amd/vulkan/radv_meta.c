@@ -104,89 +104,8 @@ radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_
 
       state->old_graphics_pipeline = cmd_buffer->state.graphics_pipeline;
 
-      /* Save all viewports. */
-      state->dynamic.viewport.count = cmd_buffer->state.dynamic.viewport.count;
-      typed_memcpy(state->dynamic.viewport.viewports, cmd_buffer->state.dynamic.viewport.viewports,
-                   MAX_VIEWPORTS);
-      typed_memcpy(state->dynamic.viewport.xform, cmd_buffer->state.dynamic.viewport.xform,
-                   MAX_VIEWPORTS);
-
-      /* Save all scissors. */
-      state->dynamic.scissor.count = cmd_buffer->state.dynamic.scissor.count;
-      typed_memcpy(state->dynamic.scissor.scissors, cmd_buffer->state.dynamic.scissor.scissors,
-                   MAX_SCISSORS);
-
-      state->dynamic.line_stipple.factor = cmd_buffer->state.dynamic.line_stipple.factor;
-      state->dynamic.line_stipple.pattern = cmd_buffer->state.dynamic.line_stipple.pattern;
-
-      state->dynamic.cull_mode = cmd_buffer->state.dynamic.cull_mode;
-      state->dynamic.front_face = cmd_buffer->state.dynamic.front_face;
-
-      state->dynamic.primitive_topology = cmd_buffer->state.dynamic.primitive_topology;
-
-      state->dynamic.depth_test_enable = cmd_buffer->state.dynamic.depth_test_enable;
-      state->dynamic.depth_write_enable = cmd_buffer->state.dynamic.depth_write_enable;
-      state->dynamic.depth_compare_op = cmd_buffer->state.dynamic.depth_compare_op;
-      state->dynamic.depth_bounds_test_enable = cmd_buffer->state.dynamic.depth_bounds_test_enable;
-      state->dynamic.stencil_test_enable = cmd_buffer->state.dynamic.stencil_test_enable;
-
-      state->dynamic.stencil_op.front.compare_op = cmd_buffer->state.dynamic.stencil_op.front.compare_op;
-      state->dynamic.stencil_op.front.fail_op = cmd_buffer->state.dynamic.stencil_op.front.fail_op;
-      state->dynamic.stencil_op.front.pass_op = cmd_buffer->state.dynamic.stencil_op.front.pass_op;
-      state->dynamic.stencil_op.front.depth_fail_op =
-         cmd_buffer->state.dynamic.stencil_op.front.depth_fail_op;
-
-      state->dynamic.stencil_op.back.compare_op = cmd_buffer->state.dynamic.stencil_op.back.compare_op;
-      state->dynamic.stencil_op.back.fail_op = cmd_buffer->state.dynamic.stencil_op.back.fail_op;
-      state->dynamic.stencil_op.back.pass_op = cmd_buffer->state.dynamic.stencil_op.back.pass_op;
-      state->dynamic.stencil_op.back.depth_fail_op =
-         cmd_buffer->state.dynamic.stencil_op.back.depth_fail_op;
-
-      state->dynamic.line_width = cmd_buffer->state.dynamic.line_width;
-
-      state->dynamic.depth_bias.bias = cmd_buffer->state.dynamic.depth_bias.bias;
-      state->dynamic.depth_bias.clamp = cmd_buffer->state.dynamic.depth_bias.clamp;
-      state->dynamic.depth_bias.slope = cmd_buffer->state.dynamic.depth_bias.slope;
-
-      memcpy(state->dynamic.blend_constants, cmd_buffer->state.dynamic.blend_constants,
-             sizeof(state->dynamic.blend_constants));
-
-      state->dynamic.depth_bounds.min = cmd_buffer->state.dynamic.depth_bounds.min;
-      state->dynamic.depth_bounds.max = cmd_buffer->state.dynamic.depth_bounds.max;
-
-      state->dynamic.stencil_compare_mask.front = cmd_buffer->state.dynamic.stencil_compare_mask.front;
-      state->dynamic.stencil_compare_mask.back = cmd_buffer->state.dynamic.stencil_compare_mask.back;
-
-      state->dynamic.stencil_write_mask.front = cmd_buffer->state.dynamic.stencil_write_mask.front;
-      state->dynamic.stencil_write_mask.back = cmd_buffer->state.dynamic.stencil_write_mask.back;
-
-      state->dynamic.stencil_reference.front = cmd_buffer->state.dynamic.stencil_reference.front;
-      state->dynamic.stencil_reference.back = cmd_buffer->state.dynamic.stencil_reference.back;
-
-      state->dynamic.fragment_shading_rate.size = cmd_buffer->state.dynamic.fragment_shading_rate.size;
-      state->dynamic.fragment_shading_rate.combiner_ops[0] =
-         cmd_buffer->state.dynamic.fragment_shading_rate.combiner_ops[0];
-      state->dynamic.fragment_shading_rate.combiner_ops[1] =
-         cmd_buffer->state.dynamic.fragment_shading_rate.combiner_ops[1];
-
-      state->dynamic.depth_bias_enable = cmd_buffer->state.dynamic.depth_bias_enable;
-
-      state->dynamic.primitive_restart_enable = cmd_buffer->state.dynamic.primitive_restart_enable;
-
-      state->dynamic.rasterizer_discard_enable = cmd_buffer->state.dynamic.rasterizer_discard_enable;
-
-      state->dynamic.logic_op = cmd_buffer->state.dynamic.logic_op;
-
-      state->dynamic.color_write_enable = cmd_buffer->state.dynamic.color_write_enable;
-
-      state->dynamic.discard_rectangle.count = cmd_buffer->state.dynamic.discard_rectangle.count;
-      typed_memcpy(state->dynamic.discard_rectangle.rectangles,
-                   cmd_buffer->state.dynamic.discard_rectangle.rectangles,
-                   MAX_DISCARD_RECTANGLES);
-   }
-
-   if (state->flags & RADV_META_SAVE_SAMPLE_LOCATIONS) {
-      typed_memcpy(&state->dynamic.sample_location, &cmd_buffer->state.dynamic.sample_location, 1);
+      /* Save all dynamic states. */
+      state->dynamic = cmd_buffer->state.dynamic;
    }
 
    if (state->flags & RADV_META_SAVE_COMPUTE_PIPELINE) {
@@ -205,12 +124,9 @@ radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_
       memcpy(state->push_constants, cmd_buffer->push_constants, MAX_PUSH_CONSTANTS_SIZE);
    }
 
-   if (state->flags & RADV_META_SAVE_PASS) {
-      state->pass = cmd_buffer->state.pass;
-      state->subpass = cmd_buffer->state.subpass;
-      state->framebuffer = cmd_buffer->state.framebuffer;
-      state->attachments = cmd_buffer->state.attachments;
-      state->render_area = cmd_buffer->state.render_area;
+   if (state->flags & RADV_META_SAVE_RENDER) {
+      state->render = cmd_buffer->state.render;
+      radv_cmd_buffer_reset_rendering(cmd_buffer);
    }
 
    if (state->flags & RADV_META_SUSPEND_PREDICATING) {
@@ -229,119 +145,24 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
                                        : VK_PIPELINE_BIND_POINT_COMPUTE;
 
    if (state->flags & RADV_META_SAVE_GRAPHICS_PIPELINE) {
-      radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_GRAPHICS,
-                           radv_pipeline_to_handle(&state->old_graphics_pipeline->base));
+      if (state->old_graphics_pipeline) {
+         radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              radv_pipeline_to_handle(&state->old_graphics_pipeline->base));
+      } else {
+         cmd_buffer->state.graphics_pipeline = NULL;
+      }
 
-      cmd_buffer->state.dirty |= RADV_CMD_DIRTY_PIPELINE;
-
-      /* Restore all viewports. */
-      cmd_buffer->state.dynamic.viewport.count = state->dynamic.viewport.count;
-      typed_memcpy(cmd_buffer->state.dynamic.viewport.viewports, state->dynamic.viewport.viewports,
-                   MAX_VIEWPORTS);
-      typed_memcpy(cmd_buffer->state.dynamic.viewport.xform, state->dynamic.viewport.xform,
-                   MAX_VIEWPORTS);
-
-      /* Restore all scissors. */
-      cmd_buffer->state.dynamic.scissor.count = state->dynamic.scissor.count;
-      typed_memcpy(cmd_buffer->state.dynamic.scissor.scissors, state->dynamic.scissor.scissors,
-                   MAX_SCISSORS);
-
-      cmd_buffer->state.dynamic.line_stipple.factor = state->dynamic.line_stipple.factor;
-      cmd_buffer->state.dynamic.line_stipple.pattern = state->dynamic.line_stipple.pattern;
-
-      cmd_buffer->state.dynamic.cull_mode = state->dynamic.cull_mode;
-      cmd_buffer->state.dynamic.front_face = state->dynamic.front_face;
-
-      cmd_buffer->state.dynamic.primitive_topology = state->dynamic.primitive_topology;
-
-      cmd_buffer->state.dynamic.depth_test_enable = state->dynamic.depth_test_enable;
-      cmd_buffer->state.dynamic.depth_write_enable = state->dynamic.depth_write_enable;
-      cmd_buffer->state.dynamic.depth_compare_op = state->dynamic.depth_compare_op;
-      cmd_buffer->state.dynamic.depth_bounds_test_enable = state->dynamic.depth_bounds_test_enable;
-      cmd_buffer->state.dynamic.stencil_test_enable = state->dynamic.stencil_test_enable;
-
-      cmd_buffer->state.dynamic.stencil_op.front.compare_op = state->dynamic.stencil_op.front.compare_op;
-      cmd_buffer->state.dynamic.stencil_op.front.fail_op = state->dynamic.stencil_op.front.fail_op;
-      cmd_buffer->state.dynamic.stencil_op.front.pass_op = state->dynamic.stencil_op.front.pass_op;
-      cmd_buffer->state.dynamic.stencil_op.front.depth_fail_op =
-         state->dynamic.stencil_op.front.depth_fail_op;
-
-      cmd_buffer->state.dynamic.stencil_op.back.compare_op = state->dynamic.stencil_op.back.compare_op;
-      cmd_buffer->state.dynamic.stencil_op.back.fail_op = state->dynamic.stencil_op.back.fail_op;
-      cmd_buffer->state.dynamic.stencil_op.back.pass_op = state->dynamic.stencil_op.back.pass_op;
-      cmd_buffer->state.dynamic.stencil_op.back.depth_fail_op =
-         state->dynamic.stencil_op.back.depth_fail_op;
-
-      cmd_buffer->state.dynamic.line_width = state->dynamic.line_width;
-
-      cmd_buffer->state.dynamic.depth_bias.bias = state->dynamic.depth_bias.bias;
-      cmd_buffer->state.dynamic.depth_bias.clamp = state->dynamic.depth_bias.clamp;
-      cmd_buffer->state.dynamic.depth_bias.slope = state->dynamic.depth_bias.slope;
-
-      memcpy(cmd_buffer->state.dynamic.blend_constants, state->dynamic.blend_constants,
-             sizeof(state->dynamic.blend_constants));
-
-      cmd_buffer->state.dynamic.depth_bounds.min = state->dynamic.depth_bounds.min;
-      cmd_buffer->state.dynamic.depth_bounds.max = state->dynamic.depth_bounds.max;
-
-      cmd_buffer->state.dynamic.stencil_compare_mask.front = state->dynamic.stencil_compare_mask.front;
-      cmd_buffer->state.dynamic.stencil_compare_mask.back = state->dynamic.stencil_compare_mask.back;
-
-      cmd_buffer->state.dynamic.stencil_write_mask.front = state->dynamic.stencil_write_mask.front;
-      cmd_buffer->state.dynamic.stencil_write_mask.back = state->dynamic.stencil_write_mask.back;
-
-      cmd_buffer->state.dynamic.stencil_reference.front = state->dynamic.stencil_reference.front;
-      cmd_buffer->state.dynamic.stencil_reference.back = state->dynamic.stencil_reference.back;
-
-      cmd_buffer->state.dynamic.fragment_shading_rate.size = state->dynamic.fragment_shading_rate.size;
-      cmd_buffer->state.dynamic.fragment_shading_rate.combiner_ops[0] =
-         state->dynamic.fragment_shading_rate.combiner_ops[0];
-      cmd_buffer->state.dynamic.fragment_shading_rate.combiner_ops[1] =
-         state->dynamic.fragment_shading_rate.combiner_ops[1];
-
-      cmd_buffer->state.dynamic.depth_bias_enable = state->dynamic.depth_bias_enable;
-
-      cmd_buffer->state.dynamic.primitive_restart_enable = state->dynamic.primitive_restart_enable;
-
-      cmd_buffer->state.dynamic.rasterizer_discard_enable = state->dynamic.rasterizer_discard_enable;
-
-      cmd_buffer->state.dynamic.logic_op = state->dynamic.logic_op;
-
-      cmd_buffer->state.dynamic.color_write_enable = state->dynamic.color_write_enable;
-
-      cmd_buffer->state.dynamic.discard_rectangle.count = state->dynamic.discard_rectangle.count;
-      typed_memcpy(cmd_buffer->state.dynamic.discard_rectangle.rectangles,
-                   state->dynamic.discard_rectangle.rectangles,
-                   MAX_DISCARD_RECTANGLES);
-
-      cmd_buffer->state.dirty |=
-         RADV_CMD_DIRTY_DYNAMIC_VIEWPORT | RADV_CMD_DIRTY_DYNAMIC_SCISSOR |
-         RADV_CMD_DIRTY_DYNAMIC_CULL_MODE | RADV_CMD_DIRTY_DYNAMIC_FRONT_FACE |
-         RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_TOPOLOGY | RADV_CMD_DIRTY_DYNAMIC_DEPTH_TEST_ENABLE |
-         RADV_CMD_DIRTY_DYNAMIC_DEPTH_WRITE_ENABLE | RADV_CMD_DIRTY_DYNAMIC_DEPTH_COMPARE_OP |
-         RADV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS_TEST_ENABLE |
-         RADV_CMD_DIRTY_DYNAMIC_STENCIL_TEST_ENABLE | RADV_CMD_DIRTY_DYNAMIC_STENCIL_OP |
-         RADV_CMD_DIRTY_DYNAMIC_STENCIL_WRITE_MASK | RADV_CMD_DIRTY_DYNAMIC_STENCIL_REFERENCE |
-         RADV_CMD_DIRTY_DYNAMIC_FRAGMENT_SHADING_RATE | RADV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS_ENABLE |
-         RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE |
-         RADV_CMD_DIRTY_DYNAMIC_RASTERIZER_DISCARD_ENABLE | RADV_CMD_DIRTY_DYNAMIC_LOGIC_OP |
-         RADV_CMD_DIRTY_DYNAMIC_COLOR_WRITE_ENABLE | RADV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE |
-         RADV_CMD_DIRTY_DYNAMIC_STENCIL_COMPARE_MASK | RADV_CMD_DIRTY_DYNAMIC_DEPTH_BOUNDS |
-         RADV_CMD_DIRTY_DYNAMIC_BLEND_CONSTANTS | RADV_CMD_DIRTY_DYNAMIC_LINE_WIDTH |
-         RADV_CMD_DIRTY_DYNAMIC_DEPTH_BIAS | RADV_CMD_DIRTY_DYNAMIC_DISCARD_RECTANGLE;
-   }
-
-   if (state->flags & RADV_META_SAVE_SAMPLE_LOCATIONS) {
-      typed_memcpy(&cmd_buffer->state.dynamic.sample_location.locations,
-                   &state->dynamic.sample_location.locations, 1);
-
-      cmd_buffer->state.dirty |= RADV_CMD_DIRTY_DYNAMIC_SAMPLE_LOCATIONS;
+      /* Restore all dynamic states. */
+      cmd_buffer->state.dynamic = state->dynamic;
+      cmd_buffer->state.dirty |= RADV_DYNAMIC_ALL;
    }
 
    if (state->flags & RADV_META_SAVE_COMPUTE_PIPELINE) {
       if (state->old_compute_pipeline) {
          radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
                               radv_pipeline_to_handle(&state->old_compute_pipeline->base));
+      } else {
+         cmd_buffer->state.compute_pipeline = NULL;
       }
    }
 
@@ -359,14 +180,9 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
                             MAX_PUSH_CONSTANTS_SIZE, state->push_constants);
    }
 
-   if (state->flags & RADV_META_SAVE_PASS) {
-      cmd_buffer->state.pass = state->pass;
-      cmd_buffer->state.subpass = state->subpass;
-      cmd_buffer->state.framebuffer = state->framebuffer;
-      cmd_buffer->state.attachments = state->attachments;
-      cmd_buffer->state.render_area = state->render_area;
-      if (state->subpass)
-         cmd_buffer->state.dirty |= RADV_CMD_DIRTY_FRAMEBUFFER;
+   if (state->flags & RADV_META_SAVE_RENDER) {
+      cmd_buffer->state.render = state->render;
+      cmd_buffer->state.dirty |= RADV_CMD_DIRTY_FRAMEBUFFER;
    }
 
    if (state->flags & RADV_META_SUSPEND_PREDICATING)

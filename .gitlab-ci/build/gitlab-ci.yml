@@ -78,7 +78,7 @@ debian-testing:
       -D dri3=enabled
       -D gallium-va=enabled
     GALLIUM_DRIVERS: "swrast,virgl,radeonsi,zink,crocus,iris,i915"
-    VULKAN_DRIVERS: "swrast,amd,intel"
+    VULKAN_DRIVERS: "swrast,amd,intel,virtio-experimental"
     BUILDTYPE: "debugoptimized"
     EXTRA_OPTION: >
       -D spirv-to-dxil=true
@@ -86,7 +86,6 @@ debian-testing:
     MINIO_ARTIFACT_NAME: mesa-amd64
     LLVM_VERSION: "13"
   script:
-    - .gitlab-ci/lava/lava-pytest.sh
     - .gitlab-ci/meson/build.sh
     - .gitlab-ci/prepare-artifacts.sh
   artifacts:
@@ -124,7 +123,7 @@ debian-testing-msan:
     GALLIUM_DRIVERS: "iris,nouveau,kmsro,r300,r600,swrast,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink,radeonsi,tegra,d3d12,crocus"
     VULKAN_DRIVERS: intel,amd,broadcom,virtio-experimental
 
-debian-clover-testing:
+.debian-cl-testing:
   extends:
     - .meson-build
     - .ci-deqp-artifacts
@@ -134,9 +133,6 @@ debian-clover-testing:
       -D glx=disabled
       -D egl=disabled
       -D gbm=disabled
-    GALLIUM_ST: >
-      -D gallium-opencl=icd
-      -D opencl-spirv=true
     GALLIUM_DRIVERS: "swrast"
     BUILDTYPE: "debugoptimized"
     EXTRA_OPTION: >
@@ -145,7 +141,23 @@ debian-clover-testing:
     - .gitlab-ci/meson/build.sh
     - .gitlab-ci/prepare-artifacts.sh
 
-debian-gallium:
+debian-clover-testing:
+  extends:
+    - .debian-cl-testing
+  variables:
+    GALLIUM_ST: >
+      -D gallium-opencl=icd
+      -D opencl-spirv=true
+
+debian-rusticl-testing:
+  extends:
+    - .debian-cl-testing
+  variables:
+    GALLIUM_ST: >
+      -D gallium-rusticl=true
+      -D opencl-spirv=true
+
+debian-build-testing:
   extends: .meson-build
   variables:
     UNWIND: "enabled"
@@ -164,6 +176,7 @@ debian-gallium:
       -D gallium-xa=enabled
       -D gallium-nine=true
       -D gallium-opencl=disabled
+      -D gallium-rusticl=false
     GALLIUM_DRIVERS: "iris,nouveau,kmsro,r300,r600,freedreno,swrast,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink,d3d12,asahi,crocus"
     VULKAN_DRIVERS: swrast
     EXTRA_OPTION: >
@@ -171,6 +184,9 @@ debian-gallium:
       -D osmesa=true
       -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,xvmc,lima,panfrost,asahi
   script:
+    - .gitlab-ci/lava/lava-pytest.sh
+    - .gitlab-ci/run-shellcheck.sh
+    - .gitlab-ci/run-yamllint.sh
     - .gitlab-ci/meson/build.sh
     - .gitlab-ci/run-shader-db.sh
 
@@ -194,6 +210,7 @@ debian-release:
       -D gallium-xa=enabled
       -D gallium-nine=false
       -D gallium-opencl=disabled
+      -D gallium-rusticl=false
       -D llvm=enabled
     GALLIUM_DRIVERS: "i915,iris,nouveau,kmsro,freedreno,r300,svga,swrast,v3d,vc4,virgl,etnaviv,panfrost,lima,zink,d3d12,crocus"
     VULKAN_DRIVERS: "amd,imagination-experimental,microsoft-experimental"
@@ -229,6 +246,7 @@ fedora-release:
       -D osmesa=true
       -D selinux=true
       -D tools=drm-shim,etnaviv,freedreno,glsl,intel,nir,nouveau,lima,panfrost,imagination
+      -D vulkan-layers=device-select,overlay
       -D intel-clc=enabled
       -D imagination-srv=true
     GALLIUM_DRIVERS: "crocus,etnaviv,freedreno,iris,kmsro,lima,nouveau,panfrost,r300,r600,radeonsi,svga,swrast,tegra,v3d,vc4,virgl,zink"
@@ -242,12 +260,12 @@ fedora-release:
       -D gallium-xa=enabled
       -D gallium-nine=false
       -D gallium-opencl=icd
+      -D gallium-rusticl=false
       -D gles1=disabled
       -D gles2=enabled
       -D llvm=enabled
       -D microsoft-clc=disabled
       -D shared-llvm=enabled
-      -D vulkan-device-select-layer=true
     LLVM_VERSION: ""
     UNWIND: "disabled"
     VULKAN_DRIVERS: "amd,broadcom,freedreno,intel,imagination-experimental"
@@ -289,6 +307,7 @@ debian-android:
       -D gallium-xa=disabled
       -D gallium-nine=false
       -D gallium-opencl=disabled
+      -D gallium-rusticl=false
     LLVM_VERSION: ""
     PKG_CONFIG_LIBDIR: "/disable/non/android/system/pc/files"
   script:
@@ -393,6 +412,7 @@ debian-clang:
   extends: .meson-build
   variables:
     UNWIND: "enabled"
+    GALLIUM_DUMP_CPU: "true"
     C_ARGS: >
       -Wno-error=constant-conversion
       -Wno-error=enum-conversion
@@ -402,22 +422,51 @@ debian-clang:
       -Wno-error=unused-function
     CPP_ARGS: >
       -Wno-error=c99-designator
-      -Wno-error=deprecated-declarations
       -Wno-error=implicit-const-int-float-conversion
-      -Wno-error=missing-braces
       -Wno-error=overloaded-virtual
       -Wno-error=tautological-constant-out-of-range-compare
       -Wno-error=unused-const-variable
       -Wno-error=unused-private-field
     DRI_LOADERS: >
+      -D glx=dri
+      -D gbm=enabled
+      -D egl=enabled
       -D glvnd=true
+      -D platforms=x11,wayland
+    GALLIUM_ST: >
+      -D dri3=enabled
+      -D gallium-extra-hud=true
+      -D gallium-vdpau=enabled
+      -D gallium-xvmc=enabled
+      -D gallium-omx=bellagio
+      -D gallium-va=enabled
+      -D gallium-xa=enabled
+      -D gallium-nine=true
+      -D gallium-opencl=icd
+      -D gles1=enabled
+      -D gles2=enabled
+      -D llvm=enabled
+      -D microsoft-clc=enabled
+      -D shared-llvm=enabled
+      -D opencl-spirv=true
     GALLIUM_DRIVERS: "iris,nouveau,kmsro,r300,r600,freedreno,swrast,svga,v3d,vc4,virgl,etnaviv,panfrost,lima,zink,radeonsi,tegra,d3d12,crocus,i915,asahi"
     VULKAN_DRIVERS: intel,amd,freedreno,broadcom,virtio-experimental,swrast,panfrost,imagination-experimental,microsoft-experimental
-    EXTRA_OPTIONS:
+    EXTRA_OPTION:
       -D spirv-to-dxil=true
+      -D osmesa=true
+      -D imagination-srv=true
+      -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,xvmc,lima,panfrost,asahi,imagination
+      -D vulkan-layers=device-select,overlay
+      -D build-aco-tests=true
+      -D intel-clc=enabled
       -D imagination-srv=true
     CC: clang
     CXX: clang++
+
+debian-clang-release:
+  extends: debian-clang
+  variables:
+    BUILDTYPE: "release"
 
 windows-vs2019:
   extends:
@@ -432,7 +481,7 @@ windows-vs2019:
       - _build/meson-logs/*.txt
       - _install/
 
-debian-clover:
+.debian-cl:
   extends: .meson-build
   variables:
     UNWIND: "enabled"
@@ -440,7 +489,13 @@ debian-clover:
       -D glx=disabled
       -D egl=disabled
       -D gbm=disabled
-    GALLIUM_DRIVERS: "r600,radeonsi"
+    EXTRA_OPTION: >
+      -D valgrind=false
+
+debian-clover:
+  extends: .debian-cl
+  variables:
+    GALLIUM_DRIVERS: "r600,radeonsi,swrast"
     GALLIUM_ST: >
       -D dri3=disabled
       -D gallium-vdpau=disabled
@@ -450,11 +505,22 @@ debian-clover:
       -D gallium-xa=disabled
       -D gallium-nine=false
       -D gallium-opencl=icd
-    EXTRA_OPTION: >
-      -D valgrind=false
-  script:
-    - LLVM_VERSION=9 GALLIUM_DRIVERS=r600,swrast .gitlab-ci/meson/build.sh
-    - .gitlab-ci/meson/build.sh
+      -D gallium-rusticl=false
+
+debian-rusticl:
+  extends: .debian-cl
+  variables:
+    GALLIUM_DRIVERS: "iris,swrast"
+    GALLIUM_ST: >
+      -D dri3=disabled
+      -D gallium-vdpau=disabled
+      -D gallium-xvmc=disabled
+      -D gallium-omx=disabled
+      -D gallium-va=disabled
+      -D gallium-xa=disabled
+      -D gallium-nine=false
+      -D gallium-opencl=disabled
+      -D gallium-rusticl=true
 
 debian-vulkan:
   extends: .meson-build
@@ -475,6 +541,7 @@ debian-vulkan:
       -D gallium-xa=disabled
       -D gallium-nine=false
       -D gallium-opencl=disabled
+      -D gallium-rusticl=false
       -D b_sanitize=undefined
       -D c_args=-fno-sanitize-recover=all
       -D cpp_args=-fno-sanitize-recover=all
@@ -494,6 +561,7 @@ debian-i386:
     CROSS: i386
     VULKAN_DRIVERS: intel,amd,swrast,virtio-experimental
     GALLIUM_DRIVERS: "iris,nouveau,r300,r600,radeonsi,swrast,virgl,zink,crocus"
+    LLVM_VERSION: 13
     EXTRA_OPTION: >
       -D vulkan-layers=device-select,overlay
 
@@ -507,8 +575,7 @@ debian-s390x:
   variables:
     CROSS: s390x
     GALLIUM_DRIVERS: "swrast,zink"
-    # The lp_test_blend test times out with LLVM 11
-    LLVM_VERSION: 9
+    LLVM_VERSION: 13
     VULKAN_DRIVERS: "swrast"
 
 debian-ppc64el:
@@ -545,6 +612,7 @@ debian-mingw32-x86_64:
     VULKAN_DRIVERS: "swrast,amd,microsoft-experimental"
     GALLIUM_ST: >
       -D gallium-opencl=icd
+      -D gallium-rusticl=false
       -D opencl-spirv=true
       -D microsoft-clc=enabled
       -D static-libclc=all

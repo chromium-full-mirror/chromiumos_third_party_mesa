@@ -392,6 +392,12 @@ wsi_configure_native_image(const struct wsi_swapchain *chain,
             __vk_append_struct(&format_info, &format_list);
          }
 
+         struct wsi_image_create_info wsi_info = (struct wsi_image_create_info) {
+            .sType = VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA,
+            .pNext = NULL,
+         };
+         __vk_append_struct(&format_info, &wsi_info);
+
          VkImageFormatProperties2 format_props = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2,
             .pNext = NULL,
@@ -400,7 +406,9 @@ wsi_configure_native_image(const struct wsi_swapchain *chain,
          result = wsi->GetPhysicalDeviceImageFormatProperties2(wsi->pdevice,
                                                                &format_info,
                                                                &format_props);
-         if (result == VK_SUCCESS)
+         if (result == VK_SUCCESS &&
+             pCreateInfo->imageExtent.width <= format_props.imageFormatProperties.maxExtent.width &&
+             pCreateInfo->imageExtent.height <= format_props.imageFormatProperties.maxExtent.height)
             info->modifier_props[info->modifier_prop_count++] = info->modifier_props[i];
       }
 

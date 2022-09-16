@@ -319,7 +319,7 @@ intrinsic("deref_mode_is", src_comp=[-1], dest_comp=1,
 intrinsic("addr_mode_is", src_comp=[-1], dest_comp=1,
           indices=[MEMORY_MODES], flags=[CAN_ELIMINATE, CAN_REORDER])
 
-intrinsic("is_sparse_texels_resident", dest_comp=1, src_comp=[1], bit_sizes=[1],
+intrinsic("is_sparse_texels_resident", dest_comp=1, src_comp=[1], bit_sizes=[1,32],
           flags=[CAN_ELIMINATE, CAN_REORDER])
 # result code is resident only if both inputs are resident
 intrinsic("sparse_residency_code_and", dest_comp=1, src_comp=[1, 1], bit_sizes=[32],
@@ -500,6 +500,11 @@ intrinsic("set_vertex_and_primitive_count", src_comp=[1, 1], indices=[STREAM_ID]
 # src[] = {vec(x, y, z)}
 intrinsic("launch_mesh_workgroups", src_comp=[3], indices=[BASE, RANGE])
 
+# Launches mesh shader workgroups from a task shader, with task_payload variable deref.
+# Same rules as launch_mesh_workgroups apply here as well.
+# src[] = {vec(x, y, z), payload pointer}
+intrinsic("launch_mesh_workgroups_with_payload_deref", src_comp=[3, -1], indices=[])
+
 # Trace a ray through an acceleration structure
 #
 # This instruction has a lot of parameters:
@@ -649,6 +654,11 @@ image("size",    dest_comp=0, src_comp=[1], flags=[CAN_ELIMINATE, CAN_REORDER])
 image("samples", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("atomic_inc_wrap",  src_comp=[4, 1, 1], dest_comp=1)
 image("atomic_dec_wrap",  src_comp=[4, 1, 1], dest_comp=1)
+# This returns true if all samples within the pixel have equal color values.
+image("samples_identical", dest_comp=1, src_comp=[4], flags=[CAN_ELIMINATE])
+# Non-uniform access is not lowered for image_descriptor_amd.
+# dest_comp can be either 4 (buffer) or 8 (image).
+image("descriptor_amd", dest_comp=0, src_comp=[], flags=[CAN_ELIMINATE, CAN_REORDER])
 # CL-specific format queries
 image("format", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("order", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
@@ -871,8 +881,6 @@ system_value("cull_mask", 1)
 #
 # Panfrost needs to implement all coordinate transformation in the
 # vertex shader; system values allow us to share this routine in NIR.
-#
-# RADV uses these for NGG primitive culling.
 system_value("viewport_x_scale", 1)
 system_value("viewport_y_scale", 1)
 system_value("viewport_z_scale", 1)
@@ -881,6 +889,8 @@ system_value("viewport_y_offset", 1)
 system_value("viewport_z_offset", 1)
 system_value("viewport_scale", 3)
 system_value("viewport_offset", 3)
+# Pack xy scale and offset into a vec4 load (used by AMD NGG primitive culling)
+system_value("viewport_xy_scale_and_offset", 4)
 
 # Blend constant color values.  Float values are clamped. Vectored versions are
 # provided as well for driver convenience
@@ -1411,6 +1421,24 @@ system_value("lshs_vertex_stride_amd", 1)
 # Per patch data offset in HS VRAM output buffer
 system_value("hs_out_patch_data_offset_amd", 1)
 
+# line_width * 0.5 / abs(viewport_scale[2])
+system_value("clip_half_line_width_amd", 2)
+
+# Number of vertices in a primitive
+system_value("num_vertices_per_primitive_amd", 1)
+
+# Load streamout buffer desc
+# BASE = buffer index
+intrinsic("load_streamout_buffer_amd", dest_comp=4, indices=[BASE], bit_sizes=[32], flags=[CAN_ELIMINATE, CAN_REORDER])
+
+# An ID for each workgroup ordered by primitve sequence
+system_value("ordered_id_amd", 1)
+
+# Add to global streamout buffer counter in specified order
+# src[] = { ordered_id, counter }
+# WRITE_MASK = mask for counter channel to update
+intrinsic("ordered_xfb_counter_add_amd", dest_comp=0, src_comp=[1, 0], indices=[WRITE_MASK], bit_sizes=[32])
+
 # V3D-specific instrinc for tile buffer color reads.
 #
 # The hardware requires that we read the samples and components of a pixel
@@ -1435,6 +1463,10 @@ intrinsic("load_fb_layers_v3d", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Logical complement of load_front_face, mapping to an AGX system value
 system_value("back_face_agx", 1, bit_sizes=[1, 32])
+
+# Loads the texture descriptor base for indexed (non-bindless) textures. On G13,
+# the referenced array has stride 24.
+system_value("texture_base_agx", 1, bit_sizes=[64])
 
 # Intel-specific query for loading from the brw_image_param struct passed
 # into the shader as a uniform.  The variable is a deref to the image

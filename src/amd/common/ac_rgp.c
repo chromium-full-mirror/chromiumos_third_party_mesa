@@ -32,21 +32,7 @@
 #include "ac_spm.h"
 #include "ac_sqtt.h"
 #include "ac_gpu_info.h"
-#ifdef _WIN32
-#define AMDGPU_VRAM_TYPE_UNKNOWN 0
-#define AMDGPU_VRAM_TYPE_GDDR1 1
-#define AMDGPU_VRAM_TYPE_DDR2  2
-#define AMDGPU_VRAM_TYPE_GDDR3 3
-#define AMDGPU_VRAM_TYPE_GDDR4 4
-#define AMDGPU_VRAM_TYPE_GDDR5 5
-#define AMDGPU_VRAM_TYPE_HBM   6
-#define AMDGPU_VRAM_TYPE_DDR3  7
-#define AMDGPU_VRAM_TYPE_DDR4  8
-#define AMDGPU_VRAM_TYPE_GDDR6 9
-#define AMDGPU_VRAM_TYPE_DDR5  10
-#else
-#include "drm-uapi/amdgpu_drm.h"
-#endif
+#include "amd_family.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -381,48 +367,25 @@ static enum sqtt_gfxip_level ac_gfx_level_to_sqtt_gfxip_level(enum amd_gfx_level
 static enum sqtt_memory_type ac_vram_type_to_sqtt_memory_type(uint32_t vram_type)
 {
    switch (vram_type) {
-   case AMDGPU_VRAM_TYPE_UNKNOWN:
+   case AMD_VRAM_TYPE_UNKNOWN:
       return SQTT_MEMORY_TYPE_UNKNOWN;
-   case AMDGPU_VRAM_TYPE_DDR2:
+   case AMD_VRAM_TYPE_DDR2:
       return SQTT_MEMORY_TYPE_DDR2;
-   case AMDGPU_VRAM_TYPE_DDR3:
+   case AMD_VRAM_TYPE_DDR3:
       return SQTT_MEMORY_TYPE_DDR3;
-   case AMDGPU_VRAM_TYPE_DDR4:
+   case AMD_VRAM_TYPE_DDR4:
       return SQTT_MEMORY_TYPE_DDR4;
-   case AMDGPU_VRAM_TYPE_GDDR5:
+   case AMD_VRAM_TYPE_GDDR5:
       return SQTT_MEMORY_TYPE_GDDR5;
-   case AMDGPU_VRAM_TYPE_HBM:
+   case AMD_VRAM_TYPE_HBM:
       return SQTT_MEMORY_TYPE_HBM;
-   case AMDGPU_VRAM_TYPE_GDDR6:
+   case AMD_VRAM_TYPE_GDDR6:
       return SQTT_MEMORY_TYPE_GDDR6;
-   case AMDGPU_VRAM_TYPE_DDR5:
+   case AMD_VRAM_TYPE_DDR5:
       return SQTT_MEMORY_TYPE_LPDDR5;
-   case AMDGPU_VRAM_TYPE_GDDR1:
-   case AMDGPU_VRAM_TYPE_GDDR3:
-   case AMDGPU_VRAM_TYPE_GDDR4:
-   default:
-      unreachable("Invalid vram type");
-   }
-}
-
-static uint32_t ac_memory_ops_per_clock(uint32_t vram_type)
-{
-   switch (vram_type) {
-   case AMDGPU_VRAM_TYPE_UNKNOWN:
-      return 0;
-   case AMDGPU_VRAM_TYPE_DDR2:
-   case AMDGPU_VRAM_TYPE_DDR3:
-   case AMDGPU_VRAM_TYPE_DDR4:
-   case AMDGPU_VRAM_TYPE_HBM:
-      return 2;
-   case AMDGPU_VRAM_TYPE_DDR5:
-   case AMDGPU_VRAM_TYPE_GDDR5:
-      return 4;
-   case AMDGPU_VRAM_TYPE_GDDR6:
-      return 16;
-   case AMDGPU_VRAM_TYPE_GDDR1:
-   case AMDGPU_VRAM_TYPE_GDDR3:
-   case AMDGPU_VRAM_TYPE_GDDR4:
+   case AMD_VRAM_TYPE_GDDR1:
+   case AMD_VRAM_TYPE_GDDR3:
+   case AMD_VRAM_TYPE_GDDR4:
    default:
       unreachable("Invalid vram type");
    }

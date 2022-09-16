@@ -202,9 +202,6 @@ struct lp_bld_tgsi_system_values {
 struct lp_build_sampler_soa
 {
    void
-   (*destroy)(struct lp_build_sampler_soa *sampler);
-
-   void
    (*emit_tex_sample)(const struct lp_build_sampler_soa *sampler,
                       struct gallivm_state *gallivm,
                       const struct lp_sampler_params *params);
@@ -232,9 +229,6 @@ struct lp_img_params;
 
 struct lp_build_image_soa
 {
-   void
-   (*destroy)(struct lp_build_image_soa *image);
-
    void
    (*emit_op)(const struct lp_build_image_soa *image,
               struct gallivm_state *gallivm,
@@ -522,7 +516,6 @@ struct lp_build_tgsi_soa_context
    LLVMValueRef max_output_vertices_vec;
 
    LLVMValueRef consts_ptr;
-   LLVMValueRef const_sizes_ptr;
    LLVMValueRef consts[LP_MAX_TGSI_CONST_BUFFERS];
    LLVMValueRef consts_sizes[LP_MAX_TGSI_CONST_BUFFERS];
    const LLVMValueRef (*inputs)[TGSI_NUM_CHANNELS];
@@ -531,7 +524,6 @@ struct lp_build_tgsi_soa_context
    LLVMValueRef thread_data_ptr;
 
    LLVMValueRef ssbo_ptr;
-   LLVMValueRef ssbo_sizes_ptr;
    LLVMValueRef ssbos[LP_MAX_TGSI_SHADER_BUFFERS];
    LLVMValueRef ssbo_sizes[LP_MAX_TGSI_SHADER_BUFFERS];
 

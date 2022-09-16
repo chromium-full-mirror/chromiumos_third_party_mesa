@@ -39,7 +39,7 @@ public:
    void visit(Block *instr) override;
    void visit(ControlFlowInstr *instr) override {(void)instr;}
    void visit(IfInstr *instr) override;
-   void visit(WriteScratchInstr *instr) override {(void)instr;}
+   void visit(ScratchIOInstr *instr) override {(void)instr;}
    void visit(StreamOutInstr *instr) override {(void)instr;}
    void visit(MemRingOutInstr *instr) override {(void)instr;}
    void visit(EmitVertexInstr *instr) override {(void)instr;}
@@ -162,8 +162,8 @@ void PeepholeVisitor::visit(IfInstr *instr)
    if (src1.as_inline_const() &&
        src1.as_inline_const()->sel() == ALU_SRC_0) {
       auto src0 = pred->src(0).as_register();
-      if (src0 && src0->is_ssa()) {
-         assert(!src0->parents().empty());
+      if (src0 && src0->is_ssa() && !src0->parents().empty()) {
+         assert(src0->parents().size() == 1);
          auto parent = *src0->parents().begin();
 
          ReplaceIfPredicate visitor(pred);
@@ -178,12 +178,11 @@ static EAluOp pred_from_op(EAluOp pred_op, EAluOp op)
    switch (pred_op) {
    case op2_pred_setne_int:
       switch (op) {
-      /*
-       case op2_setge_dx10 : return op2_pred_setge_int;
-       case op2_setgt_dx10 : return op2_pred_setgt_int;
-       case op2_sete_dx10 : return op2_prede_int;
-       case op2_setne_dx10 : return op2_pred_setne_int;
-      */
+      case op2_setge_dx10 : return op2_pred_setge;
+      case op2_setgt_dx10 : return op2_pred_setgt;
+      case op2_sete_dx10 : return op2_pred_sete;
+      case op2_setne_dx10 : return op2_pred_setne;
+
       case op2_setge_int : return op2_pred_setge_int;
       case op2_setgt_int : return op2_pred_setgt_int;
       case op2_setge_uint : return op2_pred_setge_uint;
@@ -197,6 +196,14 @@ static EAluOp pred_from_op(EAluOp pred_op, EAluOp op)
       switch (op) {
       case op2_sete_int : return op2_pred_setne_int;
       case op2_setne_int : return op2_prede_int;
+      default:
+         return op0_nop;
+      }
+   case op2_pred_setne:
+      switch (op) {
+      case op2_setge : return op2_pred_setge;
+      case op2_setgt : return op2_pred_setgt;
+      case op2_sete : return op2_pred_sete;
       default:
          return op0_nop;
       }

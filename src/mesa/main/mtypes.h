@@ -789,6 +789,9 @@ struct gl_texture_image
    /** Cube map face: index into gl_texture_object::Image[] array */
    GLuint Face;
 
+   unsigned FormatSwizzle;
+   unsigned FormatSwizzleGLSL130; //for depth formats
+
    /** GL_ARB_texture_multisample */
    GLuint NumSamples;            /**< Sample count, or 0 for non-multisample */
    GLboolean FixedSampleLocations; /**< Same sample locations for all pixels? */
@@ -978,6 +981,9 @@ struct gl_texture_object
    /* The texture must include at levels [0..lastLevel] once validated:
     */
    GLuint lastLevel;
+
+   unsigned Swizzle;
+   unsigned SwizzleGLSL130;
 
    unsigned int validated_first_level;
    unsigned int validated_last_level;
@@ -2290,6 +2296,7 @@ struct gl_ati_fragment_shader_state
 #define GLSL_DUMP_ON_ERROR 0x80 /**< Dump shaders to stderr on compile error */
 #define GLSL_CACHE_INFO 0x100 /**< Print debug information about shader cache */
 #define GLSL_CACHE_FALLBACK 0x200 /**< Force shader cache fallback paths */
+#define GLSL_SOURCE 0x400 /**< Only dump GLSL */
 
 
 /**
@@ -2427,7 +2434,6 @@ struct gl_shared_state
    bool DisplayListsAffectGLThread;
 
    struct _mesa_HashTable *DisplayList;	   /**< Display lists hash table */
-   struct _mesa_HashTable *BitmapAtlas;    /**< For optimized glBitmap text */
    struct _mesa_HashTable *TexObjects;	   /**< Texture objects hash table */
 
    /** Default texture objects (shared by all texture units) */
