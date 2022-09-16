@@ -79,7 +79,7 @@
  * our allocation fast-path, there isn't really a way to munmap the old mmap,
  * so we just keep it around until garbage collection time.  While the block
  * allocator is lockless for normal operations, we block other threads trying
- * to allocate while we're growing the map.  It sholdn't happen often, and
+ * to allocate while we're growing the map.  It shouldn't happen often, and
  * growing is fast anyway.
  *
  * At the next level we can use various sub-allocators.  The state pool is a
@@ -373,6 +373,12 @@ anv_block_pool_init(struct anv_block_pool *pool,
                     uint32_t initial_size)
 {
    VkResult result;
+
+   if (device->info.verx10 >= 125) {
+      /* Make sure VMA addresses are 2MiB aligned for the block pool */
+      assert(anv_is_aligned(start_address, 2 * 1024 * 1024));
+      assert(anv_is_aligned(initial_size, 2 * 1024 * 1024));
+   }
 
    pool->name = name;
    pool->device = device;
@@ -838,9 +844,13 @@ anv_state_pool_init(struct anv_state_pool *pool,
    /* We don't want to ever see signed overflow */
    assert(start_offset < INT32_MAX - (int32_t)BLOCK_POOL_MEMFD_SIZE);
 
+   uint32_t initial_size = block_size * 16;
+   if (device->info.verx10 >= 125)
+      initial_size = MAX2(initial_size, 2 * 1024 * 1024);
+
    VkResult result = anv_block_pool_init(&pool->block_pool, device, name,
                                          base_address + start_offset,
-                                         block_size * 16);
+                                         initial_size);
    if (result != VK_SUCCESS)
       return result;
 
@@ -988,7 +998,7 @@ anv_state_pool_return_chunk(struct anv_state_pool *pool,
 
    if (nblocks > 0) {
       /* First return divisor aligned and sized chunks. We start returning
-       * larger blocks from the end fo the chunk, since they should already be
+       * larger blocks from the end of the chunk, since they should already be
        * aligned to divisor. Also anv_state_pool_return_blocks() only accepts
        * aligned chunks.
        */
@@ -1092,7 +1102,7 @@ anv_state_pool_alloc_no_vg(struct anv_state_pool *pool,
                                                 alloc_size,
                                                 pool->block_size,
                                                 &padding);
-   /* Everytime we allocate a new state, add it to the state pool */
+   /* Every time we allocate a new state, add it to the state pool */
    uint32_t idx;
    UNUSED VkResult result = anv_state_table_add(&pool->table, &idx, 1);
    assert(result == VK_SUCCESS);
@@ -1686,18 +1696,27 @@ anv_device_alloc_bo(struct anv_device *device,
    /* If we have vram size, we have multiple memory regions and should choose
     * one of them.
     */
-   if (device->physical->vram.size > 0) {
+   if (anv_physical_device_has_vram(device->physical)) {
       struct drm_i915_gem_memory_class_instance regions[2];
       uint32_t nregions = 0;
 
       if (alloc_flags & ANV_BO_ALLOC_LOCAL_MEM) {
-         regions[nregions++] = device->physical->vram.region;
+         /* vram_non_mappable & vram_mappable actually are the same region. */
+         regions[nregions++] = device->physical->vram_non_mappable.region;
       } else {
          regions[nregions++] = device->physical->sys.region;
       }
 
+      uint32_t flags = 0;
+      if (alloc_flags & ANV_BO_ALLOC_LOCAL_MEM_CPU_VISIBLE) {
+         assert(alloc_flags & ANV_BO_ALLOC_LOCAL_MEM);
+         /* We're required to add smem as a region when using mappable vram. */
+         regions[nregions++] = device->physical->sys.region;
+         flags |= I915_GEM_CREATE_EXT_FLAG_NEEDS_CPU_ACCESS;
+      }
+
       gem_handle = anv_gem_create_regions(device, size + ccs_size,
-                                          nregions, regions);
+                                          flags, nregions, regions);
    } else {
       gem_handle = anv_gem_create(device, size + ccs_size);
    }

@@ -68,6 +68,7 @@
 #include "util/u_vector.h"
 #include "mapi/glapi/glapi.h"
 #include "util/bitscan.h"
+#include "util/driconf.h"
 #include "util/u_math.h"
 
 #define NUM_ATTRIBS 12
@@ -741,7 +742,6 @@ static const struct dri2_extension_match optional_driver_extensions[] = {
 
 static const struct dri2_extension_match optional_core_extensions[] = {
    { __DRI2_ROBUSTNESS, 1, offsetof(struct dri2_egl_display, robustness) },
-   { __DRI2_NO_ERROR, 1, offsetof(struct dri2_egl_display, no_error) },
    { __DRI2_CONFIG_QUERY, 1, offsetof(struct dri2_egl_display, config) },
    { __DRI2_FENCE, 1, offsetof(struct dri2_egl_display, fence) },
    { __DRI2_BUFFER_DAMAGE, 1, offsetof(struct dri2_egl_display, buffer_damage) },
@@ -751,6 +751,7 @@ static const struct dri2_extension_match optional_core_extensions[] = {
    { __DRI2_FLUSH_CONTROL, 1, offsetof(struct dri2_egl_display, flush_control) },
    { __DRI2_BLOB, 1, offsetof(struct dri2_egl_display, blob) },
    { __DRI_MUTABLE_RENDER_BUFFER_DRIVER, 1, offsetof(struct dri2_egl_display, mutable_render_buffer) },
+   { __DRI_KOPPER, 1, offsetof(struct dri2_egl_display, kopper) },
    { NULL, 0, 0 }
 };
 
@@ -950,7 +951,8 @@ dri2_setup_screen(_EGLDisplay *disp)
          disp->Extensions.EXT_create_context_robustness = EGL_TRUE;
    }
 
-   if (dri2_dpy->no_error)
+   if (dri2_renderer_query_integer(dri2_dpy,
+                                   __DRI2_RENDERER_HAS_NO_ERROR_CONTEXT))
       disp->Extensions.KHR_create_context_no_error = EGL_TRUE;
 
    if (dri2_dpy->fence) {
@@ -1097,7 +1099,7 @@ dri2_create_screen(_EGLDisplay *disp)
    }
 
    if (dri2_dpy->dri_screen == NULL) {
-      _eglLog(_EGL_WARNING, "DRI2: failed to create dri screen");
+      _eglLog(_EGL_WARNING, "egl: failed to create dri2 screen");
       return EGL_FALSE;
    }
 
@@ -1408,7 +1410,7 @@ dri2_fill_context_attribs(struct dri2_egl_context *dri2_ctx,
    ctx_attribs[pos++] = __DRI_CTX_ATTRIB_MINOR_VERSION;
    ctx_attribs[pos++] = dri2_ctx->base.ClientMinorVersion;
 
-   if (dri2_ctx->base.Flags != 0 || dri2_ctx->base.NoError) {
+   if (dri2_ctx->base.Flags != 0) {
       /* If the implementation doesn't support the __DRI2_ROBUSTNESS
        * extension, don't even try to send it the robust-access flag.
        * It may explode.  Instead, generate the required EGL error here.
@@ -1420,8 +1422,7 @@ dri2_fill_context_attribs(struct dri2_egl_context *dri2_ctx,
       }
 
       ctx_attribs[pos++] = __DRI_CTX_ATTRIB_FLAGS;
-      ctx_attribs[pos++] = dri2_ctx->base.Flags |
-         (dri2_ctx->base.NoError ? __DRI_CTX_FLAG_NO_ERROR : 0);
+      ctx_attribs[pos++] = dri2_ctx->base.Flags;
    }
 
    if (dri2_ctx->base.ResetNotificationStrategy != EGL_NO_RESET_NOTIFICATION_KHR) {
@@ -1463,6 +1464,11 @@ dri2_fill_context_attribs(struct dri2_egl_context *dri2_ctx,
    if (dri2_ctx->base.ReleaseBehavior == EGL_CONTEXT_RELEASE_BEHAVIOR_NONE_KHR) {
       ctx_attribs[pos++] = __DRI_CTX_ATTRIB_RELEASE_BEHAVIOR;
       ctx_attribs[pos++] = __DRI_CTX_RELEASE_BEHAVIOR_NONE;
+   }
+
+   if (dri2_ctx->base.NoError) {
+      ctx_attribs[pos++] = __DRI_CTX_ATTRIB_NO_ERROR;
+      ctx_attribs[pos++] = true;
    }
 
    *num_attribs = pos;
@@ -1739,19 +1745,25 @@ dri2_create_drawable(struct dri2_egl_display *dri2_dpy,
                      struct dri2_egl_surface *dri2_surf,
                      void *loaderPrivate)
 {
-   __DRIcreateNewDrawableFunc createNewDrawable;
+   if (dri2_dpy->kopper) {
+      dri2_surf->dri_drawable =
+          dri2_dpy->kopper->createNewDrawable(dri2_dpy->dri_screen, config, loaderPrivate,
+                                              dri2_surf->base.Type == EGL_PBUFFER_BIT ||
+                                              dri2_surf->base.Type == EGL_PIXMAP_BIT);
+   } else {
+      __DRIcreateNewDrawableFunc createNewDrawable;
+      if (dri2_dpy->image_driver)
+         createNewDrawable = dri2_dpy->image_driver->createNewDrawable;
+      else if (dri2_dpy->dri2)
+         createNewDrawable = dri2_dpy->dri2->createNewDrawable;
+      else if (dri2_dpy->swrast)
+         createNewDrawable = dri2_dpy->swrast->createNewDrawable;
+      else
+         return _eglError(EGL_BAD_ALLOC, "no createNewDrawable");
 
-   if (dri2_dpy->image_driver)
-      createNewDrawable = dri2_dpy->image_driver->createNewDrawable;
-   else if (dri2_dpy->dri2)
-      createNewDrawable = dri2_dpy->dri2->createNewDrawable;
-   else if (dri2_dpy->swrast)
-      createNewDrawable = dri2_dpy->swrast->createNewDrawable;
-   else
-      return _eglError(EGL_BAD_ALLOC, "no createNewDrawable");
-
-   dri2_surf->dri_drawable = createNewDrawable(dri2_dpy->dri_screen,
-                                               config, loaderPrivate);
+      dri2_surf->dri_drawable = createNewDrawable(dri2_dpy->dri_screen,
+                                                  config, loaderPrivate);
+   }
    if (dri2_surf->dri_drawable == NULL)
       return _eglError(EGL_BAD_ALLOC, "createNewDrawable");
 
@@ -2653,6 +2665,8 @@ dri2_num_fourcc_format_planes(EGLint format)
    case DRM_FORMAT_ABGR2101010:
    case DRM_FORMAT_RGBA1010102:
    case DRM_FORMAT_BGRA1010102:
+   case DRM_FORMAT_ABGR16161616:
+   case DRM_FORMAT_XBGR16161616:
    case DRM_FORMAT_XBGR16161616F:
    case DRM_FORMAT_ABGR16161616F:
    case DRM_FORMAT_YUYV:

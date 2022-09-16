@@ -24,14 +24,26 @@ struct vn_physical_device_features {
 
    /* Vulkan 1.3 */
    VkPhysicalDevice4444FormatsFeaturesEXT argb_4444_formats;
+   VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering;
    VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic_state;
-   VkPhysicalDeviceImageRobustnessFeaturesEXT image_robustness;
+   VkPhysicalDeviceExtendedDynamicState2FeaturesEXT extended_dynamic_state_2;
+   VkPhysicalDeviceImageRobustnessFeatures image_robustness;
+   VkPhysicalDeviceInlineUniformBlockFeatures inline_uniform_block;
+   VkPhysicalDeviceMaintenance4Features maintenance4;
+   VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures
+      shader_demote_to_helper_invocation;
 
    /* EXT */
+   VkPhysicalDeviceConditionalRenderingFeaturesEXT conditional_rendering;
    VkPhysicalDeviceCustomBorderColorFeaturesEXT custom_border_color;
+   VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable;
+   VkPhysicalDeviceImageViewMinLodFeaturesEXT image_view_min_lod;
+   VkPhysicalDeviceIndexTypeUint8FeaturesEXT index_type_uint8;
    VkPhysicalDeviceLineRasterizationFeaturesEXT line_rasterization;
    VkPhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex;
+   VkPhysicalDeviceRobustness2FeaturesEXT robustness_2;
    VkPhysicalDeviceTransformFeedbackFeaturesEXT transform_feedback;
+   VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vertex_attribute_divisor;
 };
 
 struct vn_physical_device_properties {
@@ -39,11 +51,20 @@ struct vn_physical_device_properties {
    VkPhysicalDeviceVulkan11Properties vulkan_1_1;
    VkPhysicalDeviceVulkan12Properties vulkan_1_2;
 
+   /* Vulkan 1.3 */
+   VkPhysicalDeviceInlineUniformBlockProperties inline_uniform_block;
+   VkPhysicalDeviceMaintenance4Properties maintenance4;
+
    /* EXT */
+   VkPhysicalDeviceConservativeRasterizationPropertiesEXT
+      conservative_rasterization;
    VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color;
    VkPhysicalDeviceLineRasterizationPropertiesEXT line_rasterization;
    VkPhysicalDeviceProvokingVertexPropertiesEXT provoking_vertex;
+   VkPhysicalDeviceRobustness2PropertiesEXT robustness_2;
    VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback;
+   VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT
+      vertex_attribute_divisor;
 };
 
 struct vn_format_properties_entry {
@@ -85,10 +106,6 @@ struct vn_physical_device {
       VkExternalMemoryHandleTypeFlagBits renderer_handle_type;
       VkExternalMemoryHandleTypeFlags supported_handle_types;
    } external_memory;
-
-   /* syncFdFencing allows driver to query renderer sync_fd features */
-   VkExternalFenceFeatureFlags renderer_sync_fd_fence_features;
-   VkExternalSemaphoreFeatureFlags renderer_sync_fd_semaphore_features;
 
    VkExternalFenceHandleTypeFlags external_fence_handles;
    VkExternalSemaphoreHandleTypeFlags external_binary_semaphore_handles;

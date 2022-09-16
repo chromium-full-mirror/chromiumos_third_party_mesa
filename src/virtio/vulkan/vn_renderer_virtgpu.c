@@ -12,6 +12,13 @@
 #include <unistd.h>
 #include <xf86drm.h>
 
+#ifdef MAJOR_IN_MKDEV
+#include <sys/mkdev.h>
+#endif
+#ifdef MAJOR_IN_SYSMACROS
+#include <sys/sysmacros.h>
+#endif
+
 #include "drm-uapi/virtgpu_drm.h"
 #include "util/sparse_array.h"
 #define VIRGL_RENDERER_UNSTABLE_APIS
@@ -99,8 +106,15 @@ struct virtgpu {
    struct vn_instance *instance;
 
    int fd;
-   int version_minor;
-   drmPciBusInfo bus_info;
+
+   bool has_primary;
+   int primary_major;
+   int primary_minor;
+   int render_major;
+   int render_minor;
+
+   int bustype;
+   drmPciBusInfo pci_bus_info;
 
    uint32_t max_sync_queue_count;
 
@@ -1373,14 +1387,25 @@ virtgpu_init_renderer_info(struct virtgpu *gpu)
 {
    struct vn_renderer_info *info = &gpu->base.info;
 
+   info->drm.has_primary = gpu->has_primary;
+   info->drm.primary_major = gpu->primary_major;
+   info->drm.primary_minor = gpu->primary_minor;
+   info->drm.has_render = true;
+   info->drm.render_major = gpu->render_major;
+   info->drm.render_minor = gpu->render_minor;
+
    info->pci.vendor_id = VIRTGPU_PCI_VENDOR_ID;
    info->pci.device_id = VIRTGPU_PCI_DEVICE_ID;
 
-   info->pci.has_bus_info = true;
-   info->pci.domain = gpu->bus_info.domain;
-   info->pci.bus = gpu->bus_info.bus;
-   info->pci.device = gpu->bus_info.dev;
-   info->pci.function = gpu->bus_info.func;
+   if (gpu->bustype == DRM_BUS_PCI) {
+      info->pci.has_bus_info = true;
+      info->pci.domain = gpu->pci_bus_info.domain;
+      info->pci.bus = gpu->pci_bus_info.bus;
+      info->pci.device = gpu->pci_bus_info.dev;
+      info->pci.function = gpu->pci_bus_info.func;
+   } else {
+      info->pci.has_bus_info = false;
+   }
 
    info->has_dma_buf_import = true;
    /* Kernel makes every mapping coherent.  We are better off filtering
@@ -1548,11 +1573,22 @@ virtgpu_init_params(struct virtgpu *gpu)
 static VkResult
 virtgpu_open_device(struct virtgpu *gpu, const drmDevicePtr dev)
 {
-   /* skip unless the device has our PCI vendor/device id and a render node */
-   if (!(dev->available_nodes & (1 << DRM_NODE_RENDER)) ||
-       dev->bustype != DRM_BUS_PCI ||
-       dev->deviceinfo.pci->vendor_id != VIRTGPU_PCI_VENDOR_ID ||
-       dev->deviceinfo.pci->device_id != VIRTGPU_PCI_DEVICE_ID) {
+   bool supported_bus = false;
+
+   switch (dev->bustype) {
+   case DRM_BUS_PCI:
+      if (dev->deviceinfo.pci->vendor_id == VIRTGPU_PCI_VENDOR_ID &&
+         dev->deviceinfo.pci->device_id == VIRTGPU_PCI_DEVICE_ID)
+         supported_bus = true;
+      break;
+   case DRM_BUS_PLATFORM:
+      supported_bus = true;
+      break;
+   default:
+      break;
+   }
+
+   if (!supported_bus || !(dev->available_nodes & (1 << DRM_NODE_RENDER))) {
       if (VN_DEBUG(INIT)) {
          const char *name = "unknown";
          for (uint32_t i = 0; i < DRM_NODE_MAX; i++) {
@@ -1566,6 +1602,7 @@ virtgpu_open_device(struct virtgpu *gpu, const drmDevicePtr dev)
       return VK_ERROR_INITIALIZATION_FAILED;
    }
 
+   const char *primary_path = dev->nodes[DRM_NODE_PRIMARY];
    const char *node_path = dev->nodes[DRM_NODE_RENDER];
 
    int fd = open(node_path, O_RDWR | O_CLOEXEC);
@@ -1593,8 +1630,24 @@ virtgpu_open_device(struct virtgpu *gpu, const drmDevicePtr dev)
    }
 
    gpu->fd = fd;
-   gpu->version_minor = version->version_minor;
-   gpu->bus_info = *dev->businfo.pci;
+
+   struct stat st;
+   if (stat(primary_path, &st) == 0) {
+      gpu->has_primary = true;
+      gpu->primary_major = major(st.st_rdev);
+      gpu->primary_minor = minor(st.st_rdev);
+   } else {
+      gpu->has_primary = false;
+      gpu->primary_major = 0;
+      gpu->primary_minor = 0;
+   }
+   stat(node_path, &st);
+   gpu->render_major = major(st.st_rdev);
+   gpu->render_minor = minor(st.st_rdev);
+
+   gpu->bustype = dev->bustype;
+   if (dev->bustype == DRM_BUS_PCI)
+      gpu->pci_bus_info = *dev->businfo.pci;
 
    drmFreeVersion(version);
 

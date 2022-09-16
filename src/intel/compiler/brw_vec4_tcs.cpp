@@ -161,7 +161,7 @@ vec4_tcs_visitor::emit_input_urb_read(const dst_reg &dst,
 
    /* Set up the message header to reference the proper parts of the URB */
    dst_reg header = dst_reg(this, glsl_type::uvec4_type);
-   inst = emit(TCS_OPCODE_SET_INPUT_URB_OFFSETS, header, vertex_index,
+   inst = emit(VEC4_TCS_OPCODE_SET_INPUT_URB_OFFSETS, header, vertex_index,
                indirect_offset);
    inst->force_writemask_all = true;
 
@@ -194,7 +194,7 @@ vec4_tcs_visitor::emit_output_urb_read(const dst_reg &dst,
 
    /* Set up the message header to reference the proper parts of the URB */
    dst_reg header = dst_reg(this, glsl_type::uvec4_type);
-   inst = emit(TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, header,
+   inst = emit(VEC4_TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, header,
                brw_imm_ud(dst.writemask << first_component), indirect_offset);
    inst->force_writemask_all = true;
 
@@ -223,14 +223,14 @@ vec4_tcs_visitor::emit_urb_write(const src_reg &value,
    src_reg message(this, glsl_type::uvec4_type, 2);
    vec4_instruction *inst;
 
-   inst = emit(TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, dst_reg(message),
+   inst = emit(VEC4_TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, dst_reg(message),
                brw_imm_ud(writemask), indirect_offset);
    inst->force_writemask_all = true;
    inst = emit(MOV(byte_offset(dst_reg(retype(message, value.type)), REG_SIZE),
                    value));
    inst->force_writemask_all = true;
 
-   inst = emit(TCS_OPCODE_URB_WRITE, dst_null_f(), message);
+   inst = emit(VEC4_TCS_OPCODE_URB_WRITE, dst_null_f(), message);
    inst->offset = base_offset;
    inst->mlen = 2;
    inst->base_mrf = -1;
@@ -366,6 +366,8 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    const unsigned *assembly;
 
    vue_prog_data->base.stage = MESA_SHADER_TESS_CTRL;
+   prog_data->base.base.ray_queries = nir->info.ray_queries;
+   prog_data->base.base.total_scratch = 0;
 
    nir->info.outputs_written = key->outputs_written;
    nir->info.patch_outputs_written = key->patch_outputs_written;

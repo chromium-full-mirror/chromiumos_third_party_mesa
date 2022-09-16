@@ -38,7 +38,7 @@ libintel_compiler_files = files(
   'brw_disasm.c',
   'brw_disasm_info.c',
   'brw_disasm_info.h',
-  'brw_eu.cpp',
+  'brw_eu.c',
   'brw_eu_compact.c',
   'brw_eu_defines.h',
   'brw_eu_emit.c',
@@ -76,6 +76,9 @@ libintel_compiler_files = files(
   'brw_ir_performance.h',
   'brw_ir_performance.cpp',
   'brw_ir_vec4.h',
+  'brw_isa_info.h',
+  'brw_kernel.c',
+  'brw_lower_logical_sends.cpp',
   'brw_mesh.cpp',
   'brw_nir.h',
   'brw_nir.c',
@@ -87,6 +90,7 @@ libintel_compiler_files = files(
   'brw_nir_lower_alpha_to_coverage.c',
   'brw_nir_lower_intersection_shader.c',
   'brw_nir_lower_mem_access_bit_sizes.c',
+  'brw_nir_lower_ray_queries.c',
   'brw_nir_lower_rt_intrinsics.c',
   'brw_nir_lower_scoped_barriers.c',
   'brw_nir_lower_shader_calls.c',
@@ -100,6 +104,7 @@ libintel_compiler_files = files(
   'brw_nir_clamp_image_1d_2d_array_sizes.c',
   'brw_packed_float.c',
   'brw_predicated_break.cpp',
+  'brw_prim.h',
   'brw_private.h',
   'brw_reg.h',
   'brw_reg_type.c',
@@ -147,7 +152,7 @@ brw_nir_trig = custom_target(
     prog_python, '@INPUT@',
     '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
-  depend_files : nir_algebraic_py,
+  depend_files : nir_algebraic_depends,
   capture : true,
 )
 
@@ -160,6 +165,21 @@ libintel_compiler = static_library(
   dependencies : [idep_nir_headers, idep_mesautil],
   build_by_default : false,
 )
+
+# For now this tool is only going to be used by Anv
+if with_intel_clc
+  prog_intel_clc = executable(
+    'intel_clc',
+    ['intel_clc.c'],
+    link_with : [
+      libintel_compiler, libintel_common, libintel_dev, libisl,
+    ],
+    include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel],
+    c_args : [pre_args, no_override_init_args],
+    dependencies : [idep_nir, idep_clc, idep_mesautil],
+    native : true,
+  )
+endif
 
 if with_tests
   test(

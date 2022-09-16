@@ -202,6 +202,8 @@ CreateDRIDrawable(Display *dpy, struct glx_config *config,
 
    pdraw->textureTarget = determineTextureTarget(attrib_list, num_attribs);
    pdraw->textureFormat = determineTextureFormat(attrib_list, num_attribs);
+
+   pdraw->refcount = 1;
 #endif
 
    return GL_TRUE;
@@ -302,20 +304,20 @@ __glXGetDrawableAttribute(Display * dpy, GLXDrawable drawable,
       if (psc->driScreen->getBufferAge != NULL)
          *value = psc->driScreen->getBufferAge(pdraw);
 
-      return 0;
+      return 1;
    }
 
    if (pdraw) {
       if (attribute == GLX_SWAP_INTERVAL_EXT) {
          *value = pdraw->psc->driScreen->getSwapInterval(pdraw);
-         return 0;
+         return 1;
       } else if (attribute == GLX_MAX_SWAP_INTERVAL_EXT) {
-         *value = INT_MAX;
-         return 0;
+         *value = pdraw->psc->driScreen->maxSwapInterval;
+         return 1;
       } else if (attribute == GLX_LATE_SWAPS_TEAR_EXT) {
          *value = __glXExtensionBitIsEnabled(pdraw->psc,
                                              EXT_swap_control_tear_bit);
-         return 0;
+         return 1;
       }
    }
 #endif
@@ -549,10 +551,6 @@ CreateDrawable(Display *dpy, struct glx_config *config,
 static void
 DestroyDrawable(Display * dpy, GLXDrawable drawable, CARD32 glxCode)
 {
-   if ((dpy == NULL) || (drawable == 0)) {
-      return;
-   }
-
    protocolDestroyDrawable(dpy, drawable, glxCode);
 
    DestroyGLXDrawable(dpy, drawable);

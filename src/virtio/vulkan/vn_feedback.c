@@ -169,7 +169,8 @@ vn_feedback_pool_init(struct vn_device *dev,
    list_inithead(&pool->feedback_buffers);
    list_inithead(&pool->free_slots);
 
-   return VK_SUCCESS;
+   /* no lock needed upon init */
+   return vn_feedback_pool_grow_locked(pool);
 }
 
 void

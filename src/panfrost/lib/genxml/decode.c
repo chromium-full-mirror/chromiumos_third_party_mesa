@@ -490,13 +490,13 @@ pandecode_invocation(const void *i)
 }
 #endif
 
-#if PAN_ARCH <= 7
 static void
 pandecode_primitive(const void *p)
 {
         pan_unpack(p, PRIMITIVE, primitive);
         DUMP_UNPACKED(PRIMITIVE, primitive, "Primitive:\n");
 
+#if PAN_ARCH <= 7
         /* Validate an index buffer is present if we need one. TODO: verify
          * relationship between invocation_count and index_count */
 
@@ -515,8 +515,20 @@ pandecode_primitive(const void *p)
                         pandecode_validate_buffer(primitive.indices, primitive.index_count * size);
         } else if (primitive.index_type)
                 pandecode_msg("XXX: unexpected index size\n");
+#endif
 }
 
+static void
+pandecode_primitive_size(const void *s, bool constant)
+{
+        pan_unpack(s, PRIMITIVE_SIZE, ps);
+        if (ps.size_array == 0x0)
+                return;
+
+        DUMP_UNPACKED(PRIMITIVE_SIZE, ps, "Primitive Size:\n")
+}
+
+#if PAN_ARCH <= 7
 static void
 pandecode_uniform_buffers(mali_ptr pubufs, int ubufs_count, int job_no)
 {
@@ -651,10 +663,10 @@ pandecode_texture_payload(mali_ptr payload,
                 if (manual_stride && (i & 1)) {
                         /* signed 32-bit snuck in as a 64-bit pointer */
                         uint64_t stride_set = pointers_and_strides[i];
-                        int32_t line_stride = stride_set;
+                        int32_t row_stride = stride_set;
                         int32_t surface_stride = stride_set >> 32;
-                        pandecode_log("(mali_ptr) %d /* surface stride */ %d /* line stride */, \n",
-                                      surface_stride, line_stride);
+                        pandecode_log("(mali_ptr) %d /* surface stride */ %d /* row stride */, \n",
+                                      surface_stride, row_stride);
                 } else {
                         char *a = pointer_as_memory_reference(pointers_and_strides[i]);
                         pandecode_log("%s, \n", a);
@@ -700,9 +712,14 @@ pandecode_bifrost_texture(
         pandecode_indent++;
 
 #if PAN_ARCH >= 9
-        /* TODO: count */
-        for (unsigned i = 0; i < 4; ++i)
-                DUMP_ADDR(SURFACE_WITH_STRIDE, temp.surfaces + i * pan_size(SURFACE_WITH_STRIDE), "Surface %u:\n", i);
+        int plane_count = temp.levels * temp.array_size;
+
+        /* Miptree for each face */
+        if (temp.dimension == MALI_TEXTURE_DIMENSION_CUBE)
+                plane_count *= 6;
+
+        for (unsigned i = 0; i < plane_count; ++i)
+                DUMP_ADDR(PLANE, temp.surfaces + i * pan_size(PLANE), "Plane %u:\n", i);
 #else
         struct pandecode_mapped_memory *tmem = pandecode_find_mapped_gpu_mem_containing(temp.surfaces);
         unsigned nr_samples = temp.dimension == MALI_TEXTURE_DIMENSION_3D ?
@@ -944,16 +961,6 @@ pandecode_dcd(const struct MALI_DRAW *p,
 }
 
 static void
-pandecode_primitive_size(const void *s, bool constant)
-{
-        pan_unpack(s, PRIMITIVE_SIZE, ps);
-        if (ps.size_array == 0x0)
-                return;
-
-        DUMP_UNPACKED(PRIMITIVE_SIZE, ps, "Primitive Size:\n")
-}
-
-static void
 pandecode_vertex_compute_geometry_job(const struct MALI_JOB_HEADER *h,
                                       const struct pandecode_mapped_memory *mem,
                                       mali_ptr job, int job_no, unsigned gpu_id)
@@ -1025,55 +1032,51 @@ pandecode_indexed_vertex_job(const struct MALI_JOB_HEADER *h,
 
         pan_section_unpack(p, INDEXED_VERTEX_JOB, PADDING, padding);
 }
+#endif
+#endif
 
 static void
-pandecode_tiler_job_bfr(const struct MALI_JOB_HEADER *h,
-                        const struct pandecode_mapped_memory *mem,
-                        mali_ptr job, int job_no, unsigned gpu_id)
+pandecode_tiler_job(const struct MALI_JOB_HEADER *h,
+                    const struct pandecode_mapped_memory *mem,
+                    mali_ptr job, int job_no, unsigned gpu_id)
 {
         struct mali_tiler_job_packed *PANDECODE_PTR_VAR(p, mem, job);
         pan_section_unpack(p, TILER_JOB, DRAW, draw);
-        pan_section_unpack(p, TILER_JOB, TILER, tiler_ptr);
         pandecode_dcd(&draw, job_no, h->type, "", gpu_id);
-
         pandecode_log("Tiler Job Payload:\n");
         pandecode_indent++;
-        pandecode_bifrost_tiler(tiler_ptr.address, job_no);
 
+#if PAN_ARCH <= 7
         pandecode_invocation(pan_section_ptr(p, TILER_JOB, INVOCATION));
+#endif
+
         pandecode_primitive(pan_section_ptr(p, TILER_JOB, PRIMITIVE));
+        DUMP_UNPACKED(DRAW, draw, "Draw:\n");
+
+#if PAN_ARCH >= 6
+        pan_section_unpack(p, TILER_JOB, TILER, tiler_ptr);
+        pandecode_bifrost_tiler(tiler_ptr.address, job_no);
 
         /* TODO: gl_PointSize on Bifrost */
         pandecode_primitive_size(pan_section_ptr(p, TILER_JOB, PRIMITIVE_SIZE), true);
-        pan_section_unpack(p, TILER_JOB, PADDING, padding);
-        DUMP_UNPACKED(DRAW, draw, "Draw:\n");
-        pandecode_indent--;
-        pandecode_log("\n");
-}
-#endif
+
+#if PAN_ARCH >= 9
+        DUMP_SECTION(TILER_JOB, INSTANCE_COUNT, p, "Instance count:\n");
+        DUMP_SECTION(TILER_JOB, VERTEX_COUNT, p, "Vertex count:\n");
+        DUMP_SECTION(TILER_JOB, SCISSOR, p, "Scissor:\n");
+        DUMP_SECTION(TILER_JOB, INDICES, p, "Indices:\n");
 #else
-static void
-pandecode_tiler_job_mdg(const struct MALI_JOB_HEADER *h,
-                        const struct pandecode_mapped_memory *mem,
-                        mali_ptr job, int job_no, unsigned gpu_id)
-{
-        struct mali_tiler_job_packed *PANDECODE_PTR_VAR(p, mem, job);
-        pan_section_unpack(p, TILER_JOB, DRAW, draw);
-        pandecode_dcd(&draw, job_no, h->type, "", gpu_id);
+        pan_section_unpack(p, TILER_JOB, PADDING, padding);
+#endif
 
-        pandecode_log("Tiler Job Payload:\n");
-        pandecode_indent++;
-        pandecode_invocation(pan_section_ptr(p, TILER_JOB, INVOCATION));
-        pandecode_primitive(pan_section_ptr(p, TILER_JOB, PRIMITIVE));
-        DUMP_UNPACKED(DRAW, draw, "Draw:\n");
-
+#else
         pan_section_unpack(p, TILER_JOB, PRIMITIVE, primitive);
         pandecode_primitive_size(pan_section_ptr(p, TILER_JOB, PRIMITIVE_SIZE),
                                  primitive.point_size_array_format == MALI_POINT_SIZE_ARRAY_FORMAT_NONE);
+#endif
         pandecode_indent--;
         pandecode_log("\n");
 }
-#endif
 
 static void
 pandecode_fragment_job(const struct pandecode_mapped_memory *mem,
@@ -1207,19 +1210,20 @@ pandecode_resources(mali_ptr addr, unsigned size)
 static void
 pandecode_resource_tables(mali_ptr addr, const char *label)
 {
-        fprintf(pandecode_dump_stream, "Tag %x\n", (int) (addr & 0xF));
-        addr = addr & ~0xF;
+        unsigned count = addr & 0x3F;
+        addr = addr & ~0x3F;
 
         struct pandecode_mapped_memory *mem = pandecode_find_mapped_gpu_mem_containing(addr);
-        unsigned count = 9; // TODO: what is the actual count? at least 5.
         const uint8_t *cl = pandecode_fetch_gpu_mem(mem, addr, MALI_RESOURCE_LENGTH * count);
 
         for (unsigned i = 0; i < count; ++i) {
                 pan_unpack(cl + i * MALI_RESOURCE_LENGTH, RESOURCE, entry);
                 DUMP_UNPACKED(RESOURCE, entry, "Entry %u:\n", i);
 
+                pandecode_indent += 2;
                 if (entry.address)
                         pandecode_resources(entry.address, entry.size);
+                pandecode_indent -= 2;
         }
 }
 
@@ -1232,76 +1236,65 @@ pandecode_depth_stencil(mali_ptr addr)
 }
 
 static void
+pandecode_shader_environment(const struct MALI_SHADER_ENVIRONMENT *p,
+                             unsigned gpu_id)
+{
+        if (p->shader)
+                pandecode_shader(p->shader, "Shader", gpu_id);
+
+        if (p->resources)
+                pandecode_resource_tables(p->resources, "Resources");
+
+        if (p->thread_storage)
+                pandecode_local_storage(p->thread_storage, 0);
+
+        if (p->fau)
+                dump_fau(p->fau, p->fau_count, "FAU");
+}
+
+static void
 pandecode_dcd(const struct MALI_DRAW *p,
               int job_no, enum mali_job_type job_type,
               char *suffix, unsigned gpu_id)
 {
         mali_ptr frag_shader = 0;
 
-        if (p->fragment.shader)
-                pandecode_shader(p->fragment.shader, "Fragment", gpu_id);
-
-        if (p->varying.shader)
-                pandecode_shader(p->varying.shader, "Varying", gpu_id);
-
-        if (p->position.shader)
-                pandecode_shader(p->position.shader, "Position", gpu_id);
-
         pandecode_depth_stencil(p->depth_stencil);
 
-        if (p->blend) {
+        for (unsigned i = 0; i < p->blend_count; ++i) {
                 struct pandecode_mapped_memory *blend_mem =
                         pandecode_find_mapped_gpu_mem_containing(p->blend);
 
                 struct mali_blend_packed *PANDECODE_PTR_VAR(blend_descs, blend_mem, p->blend);
 
-                mali_ptr blend_shader = pandecode_bifrost_blend(blend_descs, 0, 0, frag_shader);
+                mali_ptr blend_shader = pandecode_bifrost_blend(blend_descs, 0, i, frag_shader);
                 if (blend_shader) {
-                        fprintf(pandecode_dump_stream, "Blend shader");
+                        fprintf(pandecode_dump_stream, "Blend shader %u", i);
                         pandecode_shader_disassemble(blend_shader, 0, 0, gpu_id);
                 }
         }
 
-        if (p->fragment.resources)
-                pandecode_resource_tables(p->fragment.resources, "Fragment resources");
-        if (p->fragment.thread_storage)
-                pandecode_local_storage(p->fragment.thread_storage, 0);
-        if (p->fragment.fau)
-                dump_fau(p->fragment.fau, p->fragment.fau_count, "Fragment FAU");
-
-        if (p->position.resources)
-                pandecode_resource_tables(p->position.resources, "Position resources");
-        if (p->position.thread_storage)
-                pandecode_local_storage(p->position.thread_storage, 0);
-        if (p->position.fau)
-                dump_fau(p->position.fau, p->position.fau_count, "Position FAU");
-
-        if (p->varying.resources)
-                pandecode_resource_tables(p->varying.resources, "Varying resources");
-        if (p->varying.thread_storage)
-                pandecode_local_storage(p->varying.thread_storage, 0);
-        if (p->varying.fau)
-                dump_fau(p->varying.fau, p->varying.fau_count, "Varying FAU");
-
+        pandecode_shader_environment(&p->shader, gpu_id);
         DUMP_UNPACKED(DRAW, *p, "Draw:\n");
 }
 
 static void
-pandecode_idvs_helper_job(const struct pandecode_mapped_memory *mem,
+pandecode_malloc_vertex_job(const struct pandecode_mapped_memory *mem,
                           mali_ptr job, unsigned gpu_id)
 {
-        struct mali_idvs_helper_job_packed *PANDECODE_PTR_VAR(p, mem, job);
+        struct mali_malloc_vertex_job_packed *PANDECODE_PTR_VAR(p, mem, job);
 
-        DUMP_SECTION(IDVS_HELPER_JOB, PRIMITIVE, p, "Primitive:\n");
-        DUMP_SECTION(IDVS_HELPER_JOB, COUNTS, p, "Counts:\n");
-        DUMP_SECTION(IDVS_HELPER_JOB, TILER, p, "Tiler:\n");
-        DUMP_SECTION(IDVS_HELPER_JOB, SCISSOR, p, "Scissor:\n");
-        DUMP_SECTION(IDVS_HELPER_JOB, PRIMITIVE_SIZE, p, "Primitive Size:\n");
-        DUMP_SECTION(IDVS_HELPER_JOB, INDICES, p, "Indices:\n");
+        DUMP_SECTION(MALLOC_VERTEX_JOB, PRIMITIVE, p, "Primitive:\n");
+        DUMP_SECTION(MALLOC_VERTEX_JOB, INSTANCE_COUNT, p, "Instance count:\n");
+        DUMP_SECTION(MALLOC_VERTEX_JOB, ALLOCATION, p, "Allocation:\n");
+        DUMP_SECTION(MALLOC_VERTEX_JOB, TILER, p, "Tiler:\n");
+        DUMP_SECTION(MALLOC_VERTEX_JOB, SCISSOR, p, "Scissor:\n");
+        DUMP_SECTION(MALLOC_VERTEX_JOB, PRIMITIVE_SIZE, p, "Primitive Size:\n");
+        DUMP_SECTION(MALLOC_VERTEX_JOB, INDICES, p, "Indices:\n");
 
-        pan_section_unpack(p, IDVS_HELPER_JOB, DRAW, dcd);
+        pan_section_unpack(p, MALLOC_VERTEX_JOB, DRAW, dcd);
 
-        pan_section_unpack(p, IDVS_HELPER_JOB, TILER, tiler_ptr);
+        pan_section_unpack(p, MALLOC_VERTEX_JOB, TILER, tiler_ptr);
         pandecode_log("Tiler Job Payload:\n");
         pandecode_indent++;
         if (tiler_ptr.address)
@@ -1311,6 +1304,11 @@ pandecode_idvs_helper_job(const struct pandecode_mapped_memory *mem,
         pandecode_indent--;
 
         pandecode_dcd(&dcd, 0, 0, NULL, gpu_id);
+
+        pan_section_unpack(p, MALLOC_VERTEX_JOB, POSITION, position);
+        pan_section_unpack(p, MALLOC_VERTEX_JOB, VARYING, varying);
+        pandecode_shader_environment(&position, gpu_id);
+        pandecode_shader_environment(&varying, gpu_id);
 }
 
 static void
@@ -1367,15 +1365,11 @@ GENX(pandecode_jc)(mali_ptr jc_gpu_va, unsigned gpu_id)
                         pandecode_cache_flush_job(mem, jc_gpu_va, job_no);
                         break;
 
-#if PAN_ARCH <= 7
                 case MALI_JOB_TYPE_TILER:
-#if PAN_ARCH >= 6
-                        pandecode_tiler_job_bfr(&h, mem, jc_gpu_va, job_no, gpu_id);
-#else
-                        pandecode_tiler_job_mdg(&h, mem, jc_gpu_va, job_no, gpu_id);
-#endif
+                        pandecode_tiler_job(&h, mem, jc_gpu_va, job_no, gpu_id);
                         break;
 
+#if PAN_ARCH <= 7
                 case MALI_JOB_TYPE_VERTEX:
                 case MALI_JOB_TYPE_COMPUTE:
                         pandecode_vertex_compute_geometry_job(&h, mem, jc_gpu_va, job_no, gpu_id);
@@ -1391,8 +1385,8 @@ GENX(pandecode_jc)(mali_ptr jc_gpu_va, unsigned gpu_id)
 			pandecode_compute_job(mem, jc_gpu_va, gpu_id);
 			break;
 
-		case MALI_JOB_TYPE_IDVS_HELPER:
-			pandecode_idvs_helper_job(mem, jc_gpu_va, gpu_id);
+		case MALI_JOB_TYPE_MALLOC_VERTEX:
+			pandecode_malloc_vertex_job(mem, jc_gpu_va, gpu_id);
 			break;
 #endif
 
@@ -1425,6 +1419,7 @@ GENX(pandecode_abort_on_fault)(mali_ptr jc_gpu_va)
                 /* Ensure the job is marked COMPLETE */
                 if (h.exception_status != 0x1) {
                         fprintf(stderr, "Incomplete job or timeout\n");
+                        fflush(NULL);
                         abort();
                 }
         } while ((jc_gpu_va = next_job));

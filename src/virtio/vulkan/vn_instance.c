@@ -63,6 +63,8 @@ static const driOptionDescription vn_dri_options[] = {
       DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(false)
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+      DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
+      DRI_CONF_VENUS_IMPLICIT_FENCING(false)
    DRI_CONF_SECTION_END
    DRI_CONF_SECTION_DEBUG
       DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
@@ -222,12 +224,10 @@ vn_instance_init_experimental_features(struct vn_instance *instance)
              "VkVenusExperimentalFeatures100000MESA is as below:"
              "\n\tmemoryResourceAllocationSize = %u"
              "\n\tglobalFencing = %u"
-             "\n\tlargeRing = %u"
-             "\n\tsyncFdFencing = %u",
+             "\n\tlargeRing = %u",
              instance->experimental.memoryResourceAllocationSize,
              instance->experimental.globalFencing,
-             instance->experimental.largeRing,
-             instance->experimental.syncFdFencing);
+             instance->experimental.largeRing);
    }
 
    return VK_SUCCESS;
@@ -790,6 +790,9 @@ vn_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
                        instance->base.base.app_info.app_version,
                        instance->base.base.app_info.engine_name,
                        instance->base.base.app_info.engine_version);
+
+   instance->renderer->info.has_implicit_fencing =
+      driQueryOptionb(&instance->dri_options, "venus_implicit_fencing");
 
    *pInstance = instance_handle;
 

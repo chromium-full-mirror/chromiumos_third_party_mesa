@@ -680,7 +680,7 @@ isl_surf_choose_tiling(const struct isl_device *dev,
 
    #undef CHOOSE
 
-   /* No tiling mode accomodates the inputs. */
+   /* No tiling mode accommodates the inputs. */
    return false;
 }
 
@@ -877,7 +877,7 @@ isl_choose_image_alignment_el(const struct isl_device *dev,
          *image_align_el = isl_extent3d(1, 1, 1);
       } else if (ISL_GFX_VER(dev) < 12) {
          /* On gfx7+, HiZ surfaces are always aligned to 16x8 pixels in the
-          * primary surface which works out to 2x2 HiZ elments.
+          * primary surface which works out to 2x2 HiZ elements.
           */
          *image_align_el = isl_extent3d(2, 2, 1);
       } else {
@@ -1268,11 +1268,11 @@ isl_calc_phys_slice0_extent_sa_gfx4_2d(
        * alignment here is safe because we later align the row pitch and array
        * pitch to the tile boundary. It is safe even for
        * ISL_MSAA_LAYOUT_INTERLEAVED, because phys_level0_sa is already scaled
-       * to accomodate the interleaved samples.
+       * to accommodate the interleaved samples.
        *
        * For linear surfaces, reducing the alignment here permits us to later
        * choose an arbitrary, non-aligned row pitch. If the surface backs
-       * a VkBuffer, then an arbitrary pitch may be needed to accomodate
+       * a VkBuffer, then an arbitrary pitch may be needed to accommodate
        * VkBufferImageCopy::bufferRowLength.
        */
       *phys_slice0_sa = (struct isl_extent2d) {
@@ -2062,7 +2062,7 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
     * from Sandy Bridge through Broadwell, HiZ compresses samples in the
     * primary depth surface.  On Sky Lake and onward, HiZ compresses pixels.
     *
-    * There are a number of different ways that this discrepency could be
+    * There are a number of different ways that this discrepancy could be
     * handled.  The way we have chosen is to simply make MSAA HiZ have the
     * same number of samples as the parent surface pre-Sky Lake and always be
     * single-sampled on Sky Lake and above.  Since the block sizes of
@@ -2095,6 +2095,10 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
 {
    /* It must be multisampled with an array layout */
    if (surf->msaa_layout != ISL_MSAA_LAYOUT_ARRAY)
+      return false;
+
+   /* We are seeing failures with mcs on dg2, so disable it for now. */
+   if (intel_device_info_is_dg2(dev->info))
       return false;
 
    /* The following are true of all multisampled surfaces */
@@ -3326,6 +3330,38 @@ isl_swizzle_invert(struct isl_swizzle swizzle)
       chans[swizzle.r - ISL_CHANNEL_SELECT_RED] = ISL_CHANNEL_SELECT_RED;
 
    return (struct isl_swizzle) { chans[0], chans[1], chans[2], chans[3] };
+}
+
+static uint32_t
+isl_color_value_channel(union isl_color_value src,
+                        enum isl_channel_select chan,
+                        uint32_t one)
+{
+   if (chan == ISL_CHANNEL_SELECT_ZERO)
+      return 0;
+   if (chan == ISL_CHANNEL_SELECT_ONE)
+      return one;
+
+   assert(chan >= ISL_CHANNEL_SELECT_RED);
+   assert(chan < ISL_CHANNEL_SELECT_RED + 4);
+
+   return src.u32[chan - ISL_CHANNEL_SELECT_RED];
+}
+
+/** Applies an inverse swizzle to a color value */
+union isl_color_value
+isl_color_value_swizzle(union isl_color_value src,
+                        struct isl_swizzle swizzle,
+                        bool is_float)
+{
+   uint32_t one = is_float ? 0x3f800000 : 1;
+
+   return (union isl_color_value) { .u32 = {
+      isl_color_value_channel(src, swizzle.r, one),
+      isl_color_value_channel(src, swizzle.g, one),
+      isl_color_value_channel(src, swizzle.b, one),
+      isl_color_value_channel(src, swizzle.a, one),
+   } };
 }
 
 /** Applies an inverse swizzle to a color value */

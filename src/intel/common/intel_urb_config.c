@@ -82,7 +82,7 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
     *    Engine, the actual URB space available for operation is only 60KB
     *    (per bank). Similarly when URB space programmed is 128KB (per bank)
     *    for render engine, the actual URB space available for operation is
-    *    only 124KB (per bank). More detailed descripton available in "L3
+    *    only 124KB (per bank). More detailed description available in "L3
     *    Cache" section of the B-Spec."
     */
    if (devinfo->verx10 == 120) {
@@ -225,14 +225,32 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
    }
 
    /* Lay out the URB in pipeline order: push constants, VS, HS, DS, GS. */
-   int next = push_constant_chunks;
+   int first_urb = push_constant_chunks;
+
+   /* From the BDW PRM: for 3DSTATE_URB_*: VS URB Starting Address
+    *
+    *    "Value: [4,48] Device [SliceCount] GT 1"
+    *
+    * From the ICL PRMs and above :
+    *
+    *    "If CTXT_SR_CTL::POSH_Enable is clear and Push Constants are required
+    *     or Device[SliceCount] GT 1, the lower limit is 4."
+    *
+    *    "If Push Constants are not required andDevice[SliceCount] == 1, the
+    *     lower limit is 0."
+    */
+   if ((devinfo->ver == 8 && devinfo->num_slices == 1) ||
+       (devinfo->ver >= 11 && push_constant_chunks > 0 && devinfo->num_slices == 1))
+      first_urb = MAX2(first_urb, 4);
+
+   int next_urb = first_urb;
    for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
       if (entries[i]) {
-         start[i] = next;
-         next += chunks[i];
+         start[i] = next_urb;
+         next_urb += chunks[i];
       } else {
-         /* Just put disabled stages at the beginning. */
-         start[i] = 0;
+         /* Put disabled stages at the beginning of the valid range */
+         start[i] = first_urb;
       }
    }
 
@@ -320,7 +338,10 @@ intel_get_mesh_urb_config(const struct intel_device_info *devinfo,
       task_urb_share = task_urb_share_percentage / 100.0f;
    }
 
-   const unsigned task_urb_kb = ALIGN(total_urb_kb * task_urb_share, 8);
+   const unsigned one_task_urb_kb = ALIGN(r.task_entry_size_64b * 64, 1024) / 1024;
+
+   const unsigned task_urb_kb = ALIGN(MAX2(total_urb_kb * task_urb_share, one_task_urb_kb), 8);
+
    const unsigned mesh_urb_kb = total_urb_kb - task_urb_kb;
 
    /* TODO(mesh): Could we avoid allocating URB for Mesh if rasterization is
@@ -359,4 +380,3 @@ intel_get_mesh_urb_config(const struct intel_device_info *devinfo,
 
    return r;
 }
-

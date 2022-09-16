@@ -31,6 +31,10 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_icd.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifndef WSI_ENTRYPOINTS_H
 extern const struct vk_instance_entrypoint_table wsi_instance_entrypoints;
 extern const struct vk_physical_device_entrypoint_table wsi_physical_device_entrypoints;
@@ -56,8 +60,8 @@ struct wsi_image_create_info {
     const void *pNext;
     bool scanout;
 
-    /* if true, the image is a prime blit source */
-    bool prime_blit_src;
+    /* if true, the image is a buffer blit source */
+    bool buffer_blit_src;
 };
 
 struct wsi_memory_allocate_info {
@@ -98,8 +102,13 @@ struct wsi_device {
 
    VkPhysicalDevicePCIBusInfoPropertiesEXT pci_bus_info;
 
+   VkExternalSemaphoreHandleTypeFlags semaphore_export_handle_types;
+
+   bool has_import_memory_host;
+
    bool supports_modifiers;
    uint32_t maxImageDimension2D;
+   uint32_t optimalBufferCopyRowPitchAlignment;
    VkPresentModeKHR override_present_mode;
    bool force_bgra8_unorm_first;
 
@@ -132,6 +141,9 @@ struct wsi_device {
    } x11;
 
    bool sw;
+
+   /* Set to true if the implementation is ok with linear WSI images. */
+   bool wants_linear;
 
    /* Signals the semaphore such that any wait on the semaphore will wait on
     * any reads or writes on the give memory object.  This is used to
@@ -172,9 +184,9 @@ struct wsi_device {
 
    /*
     * A driver can implement this callback to return a special queue to execute
-    * prime blits.
+    * buffer blits.
     */
-   VkQueue (*get_prime_blit_queue)(VkDevice device);
+   VkQueue (*get_buffer_blit_queue)(VkDevice device);
 
 #define WSI_CB(cb) PFN_vk##cb cb
    WSI_CB(AllocateMemory);
@@ -182,6 +194,7 @@ struct wsi_device {
    WSI_CB(BindBufferMemory);
    WSI_CB(BindImageMemory);
    WSI_CB(BeginCommandBuffer);
+   WSI_CB(CmdPipelineBarrier);
    WSI_CB(CmdCopyImageToBuffer);
    WSI_CB(CreateBuffer);
    WSI_CB(CreateCommandPool);
@@ -204,6 +217,7 @@ struct wsi_device {
    WSI_CB(GetPhysicalDeviceFormatProperties);
    WSI_CB(GetPhysicalDeviceFormatProperties2KHR);
    WSI_CB(GetPhysicalDeviceImageFormatProperties2);
+   WSI_CB(GetSemaphoreFdKHR);
    WSI_CB(ResetFences);
    WSI_CB(QueueSubmit);
    WSI_CB(WaitForFences);
@@ -284,5 +298,9 @@ wsi_common_bind_swapchain_image(const struct wsi_device *wsi,
                                 VkImage vk_image,
                                 VkSwapchainKHR _swapchain,
                                 uint32_t image_idx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

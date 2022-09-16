@@ -631,6 +631,93 @@ vn_ResetCommandBuffer(VkCommandBuffer commandBuffer,
    return VK_SUCCESS;
 }
 
+struct vn_command_buffer_begin_info {
+   VkCommandBufferBeginInfo begin;
+   VkCommandBufferInheritanceInfo inheritance;
+   VkCommandBufferInheritanceConditionalRenderingInfoEXT conditional_rendering;
+
+   bool has_inherited_pass;
+};
+
+static const VkCommandBufferBeginInfo *
+vn_fix_command_buffer_begin_info(struct vn_command_buffer *cmd,
+                                 const VkCommandBufferBeginInfo *begin_info,
+                                 struct vn_command_buffer_begin_info *local)
+{
+   local->has_inherited_pass = false;
+
+   if (!begin_info->pInheritanceInfo)
+      return begin_info;
+
+   const bool is_cmd_secondary =
+      cmd->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+   const bool has_continue =
+      begin_info->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+   const bool has_renderpass =
+      begin_info->pInheritanceInfo->renderPass != VK_NULL_HANDLE;
+
+   /* Can early-return if dynamic rendering is used and no structures need to
+    * be dropped from the pNext chain of VkCommandBufferInheritanceInfo.
+    */
+   if (is_cmd_secondary && has_continue && !has_renderpass)
+      return begin_info;
+
+   local->begin = *begin_info;
+
+   if (!is_cmd_secondary) {
+      local->begin.pInheritanceInfo = NULL;
+      return &local->begin;
+   }
+
+   local->inheritance = *begin_info->pInheritanceInfo;
+   local->begin.pInheritanceInfo = &local->inheritance;
+
+   if (!has_continue) {
+      local->inheritance.framebuffer = VK_NULL_HANDLE;
+      local->inheritance.renderPass = VK_NULL_HANDLE;
+      local->inheritance.subpass = 0;
+   } else {
+      /* With early-returns above, it must be an inherited pass. */
+      local->has_inherited_pass = true;
+   }
+
+   /* Per spec, about VkCommandBufferInheritanceRenderingInfo:
+    *
+    * If VkCommandBufferInheritanceInfo::renderPass is not VK_NULL_HANDLE, or
+    * VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT is not specified in
+    * VkCommandBufferBeginInfo::flags, parameters of this structure are
+    * ignored.
+    */
+   VkBaseOutStructure *head = NULL;
+   VkBaseOutStructure *tail = NULL;
+   vk_foreach_struct_const(src, local->inheritance.pNext) {
+      void *pnext = NULL;
+      switch (src->sType) {
+      case VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_CONDITIONAL_RENDERING_INFO_EXT:
+         memcpy(
+            &local->conditional_rendering, src,
+            sizeof(VkCommandBufferInheritanceConditionalRenderingInfoEXT));
+         pnext = &local->conditional_rendering;
+         break;
+      case VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO:
+      default:
+         break;
+      }
+
+      if (pnext) {
+         if (!head)
+            head = pnext;
+         else
+            tail->pNext = pnext;
+
+         tail = pnext;
+      }
+   }
+   local->inheritance.pNext = head;
+
+   return &local->begin;
+}
+
 VkResult
 vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                       const VkCommandBufferBeginInfo *pBeginInfo)
@@ -644,25 +731,9 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    vn_cs_encoder_reset(&cmd->cs);
    cmd->draw_cmd_batched = 0;
 
-   /* TODO: add support for VK_KHR_dynamic_rendering */
-   VkCommandBufferBeginInfo local_begin_info;
-   VkCommandBufferInheritanceInfo local_inheritance_info;
-   if (pBeginInfo->pInheritanceInfo) {
-      if (cmd->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
-         local_begin_info = *pBeginInfo;
-         local_begin_info.pInheritanceInfo = NULL;
-         pBeginInfo = &local_begin_info;
-      } else if (!(pBeginInfo->flags &
-                   VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
-         local_inheritance_info = *pBeginInfo->pInheritanceInfo;
-         local_inheritance_info.framebuffer = VK_NULL_HANDLE;
-         local_inheritance_info.renderPass = VK_NULL_HANDLE;
-         local_inheritance_info.subpass = 0;
-         local_begin_info = *pBeginInfo;
-         local_begin_info.pInheritanceInfo = &local_inheritance_info;
-         pBeginInfo = &local_begin_info;
-      }
-   }
+   struct vn_command_buffer_begin_info local_begin_info;
+   pBeginInfo =
+      vn_fix_command_buffer_begin_info(cmd, pBeginInfo, &local_begin_info);
 
    cmd_size = vn_sizeof_vkBeginCommandBuffer(commandBuffer, pBeginInfo);
    if (!vn_cs_encoder_reserve(&cmd->cs, cmd_size)) {
@@ -674,9 +745,7 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 
    cmd->state = VN_COMMAND_BUFFER_STATE_RECORDING;
 
-   if (cmd->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY &&
-       (pBeginInfo->flags &
-        VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT)) {
+   if (local_begin_info.has_inherited_pass) {
       const VkCommandBufferInheritanceInfo *inheritance_info =
          pBeginInfo->pInheritanceInfo;
       vn_cmd_begin_render_pass(
@@ -889,6 +958,19 @@ vn_CmdDraw(VkCommandBuffer commandBuffer,
 }
 
 void
+vn_CmdBeginRendering(VkCommandBuffer commandBuffer,
+                     const VkRenderingInfo *pRenderingInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdBeginRendering, commandBuffer, pRenderingInfo);
+}
+
+void
+vn_CmdEndRendering(VkCommandBuffer commandBuffer)
+{
+   VN_CMD_ENQUEUE(vkCmdEndRendering, commandBuffer);
+}
+
+void
 vn_CmdDrawIndexed(VkCommandBuffer commandBuffer,
                   uint32_t indexCount,
                   uint32_t instanceCount,
@@ -994,6 +1076,13 @@ vn_CmdCopyBuffer(VkCommandBuffer commandBuffer,
 }
 
 void
+vn_CmdCopyBuffer2(VkCommandBuffer commandBuffer,
+                  const VkCopyBufferInfo2 *pCopyBufferInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdCopyBuffer2, commandBuffer, pCopyBufferInfo);
+}
+
+void
 vn_CmdCopyImage(VkCommandBuffer commandBuffer,
                 VkImage srcImage,
                 VkImageLayout srcImageLayout,
@@ -1004,6 +1093,13 @@ vn_CmdCopyImage(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdCopyImage, commandBuffer, srcImage, srcImageLayout,
                   dstImage, dstImageLayout, regionCount, pRegions);
+}
+
+void
+vn_CmdCopyImage2(VkCommandBuffer commandBuffer,
+                 const VkCopyImageInfo2 *pCopyImageInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdCopyImage2, commandBuffer, pCopyImageInfo);
 }
 
 void
@@ -1021,6 +1117,13 @@ vn_CmdBlitImage(VkCommandBuffer commandBuffer,
 }
 
 void
+vn_CmdBlitImage2(VkCommandBuffer commandBuffer,
+                 const VkBlitImageInfo2 *pBlitImageInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdBlitImage2, commandBuffer, pBlitImageInfo);
+}
+
+void
 vn_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
                         VkBuffer srcBuffer,
                         VkImage dstImage,
@@ -1030,6 +1133,46 @@ vn_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdCopyBufferToImage, commandBuffer, srcBuffer, dstImage,
                   dstImageLayout, regionCount, pRegions);
+}
+
+void
+vn_CmdCopyBufferToImage2(
+   VkCommandBuffer commandBuffer,
+   const VkCopyBufferToImageInfo2 *pCopyBufferToImageInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdCopyBufferToImage2, commandBuffer,
+                  pCopyBufferToImageInfo);
+}
+
+static bool
+vn_needs_prime_blit(VkImage src_image, VkImageLayout src_image_layout)
+{
+   if (src_image_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR &&
+       VN_PRESENT_SRC_INTERNAL_LAYOUT != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+
+      /* sanity check */
+      ASSERTED const struct vn_image *img = vn_image_from_handle(src_image);
+      assert(img->wsi.is_wsi && img->wsi.is_prime_blit_src);
+      return true;
+   }
+
+   return false;
+}
+
+static void
+vn_transition_prime_layout(struct vn_command_buffer *cmd, VkBuffer dst_buffer)
+{
+   const VkBufferMemoryBarrier buf_barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .srcQueueFamilyIndex = cmd->queue_family_index,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
+      .buffer = dst_buffer,
+      .size = VK_WHOLE_SIZE,
+   };
+   vn_cmd_encode_memory_barriers(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1,
+                                 &buf_barrier, 0, NULL);
 }
 
 void
@@ -1043,33 +1186,35 @@ vn_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
 
-   bool prime_blit = false;
-   if (srcImageLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR &&
-       VN_PRESENT_SRC_INTERNAL_LAYOUT != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+   bool prime_blit = vn_needs_prime_blit(srcImage, srcImageLayout);
+   if (prime_blit)
       srcImageLayout = VN_PRESENT_SRC_INTERNAL_LAYOUT;
-
-      /* sanity check */
-      const struct vn_image *img = vn_image_from_handle(srcImage);
-      prime_blit = img->wsi.is_wsi && img->wsi.is_prime_blit_src;
-      assert(prime_blit);
-   }
 
    VN_CMD_ENQUEUE(vkCmdCopyImageToBuffer, commandBuffer, srcImage,
                   srcImageLayout, dstBuffer, regionCount, pRegions);
 
-   if (prime_blit) {
-      const VkBufferMemoryBarrier buf_barrier = {
-         .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-         .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-         .srcQueueFamilyIndex = cmd->queue_family_index,
-         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT,
-         .buffer = dstBuffer,
-         .size = VK_WHOLE_SIZE,
-      };
-      vn_cmd_encode_memory_barriers(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                                    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 1,
-                                    &buf_barrier, 0, NULL);
-   }
+   if (prime_blit)
+      vn_transition_prime_layout(cmd, dstBuffer);
+}
+
+void
+vn_CmdCopyImageToBuffer2(
+   VkCommandBuffer commandBuffer,
+   const VkCopyImageToBufferInfo2 *pCopyImageToBufferInfo)
+{
+   struct vn_command_buffer *cmd =
+      vn_command_buffer_from_handle(commandBuffer);
+   struct VkCopyImageToBufferInfo2 copy_info = *pCopyImageToBufferInfo;
+
+   bool prime_blit =
+      vn_needs_prime_blit(copy_info.srcImage, copy_info.srcImageLayout);
+   if (prime_blit)
+      copy_info.srcImageLayout = VN_PRESENT_SRC_INTERNAL_LAYOUT;
+
+   VN_CMD_ENQUEUE(vkCmdCopyImageToBuffer2, commandBuffer, &copy_info);
+
+   if (prime_blit)
+      vn_transition_prime_layout(cmd, copy_info.dstBuffer);
 }
 
 void
@@ -1140,6 +1285,13 @@ vn_CmdResolveImage(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdResolveImage, commandBuffer, srcImage, srcImageLayout,
                   dstImage, dstImageLayout, regionCount, pRegions);
+}
+
+void
+vn_CmdResolveImage2(VkCommandBuffer commandBuffer,
+                    const VkResolveImageInfo2 *pResolveImageInfo)
+{
+   VN_CMD_ENQUEUE(vkCmdResolveImage2, commandBuffer, pResolveImageInfo);
 }
 
 void
@@ -1568,4 +1720,56 @@ vn_CmdSetViewportWithCount(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdSetViewportWithCount, commandBuffer, viewportCount,
                   pViewports);
+}
+
+void
+vn_CmdSetDepthBiasEnable(VkCommandBuffer commandBuffer,
+                         VkBool32 depthBiasEnable)
+{
+   VN_CMD_ENQUEUE(vkCmdSetDepthBiasEnable, commandBuffer, depthBiasEnable);
+}
+
+void
+vn_CmdSetLogicOpEXT(VkCommandBuffer commandBuffer, VkLogicOp logicOp)
+{
+   VN_CMD_ENQUEUE(vkCmdSetLogicOpEXT, commandBuffer, logicOp);
+}
+
+void
+vn_CmdSetPatchControlPointsEXT(VkCommandBuffer commandBuffer,
+                               uint32_t patchControlPoints)
+{
+   VN_CMD_ENQUEUE(vkCmdSetPatchControlPointsEXT, commandBuffer,
+                  patchControlPoints);
+}
+
+void
+vn_CmdSetPrimitiveRestartEnable(VkCommandBuffer commandBuffer,
+                                VkBool32 primitiveRestartEnable)
+{
+   VN_CMD_ENQUEUE(vkCmdSetPrimitiveRestartEnable, commandBuffer,
+                  primitiveRestartEnable);
+}
+
+void
+vn_CmdSetRasterizerDiscardEnable(VkCommandBuffer commandBuffer,
+                                 VkBool32 rasterizerDiscardEnable)
+{
+   VN_CMD_ENQUEUE(vkCmdSetRasterizerDiscardEnable, commandBuffer,
+                  rasterizerDiscardEnable);
+}
+
+void
+vn_CmdBeginConditionalRenderingEXT(
+   VkCommandBuffer commandBuffer,
+   const VkConditionalRenderingBeginInfoEXT *pConditionalRenderingBegin)
+{
+   VN_CMD_ENQUEUE(vkCmdBeginConditionalRenderingEXT, commandBuffer,
+                  pConditionalRenderingBegin);
+}
+
+void
+vn_CmdEndConditionalRenderingEXT(VkCommandBuffer commandBuffer)
+{
+   VN_CMD_ENQUEUE(vkCmdEndConditionalRenderingEXT, commandBuffer);
 }

@@ -34,6 +34,8 @@
 #define MAX_SAMPLER_TABLE_SIZE 128
 #define BINDLESS_OFFSET        255
 
+#define sizeof_field(type, field) sizeof(((type *)0)->field)
+
 struct apply_pipeline_layout_state {
    const struct anv_physical_device *pdevice;
 
@@ -72,7 +74,7 @@ addr_format_for_desc_type(VkDescriptorType desc_type,
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
       return state->ubo_addr_format;
 
-   case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
+   case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
       return state->desc_addr_format;
 
    default:
@@ -346,7 +348,7 @@ build_res_index(nir_builder *b, uint32_t set, uint32_t binding,
 
    case nir_address_format_32bit_index_offset: {
       assert(state->desc_addr_format == nir_address_format_32bit_index_offset);
-      if (bind_layout->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT) {
+      if (bind_layout->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
          uint32_t surface_index = state->set[set].desc_offset;
          return nir_imm_ivec2(b, surface_index,
                                  bind_layout->descriptor_offset);
@@ -441,7 +443,7 @@ build_desc_addr(nir_builder *b,
       struct res_index_defs res = unpack_res_index(b, index);
 
       nir_ssa_def *desc_offset = res.desc_offset_base;
-      if (desc_type != VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT) {
+      if (desc_type != VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
          /* Compute the actual descriptor offset.  For inline uniform blocks,
           * the array index is ignored as they are only allowed to be a single
           * descriptor (not an array) and there is no concept of a "stride".
@@ -470,7 +472,7 @@ build_desc_addr(nir_builder *b,
    }
 
    case nir_address_format_32bit_index_offset:
-      assert(desc_type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT);
+      assert(desc_type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK);
       assert(state->desc_addr_format == nir_address_format_32bit_index_offset);
       return index;
 
@@ -493,7 +495,7 @@ build_buffer_addr_for_res_index(nir_builder *b,
                                 nir_address_format addr_format,
                                 struct apply_pipeline_layout_state *state)
 {
-   if (desc_type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT) {
+   if (desc_type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
       assert(addr_format == state->desc_addr_format);
       return build_desc_addr(b, NULL, desc_type, res_index, addr_format, state);
    } else if (addr_format == nir_address_format_32bit_index_offset) {
@@ -1323,6 +1325,21 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
 }
 
 static bool
+lower_ray_query_globals(nir_builder *b, nir_intrinsic_instr *intrin,
+                        struct apply_pipeline_layout_state *state)
+{
+   b->cursor = nir_instr_remove(&intrin->instr);
+
+   nir_ssa_def *rq_globals =
+      nir_load_push_constant(b, 1, 64, nir_imm_int(b, 0),
+                             .base = offsetof(struct anv_push_constants, ray_query_globals),
+                             .range = sizeof_field(struct anv_push_constants, ray_query_globals));
+   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, rq_globals);
+
+   return true;
+}
+
+static bool
 apply_pipeline_layout(nir_builder *b, nir_instr *instr, void *_state)
 {
    struct apply_pipeline_layout_state *state = _state;
@@ -1360,6 +1377,8 @@ apply_pipeline_layout(nir_builder *b, nir_instr *instr, void *_state)
          return lower_image_intrinsic(b, intrin, state);
       case nir_intrinsic_load_constant:
          return lower_load_constant(b, intrin, state);
+      case nir_intrinsic_load_ray_query_global_intel:
+         return lower_ray_query_globals(b, intrin, state);
       default:
          return false;
       }
@@ -1392,10 +1411,10 @@ compare_binding_infos(const void *_a, const void *_b)
 }
 
 void
-anv_nir_apply_pipeline_layout(const struct anv_physical_device *pdevice,
+anv_nir_apply_pipeline_layout(nir_shader *shader,
+                              const struct anv_physical_device *pdevice,
                               bool robust_buffer_access,
                               const struct anv_pipeline_layout *layout,
-                              nir_shader *shader,
                               struct anv_pipeline_bind_map *map)
 {
    void *mem_ctx = ralloc_context(NULL);
@@ -1579,9 +1598,6 @@ anv_nir_apply_pipeline_layout(const struct anv_physical_device *pdevice,
    }
 
    nir_foreach_image_variable(var, shader) {
-      const struct glsl_type *glsl_type = glsl_without_array(var->type);
-      enum glsl_sampler_dim dim = glsl_get_sampler_dim(glsl_type);
-
       const uint32_t set = var->data.descriptor_set;
       const uint32_t binding = var->data.binding;
       const struct anv_descriptor_set_binding_layout *bind_layout =
@@ -1599,10 +1615,6 @@ anv_nir_apply_pipeline_layout(const struct anv_physical_device *pdevice,
       for (unsigned i = 0; i < array_size; i++) {
          assert(pipe_binding[i].set == set);
          assert(pipe_binding[i].index == bind_layout->descriptor_index + i);
-
-         if (dim == GLSL_SAMPLER_DIM_SUBPASS ||
-             dim == GLSL_SAMPLER_DIM_SUBPASS_MS)
-            pipe_binding[i].input_attachment_index = var->data.index + i;
 
          pipe_binding[i].lowered_storage_surface =
             image_binding_needs_lowered_surface(var);
