@@ -407,6 +407,9 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
        */
       return devinfo->ver >= 11;
 
+   case PIPE_CAP_QUERY_TIMESTAMP_BITS:
+      return TIMESTAMP_BITS;
+
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
    }
@@ -842,6 +845,8 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
       driQueryOptionb(config->options, "sync_compile");
    screen->driconf.limit_trig_input_range =
       driQueryOptionb(config->options, "limit_trig_input_range");
+   screen->driconf.lower_depth_range_rate =
+      driQueryOptionf(config->options, "lower_depth_range_rate");
 
    screen->precompile = env_var_as_boolean("shader_precompile", true);
 

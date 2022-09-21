@@ -1051,7 +1051,9 @@ struct rt_traversal_vars {
    nir_variable *hit;
    nir_variable *bvh_base;
    nir_variable *stack;
+   nir_variable *lds_stack_base;
    nir_variable *top_stack;
+   nir_variable *current_node;
 };
 
 static struct rt_traversal_vars
@@ -1077,8 +1079,12 @@ init_traversal_vars(nir_builder *b)
                                       "traversal_bvh_base");
    ret.stack =
       nir_variable_create(b->shader, nir_var_shader_temp, glsl_uint_type(), "traversal_stack_ptr");
+   ret.lds_stack_base = nir_variable_create(b->shader, nir_var_shader_temp, glsl_uint_type(),
+                                            "traversal_lds_stack_base");
    ret.top_stack = nir_variable_create(b->shader, nir_var_shader_temp, glsl_uint_type(),
                                        "traversal_top_stack_ptr");
+   ret.current_node =
+      nir_variable_create(b->shader, nir_var_shader_temp, glsl_uint_type(), "current_node;");
    return ret;
 }
 
@@ -1394,15 +1400,17 @@ build_traversal_shader(struct radv_device *device,
    struct rt_variables vars = create_rt_variables(b.shader, pCreateInfo, dst_vars->stack_sizes);
    map_rt_variables(var_remap, &vars, dst_vars);
 
+   unsigned stack_entry_size = 4;
    unsigned lanes = device->physical_device->rt_wave_size;
-   unsigned elements = lanes * MAX_STACK_ENTRY_COUNT;
-   nir_variable *stack_var = nir_variable_create(b.shader, nir_var_mem_shared,
-                                                 glsl_array_type(glsl_uint_type(), elements, 0),
-                                                 "trav_stack");
-   nir_deref_instr *stack_deref = nir_build_deref_var(&b, stack_var);
-   nir_deref_instr *stack;
-   nir_ssa_def *stack_idx_stride = nir_imm_int(&b, lanes);
-   nir_ssa_def *stack_idx_base = nir_load_local_invocation_index(&b);
+   unsigned stack_entry_stride = stack_entry_size * lanes;
+   nir_ssa_def *stack_entry_stride_def = nir_imm_int(&b, stack_entry_stride);
+   nir_ssa_def *stack_base =
+      nir_iadd_imm(&b, nir_imul_imm(&b, nir_load_local_invocation_index(&b), stack_entry_size),
+                   b.shader->info.shared_size);
+   nir_ssa_def *stack_exit_bound = nir_imm_int(&b, stack_entry_stride + b.shader->info.shared_size);
+
+   const uint32_t lds_stack_size = stack_entry_stride * MAX_STACK_LDS_ENTRY_COUNT;
+   b.shader->info.shared_size += lds_stack_size;
 
    nir_ssa_def *accel_struct = nir_load_var(&b, vars.accel_struct);
 
@@ -1426,36 +1434,91 @@ build_traversal_shader(struct radv_device *device,
       nir_store_var(&b, trav_vars.sbt_offset_and_flags, nir_imm_int(&b, 0), 1);
       nir_store_var(&b, trav_vars.instance_addr, nir_imm_int64(&b, 0), 1);
 
-      nir_store_var(&b, trav_vars.stack, nir_iadd(&b, stack_idx_base, stack_idx_stride), 1);
-      stack = nir_build_deref_array(&b, stack_deref, stack_idx_base);
-      nir_store_deref(&b, stack, bvh_root, 0x1);
+      nir_store_var(&b, trav_vars.stack, stack_base, 1);
+      nir_store_var(&b, trav_vars.lds_stack_base, stack_base, 1);
 
       nir_store_var(&b, trav_vars.top_stack, nir_imm_int(&b, 0), 1);
+      nir_store_var(&b, trav_vars.current_node, bvh_root, 0x1);
 
       nir_push_loop(&b);
 
-      nir_push_if(&b, nir_ieq(&b, nir_load_var(&b, trav_vars.stack), stack_idx_base));
-      nir_jump(&b, nir_jump_break);
+      nir_push_if(&b, nir_ieq_imm(&b, nir_load_var(&b, trav_vars.current_node), -1));
+      {
+         nir_push_if(&b, nir_ilt(&b, nir_load_var(&b, trav_vars.stack), stack_exit_bound));
+         nir_jump(&b, nir_jump_break);
+         nir_pop_if(&b, NULL);
+
+         nir_if *bottom_exit = nir_push_if(&b, nir_uge(&b, nir_load_var(&b, trav_vars.top_stack),
+                                                       nir_load_var(&b, trav_vars.stack)));
+         bottom_exit->control = nir_selection_control_dont_flatten;
+         {
+            nir_store_var(&b, trav_vars.top_stack, nir_imm_int(&b, 0), 1);
+            nir_store_var(&b, trav_vars.bvh_base,
+                          build_addr_to_node(&b, nir_load_var(&b, vars.accel_struct)), 1);
+            nir_store_var(&b, trav_vars.origin, nir_load_var(&b, vars.origin), 7);
+            nir_store_var(&b, trav_vars.dir, nir_load_var(&b, vars.direction), 7);
+            nir_store_var(&b, trav_vars.inv_dir,
+                          nir_fdiv(&b, vec3ones, nir_load_var(&b, trav_vars.dir)), 7);
+            nir_store_var(&b, trav_vars.instance_addr, nir_imm_int64(&b, 0), 1);
+         }
+         nir_pop_if(&b, NULL);
+
+         nir_store_var(&b, trav_vars.stack,
+                       nir_isub(&b, nir_load_var(&b, trav_vars.stack), stack_entry_stride_def), 1);
+
+         nir_push_if(&b, nir_ilt(&b, nir_load_var(&b, trav_vars.stack),
+                                 nir_load_var(&b, trav_vars.lds_stack_base)));
+         {
+            nir_ssa_def *scratch_addr = nir_imul_imm(
+               &b, nir_udiv_imm(&b, nir_load_var(&b, trav_vars.stack), stack_entry_stride),
+               stack_entry_size);
+            nir_store_var(&b, trav_vars.current_node, nir_load_scratch(&b, 1, 32, scratch_addr),
+                          0x1);
+            nir_store_var(&b, trav_vars.lds_stack_base, nir_load_var(&b, trav_vars.stack), 0x1);
+         }
+         nir_push_else(&b, NULL);
+         {
+            nir_ssa_def *stack_ptr =
+               nir_umod(&b, nir_load_var(&b, trav_vars.stack), nir_imm_int(&b, lds_stack_size));
+            nir_store_var(
+               &b, trav_vars.current_node,
+               nir_load_shared(&b, 1, 32, stack_ptr, .base = 0, .align_mul = stack_entry_size),
+               0x1);
+         }
+         nir_pop_if(&b, NULL);
+      }
       nir_pop_if(&b, NULL);
 
-      nir_push_if(
-         &b, nir_uge(&b, nir_load_var(&b, trav_vars.top_stack), nir_load_var(&b, trav_vars.stack)));
-      nir_store_var(&b, trav_vars.top_stack, nir_imm_int(&b, 0), 1);
-      nir_store_var(&b, trav_vars.bvh_base,
-                    build_addr_to_node(&b, nir_load_var(&b, vars.accel_struct)), 1);
-      nir_store_var(&b, trav_vars.origin, nir_load_var(&b, vars.origin), 7);
-      nir_store_var(&b, trav_vars.dir, nir_load_var(&b, vars.direction), 7);
-      nir_store_var(&b, trav_vars.inv_dir, nir_fdiv(&b, vec3ones, nir_load_var(&b, trav_vars.dir)), 7);
-      nir_store_var(&b, trav_vars.instance_addr, nir_imm_int64(&b, 0), 1);
+      nir_ssa_def *might_overflow =
+         nir_ige(&b,
+                 nir_isub(&b, nir_load_var(&b, trav_vars.stack),
+                          nir_load_var(&b, trav_vars.lds_stack_base)),
+                 nir_imm_int(&b, (MAX_STACK_LDS_ENTRY_COUNT - 2) * stack_entry_stride));
+      nir_push_if(&b, might_overflow);
+      {
+         nir_ssa_def *scratch_addr = nir_imul_imm(
+            &b, nir_udiv_imm(&b, nir_load_var(&b, trav_vars.lds_stack_base), stack_entry_stride),
+            stack_entry_size);
+         for (int i = 0; i < 4; ++i) {
+            nir_ssa_def *lds_stack_ptr = nir_umod(&b, nir_load_var(&b, trav_vars.lds_stack_base),
+                                                  nir_imm_int(&b, lds_stack_size));
 
+            nir_ssa_def *node =
+               nir_load_shared(&b, 1, 32, lds_stack_ptr, .base = 0, .align_mul = stack_entry_size);
+            nir_store_scratch(&b, node, scratch_addr);
+
+            nir_store_var(
+               &b, trav_vars.lds_stack_base,
+               nir_iadd(&b, nir_load_var(&b, trav_vars.lds_stack_base), stack_entry_stride_def), 1);
+            scratch_addr = nir_iadd_imm(&b, scratch_addr, stack_entry_size);
+         }
+      }
       nir_pop_if(&b, NULL);
 
-      nir_store_var(&b, trav_vars.stack,
-                    nir_isub(&b, nir_load_var(&b, trav_vars.stack), stack_idx_stride), 1);
-
-      stack = nir_build_deref_array(&b, stack_deref, nir_load_var(&b, trav_vars.stack));
-      nir_ssa_def *bvh_node = nir_load_deref(&b, stack);
+      nir_ssa_def *bvh_node = nir_load_var(&b, trav_vars.current_node);
       nir_ssa_def *bvh_node_type = nir_iand_imm(&b, bvh_node, 7);
+
+      nir_store_var(&b, trav_vars.current_node, nir_imm_int(&b, -1), 0x1);
 
       bvh_node = nir_iadd(&b, nir_load_var(&b, trav_vars.bvh_base), nir_u2u(&b, bvh_node, 64));
       nir_ssa_def *intrinsic_result = NULL;
@@ -1504,11 +1567,8 @@ build_traversal_shader(struct radv_device *device,
                              build_addr_to_node(
                                 &b, nir_pack_64_2x32(&b, nir_channels(&b, instance_data, 0x3))),
                              1);
-               stack = nir_build_deref_array(&b, stack_deref, nir_load_var(&b, trav_vars.stack));
-               nir_store_deref(&b, stack, nir_iand_imm(&b, nir_channel(&b, instance_data, 0), 63), 0x1);
-
-               nir_store_var(&b, trav_vars.stack,
-                             nir_iadd(&b, nir_load_var(&b, trav_vars.stack), stack_idx_stride), 1);
+               nir_store_var(&b, trav_vars.current_node,
+                             nir_iand_imm(&b, nir_channel(&b, instance_data, 0), 63), 1);
 
                nir_store_var(
                   &b, trav_vars.origin,
@@ -1539,18 +1599,25 @@ build_traversal_shader(struct radv_device *device,
                   nir_load_var(&b, trav_vars.dir), nir_load_var(&b, trav_vars.inv_dir));
             }
 
-            for (unsigned i = 4; i-- > 0; ) {
-               nir_ssa_def *new_node = nir_channel(&b, result, i);
-               nir_push_if(&b, nir_ine_imm(&b, new_node, 0xffffffff));
-               {
-                  stack = nir_build_deref_array(&b, stack_deref, nir_load_var(&b, trav_vars.stack));
-                  nir_store_deref(&b, stack, new_node, 0x1);
-                  nir_store_var(
-                     &b, trav_vars.stack,
-                     nir_iadd(&b, nir_load_var(&b, trav_vars.stack), stack_idx_stride), 1);
-               }
+            nir_ssa_def *new_nodes[4];
+            for (unsigned i = 0; i < 4; ++i)
+               new_nodes[i] = nir_channel(&b, result, i);
+
+            for (unsigned i = 1; i < 4; ++i)
+               nir_push_if(&b, nir_ine_imm(&b, new_nodes[i], 0xffffffff));
+
+            for (unsigned i = 4; i-- > 1;) {
+               nir_ssa_def *stack_ptr =
+                  nir_umod(&b, nir_load_var(&b, trav_vars.stack), nir_imm_int(&b, lds_stack_size));
+               nir_store_shared(&b, new_nodes[i], stack_ptr, .base = 0,
+                                .align_mul = stack_entry_size);
+               nir_store_var(
+                  &b, trav_vars.stack,
+                  nir_iadd(&b, nir_load_var(&b, trav_vars.stack), stack_entry_stride_def), 1);
+
                nir_pop_if(&b, NULL);
             }
+            nir_store_var(&b, trav_vars.current_node, new_nodes[0], 0x1);
          }
          nir_pop_if(&b, NULL);
       }
@@ -1609,6 +1676,8 @@ insert_traversal(struct radv_device *device, const VkRayTracingPipelineCreateInf
 {
    struct hash_table *var_remap = _mesa_pointer_hash_table_create(NULL);
    nir_shader *shader = build_traversal_shader(device, pCreateInfo, vars, var_remap);
+   b->shader->info.shared_size += shader->info.shared_size;
+   assert(b->shader->info.shared_size <= 32768);
 
    /* For now, just inline the traversal shader */
    nir_push_if(b, nir_ieq_imm(b, nir_load_var(b, vars->idx), 1));
@@ -1749,7 +1818,10 @@ create_rt_shader(struct radv_device *device, const VkRayTracingPipelineCreateInf
 
    struct rt_variables vars = create_rt_variables(b.shader, pCreateInfo, stack_sizes);
    load_sbt_entry(&b, &vars, nir_imm_int(&b, 0), SBT_RAYGEN, 0);
-   nir_store_var(&b, vars.stack_ptr, nir_imm_int(&b, 0), 0x1);
+   if (radv_rt_pipeline_has_dynamic_stack_size(pCreateInfo))
+      nir_store_var(&b, vars.stack_ptr, nir_load_rt_dynamic_callable_stack_base_amd(&b), 0x1);
+   else
+      nir_store_var(&b, vars.stack_ptr, nir_imm_int(&b, MAX_STACK_SCRATCH_ENTRY_COUNT * 4), 0x1);
 
    nir_store_var(&b, vars.main_loop_case_visited, nir_imm_bool(&b, true), 1);
 
@@ -1799,11 +1871,9 @@ create_rt_shader(struct radv_device *device, const VkRayTracingPipelineCreateInf
 
    nir_pop_loop(&b, loop);
 
-   if (radv_rt_pipeline_has_dynamic_stack_size(pCreateInfo)) {
-      /* Put something so scratch gets enabled in the shader. */
-      b.shader->scratch_size = 16;
-   } else
-      b.shader->scratch_size = compute_rt_stack_size(pCreateInfo, stack_sizes);
+   b.shader->scratch_size = MAX2(16, MAX_STACK_SCRATCH_ENTRY_COUNT * 4);
+   if (!radv_rt_pipeline_has_dynamic_stack_size(pCreateInfo))
+      b.shader->scratch_size += compute_rt_stack_size(pCreateInfo, stack_sizes);
 
    /* Deal with all the inline functions. */
    nir_index_ssa_defs(nir_shader_get_entrypoint(b.shader));

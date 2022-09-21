@@ -151,7 +151,7 @@ static void
 lower_fb_write_logical_send(const fs_builder &bld, fs_inst *inst,
                             const struct brw_wm_prog_data *prog_data,
                             const brw_wm_prog_key *key,
-                            const fs_visitor::thread_payload &payload)
+                            const fs_thread_payload &payload)
 {
    assert(inst->src[FB_WRITE_LOGICAL_SRC_COMPONENTS].file == IMM);
    const intel_device_info *devinfo = bld.shader->devinfo;
@@ -2681,7 +2681,7 @@ fs_visitor::lower_logical_sends()
          lower_fb_write_logical_send(ibld, inst,
                                      brw_wm_prog_data(prog_data),
                                      (const brw_wm_prog_key *)key,
-                                     payload);
+                                     fs_payload());
          break;
 
       case FS_OPCODE_FB_READ_LOGICAL:

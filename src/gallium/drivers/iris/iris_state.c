@@ -1058,6 +1058,14 @@ iris_init_render_context(struct iris_batch *batch)
 
    iris_init_common_context(batch);
 
+#if GFX_VERx10 == 125
+   /* Wa_14015207028 */
+   iris_emit_reg(batch, GENX(VFG_PREEMPTION_CHICKEN_BITS), vfgc) {
+      vfgc.PolygonTrifanLineLoopPreemptionDisable = true;
+      vfgc.PolygonTrifanLineLoopPreemptionDisableMask = true;
+   };
+#endif
+
 #if GFX_VER >= 9
    iris_emit_reg(batch, GENX(CS_DEBUG_MODE2), reg) {
       reg.CONSTANT_BUFFERAddressOffsetDisable = true;
@@ -3192,8 +3200,14 @@ iris_set_viewport_states(struct pipe_context *ctx,
                          const struct pipe_viewport_state *states)
 {
    struct iris_context *ice = (struct iris_context *) ctx;
+   struct iris_screen *screen = (struct iris_screen *)ctx->screen;
 
    memcpy(&ice->state.viewports[start_slot], states, sizeof(*states) * count);
+
+   /* Fix depth test misrenderings by lowering translated depth range */
+   if (screen->driconf.lower_depth_range_rate != 1.0f)
+      ice->state.viewports[start_slot].translate[2] *=
+         screen->driconf.lower_depth_range_rate;
 
    ice->state.dirty |= IRIS_DIRTY_SF_CL_VIEWPORT;
 

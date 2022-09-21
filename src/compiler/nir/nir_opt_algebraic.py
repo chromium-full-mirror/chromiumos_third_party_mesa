@@ -1676,6 +1676,8 @@ optimizations.extend([
    (('~fmul', ('bcsel(is_used_once)', c, 1.0, -1.0), b), ('bcsel', c, b, ('fneg', b))),
    (('~fmulz', ('bcsel(is_used_once)', c, -1.0, 1.0), b), ('bcsel', c, ('fneg', b), b)),
    (('~fmulz', ('bcsel(is_used_once)', c, 1.0, -1.0), b), ('bcsel', c, b, ('fneg', b))),
+   (('fabs', ('bcsel(is_used_once)', b, ('fneg', a), a)), ('fabs', a)),
+   (('fabs', ('bcsel(is_used_once)', b, a, ('fneg', a))), ('fabs', a)),
    (('~bcsel', ('flt', a, 0.0), ('fneg', a), a), ('fabs', a)),
 
    (('bcsel', a, ('bcsel', b, c, d), d), ('bcsel', ('iand', a, b), c, d)),
@@ -1812,6 +1814,16 @@ optimizations.extend([
    (('ibfe', 'value', ('iand', 31, 'offset'), 'bits'), ('ibfe', 'value', 'offset', 'bits')),
    (('bfm', 'bits', ('iand', 31, 'offset')), ('bfm', 'bits', 'offset')),
    (('bfm', ('iand', 31, 'bits'), 'offset'), ('bfm', 'bits', 'offset')),
+
+   # Optimizations for ubitfield_extract(value, offset, umin(bits, 32-(offset&0x1f))) and such
+   (('ult', a, ('umin', ('iand', a, b), c)), False),
+   (('ult', 31, ('umin', '#bits(is_ult_32)', a)), False),
+   (('ubfe', 'value', 'offset', ('umin', 'width', ('iadd', 32, ('ineg', ('iand', 31, 'offset'))))),
+    ('ubfe', 'value', 'offset', 'width')),
+   (('ibfe', 'value', 'offset', ('umin', 'width', ('iadd', 32, ('ineg', ('iand', 31, 'offset'))))),
+    ('ibfe', 'value', 'offset', 'width')),
+   (('bfm', ('umin', 'width', ('iadd', 32, ('ineg', ('iand', 31, 'offset')))), 'offset'),
+    ('bfm', 'width', 'offset')),
 
    # Section 8.8 (Integer Functions) of the GLSL 4.60 spec says:
    #

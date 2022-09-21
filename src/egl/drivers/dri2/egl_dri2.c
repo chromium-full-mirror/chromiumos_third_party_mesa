@@ -1822,10 +1822,10 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf,
          old_dri2_dpy->vtbl->set_shared_buffer_mode(old_disp, old_dsurf, false);
       }
 
-      dri2_dpy->core->unbindContext(old_cctx);
+      old_dri2_dpy->core->unbindContext(old_cctx);
 
       if (old_dsurf)
-         dri2_surf_update_fence_fd(old_ctx, disp, old_dsurf);
+         dri2_surf_update_fence_fd(old_ctx, old_disp, old_dsurf);
    }
 
    ddraw = (dsurf) ? dri2_dpy->vtbl->get_dri_drawable(dsurf) : NULL;
@@ -1887,7 +1887,7 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf,
          /* dri2_dpy->core->bindContext succeeded, so take a reference on the
           * dri2_dpy. This prevents dri2_dpy from being reinitialized when a
           * EGLDisplay is terminated and then initialized again while a
-          * context is still bound. See dri2_intitialize() for a more in depth
+          * context is still bound. See dri2_initialize() for a more in depth
           * explanation. */
          p_atomic_inc(&dri2_dpy->ref_count);
       }
@@ -2900,7 +2900,7 @@ dri2_query_dma_buf_modifiers(_EGLDisplay *disp, EGLint format,
       return dri2_egl_error_unlock(dri2_dpy, EGL_BAD_PARAMETER, "invalid value for max count of formats");
 
    if (max > 0 && modifiers == NULL)
-      dri2_egl_error_unlock(dri2_dpy, EGL_BAD_PARAMETER, "invalid modifiers array");
+      return dri2_egl_error_unlock(dri2_dpy, EGL_BAD_PARAMETER, "invalid modifiers array");
 
    if (dri2_dpy->image->base.version < 15 ||
        dri2_dpy->image->queryDmaBufModifiers == NULL) {
@@ -3648,9 +3648,7 @@ dri2_set_blob_cache_funcs(_EGLDisplay *disp,
                           EGLGetBlobFuncANDROID get)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display_lock(disp);
-   dri2_dpy->blob->set_cache_funcs(dri2_dpy->dri_screen,
-                                   disp->BlobCacheSet,
-                                   disp->BlobCacheGet);
+   dri2_dpy->blob->set_cache_funcs(dri2_dpy->dri_screen, set, get);
    mtx_unlock(&dri2_dpy->lock);
 }
 

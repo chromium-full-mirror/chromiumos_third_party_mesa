@@ -210,6 +210,9 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
    case nir_intrinsic_load_force_vrs_rates_amd:
       info->force_vrs_per_vertex = true;
       break;
+   case nir_intrinsic_load_rt_dynamic_callable_stack_base_amd:
+      info->cs.uses_dynamic_rt_callable_stack = true;
+      break;
    default:
       break;
    }
@@ -382,7 +385,7 @@ static void
 gather_shader_info_vs(struct radv_device *device, const nir_shader *nir,
                       const struct radv_pipeline_key *pipeline_key, struct radv_shader_info *info)
 {
-   if (pipeline_key->vs.dynamic_input_state && nir->info.inputs_read) {
+   if (pipeline_key->vs.has_prolog && nir->info.inputs_read) {
       info->vs.has_prolog = true;
       info->vs.dynamic_inputs = true;
    }
@@ -408,22 +411,24 @@ gather_shader_info_tcs(struct radv_device *device, const nir_shader *nir,
 {
    info->tcs.tcs_vertices_out = nir->info.tess.tcs_vertices_out;
 
-   /* Number of tessellation patches per workgroup processed by the current pipeline. */
-   info->num_tess_patches =
-      get_tcs_num_patches(pipeline_key->tcs.tess_input_vertices, nir->info.tess.tcs_vertices_out,
-                          info->tcs.num_linked_inputs, info->tcs.num_linked_outputs,
-                          info->tcs.num_linked_patch_outputs,
-                          device->physical_device->hs.tess_offchip_block_dw_size,
-                          device->physical_device->rad_info.gfx_level,
-                          device->physical_device->rad_info.family);
+   if (!(pipeline_key->dynamic_patch_control_points)) {
+      /* Number of tessellation patches per workgroup processed by the current pipeline. */
+      info->num_tess_patches =
+         get_tcs_num_patches(pipeline_key->tcs.tess_input_vertices, nir->info.tess.tcs_vertices_out,
+                             info->tcs.num_linked_inputs, info->tcs.num_linked_outputs,
+                             info->tcs.num_linked_patch_outputs,
+                             device->physical_device->hs.tess_offchip_block_dw_size,
+                             device->physical_device->rad_info.gfx_level,
+                             device->physical_device->rad_info.family);
 
-   /* LDS size used by VS+TCS for storing TCS inputs and outputs. */
-   info->tcs.num_lds_blocks =
-      calculate_tess_lds_size(device->physical_device->rad_info.gfx_level,
-                              pipeline_key->tcs.tess_input_vertices,
-                              nir->info.tess.tcs_vertices_out, info->tcs.num_linked_inputs,
-                              info->num_tess_patches, info->tcs.num_linked_outputs,
-                              info->tcs.num_linked_patch_outputs);
+      /* LDS size used by VS+TCS for storing TCS inputs and outputs. */
+      info->tcs.num_lds_blocks =
+         calculate_tess_lds_size(device->physical_device->rad_info.gfx_level,
+                                 pipeline_key->tcs.tess_input_vertices,
+                                 nir->info.tess.tcs_vertices_out, info->tcs.num_linked_inputs,
+                                 info->num_tess_patches, info->tcs.num_linked_outputs,
+                                 info->tcs.num_linked_patch_outputs);
+   }
 }
 
 static void
@@ -622,7 +627,7 @@ gather_shader_info_cs(struct radv_device *device, const nir_shader *nir,
    /* Games don't always request full subgroups when they should, which can cause bugs if cswave32
     * is enabled.
     */
-   if (device->physical_device->cs_wave_size == 32 && nir->info.cs.uses_wide_subgroup_intrinsics &&
+   if (device->physical_device->cs_wave_size == 32 && nir->info.uses_wide_subgroup_intrinsics &&
        !req_subgroup_size && local_size % RADV_SUBGROUP_SIZE == 0)
       require_full_subgroups = true;
 
@@ -1246,7 +1251,7 @@ radv_link_shaders_info(struct radv_device *device,
                        const struct radv_pipeline_key *pipeline_key)
 {
    /* Export primitive ID or clip/cull distances if necessary. */
-   if (consumer->stage == MESA_SHADER_FRAGMENT) {
+   if (consumer && consumer->stage == MESA_SHADER_FRAGMENT) {
       struct radv_vs_output_info *outinfo = &producer->info.outinfo;
       const bool ps_prim_id_in = consumer->info.ps.prim_id_input;
       const bool ps_clip_dists_in = !!consumer->info.ps.num_input_clips_culls;
@@ -1271,7 +1276,7 @@ radv_link_shaders_info(struct radv_device *device,
    }
 
    if (producer->stage == MESA_SHADER_VERTEX || producer->stage == MESA_SHADER_TESS_EVAL) {
-      if (consumer->stage == MESA_SHADER_GEOMETRY) {
+      if (consumer && consumer->stage == MESA_SHADER_GEOMETRY) {
          uint32_t num_outputs_written;
 
          if (producer->stage == MESA_SHADER_TESS_EVAL) {
@@ -1289,60 +1294,69 @@ radv_link_shaders_info(struct radv_device *device,
       /* Compute NGG info (GFX10+) or GS info. */
       if (producer->info.is_ngg) {
          struct radv_pipeline_stage *gs_stage =
-            consumer->stage == MESA_SHADER_GEOMETRY ? consumer : NULL;
+            consumer && consumer->stage == MESA_SHADER_GEOMETRY ? consumer : NULL;
 
          gfx10_get_ngg_info(device, producer, gs_stage);
 
          /* Determine other NGG settings like culling for VS or TES without GS. */
-         if (!gs_stage) {
+         if (!gs_stage && consumer) {
             radv_determine_ngg_settings(device, producer, consumer, pipeline_key);
          }
-      } else if (consumer->stage == MESA_SHADER_GEOMETRY) {
+      } else if (consumer && consumer->stage == MESA_SHADER_GEOMETRY) {
          gfx9_get_gs_info(device, producer, consumer);
       }
    }
 
-   if (producer->stage == MESA_SHADER_VERTEX && consumer->stage == MESA_SHADER_TESS_CTRL) {
+   if (producer->stage == MESA_SHADER_VERTEX &&
+       consumer && consumer->stage == MESA_SHADER_TESS_CTRL) {
       struct radv_pipeline_stage *vs_stage = producer;
       struct radv_pipeline_stage *tcs_stage = consumer;
 
       vs_stage->info.vs.as_ls = true;
 
-      vs_stage->info.workgroup_size =
-         ac_compute_lshs_workgroup_size(device->physical_device->rad_info.gfx_level,
-                                        MESA_SHADER_VERTEX, tcs_stage->info.num_tess_patches,
-                                        pipeline_key->tcs.tess_input_vertices,
-                                        tcs_stage->info.tcs.tcs_vertices_out);
-
-      tcs_stage->info.workgroup_size =
-         ac_compute_lshs_workgroup_size(device->physical_device->rad_info.gfx_level,
-                                        MESA_SHADER_TESS_CTRL, tcs_stage->info.num_tess_patches,
-                                        pipeline_key->tcs.tess_input_vertices,
-                                        tcs_stage->info.tcs.tcs_vertices_out);
-
-      if (!radv_use_llvm_for_stage(device, MESA_SHADER_VERTEX)) {
-         /* When the number of TCS input and output vertices are the same (typically 3):
-          * - There is an equal amount of LS and HS invocations
-          * - In case of merged LSHS shaders, the LS and HS halves of the shader always process the
-          *   exact same vertex. We can use this knowledge to optimize them.
-          *
-          * We don't set tcs_in_out_eq if the float controls differ because that might involve
-          * different float modes for the same block and our optimizer doesn't handle a instruction
-          * dominating another with a different mode.
+      if (pipeline_key->dynamic_patch_control_points) {
+         /* Set the workgroup size to the maximum possible value to ensure that compilers don't
+          * optimize barriers.
           */
-         vs_stage->info.vs.tcs_in_out_eq =
-            device->physical_device->rad_info.gfx_level >= GFX9 &&
-            pipeline_key->tcs.tess_input_vertices == tcs_stage->info.tcs.tcs_vertices_out &&
-            vs_stage->nir->info.float_controls_execution_mode ==
-               tcs_stage->nir->info.float_controls_execution_mode;
+         vs_stage->info.workgroup_size = 256;
+         tcs_stage->info.workgroup_size = 256;
+      } else {
+         vs_stage->info.workgroup_size =
+            ac_compute_lshs_workgroup_size(device->physical_device->rad_info.gfx_level,
+                                           MESA_SHADER_VERTEX, tcs_stage->info.num_tess_patches,
+                                           pipeline_key->tcs.tess_input_vertices,
+                                           tcs_stage->info.tcs.tcs_vertices_out);
 
-         if (vs_stage->info.vs.tcs_in_out_eq)
-            vs_stage->info.vs.tcs_temp_only_input_mask =
-               tcs_stage->nir->info.inputs_read &
-               vs_stage->nir->info.outputs_written &
-               ~tcs_stage->nir->info.tess.tcs_cross_invocation_inputs_read &
-               ~tcs_stage->nir->info.inputs_read_indirectly &
-               ~vs_stage->nir->info.outputs_accessed_indirectly;
+         tcs_stage->info.workgroup_size =
+            ac_compute_lshs_workgroup_size(device->physical_device->rad_info.gfx_level,
+                                           MESA_SHADER_TESS_CTRL, tcs_stage->info.num_tess_patches,
+                                           pipeline_key->tcs.tess_input_vertices,
+                                           tcs_stage->info.tcs.tcs_vertices_out);
+
+         if (!radv_use_llvm_for_stage(device, MESA_SHADER_VERTEX)) {
+            /* When the number of TCS input and output vertices are the same (typically 3):
+             * - There is an equal amount of LS and HS invocations
+             * - In case of merged LSHS shaders, the LS and HS halves of the shader always process
+             *   the exact same vertex. We can use this knowledge to optimize them.
+             *
+             * We don't set tcs_in_out_eq if the float controls differ because that might involve
+             * different float modes for the same block and our optimizer doesn't handle a
+             * instruction dominating another with a different mode.
+             */
+            vs_stage->info.vs.tcs_in_out_eq =
+               device->physical_device->rad_info.gfx_level >= GFX9 &&
+               pipeline_key->tcs.tess_input_vertices == tcs_stage->info.tcs.tcs_vertices_out &&
+               vs_stage->nir->info.float_controls_execution_mode ==
+                  tcs_stage->nir->info.float_controls_execution_mode;
+
+            if (vs_stage->info.vs.tcs_in_out_eq)
+               vs_stage->info.vs.tcs_temp_only_input_mask =
+                  tcs_stage->nir->info.inputs_read &
+                  vs_stage->nir->info.outputs_written &
+                  ~tcs_stage->nir->info.tess.tcs_cross_invocation_inputs_read &
+                  ~tcs_stage->nir->info.inputs_read_indirectly &
+                  ~vs_stage->nir->info.outputs_accessed_indirectly;
+         }
       }
    }
 
@@ -1413,7 +1427,9 @@ radv_nir_shader_info_link(struct radv_device *device, const struct radv_pipeline
                           struct radv_pipeline_stage *stages)
 {
    /* Walk backwards to link */
-   struct radv_pipeline_stage *next_stage = &stages[MESA_SHADER_FRAGMENT];
+   struct radv_pipeline_stage *next_stage =
+      stages[MESA_SHADER_FRAGMENT].nir ? &stages[MESA_SHADER_FRAGMENT] : NULL;
+
    for (int i = ARRAY_SIZE(graphics_shader_order) - 1; i >= 0; i--) {
       gl_shader_stage s = graphics_shader_order[i];
       if (!stages[s].nir)

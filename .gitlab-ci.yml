@@ -17,11 +17,12 @@ variables:
   PIGLIT_REPLAY_REFERENCE_IMAGES_BASE: "${MINIO_HOST}/mesa-tracie-results/$FDO_UPSTREAM_REPO"
   # Individual CI farm status, set to "offline" to disable jobs
   # running on a particular CI farm (ie. for outages, etc):
-  FD_FARM: "offline"
+  FD_FARM: "online"
   COLLABORA_FARM: "online"
   MICROSOFT_FARM: "online"
   LIMA_FARM: "online"
   IGALIA_FARM: "online"
+  ANHOLT_FARM: "online"
 
 default:
   before_script:
@@ -86,6 +87,7 @@ stages:
   - git-archive
   - build-x86_64
   - build-misc
+  - lint
   - amd
   - intel
   - nouveau

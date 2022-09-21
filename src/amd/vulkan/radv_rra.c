@@ -472,13 +472,6 @@ rra_validate_node(struct hash_table_u64 *accel_struct_vas, uint8_t *data,
             result = false;
          }
       }
-
-      uint32_t parent_id_index =
-         rra_parent_table_index_from_offset(offset, parent_table_size);
-      if (parent_id_index * 4 > parent_table_size) {
-         rra_accel_struct_validation_fail(offset, "Invalid parent id index %u", parent_id_index);
-         result = false;
-      }
    }
    return result;
 }
@@ -756,7 +749,7 @@ rra_dump_acceleration_structure(struct rra_copied_accel_struct *copied_struct,
     * In order to make sure BLASes can be found in the hashmap, we have
     * to replicate that mask here.
     */
-   uint64_t va = radv_accel_struct_get_va(accel_struct) & 0x1FFFFFFFFFFFFFF;
+   uint64_t va = accel_struct->va & 0x1FFFFFFFFFFFFFF;
    memcpy(chunk_header.virtual_address, &va, sizeof(uint64_t));
 
    struct rra_accel_struct_metadata rra_metadata = {

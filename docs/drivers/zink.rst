@@ -75,7 +75,6 @@ supported:
   * `VK_EXT_transform_feedback`_
   * `VK_EXT_conditional_rendering`_
 
-
 OpenGL 3.1
 ^^^^^^^^^^
 

@@ -433,6 +433,7 @@ struct zink_batch_state {
    struct util_dynarray acquires;
    struct util_dynarray acquire_flags;
    struct util_dynarray dead_swapchains;
+   struct util_dynarray unref_semaphores;
 
    struct util_queue_fence flush_completed;
 
@@ -1106,6 +1107,9 @@ struct zink_screen {
    uint32_t cur_custom_border_color_samplers;
 
    struct vk_dispatch_table vk;
+
+   void (*buffer_barrier)(struct zink_context *ctx, struct zink_resource *res, VkAccessFlags flags, VkPipelineStageFlags pipeline);
+   void (*image_barrier)(struct zink_context *ctx, struct zink_resource *res, VkImageLayout new_layout, VkAccessFlags flags, VkPipelineStageFlags pipeline);
 
    bool compact_descriptors;
    uint8_t desc_set_id[ZINK_MAX_DESCRIPTOR_SETS];

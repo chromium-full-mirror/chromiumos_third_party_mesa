@@ -62,6 +62,7 @@ apt-get install -y --no-remove \
       git-lfs \
       inetutils-syslogd \
       iptables \
+      jq \
       libasan6 \
       libexpat1 \
       libllvm13 \
@@ -113,6 +114,9 @@ mkdir -p /lava-files/
 # Needed for ci-fairy, this revision is able to upload files to MinIO
 # and doesn't depend on git
 pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@34f4ade99434043f88e164933f570301fd18b125
+
+# Needed for manipulation with traces yaml files.
+pip3 install yq
 
 ############### Build libdrm
 

@@ -699,6 +699,12 @@ bool
 _mesa_is_format_s3tc(mesa_format format);
 
 bool
+_mesa_is_format_rgtc(mesa_format format);
+
+bool
+_mesa_is_format_latc(mesa_format format);
+
+bool
 _mesa_is_format_bptc(mesa_format format);
 
 bool
