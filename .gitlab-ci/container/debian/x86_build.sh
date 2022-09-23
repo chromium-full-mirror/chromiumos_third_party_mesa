@@ -51,6 +51,7 @@ apt-get install -y --no-remove \
       shellcheck \
       strace \
       time \
+      yamllint \
       zstd
 
 
@@ -89,6 +90,12 @@ popd
 rm -rf DirectX-Headers
 
 pip3 install git+https://git.lavasoftware.org/lava/lavacli@3db3ddc45e5358908bc6a17448059ea2340492b7
+
+# install bindgen
+RUSTFLAGS='-L native=/usr/local/lib' cargo install \
+  bindgen --version 0.59.2 \
+  -j ${FDO_CI_CONCURRENT:-4} \
+  --root /usr/local
 
 ############### Uninstall the build software
 

@@ -694,7 +694,9 @@ anv_pipeline_hash_graphics(struct anv_graphics_pipeline *pipeline,
    if (layout)
       _mesa_sha1_update(&ctx, layout->sha1, sizeof(layout->sha1));
 
-   const bool rba = pipeline->base.device->robust_buffer_access;
+   const struct anv_device *device = pipeline->base.device;
+
+   const bool rba = device->robust_buffer_access;
    _mesa_sha1_update(&ctx, &rba, sizeof(rba));
 
    for (uint32_t s = 0; s < ANV_GRAPHICS_SHADER_STAGE_COUNT; s++) {
@@ -703,6 +705,11 @@ anv_pipeline_hash_graphics(struct anv_graphics_pipeline *pipeline,
                            sizeof(stages[s].shader_sha1));
          _mesa_sha1_update(&ctx, &stages[s].key, brw_prog_key_size(s));
       }
+   }
+
+   if (stages[MESA_SHADER_MESH].info || stages[MESA_SHADER_TASK].info) {
+      const bool afs = device->physical->instance->assume_full_subgroups;
+      _mesa_sha1_update(&ctx, &afs, sizeof(afs));
    }
 
    _mesa_sha1_final(&ctx, sha1_out);
@@ -1634,6 +1641,43 @@ anv_graphics_pipeline_load_nir(struct anv_graphics_pipeline *pipeline,
    return VK_SUCCESS;
 }
 
+static void
+anv_fixup_subgroup_size(struct anv_device *device, struct shader_info *info)
+{
+   switch (info->stage) {
+   case MESA_SHADER_COMPUTE:
+   case MESA_SHADER_TASK:
+   case MESA_SHADER_MESH:
+      break;
+   default:
+      return;
+   }
+
+   unsigned local_size = info->workgroup_size[0] *
+                         info->workgroup_size[1] *
+                         info->workgroup_size[2];
+
+   /* Games don't always request full subgroups when they should,
+    * which can cause bugs, as they may expect bigger size of the
+    * subgroup than we choose for the execution.
+    */
+   if (device->physical->instance->assume_full_subgroups &&
+       info->uses_wide_subgroup_intrinsics &&
+       info->subgroup_size == SUBGROUP_SIZE_API_CONSTANT &&
+       local_size &&
+       local_size % BRW_SUBGROUP_SIZE == 0)
+      info->subgroup_size = SUBGROUP_SIZE_FULL_SUBGROUPS;
+
+   /* If the client requests that we dispatch full subgroups but doesn't
+    * allow us to pick a subgroup size, we have to smash it to the API
+    * value of 32.  Performance will likely be terrible in this case but
+    * there's nothing we can do about that.  The client should have chosen
+    * a size.
+    */
+   if (info->subgroup_size == SUBGROUP_SIZE_FULL_SUBGROUPS)
+      info->subgroup_size = BRW_SUBGROUP_SIZE;
+}
+
 static VkResult
 anv_graphics_pipeline_compile(struct anv_graphics_pipeline *pipeline,
                               struct vk_pipeline_cache *cache,
@@ -1648,7 +1692,10 @@ anv_graphics_pipeline_compile(struct anv_graphics_pipeline *pipeline,
    };
    int64_t pipeline_start = os_time_get_nano();
 
-   const struct brw_compiler *compiler = pipeline->base.device->physical->compiler;
+   struct anv_device *device = pipeline->base.device;
+   const struct intel_device_info *devinfo = device->info;
+   const struct brw_compiler *compiler = device->physical->compiler;
+
    struct anv_pipeline_stage stages[ANV_GRAPHICS_SHADER_STAGE_COUNT] = {};
    for (uint32_t i = 0; i < info->stageCount; i++) {
       gl_shader_stage stage = vk_to_mesa_shader_stage(info->pStages[i].stage);
@@ -1693,41 +1740,42 @@ anv_graphics_pipeline_compile(struct anv_graphics_pipeline *pipeline,
    struct anv_pipeline_stage *next_stage = NULL;
    for (int i = ARRAY_SIZE(graphics_shader_order) - 1; i >= 0; i--) {
       gl_shader_stage s = graphics_shader_order[i];
-      if (!stages[s].info)
+      struct anv_pipeline_stage *stage = &stages[s];
+
+      if (!stage->info)
          continue;
 
       switch (s) {
       case MESA_SHADER_VERTEX:
-         anv_pipeline_link_vs(compiler, &stages[s], next_stage);
+         anv_pipeline_link_vs(compiler, stage, next_stage);
          break;
       case MESA_SHADER_TESS_CTRL:
-         anv_pipeline_link_tcs(compiler, &stages[s], next_stage);
+         anv_pipeline_link_tcs(compiler, stage, next_stage);
          break;
       case MESA_SHADER_TESS_EVAL:
-         anv_pipeline_link_tes(compiler, &stages[s], next_stage);
+         anv_pipeline_link_tes(compiler, stage, next_stage);
          break;
       case MESA_SHADER_GEOMETRY:
-         anv_pipeline_link_gs(compiler, &stages[s], next_stage);
+         anv_pipeline_link_gs(compiler, stage, next_stage);
          break;
       case MESA_SHADER_TASK:
-         anv_pipeline_link_task(compiler, &stages[s], next_stage);
+         anv_pipeline_link_task(compiler, stage, next_stage);
          break;
       case MESA_SHADER_MESH:
-         anv_pipeline_link_mesh(compiler, &stages[s], next_stage);
+         anv_pipeline_link_mesh(compiler, stage, next_stage);
          break;
       case MESA_SHADER_FRAGMENT:
-         anv_pipeline_link_fs(compiler, &stages[s], state->rp);
+         anv_pipeline_link_fs(compiler, stage, state->rp);
          break;
       default:
          unreachable("Invalid graphics shader stage");
       }
 
-      next_stage = &stages[s];
+      next_stage = stage;
    }
 
    bool use_primitive_replication = false;
-   if (pipeline->base.device->info->ver >= 12 &&
-       pipeline->view_mask != 0) {
+   if (devinfo->ver >= 12 && pipeline->view_mask != 0) {
       /* For some pipelines HW Primitive Replication can be used instead of
        * instancing to implement Multiview.  This depend on how viewIndex is
        * used in all the active shaders, so this check can't be done per
@@ -1738,38 +1786,45 @@ anv_graphics_pipeline_compile(struct anv_graphics_pipeline *pipeline,
          shaders[s] = stages[s].nir;
 
       use_primitive_replication =
-         anv_check_for_primitive_replication(pipeline->base.device,
-                                             pipeline->active_stages,
+         anv_check_for_primitive_replication(device, pipeline->active_stages,
                                              shaders, pipeline->view_mask);
    }
 
    struct anv_pipeline_stage *prev_stage = NULL;
    for (unsigned i = 0; i < ARRAY_SIZE(graphics_shader_order); i++) {
       gl_shader_stage s = graphics_shader_order[i];
-      if (!stages[s].info)
+      struct anv_pipeline_stage *stage = &stages[s];
+
+      if (!stage->info)
          continue;
 
       int64_t stage_start = os_time_get_nano();
 
       void *stage_ctx = ralloc_context(NULL);
 
-      anv_pipeline_lower_nir(&pipeline->base, stage_ctx, &stages[s], layout,
+      anv_pipeline_lower_nir(&pipeline->base, stage_ctx, stage, layout,
                              use_primitive_replication);
 
+      struct shader_info *cur_info = &stage->nir->info;
+
       if (prev_stage && compiler->nir_options[s]->unify_interfaces) {
-         prev_stage->nir->info.outputs_written |= stages[s].nir->info.inputs_read &
+         struct shader_info *prev_info = &prev_stage->nir->info;
+
+         prev_info->outputs_written |= cur_info->inputs_read &
                   ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
-         stages[s].nir->info.inputs_read |= prev_stage->nir->info.outputs_written &
+         cur_info->inputs_read |= prev_info->outputs_written &
                   ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
-         prev_stage->nir->info.patch_outputs_written |= stages[s].nir->info.patch_inputs_read;
-         stages[s].nir->info.patch_inputs_read |= prev_stage->nir->info.patch_outputs_written;
+         prev_info->patch_outputs_written |= cur_info->patch_inputs_read;
+         cur_info->patch_inputs_read |= prev_info->patch_outputs_written;
       }
 
       ralloc_free(stage_ctx);
 
-      stages[s].feedback.duration += os_time_get_nano() - stage_start;
+      anv_fixup_subgroup_size(device, cur_info);
 
-      prev_stage = &stages[s];
+      stage->feedback.duration += os_time_get_nano() - stage_start;
+
+      prev_stage = stage;
    }
 
    /* In the case the platform can write the primitive variable shading rate,
@@ -1780,7 +1835,6 @@ anv_graphics_pipeline_compile(struct anv_graphics_pipeline *pipeline,
     * We iterate backwards in the stage and stop on the first shader that can
     * set the value.
     */
-   const struct intel_device_info *devinfo = pipeline->base.device->info;
    if (devinfo->has_coarse_pixel_primitive_and_cb &&
        stages[MESA_SHADER_FRAGMENT].info &&
        stages[MESA_SHADER_FRAGMENT].key.wm.coarse_pixel &&
@@ -1807,7 +1861,9 @@ anv_graphics_pipeline_compile(struct anv_graphics_pipeline *pipeline,
    prev_stage = NULL;
    for (unsigned i = 0; i < ARRAY_SIZE(graphics_shader_order); i++) {
       gl_shader_stage s = graphics_shader_order[i];
-      if (!stages[s].info)
+      struct anv_pipeline_stage *stage = &stages[s];
+
+      if (!stage->info)
          continue;
 
       int64_t stage_start = os_time_get_nano();
@@ -1817,69 +1873,69 @@ anv_graphics_pipeline_compile(struct anv_graphics_pipeline *pipeline,
       switch (s) {
       case MESA_SHADER_VERTEX:
          anv_pipeline_compile_vs(compiler, stage_ctx, pipeline,
-                                 &stages[s]);
+                                 stage);
          break;
       case MESA_SHADER_TESS_CTRL:
-         anv_pipeline_compile_tcs(compiler, stage_ctx, pipeline->base.device,
-                                  &stages[s], prev_stage);
+         anv_pipeline_compile_tcs(compiler, stage_ctx, device,
+                                  stage, prev_stage);
          break;
       case MESA_SHADER_TESS_EVAL:
-         anv_pipeline_compile_tes(compiler, stage_ctx, pipeline->base.device,
-                                  &stages[s], prev_stage);
+         anv_pipeline_compile_tes(compiler, stage_ctx, device,
+                                  stage, prev_stage);
          break;
       case MESA_SHADER_GEOMETRY:
-         anv_pipeline_compile_gs(compiler, stage_ctx, pipeline->base.device,
-                                 &stages[s], prev_stage);
+         anv_pipeline_compile_gs(compiler, stage_ctx, device,
+                                 stage, prev_stage);
          break;
       case MESA_SHADER_TASK:
-         anv_pipeline_compile_task(compiler, stage_ctx, pipeline->base.device,
-                                   &stages[s]);
+         anv_pipeline_compile_task(compiler, stage_ctx, device,
+                                   stage);
          break;
       case MESA_SHADER_MESH:
-         anv_pipeline_compile_mesh(compiler, stage_ctx, pipeline->base.device,
-                                   &stages[s], prev_stage);
+         anv_pipeline_compile_mesh(compiler, stage_ctx, device,
+                                   stage, prev_stage);
          break;
       case MESA_SHADER_FRAGMENT:
-         anv_pipeline_compile_fs(compiler, stage_ctx, pipeline->base.device,
-                                 &stages[s], prev_stage);
+         anv_pipeline_compile_fs(compiler, stage_ctx, device,
+                                 stage, prev_stage);
          break;
       default:
          unreachable("Invalid graphics shader stage");
       }
-      if (stages[s].code == NULL) {
+      if (stage->code == NULL) {
          ralloc_free(stage_ctx);
-         result = vk_error(pipeline->base.device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
          goto fail;
       }
 
-      anv_nir_validate_push_layout(&stages[s].prog_data.base,
-                                   &stages[s].bind_map);
+      anv_nir_validate_push_layout(&stage->prog_data.base,
+                                   &stage->bind_map);
 
       struct anv_shader_bin *bin =
-         anv_device_upload_kernel(pipeline->base.device, cache, s,
-                                  &stages[s].cache_key,
-                                  sizeof(stages[s].cache_key),
-                                  stages[s].code,
-                                  stages[s].prog_data.base.program_size,
-                                  &stages[s].prog_data.base,
+         anv_device_upload_kernel(device, cache, s,
+                                  &stage->cache_key,
+                                  sizeof(stage->cache_key),
+                                  stage->code,
+                                  stage->prog_data.base.program_size,
+                                  &stage->prog_data.base,
                                   brw_prog_data_size(s),
-                                  stages[s].stats, stages[s].num_stats,
-                                  stages[s].nir->xfb_info,
-                                  &stages[s].bind_map);
+                                  stage->stats, stage->num_stats,
+                                  stage->nir->xfb_info,
+                                  &stage->bind_map);
       if (!bin) {
          ralloc_free(stage_ctx);
          result = vk_error(pipeline, VK_ERROR_OUT_OF_HOST_MEMORY);
          goto fail;
       }
 
-      anv_pipeline_add_executables(&pipeline->base, &stages[s], bin);
+      anv_pipeline_add_executables(&pipeline->base, stage, bin);
 
       pipeline->shaders[s] = bin;
       ralloc_free(stage_ctx);
 
-      stages[s].feedback.duration += os_time_get_nano() - stage_start;
+      stage->feedback.duration += os_time_get_nano() - stage_start;
 
-      prev_stage = &stages[s];
+      prev_stage = stage;
    }
 
    ralloc_free(pipeline_ctx);
@@ -1908,7 +1964,7 @@ fail:
 
    for (unsigned s = 0; s < ARRAY_SIZE(pipeline->shaders); s++) {
       if (pipeline->shaders[s])
-         anv_shader_bin_unref(pipeline->base.device, pipeline->shaders[s]);
+         anv_shader_bin_unref(device, pipeline->shaders[s]);
    }
 
    return result;
@@ -1991,29 +2047,7 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
       anv_pipeline_lower_nir(&pipeline->base, mem_ctx, &stage, layout,
                              false /* use_primitive_replication */);
 
-      unsigned local_size = stage.nir->info.workgroup_size[0] *
-                            stage.nir->info.workgroup_size[1] *
-                            stage.nir->info.workgroup_size[2];
-
-      /* Games don't always request full subgroups when they should,
-       * which can cause bugs, as they may expect bigger size of the
-       * subgroup than we choose for the execution.
-       */
-      if (device->physical->instance->assume_full_subgroups &&
-          stage.nir->info.cs.uses_wide_subgroup_intrinsics &&
-          stage.nir->info.subgroup_size == SUBGROUP_SIZE_API_CONSTANT &&
-          local_size &&
-          local_size % BRW_SUBGROUP_SIZE == 0)
-         stage.nir->info.subgroup_size = SUBGROUP_SIZE_FULL_SUBGROUPS;
-
-      /* If the client requests that we dispatch full subgroups but doesn't
-       * allow us to pick a subgroup size, we have to smash it to the API
-       * value of 32.  Performance will likely be terrible in this case but
-       * there's nothing we can do about that.  The client should have chosen
-       * a size.
-       */
-      if (stage.nir->info.subgroup_size == SUBGROUP_SIZE_FULL_SUBGROUPS)
-         stage.nir->info.subgroup_size = BRW_SUBGROUP_SIZE;
+      anv_fixup_subgroup_size(device, &stage.nir->info);
 
       stage.num_stats = 1;
 
@@ -2739,6 +2773,7 @@ anv_pipeline_compile_ray_tracing(struct anv_ray_tracing_pipeline *pipeline,
       stages[i].feedback.duration += os_time_get_nano() - stage_start;
    }
 
+ done:
    for (uint32_t i = 0; i < info->groupCount; i++) {
       const VkRayTracingShaderGroupCreateInfoKHR *ginfo = &info->pGroups[i];
       struct anv_rt_shader_group *group = &pipeline->groups[i];
@@ -2804,7 +2839,6 @@ anv_pipeline_compile_ray_tracing(struct anv_ray_tracing_pipeline *pipeline,
       }
    }
 
- done:
    ralloc_free(pipeline_ctx);
 
    anv_pipeline_compute_ray_tracing_stacks(pipeline, info, stack_max);

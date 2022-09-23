@@ -160,6 +160,8 @@ private:
    bool visit(nir_ssa_undef_instr *);
    bool visit(nir_tex_instr *);
 
+   static unsigned lowerBitSizeCB(const nir_instr *, void *);
+
    // tex stuff
    unsigned int getNIRArgCount(TexInstruction::Target&);
 
@@ -393,16 +395,24 @@ Converter::getOperation(nir_op op)
       return OP_COS;
    case nir_op_f2f32:
    case nir_op_f2f64:
+   case nir_op_f2i8:
+   case nir_op_f2i16:
    case nir_op_f2i32:
    case nir_op_f2i64:
+   case nir_op_f2u8:
+   case nir_op_f2u16:
    case nir_op_f2u32:
    case nir_op_f2u64:
    case nir_op_i2f32:
    case nir_op_i2f64:
+   case nir_op_i2i8:
+   case nir_op_i2i16:
    case nir_op_i2i32:
    case nir_op_i2i64:
    case nir_op_u2f32:
    case nir_op_u2f64:
+   case nir_op_u2u8:
+   case nir_op_u2u16:
    case nir_op_u2u32:
    case nir_op_u2u64:
       return OP_CVT;
@@ -465,6 +475,18 @@ Converter::getOperation(nir_op op)
       return OP_RSQ;
    case nir_op_fsat:
       return OP_SAT;
+   case nir_op_ieq8:
+   case nir_op_ige8:
+   case nir_op_uge8:
+   case nir_op_ilt8:
+   case nir_op_ult8:
+   case nir_op_ine8:
+   case nir_op_ieq16:
+   case nir_op_ige16:
+   case nir_op_uge16:
+   case nir_op_ilt16:
+   case nir_op_ult16:
+   case nir_op_ine16:
    case nir_op_feq32:
    case nir_op_ieq32:
    case nir_op_fge32:
@@ -703,19 +725,31 @@ CondCode
 Converter::getCondCode(nir_op op)
 {
    switch (op) {
+   case nir_op_ieq8:
+   case nir_op_ieq16:
    case nir_op_feq32:
    case nir_op_ieq32:
       return CC_EQ;
+   case nir_op_ige8:
+   case nir_op_uge8:
+   case nir_op_ige16:
+   case nir_op_uge16:
    case nir_op_fge32:
    case nir_op_ige32:
    case nir_op_uge32:
       return CC_GE;
+   case nir_op_ilt8:
+   case nir_op_ult8:
+   case nir_op_ilt16:
+   case nir_op_ult16:
    case nir_op_flt32:
    case nir_op_ilt32:
    case nir_op_ult32:
       return CC_LT;
    case nir_op_fneu32:
       return CC_NEU;
+   case nir_op_ine8:
+   case nir_op_ine16:
    case nir_op_ine32:
       return CC_NE;
    default:
@@ -2475,10 +2509,10 @@ Converter::convert(nir_load_const_instr *insn, uint8_t idx)
       val = loadImm(getSSA(4), insn->value[idx].u32);
       break;
    case 16:
-      val = loadImm(getSSA(2), insn->value[idx].u16);
+      val = loadImm(getSSA(4), insn->value[idx].u16);
       break;
    case 8:
-      val = loadImm(getSSA(1), insn->value[idx].u8);
+      val = loadImm(getSSA(4), insn->value[idx].u8);
       break;
    default:
       unreachable("unhandled bit size!\n");
@@ -2614,6 +2648,14 @@ Converter::visit(nir_alu_instr *insn)
       break;
    }
    // convert instructions
+   case nir_op_f2i8:
+   case nir_op_f2u8:
+   case nir_op_i2i8:
+   case nir_op_u2u8:
+   case nir_op_f2i16:
+   case nir_op_f2u16:
+   case nir_op_i2i16:
+   case nir_op_u2u16:
    case nir_op_f2f32:
    case nir_op_f2i32:
    case nir_op_f2u32:
@@ -2630,13 +2672,26 @@ Converter::visit(nir_alu_instr *insn)
    case nir_op_u2u64: {
       DEFAULT_CHECKS;
       LValues &newDefs = convert(&insn->dest);
+      DataType stype = sTypes[0];
       Instruction *i = mkOp1(getOperation(op), dType, newDefs[0], getSrc(&insn->src[0]));
-      if (op == nir_op_f2i32 || op == nir_op_f2i64 || op == nir_op_f2u32 || op == nir_op_f2u64)
+      if (::isFloatType(stype) && isIntType(dType))
          i->rnd = ROUND_Z;
-      i->sType = sTypes[0];
+      i->sType = stype;
       break;
    }
    // compare instructions
+   case nir_op_ieq8:
+   case nir_op_ige8:
+   case nir_op_uge8:
+   case nir_op_ilt8:
+   case nir_op_ult8:
+   case nir_op_ine8:
+   case nir_op_ieq16:
+   case nir_op_ige16:
+   case nir_op_uge16:
+   case nir_op_ilt16:
+   case nir_op_ult16:
+   case nir_op_ine16:
    case nir_op_feq32:
    case nir_op_ieq32:
    case nir_op_fge32:
@@ -3186,6 +3241,71 @@ nv_nir_move_stores_to_end(nir_shader *s)
                          nir_metadata_dominance);
 }
 
+unsigned
+Converter::lowerBitSizeCB(const nir_instr *instr, void *data)
+{
+   Converter *instance = static_cast<Converter *>(data);
+   nir_alu_instr *alu;
+
+   if (instr->type != nir_instr_type_alu)
+      return 0;
+
+   alu = nir_instr_as_alu(instr);
+
+   switch (alu->op) {
+   /* TODO: Check for operation OP_SET instead of all listed nir opcodes
+    * individually.
+    *
+    * Currently, we can't call getOperation(nir_op), since not all nir opcodes
+    * are handled within getOperation() and we'd run into an assert().
+    *
+    * Adding all nir opcodes to getOperation() isn't trivial, since the
+    * enum operation of some of the nir opcodes isn't distinct (e.g. depends
+    * on the data type).
+    */
+   case nir_op_ieq8:
+   case nir_op_ige8:
+   case nir_op_uge8:
+   case nir_op_ilt8:
+   case nir_op_ult8:
+   case nir_op_ine8:
+   case nir_op_ieq16:
+   case nir_op_ige16:
+   case nir_op_uge16:
+   case nir_op_ilt16:
+   case nir_op_ult16:
+   case nir_op_ine16:
+   case nir_op_feq32:
+   case nir_op_ieq32:
+   case nir_op_fge32:
+   case nir_op_ige32:
+   case nir_op_uge32:
+   case nir_op_flt32:
+   case nir_op_ilt32:
+   case nir_op_ult32:
+   case nir_op_fneu32:
+   case nir_op_ine32: {
+      DataType stype = instance->getSTypes(alu)[0];
+
+      if (isSignedIntType(stype) && typeSizeof(stype) < 4)
+         return 32;
+
+      return 0;
+   }
+   case nir_op_i2f64:
+   case nir_op_u2f64: {
+      DataType stype = instance->getSTypes(alu)[0];
+
+      if (isIntType(stype) && (typeSizeof(stype) <= 2))
+         return 32;
+
+      return 0;
+   }
+   default:
+      return 0;
+   }
+}
+
 bool
 Converter::run()
 {
@@ -3259,6 +3379,8 @@ Converter::run()
       NIR_PASS_V(nir, nv_nir_move_stores_to_end);
 
    NIR_PASS_V(nir, nir_lower_bool_to_int32);
+   NIR_PASS_V(nir, nir_lower_bit_size, Converter::lowerBitSizeCB, this);
+
    NIR_PASS_V(nir, nir_convert_from_ssa, true);
 
    // Garbage collect dead instructions

@@ -37,6 +37,9 @@ elif [ $DEBIAN_ARCH = amd64 ]; then
                    spirv-tools
                    sysvinit-core
                   "
+elif [ $DEBIAN_ARCH = armhf ]; then
+    ARCH_PACKAGES="firmware-misc-nonfree
+                  "
 fi
 
 INSTALL_CI_FAIRY_PACKAGES="git
@@ -55,6 +58,7 @@ apt-get -y install --no-install-recommends \
     ca-certificates \
     firmware-realtek \
     initramfs-tools \
+    jq \
     libasan6 \
     libexpat1 \
     libpng16-16 \
@@ -101,6 +105,9 @@ apt-get -y install --no-install-recommends \
 # Needed for ci-fairy, this revision is able to upload files to
 # MinIO and doesn't depend on git
 pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@34f4ade99434043f88e164933f570301fd18b125
+
+# Needed for manipulation with traces yaml files.
+pip3 install yq
 
 apt-get purge -y \
         $INSTALL_CI_FAIRY_PACKAGES

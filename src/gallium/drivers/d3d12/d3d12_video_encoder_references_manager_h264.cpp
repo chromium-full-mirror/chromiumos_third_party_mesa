@@ -398,11 +398,12 @@ d3d12_video_encoder_references_manager_h264::is_current_frame_used_as_reference(
 
 void
 d3d12_video_encoder_references_manager_h264::begin_frame(D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA curFrameData,
-                                                         bool bUsedAsReference)
+                                                         bool bUsedAsReference, struct pipe_picture_desc* picture)
 {
    m_curFrameState = *curFrameData.pH264PicData;
    m_isCurrentFrameUsedAsReference = bUsedAsReference;
-   debug_printf("Marking frame_num %d (POC %d) as reference ? %d\n",
+   debug_printf("[Entrypoint: %d] - Marking frame_num %d (POC %d) as reference ? %d\n",
+                 picture->entry_point,
                  curFrameData.pH264PicData->FrameDecodingOrderNumber,
                  curFrameData.pH264PicData->PictureOrderCountNumber,
                  bUsedAsReference);

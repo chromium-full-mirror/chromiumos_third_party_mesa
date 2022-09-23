@@ -56,6 +56,8 @@
 #include <unistd.h>
 #if DETECT_OS_APPLE
 #define VK_LIBNAME "libvulkan.1.dylib"
+#elif DETECT_OS_ANDROID
+#define VK_LIBNAME "libvulkan.so"
 #else
 #define VK_LIBNAME "libvulkan.so.1"
 #endif
@@ -520,6 +522,11 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MULTI_DRAW_INDIRECT:
       return screen->info.feats.features.multiDrawIndirect;
 
+   case PIPE_CAP_IMAGE_ATOMIC_FLOAT_ADD:
+      return screen->info.have_EXT_shader_atomic_float;
+   case PIPE_CAP_SHADER_ATOMIC_INT64:
+      return screen->info.have_KHR_shader_atomic_int64;
+
    case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
       return screen->info.have_KHR_draw_indirect_count;
 
@@ -674,6 +681,9 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_QUERY_TIMESTAMP:
       return screen->timestamp_valid_bits > 0;
 
+   case PIPE_CAP_QUERY_TIMESTAMP_BITS:
+      return screen->timestamp_valid_bits;
+
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return 1 << MIN_SLAB_ORDER;
 
@@ -815,8 +825,8 @@ zink_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT:
       /* 1<<27 is required by VK spec */
       assert(screen->info.props.limits.maxStorageBufferRange >= 1 << 27);
-      /* but Gallium can't handle values that are too big, so clamp to VK spec minimum */
-      return MIN2(get_smallest_buffer_heap(screen), 1 << 27);
+      /* clamp to VK spec minimum */
+      return MIN2(get_smallest_buffer_heap(screen), screen->info.props.limits.maxStorageBufferRange);
 
    case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
@@ -2332,6 +2342,7 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->base.get_sample_pixel_grid = zink_get_sample_pixel_grid;
    screen->base.is_compute_copy_faster = zink_is_compute_copy_faster;
    screen->base.is_format_supported = zink_is_format_supported;
+   screen->base.driver_thread_add_job = zink_driver_thread_add_job;
    if (screen->info.have_EXT_image_drm_format_modifier && screen->info.have_EXT_external_memory_dma_buf) {
       screen->base.query_dmabuf_modifiers = zink_query_dmabuf_modifiers;
       screen->base.is_dmabuf_modifier_supported = zink_is_dmabuf_modifier_supported;
@@ -2428,6 +2439,14 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
    screen->base.create_vertex_state = zink_cache_create_vertex_state;
    screen->base.vertex_state_destroy = zink_cache_vertex_state_destroy;
    glsl_type_singleton_init_or_ref();
+
+   if (screen->info.have_vulkan13 || screen->info.have_KHR_synchronization2) {
+      screen->image_barrier = zink_resource_image_barrier2;
+      screen->buffer_barrier = zink_resource_buffer_barrier2;
+   } else {
+      screen->image_barrier = zink_resource_image_barrier;
+      screen->buffer_barrier = zink_resource_buffer_barrier;
+   }
 
    screen->copy_context = zink_context(screen->base.context_create(&screen->base, NULL, ZINK_CONTEXT_COPY_ONLY));
    if (!screen->copy_context) {
