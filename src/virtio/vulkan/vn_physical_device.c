@@ -1139,6 +1139,23 @@ vn_physical_device_init_supported_extensions(
 #ifdef ANDROID
       if (!vk_android_allowed_device_extensions.extensions[i])
          continue;
+
+      /* TODO remove below after ndk translation filters extensions */
+      static const struct vk_device_extension_table blocked = {
+         .KHR_buffer_device_address = true,
+         .KHR_copy_commands2 = true,
+         .KHR_push_descriptor = true,
+         .KHR_synchronization2 = true,
+         .KHR_timeline_semaphore = true,
+         .EXT_calibrated_timestamps = true,
+         .EXT_conditional_rendering = true,
+         .EXT_image_drm_format_modifier = true,
+         .EXT_inline_uniform_block = true,
+         .EXT_pipeline_creation_feedback = true,
+         .EXT_subgroup_size_control = true,
+      };
+      if (blocked.extensions[i])
+         continue;
 #endif
 
       if (native.extensions[i]) {
