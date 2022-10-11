@@ -1132,8 +1132,12 @@ vn_physical_device_init_supported_extensions(
          .KHR_buffer_device_address = true,
          .KHR_copy_commands2 = true,
          .KHR_timeline_semaphore = true,
+         .EXT_calibrated_timestamps = true,
+         .EXT_conditional_rendering = true,
+         .EXT_image_drm_format_modifier = true,
          .EXT_inline_uniform_block = true,
          .EXT_pipeline_creation_feedback = true,
+         .EXT_subgroup_size_control = true,
       };
       if (blocked.extensions[i])
          continue;
