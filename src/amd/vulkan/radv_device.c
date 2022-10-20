@@ -549,6 +549,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
 #endif
       .EXT_extended_dynamic_state = true,
       .EXT_extended_dynamic_state2 = true,
+      .EXT_extended_dynamic_state3 = true,
       .EXT_external_memory_dma_buf = true,
       .EXT_external_memory_host = device->rad_info.has_userptr,
       .EXT_global_priority = true,
@@ -620,11 +621,12 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .AMD_shader_ballot = true,
       .AMD_shader_core_properties = true,
       .AMD_shader_core_properties2 = true,
-      .AMD_shader_explicit_vertex_parameter = true,
+      /* TODO: Figure out if it's possible to implement it on gfx11. */
+      .AMD_shader_explicit_vertex_parameter = device->rad_info.gfx_level < GFX11,
       .AMD_shader_fragment_mask = device->rad_info.gfx_level < GFX11,
       .AMD_shader_image_load_store_lod = true,
       .AMD_shader_trinary_minmax = true,
-      .AMD_texture_gather_bias_lod = true,
+      .AMD_texture_gather_bias_lod = device->rad_info.gfx_level < GFX11,
 #ifdef ANDROID
       .ANDROID_external_memory_android_hardware_buffer = RADV_SUPPORT_ANDROID_HARDWARE_BUFFER,
       .ANDROID_native_buffer = true,
@@ -1682,14 +1684,16 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT: {
          VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT *features =
             (VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT *)ext;
-         bool has_shader_buffer_float_minmax = radv_has_shader_buffer_float_minmax(pdevice);
          bool has_shader_image_float_minmax =
-            pdevice->rad_info.gfx_level != GFX8 && pdevice->rad_info.gfx_level != GFX9;
+            pdevice->rad_info.gfx_level != GFX8 && pdevice->rad_info.gfx_level != GFX9 &&
+            pdevice->rad_info.gfx_level != GFX11;
          features->shaderBufferFloat16Atomics = false;
          features->shaderBufferFloat16AtomicAdd = false;
          features->shaderBufferFloat16AtomicMinMax = false;
-         features->shaderBufferFloat32AtomicMinMax = has_shader_buffer_float_minmax;
-         features->shaderBufferFloat64AtomicMinMax = has_shader_buffer_float_minmax;
+         features->shaderBufferFloat32AtomicMinMax =
+            radv_has_shader_buffer_float_minmax(pdevice, 32);
+         features->shaderBufferFloat64AtomicMinMax =
+            radv_has_shader_buffer_float_minmax(pdevice, 64);
          features->shaderSharedFloat16Atomics = false;
          features->shaderSharedFloat16AtomicAdd = false;
          features->shaderSharedFloat16AtomicMinMax = false;
@@ -1857,6 +1861,42 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *features =
             (VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *)ext;
          features->graphicsPipelineLibrary = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT: {
+         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT *features =
+            (VkPhysicalDeviceExtendedDynamicState3FeaturesEXT *)ext;
+         features->extendedDynamicState3TessellationDomainOrigin = true;
+         features->extendedDynamicState3PolygonMode = true;
+         features->extendedDynamicState3SampleMask = true;
+         features->extendedDynamicState3AlphaToCoverageEnable = pdevice->rad_info.gfx_level < GFX11;
+         features->extendedDynamicState3LogicOpEnable = true;
+         features->extendedDynamicState3LineStippleEnable = true;
+         features->extendedDynamicState3ColorBlendEnable = false; /* TODO: Zink */
+         features->extendedDynamicState3DepthClipEnable = true;
+         features->extendedDynamicState3ConservativeRasterizationMode = true;
+         features->extendedDynamicState3DepthClipNegativeOneToOne = true;
+         features->extendedDynamicState3ProvokingVertexMode = !pdevice->use_ngg; /* TODO: NGG */
+         features->extendedDynamicState3DepthClampEnable = true;
+         features->extendedDynamicState3ColorWriteMask = false; /* TODO: Zink */
+         features->extendedDynamicState3RasterizationSamples = false; /* TODO: Zink */
+         features->extendedDynamicState3ColorBlendEquation = false; /* TODO: Zink */
+         features->extendedDynamicState3SampleLocationsEnable = false; /* TODO: Zink */
+         features->extendedDynamicState3LineRasterizationMode = false; /* TODO: Zink */
+         features->extendedDynamicState3ExtraPrimitiveOverestimationSize = false;
+         features->extendedDynamicState3AlphaToOneEnable = false;
+         features->extendedDynamicState3RasterizationStream = false;
+         features->extendedDynamicState3ColorBlendAdvanced = false;
+         features->extendedDynamicState3ViewportWScalingEnable = false;
+         features->extendedDynamicState3ViewportSwizzle = false;
+         features->extendedDynamicState3CoverageToColorEnable = false;
+         features->extendedDynamicState3CoverageToColorLocation = false;
+         features->extendedDynamicState3CoverageModulationMode = false;
+         features->extendedDynamicState3CoverageModulationTableEnable = false;
+         features->extendedDynamicState3CoverageModulationTable = false;
+         features->extendedDynamicState3CoverageReductionMode = false;
+         features->extendedDynamicState3RepresentativeFragmentTestEnable = false;
+         features->extendedDynamicState3ShadingRateImageEnable = false;
          break;
       }
       default:
@@ -2229,14 +2269,15 @@ radv_get_physical_device_properties_1_3(struct radv_physical_device *pdevice,
    p->maxInlineUniformTotalSize = UINT16_MAX;
 
    bool accel = pdevice->rad_info.has_accelerated_dot_product;
+   bool gfx11plus = pdevice->rad_info.gfx_level >= GFX11;
    p->integerDotProduct8BitUnsignedAccelerated = accel;
    p->integerDotProduct8BitSignedAccelerated = accel;
-   p->integerDotProduct8BitMixedSignednessAccelerated = false;
+   p->integerDotProduct8BitMixedSignednessAccelerated = accel && gfx11plus;
    p->integerDotProduct4x8BitPackedUnsignedAccelerated = accel;
    p->integerDotProduct4x8BitPackedSignedAccelerated = accel;
-   p->integerDotProduct4x8BitPackedMixedSignednessAccelerated = false;
-   p->integerDotProduct16BitUnsignedAccelerated = accel;
-   p->integerDotProduct16BitSignedAccelerated = accel;
+   p->integerDotProduct4x8BitPackedMixedSignednessAccelerated = accel && gfx11plus;
+   p->integerDotProduct16BitUnsignedAccelerated = accel && !gfx11plus;
+   p->integerDotProduct16BitSignedAccelerated = accel && !gfx11plus;
    p->integerDotProduct16BitMixedSignednessAccelerated = false;
    p->integerDotProduct32BitUnsignedAccelerated = false;
    p->integerDotProduct32BitSignedAccelerated = false;
@@ -2246,12 +2287,12 @@ radv_get_physical_device_properties_1_3(struct radv_physical_device *pdevice,
    p->integerDotProduct64BitMixedSignednessAccelerated = false;
    p->integerDotProductAccumulatingSaturating8BitUnsignedAccelerated = accel;
    p->integerDotProductAccumulatingSaturating8BitSignedAccelerated = accel;
-   p->integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated = false;
+   p->integerDotProductAccumulatingSaturating8BitMixedSignednessAccelerated = accel && gfx11plus;
    p->integerDotProductAccumulatingSaturating4x8BitPackedUnsignedAccelerated = accel;
    p->integerDotProductAccumulatingSaturating4x8BitPackedSignedAccelerated = accel;
-   p->integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated = false;
-   p->integerDotProductAccumulatingSaturating16BitUnsignedAccelerated = accel;
-   p->integerDotProductAccumulatingSaturating16BitSignedAccelerated = accel;
+   p->integerDotProductAccumulatingSaturating4x8BitPackedMixedSignednessAccelerated = accel && gfx11plus;
+   p->integerDotProductAccumulatingSaturating16BitUnsignedAccelerated = accel && !gfx11plus;
+   p->integerDotProductAccumulatingSaturating16BitSignedAccelerated = accel && !gfx11plus;
    p->integerDotProductAccumulatingSaturating16BitMixedSignednessAccelerated = false;
    p->integerDotProductAccumulatingSaturating32BitUnsignedAccelerated = false;
    p->integerDotProductAccumulatingSaturating32BitSignedAccelerated = false;
@@ -2441,7 +2482,7 @@ radv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->maxFragmentSizeAspectRatio = 2;
          props->maxFragmentShadingRateCoverageSamples = 32;
          props->maxFragmentShadingRateRasterizationSamples = VK_SAMPLE_COUNT_8_BIT;
-         props->fragmentShadingRateWithShaderDepthStencilWrites = false;
+         props->fragmentShadingRateWithShaderDepthStencilWrites = !pdevice->rad_info.has_vrs_ds_export_bug;
          props->fragmentShadingRateWithSampleMask = true;
          props->fragmentShadingRateWithShaderSampleMask = false;
          props->fragmentShadingRateWithConservativeRasterization = true;
@@ -2637,6 +2678,12 @@ radv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          properties->prefersCompactVertexOutput = true;
          properties->prefersCompactPrimitiveOutput = false;
 
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_PROPERTIES_EXT: {
+         VkPhysicalDeviceExtendedDynamicState3PropertiesEXT *properties =
+            (VkPhysicalDeviceExtendedDynamicState3PropertiesEXT *)ext;
+         properties->dynamicPrimitiveTopologyUnrestricted = false;
          break;
       }
       default:

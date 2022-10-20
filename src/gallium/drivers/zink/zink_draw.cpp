@@ -359,6 +359,16 @@ update_gfx_pipeline(struct zink_context *ctx, struct zink_batch_state *bs, enum 
    return pipeline_changed;
 }
 
+static enum pipe_prim_type
+zink_rast_prim(const struct zink_context *ctx,
+               const struct pipe_draw_info *dinfo)
+{
+   if (ctx->gfx_pipeline_state.shader_rast_prim != PIPE_PRIM_MAX)
+      return ctx->gfx_pipeline_state.shader_rast_prim;
+
+   return u_reduced_prim((enum pipe_prim_type)dinfo->mode);
+}
+
 template <zink_multidraw HAS_MULTIDRAW, zink_dynamic_state DYNAMIC_STATE, bool BATCH_CHANGED, bool DRAW_STATE>
 void
 zink_draw(struct pipe_context *pctx,
@@ -491,17 +501,21 @@ zink_draw(struct pipe_context *pctx,
                       (HAS_MULTIDRAW && num_draws > 1 && !dinfo->increment_draw_id));
    if (drawid_broken != zink_get_last_vertex_key(ctx)->push_drawid)
       zink_set_last_vertex_key(ctx)->push_drawid = drawid_broken;
-   if (mode_changed) {
-      bool points_changed = false;
-      if (mode == PIPE_PRIM_POINTS) {
-         ctx->gfx_pipeline_state.has_points++;
-         points_changed = true;
-      } else if (ctx->gfx_pipeline_state.gfx_prim_mode == PIPE_PRIM_POINTS) {
-         ctx->gfx_pipeline_state.has_points--;
-         points_changed = true;
+
+   bool rast_prim_changed = false;
+   if (mode_changed || ctx->gfx_pipeline_state.modules_changed) {
+      enum pipe_prim_type rast_prim = zink_rast_prim(ctx, dinfo);
+      if (rast_prim != ctx->gfx_pipeline_state.rast_prim) {
+         bool points_changed =
+            (ctx->gfx_pipeline_state.rast_prim == PIPE_PRIM_POINTS) !=
+            (rast_prim == PIPE_PRIM_POINTS);
+
+         ctx->gfx_pipeline_state.rast_prim = rast_prim;
+         rast_prim_changed = true;
+
+         if (points_changed && ctx->rast_state->base.point_quad_rasterization)
+            zink_set_fs_point_coord_key(ctx);
       }
-      if (points_changed && ctx->rast_state->base.point_quad_rasterization)
-         zink_set_fs_point_coord_key(ctx);
    }
    ctx->gfx_pipeline_state.gfx_prim_mode = mode;
 
@@ -645,7 +659,8 @@ zink_draw(struct pipe_context *pctx,
                                                                 VK_PROVOKING_VERTEX_MODE_LAST_VERTEX_EXT :
                                                                 VK_PROVOKING_VERTEX_MODE_FIRST_VERTEX_EXT);
       VKCTX(CmdSetLineRasterizationModeEXT)(batch->state->cmdbuf, (VkLineRasterizationModeEXT)rast_state->hw_state.line_mode);
-      VKCTX(CmdSetLineStippleEnableEXT)(batch->state->cmdbuf, rast_state->hw_state.line_stipple_enable);
+      if (screen->info.dynamic_state3_feats.extendedDynamicState3LineStippleEnable)
+         VKCTX(CmdSetLineStippleEnableEXT)(batch->state->cmdbuf, rast_state->hw_state.line_stipple_enable);
    }
    if ((BATCH_CHANGED || ctx->sample_mask_changed) && screen->have_full_ds3) {
       VKCTX(CmdSetRasterizationSamplesEXT)(batch->state->cmdbuf, (VkSampleCountFlagBits)(ctx->gfx_pipeline_state.rast_samples + 1));
@@ -665,13 +680,9 @@ zink_draw(struct pipe_context *pctx,
       }
    }
 
-   if (BATCH_CHANGED || rast_state_changed) {
-      enum pipe_prim_type reduced_prim = ctx->last_vertex_stage->reduced_prim;
-      if (reduced_prim == PIPE_PRIM_MAX)
-         reduced_prim = u_reduced_prim(mode);
-
+   if (BATCH_CHANGED || rast_state_changed || rast_prim_changed) {
       bool depth_bias = false;
-      switch (reduced_prim) {
+      switch (ctx->gfx_pipeline_state.rast_prim) {
       case PIPE_PRIM_POINTS:
          depth_bias = rast_state->offset_point;
          break;

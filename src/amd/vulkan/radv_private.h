@@ -1096,7 +1096,18 @@ enum radv_dynamic_state_bits {
    RADV_DYNAMIC_PRIMITIVE_RESTART_ENABLE = 1ull << 27,
    RADV_DYNAMIC_COLOR_WRITE_ENABLE = 1ull << 28,
    RADV_DYNAMIC_VERTEX_INPUT = 1ull << 29,
-   RADV_DYNAMIC_ALL = (1ull << 30) - 1,
+   RADV_DYNAMIC_POLYGON_MODE = 1ull << 30,
+   RADV_DYNAMIC_TESS_DOMAIN_ORIGIN = 1ull << 31,
+   RADV_DYNAMIC_LOGIC_OP_ENABLE = 1ull << 32,
+   RADV_DYNAMIC_LINE_STIPPLE_ENABLE = 1ull << 33,
+   RADV_DYNAMIC_ALPHA_TO_COVERAGE_ENABLE = 1ull << 34,
+   RADV_DYNAMIC_SAMPLE_MASK = 1ull << 35,
+   RADV_DYNAMIC_DEPTH_CLIP_ENABLE = 1ull << 36,
+   RADV_DYNAMIC_CONSERVATIVE_RAST_MODE = 1ull << 37,
+   RADV_DYNAMIC_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE = 1ull << 38,
+   RADV_DYNAMIC_PROVOKING_VERTEX_MODE = 1ull << 39,
+   RADV_DYNAMIC_DEPTH_CLAMP_ENABLE = 1ull << 40,
+   RADV_DYNAMIC_ALL = (1ull << 41) - 1,
 };
 
 enum radv_cmd_dirty_bits {
@@ -1132,13 +1143,24 @@ enum radv_cmd_dirty_bits {
    RADV_CMD_DIRTY_DYNAMIC_PRIMITIVE_RESTART_ENABLE = 1ull << 27,
    RADV_CMD_DIRTY_DYNAMIC_COLOR_WRITE_ENABLE = 1ull << 28,
    RADV_CMD_DIRTY_DYNAMIC_VERTEX_INPUT = 1ull << 29,
-   RADV_CMD_DIRTY_DYNAMIC_ALL = (1ull << 30) - 1,
-   RADV_CMD_DIRTY_PIPELINE = 1ull << 30,
-   RADV_CMD_DIRTY_INDEX_BUFFER = 1ull << 31,
-   RADV_CMD_DIRTY_FRAMEBUFFER = 1ull << 32,
-   RADV_CMD_DIRTY_VERTEX_BUFFER = 1ull << 33,
-   RADV_CMD_DIRTY_STREAMOUT_BUFFER = 1ull << 34,
-   RADV_CMD_DIRTY_GUARDBAND = 1ull << 35,
+   RADV_CMD_DIRTY_DYNAMIC_POLYGON_MODE = 1ull << 30,
+   RADV_CMD_DIRTY_DYNAMIC_TESS_DOMAIN_ORIGIN = 1ull << 31,
+   RADV_CMD_DIRTY_DYNAMIC_LOGIC_OP_ENABLE = 1ull << 32,
+   RADV_CMD_DIRTY_DYNAMIC_LINE_STIPPLE_ENABLE = 1ull << 33,
+   RADV_CMD_DIRTY_DYNAMIC_ALPHA_TO_COVERAGE_ENABLE = 1ull << 34,
+   RADV_CMD_DIRTY_DYNAMIC_SAMPLE_MASK = 1ull << 35,
+   RADV_CMD_DIRTY_DYNAMIC_DEPTH_CLIP_ENABLE = 1ull << 36,
+   RADV_CMD_DIRTY_DYNAMIC_CONSERVATIVE_RAST_MODE = 1ull << 37,
+   RADV_CMD_DIRTY_DYNAMIC_DEPTH_CLIP_NEGATIVE_ONE_TO_ONE = 1ull << 38,
+   RADV_CMD_DIRTY_DYNAMIC_PROVOKING_VERTEX_MODE = 1ull << 39,
+   RADV_CMD_DIRTY_DYNAMIC_DEPTH_CLAMP_ENABLE = 1ull << 40,
+   RADV_CMD_DIRTY_DYNAMIC_ALL = (1ull << 41) - 1,
+   RADV_CMD_DIRTY_PIPELINE = 1ull << 41,
+   RADV_CMD_DIRTY_INDEX_BUFFER = 1ull << 42,
+   RADV_CMD_DIRTY_FRAMEBUFFER = 1ull << 43,
+   RADV_CMD_DIRTY_VERTEX_BUFFER = 1ull << 44,
+   RADV_CMD_DIRTY_STREAMOUT_BUFFER = 1ull << 45,
+   RADV_CMD_DIRTY_GUARDBAND = 1ull << 46,
 };
 
 enum radv_cmd_flush_bits {
@@ -1188,6 +1210,12 @@ enum radv_nggc_settings {
    radv_nggc_back_face = 1 << 1,
    radv_nggc_face_is_ccw = 1 << 2,
    radv_nggc_small_primitives = 1 << 3,
+};
+
+enum radv_ngg_query_state {
+   radv_ngg_query_none = 0,
+   radv_ngg_query_pipeline_stat = 1 << 0,
+   radv_ngg_query_prim_gen = 1 << 1,
 };
 
 struct radv_vertex_binding {
@@ -1329,6 +1357,28 @@ struct radv_dynamic_state {
    uint32_t color_write_enable;
 
    uint32_t patch_control_points;
+
+   uint32_t polygon_mode;
+
+   VkTessellationDomainOrigin tess_domain_origin;
+
+   bool logic_op_enable;
+
+   bool stippled_line_enable;
+
+   bool alpha_to_coverage_enable;
+
+   uint16_t sample_mask;
+
+   bool depth_clip_enable;
+
+   VkConservativeRasterizationModeEXT conservative_rast_mode;
+
+   bool depth_clip_negative_one_to_one;
+
+   VkProvokingVertexModeEXT provoking_vertex_mode;
+
+   bool depth_clamp_enable;
 };
 
 extern const struct radv_dynamic_state default_dynamic_state;
@@ -1485,7 +1535,8 @@ struct radv_cmd_state {
    bool perfect_occlusion_queries_enabled;
    unsigned active_pipeline_queries;
    unsigned active_pipeline_gds_queries;
-   bool prims_gen_query_enabled;
+   unsigned active_prims_gen_queries;
+   unsigned active_prims_gen_gds_queries;
    uint32_t trace_id;
    uint32_t last_ia_multi_vgt_param;
    uint32_t last_ge_cntl;
@@ -1893,7 +1944,6 @@ struct radv_multisample_state {
    uint32_t pa_sc_mode_cntl_0;
    uint32_t pa_sc_mode_cntl_1;
    uint32_t pa_sc_aa_config;
-   uint32_t pa_sc_aa_mask[2];
    unsigned num_samples;
 };
 
@@ -2010,8 +2060,6 @@ struct radv_graphics_pipeline {
    struct radv_ia_multi_vgt_param_helpers ia_multi_vgt_param;
    uint8_t vtx_emit_num;
    uint64_t needed_dynamic_state;
-   unsigned pa_su_sc_mode_cntl;
-   unsigned pa_cl_clip_cntl;
    unsigned cb_color_control;
    uint32_t binding_stride[MAX_VBS];
    uint8_t attrib_bindings[MAX_VERTEX_ATTRIBS];
@@ -2021,6 +2069,7 @@ struct radv_graphics_pipeline {
    uint8_t next_vertex_stage : 8;
    uint32_t vb_desc_usage_mask;
    uint32_t vb_desc_alloc_size;
+   uint32_t vgt_tf_param;
 
    /* Last pre-PS API stage */
    gl_shader_stage last_vgt_api_stage;
@@ -2033,9 +2082,6 @@ struct radv_graphics_pipeline {
    bool disable_out_of_order_rast_for_occlusion;
    bool uses_drawid;
    bool uses_baseinstance;
-   bool uses_conservative_overestimate;
-   bool negative_one_to_one;
-   enum radv_depth_clamp_mode depth_clamp_mode;
    bool use_per_attribute_vb_descs;
    bool can_use_simple_input;
    bool uses_user_sample_locations;
@@ -2983,6 +3029,22 @@ radv_get_num_vertices_per_prim(const struct radv_pipeline_key *pipeline_key)
 }
 
 static inline uint32_t
+si_translate_fill(VkPolygonMode func)
+{
+   switch (func) {
+   case VK_POLYGON_MODE_FILL:
+      return V_028814_X_DRAW_TRIANGLES;
+   case VK_POLYGON_MODE_LINE:
+      return V_028814_X_DRAW_LINES;
+   case VK_POLYGON_MODE_POINT:
+      return V_028814_X_DRAW_POINTS;
+   default:
+      assert(0);
+      return V_028814_X_DRAW_POINTS;
+   }
+}
+
+static inline uint32_t
 si_translate_stencil_op(enum VkStencilOp op)
 {
    switch (op) {
@@ -3048,13 +3110,16 @@ si_translate_blend_logic_op(VkLogicOp op)
    }
 }
 
+uint32_t radv_get_tess_output_topology(const struct radv_graphics_pipeline *pipeline,
+                                       VkTessellationDomainOrigin domain_origin);
+
 ALWAYS_INLINE static bool
 radv_is_streamout_enabled(struct radv_cmd_buffer *cmd_buffer)
 {
    struct radv_streamout_state *so = &cmd_buffer->state.streamout;
 
    /* Streamout must be enabled for the PRIMITIVES_GENERATED query to work. */
-   return (so->streamout_enabled || cmd_buffer->state.prims_gen_query_enabled) &&
+   return (so->streamout_enabled || cmd_buffer->state.active_prims_gen_queries) &&
           !cmd_buffer->state.suspend_streamout;
 }
 
@@ -3079,10 +3144,11 @@ radv_use_llvm_for_stage(struct radv_device *device, UNUSED gl_shader_stage stage
 }
 
 static inline bool
-radv_has_shader_buffer_float_minmax(const struct radv_physical_device *pdevice)
+radv_has_shader_buffer_float_minmax(const struct radv_physical_device *pdevice, unsigned bitsize)
 {
    return (pdevice->rad_info.gfx_level <= GFX7 && !pdevice->use_llvm) ||
-          pdevice->rad_info.gfx_level >= GFX10;
+          pdevice->rad_info.gfx_level == GFX10 || pdevice->rad_info.gfx_level == GFX10_3 ||
+          (pdevice->rad_info.gfx_level == GFX11 && bitsize == 32);
 }
 
 /* radv_perfcounter.c */

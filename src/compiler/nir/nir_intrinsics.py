@@ -1342,6 +1342,16 @@ system_value("gs_vertex_offset_amd", 1, [BASE])
 # Number of rasterization samples
 system_value("rasterization_samples_amd", 1)
 
+# Descriptor where GS outputs are stored for GS copy shader to read on GFX6-9
+system_value("ring_gsvs_amd", 4)
+
+# Streamout configuration
+system_value("streamout_config_amd", 1)
+# Position to write within the streamout buffers
+system_value("streamout_write_index_amd", 1)
+# Offset to write within a streamout buffer
+system_value("streamout_offset_amd", 1, indices=[BASE])
+
 # AMD merged shader intrinsics
 
 # Whether the current invocation has an input vertex / primitive to process (also known as "ES thread" or "GS thread").
@@ -1358,8 +1368,12 @@ system_value("workgroup_num_input_vertices_amd", 1)
 system_value("workgroup_num_input_primitives_amd", 1)
 # For NGG passthrough mode only. Pre-packed argument for export_primitive_amd.
 system_value("packed_passthrough_primitive_amd", 1)
-# Whether NGG GS should execute shader query.
-system_value("shader_query_enabled_amd", dest_comp=1, bit_sizes=[1])
+# Whether NGG should execute shader query for pipeline statistics.
+system_value("pipeline_stat_query_enabled_amd", dest_comp=1, bit_sizes=[1])
+# Whether NGG should execute shader query for primitive generated.
+system_value("prim_gen_query_enabled_amd", dest_comp=1, bit_sizes=[1])
+# Whether NGG should execute shader query for primitive streamouted.
+system_value("prim_xfb_query_enabled_amd", dest_comp=1, bit_sizes=[1])
 # Whether the shader should cull front facing triangles.
 intrinsic("load_cull_front_face_enabled_amd", dest_comp=1, bit_sizes=[1], flags=[CAN_ELIMINATE])
 # Whether the shader should cull back facing triangles.
@@ -1454,6 +1468,16 @@ intrinsic("ordered_xfb_counter_add_amd", dest_comp=0, src_comp=[1, 0], indices=[
 
 # Provoking vertex index in a primitive
 system_value("provoking_vtx_in_prim_amd", 1)
+
+# Atomically add current wave's primitive count to query result
+#   * GS emitted primitive is primitive emitted by any GS stream
+#   * generated primitive is primitive that has been produced for that stream by VS/TES/GS
+#   * streamout primitve is primitve that has been written to xfb buffer, may be different
+#     than generated primitive when xfb buffer is too small to hold more primitives
+# src[] = { primitive_count }.
+intrinsic("atomic_add_gs_emit_prim_count_amd", [1])
+intrinsic("atomic_add_gen_prim_count_amd", [1], indices=[STREAM_ID])
+intrinsic("atomic_add_xfb_prim_count_amd", [1], indices=[STREAM_ID])
 
 # V3D-specific instrinc for tile buffer color reads.
 #

@@ -2417,11 +2417,19 @@ unbreak_bos(nir_shader *shader, struct zink_shader *zs, bool needs_size)
 }
 
 static uint32_t
-get_src_mask(unsigned total, nir_src src)
+get_src_mask_ssbo(unsigned total, nir_src src)
 {
    if (nir_src_is_const(src))
       return BITFIELD_BIT(nir_src_as_uint(src));
    return BITFIELD_MASK(total);
+}
+
+static uint32_t
+get_src_mask_ubo(unsigned total, nir_src src)
+{
+   if (nir_src_is_const(src))
+      return BITFIELD_BIT(nir_src_as_uint(src));
+   return BITFIELD_MASK(total) & ~BITFIELD_BIT(0);
 }
 
 static bool
@@ -2437,11 +2445,11 @@ analyze_io(struct zink_shader *zs, nir_shader *shader)
          nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
          switch (intrin->intrinsic) {
          case nir_intrinsic_store_ssbo:
-            zs->ssbos_used |= get_src_mask(shader->info.num_ssbos, intrin->src[1]);
+            zs->ssbos_used |= get_src_mask_ssbo(shader->info.num_ssbos, intrin->src[1]);
             break;
  
          case nir_intrinsic_get_ssbo_size: {
-            zs->ssbos_used |= get_src_mask(shader->info.num_ssbos, intrin->src[0]);
+            zs->ssbos_used |= get_src_mask_ssbo(shader->info.num_ssbos, intrin->src[0]);
             ret = true;
             break;
          }
@@ -2460,11 +2468,11 @@ analyze_io(struct zink_shader *zs, nir_shader *shader)
          case nir_intrinsic_ssbo_atomic_fmax:
          case nir_intrinsic_ssbo_atomic_fcomp_swap:
          case nir_intrinsic_load_ssbo:
-            zs->ssbos_used |= get_src_mask(shader->info.num_ssbos, intrin->src[0]);
+            zs->ssbos_used |= get_src_mask_ssbo(shader->info.num_ssbos, intrin->src[0]);
             break;
          case nir_intrinsic_load_ubo:
          case nir_intrinsic_load_ubo_vec4:
-            zs->ubos_used |= get_src_mask(shader->info.num_ubos, intrin->src[0]);
+            zs->ubos_used |= get_src_mask_ubo(shader->info.num_ubos, intrin->src[0]);
             break;
          default:
             break;
@@ -2729,48 +2737,6 @@ handle_bindless_var(nir_shader *nir, nir_variable *var, const struct glsl_type *
       assert(glsl_get_sampler_dim(glsl_without_array(bindless->bindless[binding]->type)) == glsl_get_sampler_dim(glsl_without_array(var->type)));
    }
    var->data.mode = nir_var_shader_temp;
-}
-
-static enum pipe_prim_type
-prim_to_pipe(enum shader_prim primitive_type)
-{
-   switch (primitive_type) {
-   case SHADER_PRIM_POINTS:
-      return PIPE_PRIM_POINTS;
-   case SHADER_PRIM_LINES:
-   case SHADER_PRIM_LINE_LOOP:
-   case SHADER_PRIM_LINE_STRIP:
-   case SHADER_PRIM_LINES_ADJACENCY:
-   case SHADER_PRIM_LINE_STRIP_ADJACENCY:
-      return PIPE_PRIM_LINES;
-   default:
-      return PIPE_PRIM_TRIANGLES;
-   }
-}
-
-static enum pipe_prim_type
-tess_prim_to_pipe(enum tess_primitive_mode prim_mode)
-{
-   switch (prim_mode) {
-   case TESS_PRIMITIVE_ISOLINES:
-      return PIPE_PRIM_LINES;
-   default:
-      return PIPE_PRIM_TRIANGLES;
-   }
-}
-
-static enum pipe_prim_type
-get_shader_base_prim_type(struct nir_shader *nir)
-{
-   switch (nir->info.stage) {
-   case MESA_SHADER_GEOMETRY:
-      return prim_to_pipe(nir->info.gs.output_primitive);
-   case MESA_SHADER_TESS_EVAL:
-      return nir->info.tess.point_mode ? PIPE_PRIM_POINTS : tess_prim_to_pipe(nir->info.tess._primitive_mode);
-   default:
-      break;
-   }
-   return PIPE_PRIM_MAX;
 }
 
 static bool
@@ -3127,7 +3093,6 @@ zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
    ret->sinfo.have_vulkan_memory_model = screen->info.have_KHR_vulkan_memory_model;
 
    ret->hash = _mesa_hash_pointer(ret);
-   ret->reduced_prim = get_shader_base_prim_type(nir);
 
    ret->programs = _mesa_pointer_set_create(NULL);
    simple_mtx_init(&ret->lock, mtx_plain);

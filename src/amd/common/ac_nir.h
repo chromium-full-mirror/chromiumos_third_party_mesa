@@ -27,9 +27,11 @@
 #define AC_NIR_H
 
 #include "nir.h"
+#include "nir_builder.h"
 #include "ac_shader_args.h"
 #include "ac_shader_util.h"
 #include "amd_family.h"
+#include "pipe/p_state.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -137,11 +139,13 @@ ac_nir_lower_ngg_nogs(nir_shader *shader,
 
 void
 ac_nir_lower_ngg_gs(nir_shader *shader,
+                    enum amd_gfx_level gfx_level,
                     unsigned wave_size,
                     unsigned max_workgroup_size,
                     unsigned esgs_ring_lds_bytes,
                     unsigned gs_out_vtx_bytes,
                     unsigned gs_total_out_vtx_bytes,
+                    bool has_xfb_query,
                     bool can_cull,
                     bool disable_streamout);
 
@@ -176,6 +180,17 @@ bool
 ac_nir_lower_global_access(nir_shader *shader);
 
 bool ac_nir_lower_resinfo(nir_shader *nir, enum amd_gfx_level gfx_level);
+
+nir_shader *
+ac_nir_create_gs_copy_shader(const nir_shader *gs_nir,
+                             const struct pipe_stream_output_info *so_info, size_t num_outputs,
+                             const uint8_t *output_usage_mask, const uint8_t *output_streams,
+                             const uint8_t *output_semantics,
+                             const uint8_t num_stream_output_components[4]);
+
+void
+ac_nir_lower_legacy_vs(nir_shader *nir, int primitive_id_location,
+                       const struct pipe_stream_output_info *so_info);
 
 #ifdef __cplusplus
 }
