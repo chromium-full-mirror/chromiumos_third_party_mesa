@@ -11,6 +11,8 @@ use crate::impl_cl_type_trait;
 use mesa_rust::compiler::clc::*;
 use mesa_rust::compiler::nir::*;
 use mesa_rust::pipe::context::RWFlags;
+use mesa_rust::pipe::context::ResourceMapType;
+use mesa_rust::pipe::screen::ResourceType;
 use mesa_rust_gen::*;
 use mesa_rust_util::math::*;
 use mesa_rust_util::serialize::*;
@@ -379,7 +381,7 @@ extern "C" fn can_remove_var(var: *mut nir_variable, _: *mut c_void) -> bool {
 fn lower_and_optimize_nir_late(
     dev: &Device,
     nir: &mut NirShader,
-    args: usize,
+    args: &mut [KernelArg],
 ) -> Vec<InternalKernelArg> {
     let mut res = Vec::new();
     let nir_options = unsafe {
@@ -454,7 +456,7 @@ fn lower_and_optimize_nir_late(
     lower_state.base_global_invoc_id = nir.add_var(
         nir_variable_mode::nir_var_uniform,
         unsafe { glsl_vector_type(glsl_base_type::GLSL_TYPE_UINT64, 3) },
-        args + res.len() - 1,
+        args.len() + res.len() - 1,
         "base_global_invocation_id",
     );
     if nir.has_constant() {
@@ -466,7 +468,7 @@ fn lower_and_optimize_nir_late(
         lower_state.const_buf = nir.add_var(
             nir_variable_mode::nir_var_uniform,
             unsafe { glsl_uint64_t_type() },
-            args + res.len() - 1,
+            args.len() + res.len() - 1,
             "constant_buffer_addr",
         );
     }
@@ -479,7 +481,7 @@ fn lower_and_optimize_nir_late(
         lower_state.printf_buf = nir.add_var(
             nir_variable_mode::nir_var_uniform,
             unsafe { glsl_uint64_t_type() },
-            args + res.len() - 1,
+            args.len() + res.len() - 1,
             "printf_buffer_addr",
         );
     }
@@ -501,14 +503,14 @@ fn lower_and_optimize_nir_late(
         lower_state.format_arr = nir.add_var(
             nir_variable_mode::nir_var_uniform,
             unsafe { glsl_array_type(glsl_int16_t_type(), nir.num_images() as u32, 2) },
-            args + res.len() - 2,
+            args.len() + res.len() - 2,
             "image_formats",
         );
 
         lower_state.order_arr = nir.add_var(
             nir_variable_mode::nir_var_uniform,
             unsafe { glsl_array_type(glsl_int16_t_type(), nir.num_images() as u32, 2) },
-            args + res.len() - 1,
+            args.len() + res.len() - 1,
             "image_orders",
         );
     }
@@ -521,10 +523,21 @@ fn lower_and_optimize_nir_late(
             | nir_variable_mode::nir_var_mem_global,
         Some(glsl_get_cl_type_size_align),
     );
+
+    let global_address_format;
+    let shared_address_format;
+    if dev.address_bits() == 32 {
+        global_address_format = nir_address_format::nir_address_format_32bit_global;
+        shared_address_format = nir_address_format::nir_address_format_32bit_offset;
+    } else {
+        global_address_format = nir_address_format::nir_address_format_64bit_global;
+        shared_address_format = nir_address_format::nir_address_format_32bit_offset_as_64bit;
+    }
+
     nir.pass2(
         nir_lower_explicit_io,
         nir_variable_mode::nir_var_mem_global | nir_variable_mode::nir_var_mem_constant,
-        nir_address_format::nir_address_format_64bit_global,
+        global_address_format,
     );
     nir.pass0(nir_lower_system_values);
     let mut compute_options = nir_lower_compute_system_values_options::default();
@@ -537,7 +550,7 @@ fn lower_and_optimize_nir_late(
         nir_variable_mode::nir_var_mem_shared
             | nir_variable_mode::nir_var_function_temp
             | nir_variable_mode::nir_var_uniform,
-        nir_address_format::nir_address_format_32bit_offset_as_64bit,
+        shared_address_format,
     );
 
     if nir_options.lower_int64_options.0 != 0 {
@@ -547,6 +560,11 @@ fn lower_and_optimize_nir_late(
     nir.pass1(nir_lower_convert_alu_types, None);
 
     opt_nir(nir, dev);
+
+    /* before passing it into drivers, assign locations as drivers might remove nir_variables or
+     * other things we depend on
+     */
+    KernelArg::assign_locations(args, &mut res, nir);
     dev.screen.finalize_nir(nir);
 
     nir.pass0(nir_opt_dce);
@@ -618,10 +636,14 @@ fn convert_spirv_to_nir(
         } else {
             let mut nir = p.to_nir(name, d);
 
+            /* this is a hack until we support fp16 properly and check for denorms inside
+             * vstore/vload_half
+             */
+            nir.preserve_fp16_denorms();
+
             lower_and_optimize_nir_pre_inputs(d, &mut nir, &d.lib_clc);
             let mut args = KernelArg::from_spirv_nir(&args, &mut nir);
-            let mut internal_args = lower_and_optimize_nir_late(d, &mut nir, args.len());
-            KernelArg::assign_locations(&mut args, &mut internal_args, &mut nir);
+            let internal_args = lower_and_optimize_nir_late(d, &mut nir, &mut args);
 
             if let Some(cache) = cache {
                 let mut bin = Vec::new();
@@ -839,7 +861,7 @@ impl Kernel {
                     let res = Arc::new(
                         q.device
                             .screen()
-                            .resource_create_buffer(buf.len() as u32)
+                            .resource_create_buffer(buf.len() as u32, ResourceType::Normal)
                             .unwrap(),
                     );
                     q.device
@@ -854,8 +876,12 @@ impl Kernel {
                     input.extend_from_slice(&cl_prop::<[u64; 3]>(offsets));
                 }
                 InternalKernelArgType::PrintfBuffer => {
-                    let buf =
-                        Arc::new(q.device.screen.resource_create_buffer(printf_size).unwrap());
+                    let buf = Arc::new(
+                        q.device
+                            .screen
+                            .resource_create_buffer(printf_size, ResourceType::Normal)
+                            .unwrap(),
+                    );
 
                     input.extend_from_slice(&[0; 8]);
                     resource_info.push((Some(buf.clone()), arg.offset));
@@ -929,7 +955,13 @@ impl Kernel {
 
             if let Some(printf_buf) = &printf_buf {
                 let tx = ctx
-                    .buffer_map(printf_buf, 0, printf_size as i32, true, RWFlags::RD)
+                    .buffer_map(
+                        printf_buf,
+                        0,
+                        printf_size as i32,
+                        RWFlags::RD,
+                        ResourceMapType::Normal,
+                    )
                     .with_ctx(ctx);
                 let mut buf: &[u8] =
                     unsafe { slice::from_raw_parts(tx.ptr().cast(), printf_size as usize) };
@@ -940,7 +972,7 @@ impl Kernel {
 
                 unsafe {
                     u_printf(
-                        stdout,
+                        stdout_ptr(),
                         buf.as_ptr().cast(),
                         buf.len(),
                         printf_format.as_ptr(),

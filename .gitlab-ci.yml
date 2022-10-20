@@ -71,7 +71,6 @@ include:
   - local: 'src/gallium/drivers/lima/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/llvmpipe/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/nouveau/ci/gitlab-ci.yml'
-  - local: 'src/gallium/drivers/radeonsi/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/softpipe/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/virgl/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/zink/ci/gitlab-ci.yml'
@@ -133,7 +132,7 @@ stages:
     - .build-rules
   script:
   - apk --no-cache add graphviz doxygen
-  - pip3 install sphinx breathe mako sphinx_rtd_theme
+  - pip3 install sphinx===5.1.1 breathe===4.34.0 mako===1.2.3 sphinx_rtd_theme===1.0.0
   - docs/doxygen-wrapper.py --out-dir=docs/doxygen_xml
   - sphinx-build -W -b html docs public
 

@@ -27,6 +27,7 @@ enum tu_dynamic_state
    TU_DYNAMIC_STATE_RASTERIZER_DISCARD,
    TU_DYNAMIC_STATE_BLEND,
    TU_DYNAMIC_STATE_VERTEX_INPUT,
+   TU_DYNAMIC_STATE_PATCH_CONTROL_POINTS,
    TU_DYNAMIC_STATE_COUNT,
    /* no associated draw state: */
    TU_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY = TU_DYNAMIC_STATE_COUNT,
@@ -131,6 +132,7 @@ struct tu_pipeline
       uint32_t gras_su_cntl, gras_su_cntl_mask;
       uint32_t pc_raster_cntl, pc_raster_cntl_mask;
       uint32_t vpc_unknown_9107, vpc_unknown_9107_mask;
+      uint32_t rb_depth_cntl;
       enum a5xx_line_mode line_mode;
       bool provoking_vertex_last;
 
@@ -138,6 +140,12 @@ struct tu_pipeline
 
       struct tu_draw_state state;
    } rast;
+
+   /* RB_DEPTH_CNTL state comes from both rast and depth/stencil state.
+    */
+   struct {
+      uint32_t rb_depth_cntl, rb_depth_cntl_mask;
+   } rast_ds;
 
    struct {
       uint32_t rb_depth_cntl, rb_depth_cntl_mask;
@@ -198,6 +206,12 @@ struct tu_pipeline
       struct tu_draw_state binning_state;
 
       struct tu_program_descriptor_linkage link[MESA_SHADER_STAGES];
+
+      uint32_t vs_param_stride;
+      uint32_t hs_param_stride;
+      uint32_t hs_param_dwords;
+      uint32_t hs_vertices_out;
+      uint32_t cs_instrlen;
    } program;
 
    struct
@@ -210,7 +224,6 @@ struct tu_pipeline
    {
       uint32_t patch_type;
       uint32_t patch_control_points;
-      uint32_t param_stride;
       bool upper_left_domain_origin;
    } tess;
 
@@ -282,6 +295,13 @@ void tu6_emit_vertex_input(struct tu_cs *cs,
                            uint32_t attr_count,
                            const VkVertexInputAttributeDescription2EXT *attrs);
 
+#define EMIT_CONST_DWORDS(const_dwords) (4 + const_dwords)
+#define TU6_EMIT_PATCH_CONTROL_POINTS_DWORDS(hs_param_dwords) \
+   (EMIT_CONST_DWORDS(4) + EMIT_CONST_DWORDS(hs_param_dwords) + 2 + 2 + 2)
+void tu6_emit_patch_control_points(struct tu_cs *cs,
+                                   const struct tu_pipeline *pipeline,
+                                   unsigned patch_control_points);
+
 uint32_t tu6_rb_mrt_control_rop(VkLogicOp op, bool *rop_reads_dst);
 
 struct tu_pvtmem_config {
@@ -309,8 +329,7 @@ tu6_emit_vpc(struct tu_cs *cs,
              const struct ir3_shader_variant *hs,
              const struct ir3_shader_variant *ds,
              const struct ir3_shader_variant *gs,
-             const struct ir3_shader_variant *fs,
-             uint32_t patch_control_points);
+             const struct ir3_shader_variant *fs);
 
 void
 tu6_emit_fs_inputs(struct tu_cs *cs, const struct ir3_shader_variant *fs);

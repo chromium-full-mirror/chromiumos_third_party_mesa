@@ -48,8 +48,31 @@ pub trait HelperContextWrapper {
     where
         F: Fn(&HelperContext);
 
-    fn buffer_map_async(&self, res: &PipeResource, offset: i32, size: i32) -> PipeTransfer;
-    fn texture_map_async(&self, res: &PipeResource, bx: &pipe_box) -> PipeTransfer;
+    fn buffer_map_directly(
+        &self,
+        res: &PipeResource,
+        offset: i32,
+        size: i32,
+        rw: RWFlags,
+    ) -> Option<PipeTransfer>;
+
+    fn buffer_map_coherent(
+        &self,
+        res: &PipeResource,
+        offset: i32,
+        size: i32,
+        rw: RWFlags,
+    ) -> PipeTransfer;
+
+    fn texture_map_directly(
+        &self,
+        res: &PipeResource,
+        bx: &pipe_box,
+        rw: RWFlags,
+    ) -> Option<PipeTransfer>;
+
+    fn texture_map_coherent(&self, res: &PipeResource, bx: &pipe_box, rw: RWFlags) -> PipeTransfer;
+
     fn unmap(&self, tx: PipeTransfer);
 }
 
@@ -90,12 +113,39 @@ impl<'a> HelperContextWrapper for HelperContext<'a> {
         self.lock.flush()
     }
 
-    fn buffer_map_async(&self, res: &PipeResource, offset: i32, size: i32) -> PipeTransfer {
-        self.lock.buffer_map(res, offset, size, false, RWFlags::RW)
+    fn buffer_map_directly(
+        &self,
+        res: &PipeResource,
+        offset: i32,
+        size: i32,
+        rw: RWFlags,
+    ) -> Option<PipeTransfer> {
+        self.lock.buffer_map_directly(res, offset, size, rw)
     }
 
-    fn texture_map_async(&self, res: &PipeResource, bx: &pipe_box) -> PipeTransfer {
-        self.lock.texture_map(res, bx, false, RWFlags::RW)
+    fn buffer_map_coherent(
+        &self,
+        res: &PipeResource,
+        offset: i32,
+        size: i32,
+        rw: RWFlags,
+    ) -> PipeTransfer {
+        self.lock
+            .buffer_map(res, offset, size, rw, ResourceMapType::Coherent)
+    }
+
+    fn texture_map_directly(
+        &self,
+        res: &PipeResource,
+        bx: &pipe_box,
+        rw: RWFlags,
+    ) -> Option<PipeTransfer> {
+        self.lock.texture_map_directly(res, bx, rw)
+    }
+
+    fn texture_map_coherent(&self, res: &PipeResource, bx: &pipe_box, rw: RWFlags) -> PipeTransfer {
+        self.lock
+            .texture_map(res, bx, rw, ResourceMapType::Coherent)
     }
 
     fn unmap(&self, tx: PipeTransfer) {
@@ -207,7 +257,7 @@ impl Device {
         // Max size of memory object allocation in bytes. The minimum value is
         // max(min(1024 × 1024 × 1024, 1/4th of CL_DEVICE_GLOBAL_MEM_SIZE), 32 × 1024 × 1024)
         // for devices that are not of type CL_DEVICE_TYPE_CUSTOM.
-        let mut limit = min(1024 * 1024 * 1024, self.global_mem_size());
+        let mut limit = min(1024 * 1024 * 1024, self.global_mem_size() / 4);
         limit = max(limit, 32 * 1024 * 1024);
         if self.max_mem_alloc() < limit {
             return true;
@@ -621,8 +671,12 @@ impl Device {
     }
 
     pub fn max_mem_alloc(&self) -> cl_ulong {
-        self.screen
-            .compute_param(pipe_compute_cap::PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE)
+        // TODO: at the moment gallium doesn't support bigger buffers
+        min(
+            self.screen
+                .compute_param(pipe_compute_cap::PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE),
+            0x80000000,
+        )
     }
 
     pub fn max_samplers(&self) -> cl_uint {

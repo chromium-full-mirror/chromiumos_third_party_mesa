@@ -725,7 +725,6 @@ agx_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
-   case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
@@ -918,7 +917,6 @@ agx_get_shader_param(struct pipe_screen* pscreen,
                      enum pipe_shader_type shader,
                      enum pipe_shader_cap param)
 {
-   bool is_deqp = agx_device(pscreen)->debug & AGX_DBG_DEQP;
    bool is_no16 = agx_device(pscreen)->debug & AGX_DBG_NO16;
 
    if (shader != PIPE_SHADER_VERTEX &&
@@ -962,8 +960,6 @@ agx_get_shader_param(struct pipe_screen* pscreen,
       return 0;
 
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
-      return is_deqp;
-
    case PIPE_SHADER_CAP_INTEGERS:
       return true;
 

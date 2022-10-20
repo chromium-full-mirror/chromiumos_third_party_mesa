@@ -126,6 +126,7 @@ struct lvp_physical_device {
 
    struct pipe_loader_device *pld;
    struct pipe_screen *pscreen;
+   const nir_shader_compiler_options *drv_options[MESA_SHADER_STAGES];
    uint32_t max_images;
 
    struct vk_sync_timeline_type sync_timeline_type;
@@ -414,7 +415,9 @@ struct lvp_pipeline {
    bool is_compute_pipeline;
    bool force_min_sample;
    nir_shader *pipeline_nir[MESA_SHADER_STAGES];
+   nir_shader *tess_ccw;
    void *shader_cso[PIPE_SHADER_TYPES];
+   void *tess_ccw_cso;
    struct {
       uint32_t uniform_offsets[PIPE_MAX_CONSTANT_BUFFERS][MAX_INLINABLE_UNIFORMS];
       uint8_t count[PIPE_MAX_CONSTANT_BUFFERS];

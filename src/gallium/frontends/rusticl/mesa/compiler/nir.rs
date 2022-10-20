@@ -93,7 +93,7 @@ impl NirShader {
     }
 
     pub fn print(&self) {
-        unsafe { nir_print_shader(self.nir.as_ptr(), stderr) };
+        unsafe { nir_print_shader(self.nir.as_ptr(), stderr_ptr()) };
     }
 
     pub fn get_nir(&self) -> *mut nir_shader {
@@ -251,6 +251,13 @@ impl NirShader {
         unsafe {
             let nir = self.nir.as_ref();
             slice::from_raw_parts(nir.constant_data.cast(), nir.constant_data_size as usize)
+        }
+    }
+
+    pub fn preserve_fp16_denorms(&mut self) {
+        unsafe {
+            self.nir.as_mut().info.float_controls_execution_mode |=
+                float_controls::FLOAT_CONTROLS_DENORM_PRESERVE_FP16 as u16;
         }
     }
 

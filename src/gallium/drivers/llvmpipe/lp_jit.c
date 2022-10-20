@@ -285,6 +285,7 @@ lp_jit_create_types(struct lp_fragment_shader_variant *lp)
       LP_CHECK_STRUCT_SIZE(struct lp_jit_context,
                            gallivm->target, context_type);
 
+      lp->jit_context_type = context_type;
       lp->jit_context_ptr_type = LLVMPointerType(context_type, 0);
    }
 
@@ -304,6 +305,7 @@ lp_jit_create_types(struct lp_fragment_shader_variant *lp)
       thread_data_type = LLVMStructTypeInContext(lc, elem_types,
                                                  ARRAY_SIZE(elem_types), 0);
 
+      lp->jit_thread_data_type = thread_data_type;
       lp->jit_thread_data_ptr_type = LLVMPointerType(thread_data_type, 0);
    }
 
@@ -329,6 +331,7 @@ lp_jit_create_types(struct lp_fragment_shader_variant *lp)
        * We actually define lp_linear_elem not as a structure but simply as a
        * lp_linear_func pointer
        */
+      lp->jit_linear_func_type = func_type;
       linear_elem_type = LLVMPointerType(func_type, 0);
    }
 
@@ -341,8 +344,11 @@ lp_jit_create_types(struct lp_fragment_shader_variant *lp)
 
       elem_types[LP_JIT_LINEAR_CTX_CONSTANTS] = LLVMPointerType(LLVMInt8TypeInContext(lc), 0);
       elem_types[LP_JIT_LINEAR_CTX_TEX] =
+      lp->jit_linear_textures_type =
             LLVMArrayType(linear_elem_ptr_type, LP_MAX_LINEAR_TEXTURES);
+
       elem_types[LP_JIT_LINEAR_CTX_INPUTS] =
+      lp->jit_linear_inputs_type =
             LLVMArrayType(linear_elem_ptr_type, LP_MAX_LINEAR_INPUTS);
       elem_types[LP_JIT_LINEAR_CTX_COLOR0] = LLVMPointerType(LLVMInt8TypeInContext(lc), 0);
       elem_types[LP_JIT_LINEAR_CTX_BLEND_COLOR] = LLVMInt32TypeInContext(lc);
@@ -372,6 +378,7 @@ lp_jit_create_types(struct lp_fragment_shader_variant *lp)
       LP_CHECK_STRUCT_SIZE(struct lp_jit_linear_context,
                            gallivm->target, linear_context_type);
 
+      lp->jit_linear_context_type = linear_context_type;
       lp->jit_linear_context_ptr_type = LLVMPointerType(linear_context_type, 0);
    }
 
@@ -428,6 +435,7 @@ lp_jit_create_cs_types(struct lp_compute_shader_variant *lp)
       thread_data_type = LLVMStructTypeInContext(lc, elem_types,
                                                  ARRAY_SIZE(elem_types), 0);
 
+      lp->jit_cs_thread_data_type = thread_data_type;
       lp->jit_cs_thread_data_ptr_type = LLVMPointerType(thread_data_type, 0);
    }
 
@@ -483,6 +491,7 @@ lp_jit_create_cs_types(struct lp_compute_shader_variant *lp)
       LP_CHECK_STRUCT_SIZE(struct lp_jit_cs_context,
                            gallivm->target, cs_context_type);
 
+      lp->jit_cs_context_type = cs_context_type;
       lp->jit_cs_context_ptr_type = LLVMPointerType(cs_context_type, 0);
    }
 

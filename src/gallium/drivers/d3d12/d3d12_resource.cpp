@@ -41,6 +41,9 @@
 #include <dxguids/dxguids.h>
 #include <memory>
 
+#include <wrl/client.h>
+using Microsoft::WRL::ComPtr;
+
 #ifndef GENERIC_ALL
  // This is only added to winadapter.h in newer DirectX-Headers
 #define GENERIC_ALL 0x10000000L
@@ -252,7 +255,14 @@ init_texture(struct d3d12_screen *screen,
        */
    }
 
-   if (screen->support_shader_images && templ->nr_samples <= 1) {
+   /* The VA frontend VaFourccToPipeFormat chooses _UNORM types for RGBx formats as typeless formats
+    * such as DXGI_R8G8B8A8_TYPELESS are not supported as Video Processor input/output as specified in:
+    * https://learn.microsoft.com/en-us/windows/win32/direct3ddxgi/hardware-support-for-direct3d-12-1-formats
+    * PIPE_BIND_CUSTOM is used by the video frontend to hint this resource will be used in video and the
+    * original format must be not converted to _TYPELESS
+   */
+   if ( ((templ->bind & PIPE_BIND_CUSTOM) == 0) &&
+      (screen->support_shader_images && templ->nr_samples <= 1)) {
       /* Ideally, we'd key off of PIPE_BIND_SHADER_IMAGE for this, but it doesn't
        * seem to be set properly. So, all UAV-capable resources need the UAV flag.
        */
@@ -448,6 +458,32 @@ d3d12_resource_from_handle(struct pipe_screen *pscreen,
 #else
    HANDLE d3d_handle = (HANDLE) (intptr_t) handle->handle;
 #endif
+
+   if (handle->type == WINSYS_HANDLE_TYPE_D3D12_RES) {
+      ComPtr<IUnknown> screen_device;
+      ComPtr<IUnknown> res_device;
+      screen->dev->QueryInterface(screen_device.GetAddressOf());
+      ((ID3D12DeviceChild *)handle->com_obj)->GetDevice(IID_PPV_ARGS(res_device.GetAddressOf()));
+
+      if (screen_device.Get() != res_device.Get()) {
+         debug_printf("d3d12: Importing resource - Resource's parent device (%p) does not"
+                      " match d3d12 device (%p) instance from this pipe_screen."
+                      " Attempting to re-import via NT Handle...\n", screen_device.Get(), res_device.Get());
+
+         handle->type = WINSYS_HANDLE_TYPE_FD;
+         HRESULT hr = screen->dev->CreateSharedHandle(((ID3D12DeviceChild *)handle->com_obj),
+               nullptr,
+               GENERIC_ALL,
+               nullptr,
+               &d3d_handle);
+
+         if (FAILED(hr)) {
+            debug_printf("d3d12: Error %x - Couldn't export incoming resource com_obj "
+                         "(%p) via shared NT handle.\n", hr, handle->com_obj);
+            return NULL;
+         }
+      }
+   }
 
 #ifdef _WIN32
    HANDLE d3d_handle_to_close = nullptr;

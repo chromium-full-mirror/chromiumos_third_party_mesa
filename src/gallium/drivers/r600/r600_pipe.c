@@ -245,8 +245,7 @@ fail:
 }
 
 static bool is_nir_enabled(struct r600_common_screen *screen) {
-   return (screen->debug_flags & DBG_NIR_PREFERRED); /* &&
-       screen->family >= CHIP_CEDAR);*/
+   return !(screen->debug_flags & DBG_USE_TGSI);
 }
 
 /*
@@ -264,7 +263,6 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
 	case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
 	case PIPE_CAP_ANISOTROPIC_FILTER:
-	case PIPE_CAP_POINT_SPRITE:
 	case PIPE_CAP_OCCLUSION_QUERY:
 	case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
 	case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
@@ -274,7 +272,6 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
 	case PIPE_CAP_SHADER_STENCIL_EXPORT:
 	case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
-	case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
 	case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
 	case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
 	case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
@@ -319,7 +316,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 		return 1;
 
         case PIPE_CAP_NIR_ATOMICS_AS_DEREF:
-		return rscreen->b.debug_flags & DBG_NIR_PREFERRED;
+		return is_nir_enabled(&rscreen->b);
 
 	case PIPE_CAP_TEXTURE_TRANSFER_MODES:
 		return PIPE_TEXTURE_TRANSFER_BLIT;

@@ -480,7 +480,7 @@ fd6_emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
  * returns whether border_color is required:
  */
 static bool
-fd6_emit_combined_textures(struct fd_ringbuffer *ring, struct fd6_emit *emit,
+fd6_emit_combined_textures(struct fd6_emit *emit,
                            enum pipe_shader_type type,
                            const struct ir3_shader_variant *v) assert_dt
 {
@@ -742,15 +742,6 @@ build_scissor(struct fd6_emit *emit) assert_dt
       A6XX_GRAS_SC_SCREEN_SCISSOR_BR(0, .x = MAX2(scissor->maxx, 1) - 1,
                                      .y = MAX2(scissor->maxy, 1) - 1));
 
-   ctx->batch->max_scissor.minx =
-      MIN2(ctx->batch->max_scissor.minx, scissor->minx);
-   ctx->batch->max_scissor.miny =
-      MIN2(ctx->batch->max_scissor.miny, scissor->miny);
-   ctx->batch->max_scissor.maxx =
-      MAX2(ctx->batch->max_scissor.maxx, scissor->maxx);
-   ctx->batch->max_scissor.maxy =
-      MAX2(ctx->batch->max_scissor.maxy, scissor->maxy);
-
    return ring;
 }
 
@@ -1000,11 +991,11 @@ fd6_emit_non_ring(struct fd_ringbuffer *ring, struct fd6_emit *emit) assert_dt
                                                     .vert = guardband_y));
    }
 
-   /* The clamp ranges are only used when the rasterizer disables
-    * depth clip.
+   /* The clamp ranges are only used when the rasterizer wants depth
+    * clamping.
     */
    if ((dirty & (FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER)) &&
-       fd_depth_clip_disabled(ctx)) {
+       fd_depth_clamp_enabled(ctx)) {
       float zmin, zmax;
       util_viewport_zmin_zmax(&ctx->viewport, ctx->rasterizer->clip_halfz,
                               &zmin, &zmax);
@@ -1054,7 +1045,7 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
          state = fd6_zsa_state(
             ctx,
             util_format_is_pure_integer(pipe_surface_format(pfb->cbufs[0])),
-            fd_depth_clip_disabled(ctx));
+            fd_depth_clamp_enabled(ctx));
          fd_ringbuffer_ref(state);
          break;
       case FD6_GROUP_LRZ:
@@ -1115,29 +1106,29 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
          break;
       case FD6_GROUP_VS_TEX:
          needs_border |=
-            fd6_emit_combined_textures(ring, emit, PIPE_SHADER_VERTEX, vs);
+            fd6_emit_combined_textures(emit, PIPE_SHADER_VERTEX, vs);
          continue;
       case FD6_GROUP_HS_TEX:
          if (hs) {
-            needs_border |= fd6_emit_combined_textures(
-               ring, emit, PIPE_SHADER_TESS_CTRL, hs);
+            needs_border |=
+               fd6_emit_combined_textures(emit, PIPE_SHADER_TESS_CTRL, hs);
          }
          continue;
       case FD6_GROUP_DS_TEX:
          if (ds) {
-            needs_border |= fd6_emit_combined_textures(
-               ring, emit, PIPE_SHADER_TESS_EVAL, ds);
+            needs_border |=
+               fd6_emit_combined_textures(emit, PIPE_SHADER_TESS_EVAL, ds);
          }
          continue;
       case FD6_GROUP_GS_TEX:
          if (gs) {
             needs_border |=
-               fd6_emit_combined_textures(ring, emit, PIPE_SHADER_GEOMETRY, gs);
+               fd6_emit_combined_textures(emit, PIPE_SHADER_GEOMETRY, gs);
          }
          continue;
       case FD6_GROUP_FS_TEX:
          needs_border |=
-            fd6_emit_combined_textures(ring, emit, PIPE_SHADER_FRAGMENT, fs);
+            fd6_emit_combined_textures(emit, PIPE_SHADER_FRAGMENT, fs);
          continue;
       case FD6_GROUP_SO:
          fd6_emit_streamout(ring, emit);

@@ -65,6 +65,7 @@
 #include "util/libsync.h"
 #include "util/os_file.h"
 #include "util/u_atomic.h"
+#include "util/u_call_once.h"
 #include "util/u_vector.h"
 #include "mapi/glapi/glapi.h"
 #include "util/bitscan.h"
@@ -133,15 +134,19 @@ dri_set_background_context(void *loaderPrivate)
 }
 
 static void
+dri2_gl_flush_get(_glapi_proc *glFlush)
+{
+   *glFlush = _glapi_get_proc_address("glFlush");
+}
+
+static void
 dri2_gl_flush()
 {
    static void (*glFlush)(void);
-   static mtx_t glFlushMutex = _MTX_INITIALIZER_NP;
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
 
-   mtx_lock(&glFlushMutex);
-   if (!glFlush)
-      glFlush = _glapi_get_proc_address("glFlush");
-   mtx_unlock(&glFlushMutex);
+   util_call_once_data(&once,
+      (util_call_once_data_func)dri2_gl_flush_get, &glFlush);
 
    /* if glFlush is not available things are horribly broken */
    if (!glFlush) {
@@ -653,12 +658,9 @@ dri2_add_pbuffer_configs_for_visuals(_EGLDisplay *disp)
 GLboolean
 dri2_validate_egl_image(void *image, void *data)
 {
-   _EGLDisplay *disp = data;
-   _EGLImage *img;
-
-   egl_lock(disp);
-   img = _eglLookupImage(image, disp);
-   egl_unlock(disp);
+   _EGLDisplay *disp = _eglLockDisplay(data);
+   _EGLImage *img = _eglLookupImage(image, disp);
+   _eglUnlockDisplay(disp);
 
    if (img == NULL) {
       _eglError(EGL_BAD_PARAMETER, "dri2_validate_egl_image");
@@ -1832,7 +1834,7 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf,
    rdraw = (rsurf) ? dri2_dpy->vtbl->get_dri_drawable(rsurf) : NULL;
    cctx = (dri2_ctx) ? dri2_ctx->dri_context : NULL;
 
-   if (cctx || ddraw || rdraw) {
+   if (cctx) {
       if (!dri2_dpy->core->bindContext(cctx, ddraw, rdraw)) {
          _EGLContext *tmp_ctx;
 

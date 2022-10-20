@@ -302,11 +302,6 @@ struct radv_physical_device {
    /* Whether to emulate ETC2 image support on HW without support. */
    bool emulate_etc2;
 
-   /* This is the drivers on-disk cache used as a fallback as opposed to
-    * the pipeline cache defined by apps.
-    */
-   struct disk_cache *disk_cache;
-
    VkPhysicalDeviceMemoryProperties memory_properties;
    enum radeon_bo_domain memory_domains[VK_MAX_MEMORY_TYPES];
    enum radeon_bo_flag memory_flags[VK_MAX_MEMORY_TYPES];
@@ -364,6 +359,7 @@ struct radv_instance {
    bool zero_vram;
    bool disable_sinking_load_input_fs;
    bool flush_before_query_copy;
+   bool enable_unified_heap_on_apu;
 };
 
 VkResult radv_init_wsi(struct radv_physical_device *physical_device);
@@ -381,7 +377,6 @@ struct radv_pipeline_cache {
    uint32_t table_size;
    uint32_t kernel_count;
    struct cache_entry **hash_table;
-   bool modified;
 
    VkAllocationCallbacks alloc;
 };
@@ -389,10 +384,6 @@ struct radv_pipeline_cache {
 struct radv_shader_binary;
 struct radv_shader;
 struct radv_pipeline_shader_stack_size;
-
-void radv_pipeline_cache_init(struct radv_pipeline_cache *cache, struct radv_device *device);
-void radv_pipeline_cache_finish(struct radv_pipeline_cache *cache);
-bool radv_pipeline_cache_load(struct radv_pipeline_cache *cache, const void *data, size_t size);
 
 bool radv_create_shaders_from_pipeline_cache(
    struct radv_device *device, struct radv_pipeline_cache *cache, const unsigned char *sha1,
@@ -449,7 +440,8 @@ radv_meta_dst_layout_to_layout(enum radv_meta_dst_layout layout)
 struct radv_meta_state {
    VkAllocationCallbacks alloc;
 
-   struct radv_pipeline_cache cache;
+   VkPipelineCache cache;
+   uint32_t initial_cache_entries;
 
    /*
     * For on-demand pipeline creation, makes sure that
@@ -674,8 +666,12 @@ struct radv_meta_state {
       VkPipeline leaf_pipeline;
       VkPipelineLayout morton_p_layout;
       VkPipeline morton_pipeline;
-      VkPipelineLayout internal_p_layout;
-      VkPipeline internal_pipeline;
+      VkPipelineLayout lbvh_internal_p_layout;
+      VkPipeline lbvh_internal_pipeline;
+      VkPipelineLayout convert_leaf_p_layout;
+      VkPipeline convert_leaf_pipeline;
+      VkPipelineLayout convert_internal_p_layout;
+      VkPipeline convert_internal_pipeline;
       VkPipelineLayout copy_p_layout;
       VkPipeline copy_pipeline;
 
@@ -721,6 +717,7 @@ struct radv_queue_ring_info {
    uint32_t compute_scratch_waves;
    uint32_t esgs_ring_size;
    uint32_t gsvs_ring_size;
+   uint32_t attr_ring_size;
    bool tess_rings;
    bool task_rings;
    bool mesh_scratch_ring;
@@ -741,6 +738,7 @@ struct radv_queue_state {
    struct radeon_winsys_bo *tess_rings_bo;
    struct radeon_winsys_bo *task_rings_bo;
    struct radeon_winsys_bo *mesh_scratch_ring_bo;
+   struct radeon_winsys_bo *attr_ring_bo;
    struct radeon_winsys_bo *gds_bo;
    struct radeon_winsys_bo *gds_oa_bo;
 
@@ -1465,7 +1463,7 @@ struct radv_cmd_state {
    struct radv_graphics_pipeline *emitted_graphics_pipeline;
    struct radv_compute_pipeline *compute_pipeline;
    struct radv_compute_pipeline *emitted_compute_pipeline;
-   struct radv_compute_pipeline *rt_pipeline; /* emitted = emitted_compute_pipeline */
+   struct radv_ray_tracing_pipeline *rt_pipeline; /* emitted = emitted_compute_pipeline */
    struct radv_dynamic_state dynamic;
    struct radv_vs_input_state dynamic_vs_input;
    struct radv_streamout_state streamout;
@@ -1664,7 +1662,6 @@ struct radv_image_view;
 
 bool radv_cmd_buffer_uses_mec(struct radv_cmd_buffer *cmd_buffer);
 
-bool radv_is_streamout_enabled(struct radv_cmd_buffer *cmd_buffer);
 void radv_emit_streamout_enable(struct radv_cmd_buffer *cmd_buffer);
 
 void si_emit_graphics(struct radv_device *device, struct radeon_cmdbuf *cs);
@@ -1925,10 +1922,12 @@ struct radv_binning_state {
 enum radv_pipeline_type {
    RADV_PIPELINE_GRAPHICS,
    RADV_PIPELINE_GRAPHICS_LIB,
-   /* Compute pipeline (incl raytracing pipeline) */
+   /* Compute pipeline */
    RADV_PIPELINE_COMPUTE,
    /* Pipeline library. This can't actually run and merely is a partial pipeline. */
-   RADV_PIPELINE_LIBRARY
+   RADV_PIPELINE_LIBRARY,
+   /* Raytracing pipeline */
+   RADV_PIPELINE_RAY_TRACING,
 };
 
 struct radv_pipeline_group_handle {
@@ -2025,9 +2024,10 @@ struct radv_graphics_pipeline {
 
    /* Last pre-PS API stage */
    gl_shader_stage last_vgt_api_stage;
+   struct radv_userdata_info *last_vgt_api_stage_locs;
 
    /* Used for rbplus */
-   uint32_t col_format;
+   uint32_t col_format_non_compacted;
    uint32_t cb_target_mask;
 
    bool disable_out_of_order_rast_for_occlusion;
@@ -2063,12 +2063,6 @@ struct radv_compute_pipeline {
    struct radv_pipeline base;
 
    bool cs_regalloc_hang_bug;
-
-   /* Raytracing */
-   struct radv_pipeline_group_handle *rt_group_handles;
-   struct radv_pipeline_shader_stack_size *rt_stack_sizes;
-   bool dynamic_stack_size;
-   uint32_t group_count;
 };
 
 struct radv_library_pipeline {
@@ -2094,6 +2088,15 @@ struct radv_graphics_lib_pipeline {
    VkGraphicsPipelineLibraryFlagsEXT lib_flags;
 };
 
+struct radv_ray_tracing_pipeline {
+   struct radv_compute_pipeline base;
+
+   struct radv_pipeline_group_handle *group_handles;
+   struct radv_pipeline_shader_stack_size *stack_sizes;
+   uint32_t group_count;
+   bool dynamic_stack_size;
+};
+
 #define RADV_DECL_PIPELINE_DOWNCAST(pipe_type, pipe_enum)            \
    static inline struct radv_##pipe_type##_pipeline *                \
    radv_pipeline_to_##pipe_type(struct radv_pipeline *pipeline)      \
@@ -2106,6 +2109,7 @@ RADV_DECL_PIPELINE_DOWNCAST(graphics, RADV_PIPELINE_GRAPHICS)
 RADV_DECL_PIPELINE_DOWNCAST(graphics_lib, RADV_PIPELINE_GRAPHICS_LIB)
 RADV_DECL_PIPELINE_DOWNCAST(compute, RADV_PIPELINE_COMPUTE)
 RADV_DECL_PIPELINE_DOWNCAST(library, RADV_PIPELINE_LIBRARY)
+RADV_DECL_PIPELINE_DOWNCAST(ray_tracing, RADV_PIPELINE_RAY_TRACING)
 
 struct radv_pipeline_stage {
    gl_shader_stage stage;
@@ -2152,6 +2156,9 @@ void radv_pipeline_emit_hw_cs(const struct radv_physical_device *pdevice, struct
 void radv_pipeline_emit_compute_state(const struct radv_physical_device *pdevice,
                                       struct radeon_cmdbuf *cs, const struct radv_shader *shader);
 
+void radv_compute_pipeline_init(struct radv_compute_pipeline *pipeline,
+                                const struct radv_pipeline_layout *layout);
+
 struct radv_graphics_pipeline_create_info {
    bool use_rectlist;
    bool db_depth_clear;
@@ -2161,6 +2168,9 @@ struct radv_graphics_pipeline_create_info {
    bool resummarize_enable;
    uint32_t custom_blend_mode;
 };
+
+struct radv_pipeline_key radv_generate_pipeline_key(const struct radv_pipeline *pipeline,
+                                                    VkPipelineCreateFlags flags);
 
 void radv_pipeline_init(struct radv_device *device, struct radv_pipeline *pipeline,
                         enum radv_pipeline_type type);
@@ -2173,9 +2183,7 @@ VkResult radv_graphics_pipeline_create(VkDevice device, VkPipelineCache cache,
 VkResult radv_compute_pipeline_create(VkDevice _device, VkPipelineCache _cache,
                                       const VkComputePipelineCreateInfo *pCreateInfo,
                                       const VkAllocationCallbacks *pAllocator,
-                                      const uint8_t *custom_hash,
-                                      struct radv_pipeline_shader_stack_size *rt_stack_sizes,
-                                      uint32_t rt_group_count, VkPipeline *pPipeline);
+                                      VkPipeline *pPipeline);
 
 void radv_pipeline_destroy(struct radv_device *device, struct radv_pipeline *pipeline,
                            const VkAllocationCallbacks *allocator);
@@ -2624,7 +2632,6 @@ struct radv_sampler_ycbcr_conversion {
 struct radv_buffer_view {
    struct vk_object_base base;
    struct radeon_winsys_bo *bo;
-   VkFormat vk_format;
    uint64_t range; /**< VkBufferViewCreateInfo::range */
    uint32_t state[4];
 };
@@ -2722,6 +2729,10 @@ void radv_meta_push_descriptor_set(struct radv_cmd_buffer *cmd_buffer,
                                    VkPipelineBindPoint pipelineBindPoint, VkPipelineLayout _layout,
                                    uint32_t set, uint32_t descriptorWriteCount,
                                    const VkWriteDescriptorSet *pDescriptorWrites);
+
+void radv_make_texel_buffer_descriptor(struct radv_device *device, uint64_t va,
+                                       VkFormat vk_format, unsigned offset, unsigned range,
+                                       uint32_t *state);
 
 uint32_t radv_init_dcc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image,
                        const VkImageSubresourceRange *range, uint32_t value);
@@ -2955,6 +2966,22 @@ radv_rast_prim_is_points_or_lines(unsigned rast_prim)
    return radv_rast_prim_is_point(rast_prim) || radv_rast_prim_is_line(rast_prim);
 }
 
+static inline unsigned
+radv_get_num_vertices_per_prim(const struct radv_pipeline_key *pipeline_key)
+{
+   if (pipeline_key->vs.topology == V_008958_DI_PT_NONE) {
+      /* When the topology is unknown (with graphics pipeline library), return the maximum number of
+       * vertices per primitives for VS. This is used to lower NGG (the HW will ignore the extra
+       * bits for points/lines) and also to enable NGG culling unconditionally (it will be disabled
+       * dynamically for points/lines).
+       */
+      return 3;
+   } else {
+      /* Need to add 1, because: V_028A6C_POINTLIST=0, V_028A6C_LINESTRIP=1, V_028A6C_TRISTRIP=2, etc. */
+      return si_conv_prim_to_gs_out(pipeline_key->vs.topology) + 1;
+   }
+}
+
 static inline uint32_t
 si_translate_stencil_op(enum VkStencilOp op)
 {
@@ -3019,6 +3046,16 @@ si_translate_blend_logic_op(VkLogicOp op)
    default:
       unreachable("Unhandled logic op");
    }
+}
+
+ALWAYS_INLINE static bool
+radv_is_streamout_enabled(struct radv_cmd_buffer *cmd_buffer)
+{
+   struct radv_streamout_state *so = &cmd_buffer->state.streamout;
+
+   /* Streamout must be enabled for the PRIMITIVES_GENERATED query to work. */
+   return (so->streamout_enabled || cmd_buffer->state.prims_gen_query_enabled) &&
+          !cmd_buffer->state.suspend_streamout;
 }
 
 /*

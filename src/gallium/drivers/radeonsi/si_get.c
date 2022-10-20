@@ -57,7 +57,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_ACCELERATED:
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
    case PIPE_CAP_ANISOTROPIC_FILTER:
-   case PIPE_CAP_POINT_SPRITE:
    case PIPE_CAP_OCCLUSION_QUERY:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
    case PIPE_CAP_TEXTURE_SHADOW_LOD:
@@ -68,7 +67,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
-   case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
@@ -627,14 +625,55 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
          return (sscreen->info.family >= CHIP_RAVEN) ? 1 : 0;
 
       case PIPE_VIDEO_CAP_ENC_HEVC_FEATURE_FLAGS:
-         if ((sscreen->info.family >= CHIP_RENOIR) &&
-                  (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN ||
-                   profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) {
+         if ((sscreen->info.family >= CHIP_RAVEN) &&
+               (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN ||
+             profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)) {
             union pipe_h265_enc_cap_features pipe_features;
             pipe_features.value = 0;
 
-            pipe_features.bits.sao = PIPE_H265_ENC_FEATURE_SUPPORTED;
+            pipe_features.bits.amp = PIPE_H265_ENC_FEATURE_SUPPORTED;
+            pipe_features.bits.strong_intra_smoothing = PIPE_H265_ENC_FEATURE_SUPPORTED;
+            pipe_features.bits.constrained_intra_pred = PIPE_H265_ENC_FEATURE_SUPPORTED;
+            pipe_features.bits.deblocking_filter_disable
+                                                      = PIPE_H265_ENC_FEATURE_SUPPORTED;
+            if (sscreen->info.family >= CHIP_RENOIR)
+               pipe_features.bits.sao = PIPE_H265_ENC_FEATURE_SUPPORTED;
+
             return pipe_features.value;
+         } else
+            return 0;
+
+      case PIPE_VIDEO_CAP_ENC_HEVC_BLOCK_SIZES:
+         if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN ||
+             profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10) {
+            union pipe_h265_enc_cap_block_sizes pipe_block_sizes;
+            pipe_block_sizes.value = 0;
+
+            pipe_block_sizes.bits.log2_max_coding_tree_block_size_minus3 = 3;
+            pipe_block_sizes.bits.log2_min_coding_tree_block_size_minus3 = 3;
+            pipe_block_sizes.bits.log2_min_luma_coding_block_size_minus3 = 0;
+            pipe_block_sizes.bits.log2_max_luma_transform_block_size_minus2 = 3;
+            pipe_block_sizes.bits.log2_min_luma_transform_block_size_minus2 = 0;
+
+            return pipe_block_sizes.value;
+         } else
+            return 0;
+
+      case PIPE_VIDEO_CAP_ENC_SUPPORTS_ASYNC_OPERATION:
+         return (sscreen->info.family >= CHIP_RAVEN) ? 1 : 0;
+
+      case PIPE_VIDEO_CAP_ENC_MAX_SLICES_PER_FRAME:
+         if (sscreen->info.family >= CHIP_RAVEN)
+            return 128;
+         else
+            return 1;
+
+      case PIPE_VIDEO_CAP_ENC_SLICES_STRUCTURE:
+         if (sscreen->info.family >= CHIP_RENOIR) {
+            int value = (PIPE_VIDEO_CAP_SLICE_STRUCTURE_POWER_OF_TWO_ROWS |
+                         PIPE_VIDEO_CAP_SLICE_STRUCTURE_EQUAL_ROWS |
+                         PIPE_VIDEO_CAP_SLICE_STRUCTURE_EQUAL_MULTI_ROWS);
+            return value;
          } else
             return 0;
 
@@ -803,6 +842,8 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen, enum pipe_for
                                        enum pipe_video_profile profile,
                                        enum pipe_video_entrypoint entrypoint)
 {
+   struct si_screen *sscreen = (struct si_screen *)screen;
+
    /* HEVC 10 bit decoding should use P010 instead of NV12 if possible */
    if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
       return (format == PIPE_FORMAT_NV12) || (format == PIPE_FORMAT_P010) ||
@@ -811,6 +852,16 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen, enum pipe_for
    /* Vp9 profile 2 supports 10 bit decoding using P016 */
    if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
       return (format == PIPE_FORMAT_P010) || (format == PIPE_FORMAT_P016);
+
+   /* JPEG supports YUV400 and YUV444 */
+   if (profile == PIPE_VIDEO_PROFILE_JPEG_BASELINE) {
+      if (sscreen->info.family >= CHIP_NAVI21)
+         return (format == PIPE_FORMAT_NV12 || format == PIPE_FORMAT_Y8_400_UNORM ||
+                 format == PIPE_FORMAT_Y8_U8_V8_444_UNORM);
+      else
+         return (format == PIPE_FORMAT_NV12);
+
+   }
 
    /* we can only handle this one with UVD */
    if (profile != PIPE_VIDEO_PROFILE_UNKNOWN)
@@ -1122,6 +1173,9 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
       .lower_extract_word = true,
       .lower_insert_byte = true,
       .lower_insert_word = true,
+      .lower_hadd = true,
+      .lower_hadd64 = true,
+      .lower_fisnormal = true,
       .lower_rotate = true,
       .lower_to_scalar = true,
       .lower_int64_options = nir_lower_imul_2x32_64,

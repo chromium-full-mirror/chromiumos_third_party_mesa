@@ -361,7 +361,7 @@ agx_create_sampler_state(struct pipe_context *pctx,
       cfg.wrap_s = agx_wrap_from_pipe(state->wrap_s);
       cfg.wrap_t = agx_wrap_from_pipe(state->wrap_t);
       cfg.wrap_r = agx_wrap_from_pipe(state->wrap_r);
-      cfg.pixel_coordinates = !state->normalized_coords;
+      cfg.pixel_coordinates = state->unnormalized_coords;
       cfg.compare_func = agx_compare_funcs[state->compare_func];
    }
 
@@ -472,7 +472,8 @@ agx_create_sampler_view(struct pipe_context *pctx,
    agx_pack(&so->desc, TEXTURE, cfg) {
       cfg.dimension = agx_translate_texture_dimension(state->target);
       cfg.layout = agx_translate_layout(rsrc->modifier);
-      cfg.format = agx_pixel_format[state->format].hw;
+      cfg.channels = agx_pixel_format[state->format].channels;
+      cfg.type = agx_pixel_format[state->format].type;
       cfg.swizzle_r = agx_channel_from_pipe(out_swizzle[0]);
       cfg.swizzle_g = agx_channel_from_pipe(out_swizzle[1]);
       cfg.swizzle_b = agx_channel_from_pipe(out_swizzle[2]);
@@ -772,7 +773,8 @@ agx_set_framebuffer_state(struct pipe_context *pctx,
 
       agx_pack(ctx->render_target[i], RENDER_TARGET, cfg) {
          cfg.layout = agx_translate_layout(tex->modifier);
-         cfg.format = agx_pixel_format[surf->format].hw;
+         cfg.channels = agx_pixel_format[surf->format].channels;
+         cfg.type = agx_pixel_format[surf->format].type;
 
          assert(desc->nr_channels >= 1 && desc->nr_channels <= 4);
          cfg.swizzle_r = agx_channel_from_pipe(desc->swizzle[0]);
@@ -1091,6 +1093,11 @@ agx_update_shader(struct agx_context *ctx, struct agx_compiled_shader **out,
 
       NIR_PASS_V(nir, nir_lower_fragcolor, key->nr_cbufs);
 
+      if (key->sprite_coord_enable) {
+         NIR_PASS_V(nir, nir_lower_texcoord_replace, key->sprite_coord_enable,
+                    false /* point coord is sysval */, false /* Y-invert */);
+      }
+
       if (key->clip_plane_enable) {
          NIR_PASS_V(nir, nir_lower_clip_fs, key->clip_plane_enable,
                     false);
@@ -1145,6 +1152,9 @@ agx_update_fs(struct agx_context *ctx)
       .nr_cbufs = ctx->batch->nr_cbufs,
       .clip_plane_enable = ctx->rast->base.clip_plane_enable,
    };
+
+   if (ctx->batch->reduced_prim == PIPE_PRIM_POINTS)
+      key.sprite_coord_enable = ctx->rast->base.sprite_coord_enable;
 
    for (unsigned i = 0; i < key.nr_cbufs; ++i) {
       struct pipe_surface *surf = ctx->batch->cbufs[i];
@@ -1414,7 +1424,8 @@ agx_build_reload_pipeline(struct agx_context *ctx, uint32_t code, struct pipe_su
        */
       cfg.dimension = AGX_TEXTURE_DIMENSION_2D;
       cfg.layout = agx_translate_layout(rsrc->modifier);
-      cfg.format = agx_pixel_format[surf->format].hw;
+      cfg.channels = agx_pixel_format[surf->format].channels;
+      cfg.type = agx_pixel_format[surf->format].type;
       cfg.swizzle_r = agx_channel_from_pipe(desc->swizzle[0]);
       cfg.swizzle_g = agx_channel_from_pipe(desc->swizzle[1]);
       cfg.swizzle_b = agx_channel_from_pipe(desc->swizzle[2]);

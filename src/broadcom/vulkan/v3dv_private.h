@@ -313,6 +313,7 @@ struct v3dv_meta_texel_buffer_copy_pipeline {
 
 struct v3dv_pipeline_key {
    bool robust_buffer_access;
+   bool robust_image_access;
    uint8_t topology;
    uint8_t logicop_func;
    bool msaa;
@@ -518,7 +519,11 @@ struct v3dv_device {
     * attributes will create their own BO.
     */
    struct v3dv_bo *default_attribute_float;
+
    VkPhysicalDeviceFeatures features;
+   struct {
+      bool robustImageAccess;
+   } ext_features;
 
    void *device_address_mem_ctx;
    struct util_dynarray device_address_bo_list; /* Array of struct v3dv_bo * */
@@ -1668,9 +1673,11 @@ struct v3dv_shader_variant {
     */
    uint32_t assembly_offset;
 
-   /* Note: it is really likely that qpu_insts would be NULL, as it will be
-    * used only temporarily, to upload it to the shared bo, as we compile the
-    * different stages individually.
+   /* Note: don't assume qpu_insts to be always NULL or not-NULL. In general
+    * we will try to free it as soon as we upload it to the shared bo while we
+    * compile the different stages. But we can decide to keep it around based
+    * on some pipeline creation flags, like
+    * VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT.
     */
    uint64_t *qpu_insts;
    uint32_t qpu_insts_size;
@@ -2040,20 +2047,12 @@ struct v3dv_pipeline {
    struct v3dv_device *device;
 
    VkShaderStageFlags active_stages;
+   VkPipelineCreateFlags flags;
 
    struct v3dv_render_pass *pass;
    struct v3dv_subpass *subpass;
 
-   /* Note: We can't use just a MESA_SHADER_STAGES array because we also need
-    * to track binning shaders. Note these will be freed once the pipeline
-    * has been compiled.
-    */
-   struct v3dv_pipeline_stage *vs;
-   struct v3dv_pipeline_stage *vs_bin;
-   struct v3dv_pipeline_stage *gs;
-   struct v3dv_pipeline_stage *gs_bin;
-   struct v3dv_pipeline_stage *fs;
-   struct v3dv_pipeline_stage *cs;
+   struct v3dv_pipeline_stage *stages[BROADCOM_SHADER_STAGES];
 
    /* Flags for whether optional pipeline stages are present, for convenience */
    bool has_gs;
@@ -2153,7 +2152,6 @@ struct v3dv_pipeline {
 
    struct {
       void *mem_ctx;
-      bool has_data;
       struct util_dynarray data; /* Array of v3dv_pipeline_executable_data */
    } executables;
 

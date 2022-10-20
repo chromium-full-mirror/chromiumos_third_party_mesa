@@ -447,7 +447,7 @@ files_libmesa += [
   main_api_exec_decl_h,
   main_api_save_h,
   main_api_save_init_h,
-  main_api_vtxfmt_init_h,
+  main_api_beginend_init_h,
   main_api_hw_select_init_h,
   main_enums_c,
   format_fallback_c,
@@ -457,6 +457,7 @@ files_libmesa += [
   ir_expression_operation_h,
   main_remap_helper_h,
   sha1_h,
+  main_unmarshal_table_c,
 ] + main_marshal_generated_c
 
 if with_sse41

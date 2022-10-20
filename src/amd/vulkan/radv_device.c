@@ -194,13 +194,21 @@ radv_physical_device_init_mem_types(struct radv_physical_device *device)
    device->heaps = 0;
 
    if (!device->rad_info.has_dedicated_vram) {
-      /* On APUs, the carveout is usually too small for games that request a minimum VRAM size
-       * greater than it. To workaround this, we compute the total available memory size (GTT +
-       * visible VRAM size) and report 2/3 as VRAM and 1/3 as GTT.
-       */
       const uint64_t total_size = gtt_size + visible_vram_size;
-      visible_vram_size = align64((total_size * 2) / 3, device->rad_info.gart_page_size);
-      gtt_size = total_size - visible_vram_size;
+
+      if (device->instance->enable_unified_heap_on_apu) {
+         /* Some applications seem better when the driver exposes only one heap of VRAM on APUs. */
+         visible_vram_size = total_size;
+         gtt_size = 0;
+      } else {
+         /* On APUs, the carveout is usually too small for games that request a minimum VRAM size
+          * greater than it. To workaround this, we compute the total available memory size (GTT +
+          * visible VRAM size) and report 2/3 as VRAM and 1/3 as GTT.
+          */
+         visible_vram_size = align64((total_size * 2) / 3, device->rad_info.gart_page_size);
+         gtt_size = total_size - visible_vram_size;
+      }
+
       vram_size = 0;
    }
 
@@ -815,7 +823,8 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
 
    const char *marketing_name = device->ws->get_chip_name(device->ws);
    snprintf(device->marketing_name, sizeof(device->name), "%s (RADV %s%s)",
-            marketing_name, device->rad_info.name, radv_get_compiler_string(device));
+            marketing_name ? marketing_name : "AMD Unknown", device->rad_info.name,
+            radv_get_compiler_string(device));
 
 #ifdef ENABLE_SHADER_CACHE
    if (radv_device_get_cache_uuid(device, device->cache_uuid)) {
@@ -828,7 +837,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
     */
    char buf[VK_UUID_SIZE * 2 + 1];
    disk_cache_format_hex_id(buf, device->cache_uuid, VK_UUID_SIZE * 2);
-   device->disk_cache = disk_cache_create(device->name, buf, 0);
+   device->vk.disk_cache = disk_cache_create(device->name, buf, 0);
 #endif
 
    if (!radv_is_conformant(device))
@@ -940,7 +949,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
 
 fail_perfcounters:
    ac_destroy_perfcounters(&device->ac_perfcounters);
-   disk_cache_destroy(device->disk_cache);
+   disk_cache_destroy(device->vk.disk_cache);
 #ifdef ENABLE_SHADER_CACHE
 fail_wsi:
 #endif
@@ -965,7 +974,7 @@ radv_physical_device_destroy(struct vk_physical_device *vk_device)
    radv_finish_wsi(device);
    ac_destroy_perfcounters(&device->ac_perfcounters);
    device->ws->destroy(device->ws);
-   disk_cache_destroy(device->disk_cache);
+   disk_cache_destroy(device->vk.disk_cache);
    if (device->local_fd != -1)
       close(device->local_fd);
    if (device->master_fd != -1)
@@ -1077,6 +1086,7 @@ static const driOptionDescription radv_dri_options[] = {
       DRI_CONF_RADV_DISABLE_SINKING_LOAD_INPUT_FS(false)
       DRI_CONF_RADV_DGC(false)
       DRI_CONF_RADV_FLUSH_BEFORE_QUERY_COPY(false)
+      DRI_CONF_RADV_ENABLE_UNIFIED_HEAP_ON_APU(false)
    DRI_CONF_SECTION_END
 };
 // clang-format on
@@ -1128,6 +1138,9 @@ radv_init_dri_options(struct radv_instance *instance)
 
    instance->flush_before_query_copy =
       driQueryOptionb(&instance->dri_options, "radv_flush_before_query_copy");
+
+   instance->enable_unified_heap_on_apu =
+      driQueryOptionb(&instance->dri_options, "radv_enable_unified_heap_on_apu");
 }
 
 static VkResult create_null_physical_device(struct vk_instance *vk_instance);
@@ -2739,48 +2752,72 @@ radv_get_memory_budget_properties(VkPhysicalDevice physicalDevice,
     * in presence of shared buffers).
     */
    if (!device->rad_info.has_dedicated_vram) {
-      /* On APUs, the driver exposes fake heaps to the application because usually the carveout is
-       * too small for games but the budgets need to be redistributed accordingly.
-       */
+      if (device->instance->enable_unified_heap_on_apu) {
+         /* When the heaps are unified, only the visible VRAM heap is exposed on APUs. */
+         assert(device->heaps == RADV_HEAP_VRAM_VIS);
+         assert(device->memory_properties.memoryHeaps[0].flags == VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
+         const uint8_t vram_vis_heap_idx = 0;
 
-      assert(device->heaps == (RADV_HEAP_GTT | RADV_HEAP_VRAM_VIS));
-      assert(device->memory_properties.memoryHeaps[0].flags == 0); /* GTT */
-      assert(device->memory_properties.memoryHeaps[1].flags == VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
-      uint8_t gtt_heap_idx = 0, vram_vis_heap_idx = 1;
+         /* Get the total heap size which is the visible VRAM heap size. */
+         uint64_t total_heap_size = device->memory_properties.memoryHeaps[vram_vis_heap_idx].size;
 
-      /* Get the visible VRAM/GTT heap sizes and internal usages. */
-      uint64_t gtt_heap_size = device->memory_properties.memoryHeaps[gtt_heap_idx].size;
-      uint64_t vram_vis_heap_size = device->memory_properties.memoryHeaps[vram_vis_heap_idx].size;
+         /* Get the different memory usages. */
+         uint64_t vram_vis_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM_VIS) +
+                                            device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
+         uint64_t gtt_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_GTT);
+         uint64_t total_internal_usage = vram_vis_internal_usage + gtt_internal_usage;
+         uint64_t total_system_usage = device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE) +
+                                       device->ws->query_value(device->ws, RADEON_GTT_USAGE);
+         uint64_t total_usage = MAX2(total_internal_usage, total_system_usage);
 
-      uint64_t vram_vis_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM_VIS) +
-                                         device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
-      uint64_t gtt_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_GTT);
+         /* Compute the total free space that can be allocated for this process accross all heaps. */
+         uint64_t total_free_space = total_heap_size - MIN2(total_heap_size, total_usage);
 
-      /* Compute the total heap size, internal and system usage. */
-      uint64_t total_heap_size = vram_vis_heap_size + gtt_heap_size;
-      uint64_t total_internal_usage = vram_vis_internal_usage + gtt_internal_usage;
-      uint64_t total_system_usage = device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE) +
-                                    device->ws->query_value(device->ws, RADEON_GTT_USAGE);
+         memoryBudget->heapBudget[vram_vis_heap_idx] = total_free_space + total_internal_usage;
+         memoryBudget->heapUsage[vram_vis_heap_idx] = total_internal_usage;
+      } else {
+         /* On APUs, the driver exposes fake heaps to the application because usually the carveout
+          * is too small for games but the budgets need to be redistributed accordingly.
+          */
+         assert(device->heaps == (RADV_HEAP_GTT | RADV_HEAP_VRAM_VIS));
+         assert(device->memory_properties.memoryHeaps[0].flags == 0); /* GTT */
+         assert(device->memory_properties.memoryHeaps[1].flags == VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
+         const uint8_t gtt_heap_idx = 0, vram_vis_heap_idx = 1;
 
-      uint64_t total_usage = MAX2(total_internal_usage, total_system_usage);
+         /* Get the visible VRAM/GTT heap sizes and internal usages. */
+         uint64_t gtt_heap_size = device->memory_properties.memoryHeaps[gtt_heap_idx].size;
+         uint64_t vram_vis_heap_size = device->memory_properties.memoryHeaps[vram_vis_heap_idx].size;
 
-      /* Compute the total free space that can be allocated for this process accross all heaps. */
-      uint64_t total_free_space = total_heap_size - MIN2(total_heap_size, total_usage);
+         uint64_t vram_vis_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM_VIS) +
+                                            device->ws->query_value(device->ws, RADEON_ALLOCATED_VRAM);
+         uint64_t gtt_internal_usage = device->ws->query_value(device->ws, RADEON_ALLOCATED_GTT);
 
-      /* Compute the remaining visible VRAM size for this process. */
-      uint64_t vram_vis_free_space = vram_vis_heap_size - MIN2(vram_vis_heap_size, vram_vis_internal_usage);
+         /* Compute the total heap size, internal and system usage. */
+         uint64_t total_heap_size = vram_vis_heap_size + gtt_heap_size;
+         uint64_t total_internal_usage = vram_vis_internal_usage + gtt_internal_usage;
+         uint64_t total_system_usage = device->ws->query_value(device->ws, RADEON_VRAM_VIS_USAGE) +
+                                       device->ws->query_value(device->ws, RADEON_GTT_USAGE);
 
-      /* Distribute the total free space (2/3rd as VRAM and 1/3rd as GTT) to match the heap sizes,
-       * and align down to the page size to be conservative.
-       */
-      vram_vis_free_space = ROUND_DOWN_TO(MIN2((total_free_space * 2) / 3, vram_vis_free_space),
-                                          device->rad_info.gart_page_size);
-      uint64_t gtt_free_space = total_free_space - vram_vis_free_space;
+         uint64_t total_usage = MAX2(total_internal_usage, total_system_usage);
 
-      memoryBudget->heapBudget[vram_vis_heap_idx] = vram_vis_free_space + vram_vis_internal_usage;
-      memoryBudget->heapUsage[vram_vis_heap_idx] = vram_vis_internal_usage;
-      memoryBudget->heapBudget[gtt_heap_idx] = gtt_free_space + gtt_internal_usage;
-      memoryBudget->heapUsage[gtt_heap_idx] = gtt_internal_usage;
+         /* Compute the total free space that can be allocated for this process accross all heaps. */
+         uint64_t total_free_space = total_heap_size - MIN2(total_heap_size, total_usage);
+
+         /* Compute the remaining visible VRAM size for this process. */
+         uint64_t vram_vis_free_space = vram_vis_heap_size - MIN2(vram_vis_heap_size, vram_vis_internal_usage);
+
+         /* Distribute the total free space (2/3rd as VRAM and 1/3rd as GTT) to match the heap sizes,
+          * and align down to the page size to be conservative.
+          */
+         vram_vis_free_space = ROUND_DOWN_TO(MIN2((total_free_space * 2) / 3, vram_vis_free_space),
+                                             device->rad_info.gart_page_size);
+         uint64_t gtt_free_space = total_free_space - vram_vis_free_space;
+
+         memoryBudget->heapBudget[vram_vis_heap_idx] = vram_vis_free_space + vram_vis_internal_usage;
+         memoryBudget->heapUsage[vram_vis_heap_idx] = vram_vis_internal_usage;
+         memoryBudget->heapBudget[gtt_heap_idx] = gtt_free_space + gtt_internal_usage;
+         memoryBudget->heapUsage[gtt_heap_idx] = gtt_internal_usage;
+      }
    } else {
       unsigned mask = device->heaps;
       unsigned heap = 0;
@@ -2929,6 +2966,8 @@ radv_queue_state_finish(struct radv_queue_state *queue, struct radeon_winsys *ws
       ws->buffer_destroy(ws, queue->tess_rings_bo);
    if (queue->task_rings_bo)
       ws->buffer_destroy(ws, queue->task_rings_bo);
+   if (queue->attr_ring_bo)
+      ws->buffer_destroy(ws, queue->attr_ring_bo);
    if (queue->gds_bo)
       ws->buffer_destroy(ws, queue->gds_bo);
    if (queue->gds_oa_bo)
@@ -3630,8 +3669,10 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
        */
       keep_shader_info = true;
 
-      if (!radv_init_trace(device))
+      if (!radv_init_trace(device)) {
+         result = VK_ERROR_INITIALIZATION_FAILED;
          goto fail;
+      }
 
       fprintf(stderr,
               "*****************************************************************************\n");
@@ -3657,8 +3698,10 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
          abort();
       }
 
-      if (!radv_thread_trace_init(device))
+      if (!radv_thread_trace_init(device)) {
+         result = VK_ERROR_INITIALIZATION_FAILED;
          goto fail;
+      }
 
       fprintf(stderr, "radv: Thread trace support is enabled (initial buffer size: %u MiB, "
                       "instruction timing: %s, cache counters: %s).\n",
@@ -3668,8 +3711,10 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
 
       if (radv_spm_trace_enabled()) {
          if (device->physical_device->rad_info.gfx_level >= GFX10) {
-            if (!radv_spm_init(device))
+            if (!radv_spm_init(device)) {
+               result = VK_ERROR_INITIALIZATION_FAILED;
                goto fail;
+            }
          } else {
             fprintf(stderr, "radv: SPM isn't supported for this GPU (%s)!\n",
                     device->physical_device->name);
@@ -3690,8 +3735,10 @@ radv_CreateDevice(VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo *pCr
        */
       keep_shader_info = true;
 
-      if (!radv_trap_handler_init(device))
+      if (!radv_trap_handler_init(device)) {
+         result = VK_ERROR_INITIALIZATION_FAILED;
          goto fail;
+      }
    }
 
    if (device->physical_device->rad_info.gfx_level >= GFX10_3) {
@@ -3921,7 +3968,8 @@ radv_fill_shader_rings(struct radv_device *device, uint32_t *map, bool add_sampl
                        uint32_t gsvs_ring_size, struct radeon_winsys_bo *gsvs_ring_bo,
                        struct radeon_winsys_bo *tess_rings_bo,
                        struct radeon_winsys_bo *task_rings_bo,
-                       struct radeon_winsys_bo *mesh_scratch_ring_bo)
+                       struct radeon_winsys_bo *mesh_scratch_ring_bo,
+                       uint32_t attr_ring_size, struct radeon_winsys_bo *attr_ring_bo)
 {
    uint32_t *desc = &map[4];
 
@@ -4124,6 +4172,22 @@ radv_fill_shader_rings(struct radv_device *device, uint32_t *map, bool add_sampl
          desc[3] |= S_008F0C_FORMAT(V_008F0C_GFX10_FORMAT_32_UINT) |
                     S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_DISABLED) | S_008F0C_RESOURCE_LEVEL(1);
       }
+   }
+
+   desc += 4;
+
+   if (attr_ring_bo) {
+      assert(device->physical_device->rad_info.gfx_level >= GFX11);
+
+      uint64_t va = radv_buffer_get_va(attr_ring_bo);
+
+      desc[0] = va;
+      desc[1] = S_008F04_BASE_ADDRESS_HI(va >> 32) | S_008F04_SWIZZLE_ENABLE_GFX11(3) /* 16B */;
+      desc[2] = attr_ring_size;
+      desc[3] = S_008F0C_DST_SEL_X(V_008F0C_SQ_SEL_X) | S_008F0C_DST_SEL_Y(V_008F0C_SQ_SEL_Y) |
+                S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W) |
+                S_008F0C_FORMAT(V_008F0C_GFX11_FORMAT_32_32_32_32_FLOAT) |
+                S_008F0C_INDEX_STRIDE(2) /* 32 elements */;
    }
 
    desc += 4;
@@ -4386,6 +4450,56 @@ radv_emit_graphics_shader_pointers(struct radv_device *device, struct radeon_cmd
 }
 
 static void
+radv_emit_attribute_ring(struct radv_device *device, struct radeon_cmdbuf *cs,
+                         struct radeon_winsys_bo *attr_ring_bo, uint32_t attr_ring_size)
+{
+   const struct radv_physical_device *pdevice = device->physical_device;
+   uint64_t va;
+
+   if (!attr_ring_bo)
+      return;
+
+   assert(pdevice->rad_info.gfx_level >= GFX11);
+
+   va = radv_buffer_get_va(attr_ring_bo);
+   assert((va >> 32) == pdevice->rad_info.address32_hi);
+
+   radv_cs_add_buffer(device->ws, cs, attr_ring_bo);
+
+   /* We must wait for idle using an EOP event before changing the attribute ring registers. Use the
+    * bottom-of-pipe EOP event, but increment the PWS counter instead of writing memory.
+    */
+   radeon_emit(cs, PKT3(PKT3_RELEASE_MEM, 6, 0));
+   radeon_emit(cs, S_490_EVENT_TYPE(V_028A90_BOTTOM_OF_PIPE_TS) | S_490_EVENT_INDEX(5) |
+                   S_490_PWS_ENABLE(1));
+   radeon_emit(cs, 0); /* DST_SEL, INT_SEL, DATA_SEL */
+   radeon_emit(cs, 0); /* ADDRESS_LO */
+   radeon_emit(cs, 0); /* ADDRESS_HI */
+   radeon_emit(cs, 0); /* DATA_LO */
+   radeon_emit(cs, 0); /* DATA_HI */
+   radeon_emit(cs, 0); /* INT_CTXID */
+
+   /* Wait for the PWS counter. */
+   radeon_emit(cs, PKT3(PKT3_ACQUIRE_MEM, 6, 0));
+   radeon_emit(cs, S_580_PWS_STAGE_SEL(V_580_CP_ME) |
+                   S_580_PWS_COUNTER_SEL(V_580_TS_SELECT) |
+                   S_580_PWS_ENA2(1) | S_580_PWS_COUNT(0));
+   radeon_emit(cs, 0xffffffff); /* GCR_SIZE */
+   radeon_emit(cs, 0x01ffffff); /* GCR_SIZE_HI */
+   radeon_emit(cs, 0); /* GCR_BASE_LO */
+   radeon_emit(cs, 0); /* GCR_BASE_HI */
+   radeon_emit(cs, S_585_PWS_ENA(1));
+   radeon_emit(cs, 0); /* GCR_CNTL */
+
+   /* The PS will read inputs from this address. */
+   radeon_set_uconfig_reg(cs, R_031118_SPI_ATTRIBUTE_RING_BASE, va >> 16);
+   radeon_set_uconfig_reg(cs, R_03111C_SPI_ATTRIBUTE_RING_SIZE,
+                              S_03111C_MEM_SIZE(((attr_ring_size / pdevice->rad_info.max_se) >> 16) - 1) |
+                              S_03111C_BIG_PAGE(pdevice->rad_info.discardable_allows_big_page) |
+                              S_03111C_L1_POLICY(1));
+}
+
+static void
 radv_init_graphics_state(struct radeon_cmdbuf *cs, struct radv_device *device)
 {
    if (device->gfx_init) {
@@ -4421,6 +4535,7 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
    struct radeon_winsys_bo *tess_rings_bo = queue->tess_rings_bo;
    struct radeon_winsys_bo *task_rings_bo = queue->task_rings_bo;
    struct radeon_winsys_bo *mesh_scratch_ring_bo = queue->mesh_scratch_ring_bo;
+   struct radeon_winsys_bo *attr_ring_bo = queue->attr_ring_bo;
    struct radeon_winsys_bo *gds_bo = queue->gds_bo;
    struct radeon_winsys_bo *gds_oa_bo = queue->gds_oa_bo;
    struct radeon_cmdbuf *dest_cs[3] = {0};
@@ -4502,6 +4617,15 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
          goto fail;
    }
 
+   if (needs->attr_ring_size > queue->ring_info.attr_ring_size) {
+      assert(device->physical_device->rad_info.gfx_level >= GFX11);
+      result = ws->buffer_create(ws, needs->attr_ring_size, 2 * 1024 * 1024 /* 2MiB */,
+                                 RADEON_DOMAIN_VRAM, RADEON_FLAG_32BIT | RADEON_FLAG_DISCARDABLE |
+                                 ring_bo_flags, RADV_BO_PRIORITY_SCRATCH, 0, &attr_ring_bo);
+      if (result != VK_SUCCESS)
+         goto fail;
+   }
+
    if (!queue->ring_info.gds && needs->gds) {
       assert(device->physical_device->rad_info.gfx_level >= GFX10);
 
@@ -4533,10 +4657,11 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
        scratch_bo != queue->scratch_bo || esgs_ring_bo != queue->esgs_ring_bo ||
        gsvs_ring_bo != queue->gsvs_ring_bo || tess_rings_bo != queue->tess_rings_bo ||
        task_rings_bo != queue->task_rings_bo || mesh_scratch_ring_bo != queue->mesh_scratch_ring_bo ||
-       add_sample_positions) {
+       attr_ring_bo != queue->attr_ring_bo || add_sample_positions) {
       uint32_t size = 0;
-      if (gsvs_ring_bo || esgs_ring_bo || tess_rings_bo || task_rings_bo || mesh_scratch_ring_bo || add_sample_positions) {
-         size = 160; /* 2 dword + 2 padding + 4 dword * 9 */
+      if (gsvs_ring_bo || esgs_ring_bo || tess_rings_bo || task_rings_bo || mesh_scratch_ring_bo ||
+          attr_ring_bo || add_sample_positions) {
+         size = 176; /* 2 dword + 2 padding + 4 dword * 10 */
          if (add_sample_positions)
             size += 128; /* 64+32+16+8 = 120 bytes */
       } else if (scratch_bo) {
@@ -4569,10 +4694,12 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
          map[1] = rsrc1;
       }
 
-      if (esgs_ring_bo || gsvs_ring_bo || tess_rings_bo || task_rings_bo || mesh_scratch_ring_bo || add_sample_positions)
+      if (esgs_ring_bo || gsvs_ring_bo || tess_rings_bo || task_rings_bo || mesh_scratch_ring_bo ||
+          attr_ring_bo || add_sample_positions)
          radv_fill_shader_rings(device, map, add_sample_positions, needs->esgs_ring_size,
                                 esgs_ring_bo, needs->gsvs_ring_size, gsvs_ring_bo, tess_rings_bo,
-                                task_rings_bo, mesh_scratch_ring_bo);
+                                task_rings_bo, mesh_scratch_ring_bo, needs->attr_ring_size,
+                                attr_ring_bo);
 
       ws->buffer_unmap(descriptor_bo);
    }
@@ -4587,7 +4714,8 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
          /* Continue preamble is unnecessary when no shader rings are used. */
          if (!needs->scratch_size_per_wave && !needs->compute_scratch_size_per_wave &&
              !needs->esgs_ring_size && !needs->gsvs_ring_size && !needs->tess_rings &&
-             !needs->task_rings && !needs->mesh_scratch_ring && !needs->gds && !needs->gds_oa && !needs->sample_positions)
+             !needs->task_rings && !needs->mesh_scratch_ring && !needs->attr_ring_size &&
+             !needs->gds && !needs->gds_oa && !needs->sample_positions)
             continue;
       }
 
@@ -4621,6 +4749,7 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
                                  needs->gsvs_ring_size);
          radv_emit_tess_factor_ring(device, cs, tess_rings_bo);
          radv_emit_task_rings(device, cs, task_rings_bo, false);
+         radv_emit_attribute_ring(device, cs, attr_ring_bo, needs->attr_ring_size);
          radv_emit_graphics_shader_pointers(device, cs, descriptor_bo);
          radv_emit_compute_scratch(device, cs, needs->compute_scratch_size_per_wave,
                                    needs->compute_scratch_waves, compute_scratch_bo);
@@ -4718,6 +4847,7 @@ radv_update_preamble_cs(struct radv_queue_state *queue, struct radv_device *devi
    queue->tess_rings_bo = tess_rings_bo;
    queue->task_rings_bo = task_rings_bo;
    queue->mesh_scratch_ring_bo = mesh_scratch_ring_bo;
+   queue->attr_ring_bo = attr_ring_bo;
    queue->gds_bo = gds_bo;
    queue->gds_oa_bo = gds_oa_bo;
    queue->ring_info = *needs;
@@ -4740,6 +4870,8 @@ fail:
       ws->buffer_destroy(ws, tess_rings_bo);
    if (task_rings_bo && task_rings_bo != queue->task_rings_bo)
       ws->buffer_destroy(ws, task_rings_bo);
+   if (attr_ring_bo && attr_ring_bo != queue->attr_ring_bo)
+      ws->buffer_destroy(ws, attr_ring_bo);
    if (gds_bo && gds_bo != queue->gds_bo)
       ws->buffer_destroy(ws, gds_bo);
    if (gds_oa_bo && gds_oa_bo != queue->gds_oa_bo)
@@ -5024,6 +5156,14 @@ radv_update_preambles(struct radv_queue_state *queue, struct radv_device *device
          ? MIN2(needs.compute_scratch_waves, UINT32_MAX / needs.compute_scratch_size_per_wave)
          : 0;
 
+   if (device->physical_device->rad_info.gfx_level >= GFX11) {
+      /* TODO: tweak this */
+      unsigned attr_ring_size_per_se = align(1400000, 64 * 1024);
+      unsigned attr_ring_size = attr_ring_size_per_se * device->physical_device->rad_info.max_se;
+      assert(attr_ring_size <= 16 * 1024 * 1024); /* maximum size */
+      needs.attr_ring_size = attr_ring_size;
+   }
+
    /* Return early if we already match these needs.
     * Note that it's not possible for any of the needed values to be less
     * than what the queue already had, because we only ever increase the allocated size.
@@ -5038,6 +5178,7 @@ radv_update_preambles(struct radv_queue_state *queue, struct radv_device *device
        queue->ring_info.tess_rings == needs.tess_rings &&
        queue->ring_info.task_rings == needs.task_rings &&
        queue->ring_info.mesh_scratch_ring == needs.mesh_scratch_ring &&
+       queue->ring_info.attr_ring_size == needs.attr_ring_size &&
        queue->ring_info.gds == needs.gds &&
        queue->ring_info.gds_oa == needs.gds_oa &&
        queue->ring_info.sample_positions == needs.sample_positions)

@@ -38,6 +38,9 @@
 #include "egldefines.h"
 #include "eglarray.h"
 
+#ifdef HAVE_X11_PLATFORM
+#include <X11/Xlib.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -225,19 +228,14 @@ struct _egl_display
    EGLGetBlobFuncANDROID BlobCacheGet;
 };
 
-static inline void
-egl_lock(_EGLDisplay *disp)
-{
-   u_rwlock_rdlock(&disp->TerminateLock);
-   simple_mtx_lock(&disp->Mutex);
-}
 
-static inline void
-egl_unlock(_EGLDisplay *disp)
-{
-   simple_mtx_unlock(&disp->Mutex);
-   u_rwlock_rdunlock(&disp->TerminateLock);
-}
+extern _EGLDisplay *
+_eglLockDisplay(EGLDisplay dpy);
+
+
+extern void
+_eglUnlockDisplay(_EGLDisplay *disp);
+
 
 extern _EGLPlatformType
 _eglGetNativePlatform(void *nativeDisplay);
@@ -260,25 +258,7 @@ _eglCleanupDisplay(_EGLDisplay *disp);
 
 
 extern EGLBoolean
-_eglCheckDisplayHandle(EGLDisplay dpy);
-
-
-extern EGLBoolean
 _eglCheckResource(void *res, _EGLResourceType type, _EGLDisplay *disp);
-
-
-/**
- * Lookup a handle to find the linked display.
- * Return NULL if the handle has no corresponding linked display.
- */
-static inline _EGLDisplay *
-_eglLookupDisplay(EGLDisplay dpy)
-{
-   _EGLDisplay *disp = (_EGLDisplay *) dpy;
-   if (!_eglCheckDisplayHandle(dpy))
-      disp = NULL;
-   return disp;
-}
 
 
 /**

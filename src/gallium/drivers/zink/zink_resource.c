@@ -99,6 +99,13 @@ void
 zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_object *obj)
 {
    if (obj->is_buffer) {
+      while (util_dynarray_contains(&obj->views, VkBufferView))
+         VKSCR(DestroyBufferView)(screen->dev, util_dynarray_pop(&obj->views, VkBufferView), NULL);
+   } else {
+      while (util_dynarray_contains(&obj->views, VkImageView))
+         VKSCR(DestroyImageView)(screen->dev, util_dynarray_pop(&obj->views, VkImageView), NULL);
+   }
+   if (obj->is_buffer) {
       VKSCR(DestroyBuffer)(screen->dev, obj->buffer, NULL);
       VKSCR(DestroyBuffer)(screen->dev, obj->storage_buffer, NULL);
    } else if (obj->dt) {
@@ -111,6 +118,7 @@ zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_ob
 #endif
    }
 
+   simple_mtx_destroy(&obj->view_lock);
    if (obj->dt) {
       FREE(obj->bo); //this is a dummy struct
    } else
@@ -277,8 +285,10 @@ get_image_usage_for_feats(struct zink_screen *screen, VkFormatFeatureFlags feats
    if (bind & PIPE_BIND_RENDER_TARGET) {
       if (feats & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) {
          usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-         if ((bind & (PIPE_BIND_LINEAR | PIPE_BIND_SHARED)) != (PIPE_BIND_LINEAR | PIPE_BIND_SHARED))
+         if (!(bind & ZINK_BIND_TRANSIENT) && (bind & (PIPE_BIND_LINEAR | PIPE_BIND_SHARED)) != (PIPE_BIND_LINEAR | PIPE_BIND_SHARED))
             usage |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+         if (!(bind & ZINK_BIND_TRANSIENT))
+            usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
       } else {
          /* trust that gallium isn't going to give us anything wild */
          *need_extended = true;
@@ -298,6 +308,7 @@ get_image_usage_for_feats(struct zink_screen *screen, VkFormatFeatureFlags feats
          usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
       else
          return 0;
+      usage |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
    /* this is unlikely to occur and has been included for completeness */
    } else if (bind & PIPE_BIND_SAMPLER_VIEW && !(usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
       if (feats & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)
@@ -564,6 +575,8 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
    struct zink_resource_object *obj = CALLOC_STRUCT(zink_resource_object);
    if (!obj)
       return NULL;
+   simple_mtx_init(&obj->view_lock, mtx_plain);
+   util_dynarray_init(&obj->views, NULL);
    obj->last_dt_idx = obj->dt_idx = UINT32_MAX; //TODO: unionize
 
    VkMemoryRequirements reqs = {0};
@@ -1123,7 +1136,9 @@ resource_create(struct pipe_screen *pscreen,
 
    res->base.b = *templ;
 
-   threaded_resource_init(&res->base.b, false);
+   bool allow_cpu_storage = (templ->target == PIPE_BUFFER) &&
+                            (templ->width0 < 0x1000);
+   threaded_resource_init(&res->base.b, allow_cpu_storage);
    pipe_reference_init(&res->base.b.reference, 1);
    res->base.b.screen = pscreen;
 
@@ -1412,6 +1427,8 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
                          struct winsys_handle *whandle,
                          unsigned usage)
 {
+   if (tex->target == PIPE_BUFFER)
+      tc_buffer_disable_cpu_storage(tex);
    if (whandle->type == WINSYS_HANDLE_TYPE_FD || whandle->type == WINSYS_HANDLE_TYPE_KMS) {
 #ifdef ZINK_USE_DMABUF
       struct zink_resource *res = zink_resource(tex);
@@ -1512,6 +1529,8 @@ zink_resource_from_handle(struct pipe_screen *pscreen,
       res->drm_format = whandle->format;
       if (pres->target != PIPE_BUFFER)
          res->valid = true;
+      else
+         tc_buffer_disable_cpu_storage(pres);
    }
    return pres;
 #else
@@ -1575,8 +1594,12 @@ zink_resource_from_memobj(struct pipe_screen *pscreen,
    struct zink_memory_object *memobj = (struct zink_memory_object *)pmemobj;
 
    struct pipe_resource *pres = resource_create(pscreen, templ, &memobj->whandle, 0, NULL, 0, NULL);
-   if (pres && pres->target != PIPE_BUFFER)
-      zink_resource(pres)->valid = true;
+   if (pres) {
+      if (pres->target != PIPE_BUFFER)
+         zink_resource(pres)->valid = true;
+      else
+         tc_buffer_disable_cpu_storage(pres);
+   }
    return pres;
 }
 
@@ -1622,7 +1645,7 @@ zink_resource_invalidate(struct pipe_context *pctx, struct pipe_resource *pres)
       invalidate_buffer(zink_context(pctx), zink_resource(pres));
    else {
       struct zink_resource *res = zink_resource(pres);
-      if (res->valid && res->fb_binds)
+      if (res->valid && res->fb_bind_count)
          zink_context(pctx)->rp_loadop_changed = true;
       res->valid = false;
    }
@@ -2017,7 +2040,7 @@ zink_image_map(struct pipe_context *pctx,
    if (!ptr)
       goto fail;
    if (usage & PIPE_MAP_WRITE) {
-      if (!res->valid && res->fb_binds)
+      if (!res->valid && res->fb_bind_count)
          ctx->rp_loadop_changed = true;
       res->valid = true;
    }
@@ -2195,6 +2218,21 @@ bool
 zink_resource_object_init_mutable(struct zink_context *ctx, struct zink_resource *res)
 {
    return resource_object_add_bind(ctx, res, ZINK_BIND_MUTABLE);
+}
+
+VkDeviceAddress
+zink_resource_get_address(struct zink_screen *screen, struct zink_resource *res)
+{
+   assert(res->obj->is_buffer);
+   if (!res->obj->bda) {
+      VkBufferDeviceAddressInfo info = {
+         VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+         NULL,
+         res->obj->buffer
+      };
+      res->obj->bda = VKSCR(GetBufferDeviceAddress)(screen->dev, &info);
+   }
+   return res->obj->bda;
 }
 
 void

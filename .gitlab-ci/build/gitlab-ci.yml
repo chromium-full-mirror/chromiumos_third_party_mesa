@@ -128,6 +128,7 @@ debian-testing-msan:
     - .meson-build
     - .ci-deqp-artifacts
   variables:
+    LLVM_VERSION: "13"
     UNWIND: "enabled"
     DRI_LOADERS: >
       -D glx=disabled
@@ -170,7 +171,6 @@ debian-build-testing:
       -D dri3=enabled
       -D gallium-extra-hud=true
       -D gallium-vdpau=enabled
-      -D gallium-xvmc=enabled
       -D gallium-omx=bellagio
       -D gallium-va=enabled
       -D gallium-xa=enabled
@@ -182,7 +182,7 @@ debian-build-testing:
     EXTRA_OPTION: >
       -D spirv-to-dxil=true
       -D osmesa=true
-      -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,xvmc,lima,panfrost,asahi
+      -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,lima,panfrost,asahi
   script:
     - .gitlab-ci/lava/lava-pytest.sh
     - .gitlab-ci/run-shellcheck.sh
@@ -194,6 +194,7 @@ debian-build-testing:
 debian-release:
   extends: .meson-build
   variables:
+    LLVM_VERSION: "13"
     UNWIND: "enabled"
     DRI_LOADERS: >
       -D glx=dri
@@ -204,7 +205,6 @@ debian-release:
       -D dri3=enabled
       -D gallium-extra-hud=true
       -D gallium-vdpau=enabled
-      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
       -D gallium-va=enabled
       -D gallium-xa=enabled
@@ -242,19 +242,19 @@ fedora-release:
       -D egl=enabled
       -D glvnd=true
       -D platforms=x11,wayland
+    # intel-clc disabled, we need llvm-spirv-translator 13.0+, Fedora 34 only packages 12.0.
     EXTRA_OPTION: >
       -D osmesa=true
       -D selinux=true
       -D tools=drm-shim,etnaviv,freedreno,glsl,intel,nir,nouveau,lima,panfrost,imagination
       -D vulkan-layers=device-select,overlay
-      -D intel-clc=enabled
+      -D intel-clc=disabled
       -D imagination-srv=true
     GALLIUM_DRIVERS: "crocus,etnaviv,freedreno,iris,kmsro,lima,nouveau,panfrost,r300,r600,radeonsi,svga,swrast,tegra,v3d,vc4,virgl,zink"
     GALLIUM_ST: >
       -D dri3=enabled
       -D gallium-extra-hud=true
       -D gallium-vdpau=enabled
-      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
       -D gallium-va=enabled
       -D gallium-xa=enabled
@@ -301,7 +301,6 @@ debian-android:
     GALLIUM_ST: >
       -D dri3=disabled
       -D gallium-vdpau=disabled
-      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
       -D gallium-va=disabled
       -D gallium-xa=disabled
@@ -334,7 +333,6 @@ debian-android:
     GALLIUM_ST: >
       -D dri3=enabled
       -D gallium-vdpau=disabled
-      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
       -D gallium-va=disabled
       -D gallium-xa=disabled
@@ -386,8 +384,6 @@ debian-arm64-asan:
   extends:
     - debian-arm64
   variables:
-    C_ARGS: >
-      -Wno-error=stringop-truncation
     EXTRA_OPTION: >
       -D llvm=disabled
       -D b_sanitize=address
@@ -411,6 +407,7 @@ debian-arm64-build-test:
 debian-clang:
   extends: .meson-build
   variables:
+    LLVM_VERSION: "13"
     UNWIND: "enabled"
     GALLIUM_DUMP_CPU: "true"
     C_ARGS: >
@@ -419,7 +416,6 @@ debian-clang:
       -Wno-error=implicit-const-int-float-conversion
       -Wno-error=initializer-overrides
       -Wno-error=sometimes-uninitialized
-      -Wno-error=unused-function
     CPP_ARGS: >
       -Wno-error=c99-designator
       -Wno-error=implicit-const-int-float-conversion
@@ -437,7 +433,6 @@ debian-clang:
       -D dri3=enabled
       -D gallium-extra-hud=true
       -D gallium-vdpau=enabled
-      -D gallium-xvmc=enabled
       -D gallium-omx=bellagio
       -D gallium-va=enabled
       -D gallium-xa=enabled
@@ -455,7 +450,7 @@ debian-clang:
       -D spirv-to-dxil=true
       -D osmesa=true
       -D imagination-srv=true
-      -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,xvmc,lima,panfrost,asahi,imagination
+      -D tools=drm-shim,etnaviv,freedreno,glsl,intel,intel-ui,nir,nouveau,lima,panfrost,asahi,imagination
       -D vulkan-layers=device-select,overlay
       -D build-aco-tests=true
       -D intel-clc=enabled
@@ -484,6 +479,7 @@ windows-vs2019:
 .debian-cl:
   extends: .meson-build
   variables:
+    LLVM_VERSION: "13"
     UNWIND: "enabled"
     DRI_LOADERS: >
       -D glx=disabled
@@ -499,7 +495,6 @@ debian-clover:
     GALLIUM_ST: >
       -D dri3=disabled
       -D gallium-vdpau=disabled
-      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
       -D gallium-va=disabled
       -D gallium-xa=disabled
@@ -514,7 +509,6 @@ debian-rusticl:
     GALLIUM_ST: >
       -D dri3=disabled
       -D gallium-vdpau=disabled
-      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
       -D gallium-va=disabled
       -D gallium-xa=disabled
@@ -525,6 +519,7 @@ debian-rusticl:
 debian-vulkan:
   extends: .meson-build
   variables:
+    LLVM_VERSION: "13"
     UNWIND: "disabled"
     DRI_LOADERS: >
       -D glx=disabled
@@ -535,7 +530,6 @@ debian-vulkan:
     GALLIUM_ST: >
       -D dri3=enabled
       -D gallium-vdpau=disabled
-      -D gallium-xvmc=disabled
       -D gallium-omx=disabled
       -D gallium-va=disabled
       -D gallium-xa=disabled
@@ -550,7 +544,7 @@ debian-vulkan:
     EXTRA_OPTION: >
       -D vulkan-layers=device-select,overlay
       -D build-aco-tests=true
-      -D intel-clc=enabled
+      -D intel-clc=disabled
       -D imagination-srv=true
 
 debian-i386:
@@ -613,12 +607,14 @@ debian-mingw32-x86_64:
     GALLIUM_ST: >
       -D gallium-opencl=icd
       -D gallium-rusticl=false
-      -D opencl-native=false
       -D opencl-spirv=true
       -D microsoft-clc=enabled
       -D static-libclc=all
       -D llvm=enabled
+      -D gallium-va=true
+      -D video-codecs=h264dec,h264enc,h265dec,h265enc,vc1dec
     EXTRA_OPTION: >
+      -D min-windows-version=7
       -D spirv-to-dxil=true
       -D gles1=enabled
       -D gles2=enabled

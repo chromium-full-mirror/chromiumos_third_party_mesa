@@ -371,9 +371,9 @@ agx_pack_alu(struct util_dynarray *emission, agx_instr *I)
       raw |= (uint64_t) (I->shift & 1) << 39;
       raw |= (uint64_t) (I->shift >> 2) << 52;
    } else if (info.immediates & AGX_IMMEDIATE_BFI_MASK) {
-      raw |= (uint64_t) (I->mask & 0x3) << 38;
-      raw |= (uint64_t) ((I->mask >> 2) & 0x3) << 50;
-      raw |= (uint64_t) ((I->mask >> 4) & 0x1) << 63;
+      raw |= (uint64_t) (I->bfi_mask & 0x3) << 38;
+      raw |= (uint64_t) ((I->bfi_mask >> 2) & 0x3) << 50;
+      raw |= (uint64_t) ((I->bfi_mask >> 4) & 0x1) << 63;
    } else if (info.immediates & AGX_IMMEDIATE_SR) {
       raw |= (uint64_t) (I->sr & 0x3F) << 16;
       raw |= (uint64_t) (I->sr >> 6) << 26;
@@ -426,8 +426,7 @@ agx_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups, agx
       bool load = (I->op == AGX_OPCODE_LD_TILE);
       unsigned D = agx_pack_alu_dst(load ? I->dest[0] : I->src[0]);
       unsigned rt = 0; /* TODO */
-      unsigned mask = I->mask ?: 0xF;
-      assert(mask < 0x10);
+      assert(I->mask < 0x10);
 
       uint64_t raw =
          0x09 |
@@ -436,7 +435,7 @@ agx_pack_instr(struct util_dynarray *emission, struct util_dynarray *fixups, agx
          ((uint64_t) (I->format) << 24) |
          ((uint64_t) (rt) << 32) |
          (load ? (1ull << 35) : 0) |
-         ((uint64_t) (mask) << 36) |
+         ((uint64_t) (I->mask) << 36) |
          ((uint64_t) 0x0380FC << 40) |
          (((uint64_t) (D >> 8)) << 60);
 
@@ -701,6 +700,12 @@ agx_pack_binary(agx_context *ctx, struct util_dynarray *emission)
 
    util_dynarray_foreach(&fixups, struct agx_branch_fixup, fixup)
       agx_fixup_branch(emission, *fixup);
+
+   /* Dougall calls the instruction in this footer "trap". Match the blob. */
+   for (unsigned i = 0; i < 8; ++i) {
+      uint16_t trap = agx_opcodes_info[AGX_OPCODE_TRAP].encoding.exact;
+      util_dynarray_append(emission, uint16_t, trap);
+   }
 
    util_dynarray_fini(&fixups);
 }
