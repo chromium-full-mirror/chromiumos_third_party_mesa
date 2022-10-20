@@ -32,11 +32,20 @@
 #include "st_shader_cache.h"
 #include "st_program.h"
 
-static GLboolean
-link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
+extern "C" {
+
+/**
+ * Link a shader.
+ * Called via ctx->Driver.LinkShader()
+ * This is a shared function that branches off to either GLSL IR -> TGSI or
+ * GLSL IR -> NIR
+ */
+GLboolean
+st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 {
    GLboolean ret;
    struct st_context *sctx = st_context(ctx);
+   struct pipe_context *pctx = sctx->pipe;
    struct pipe_screen *pscreen = sctx->screen;
 
    /* Return early if we are loading the shader from on-disk cache */
@@ -96,21 +105,6 @@ link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
 
    ret = st_link_nir(ctx, prog);
 
-   return ret;
-}
-
-extern "C" {
-
-/**
- * Link a shader.
- */
-GLboolean
-st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
-{
-   struct pipe_context *pctx = st_context(ctx)->pipe;
-
-   GLboolean ret = link_shader(ctx, prog);
-    
    if (pctx->link_shader) {
       void *driver_handles[PIPE_SHADER_TYPES];
       memset(driver_handles, 0, sizeof(driver_handles));
