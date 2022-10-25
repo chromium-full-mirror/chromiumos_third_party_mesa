@@ -89,10 +89,14 @@ resolve_sampler_views(struct iris_context *ice,
                       bool *draw_aux_buffer_disabled,
                       bool consider_framebuffer)
 {
-   uint32_t views = info ? (shs->bound_sampler_views & info->textures_used[0]) : 0;
+   if (info == NULL)
+      return;
 
-   while (views) {
-      const int i = u_bit_scan(&views);
+   int i;
+   BITSET_FOREACH_SET(i, shs->bound_sampler_views, IRIS_MAX_TEXTURES) {
+      if (!BITSET_TEST(info->textures_used, i))
+         continue;
+
       struct iris_sampler_view *isv = shs->textures[i];
 
       if (isv->res->base.b.target != PIPE_BUFFER) {
@@ -121,10 +125,15 @@ resolve_image_views(struct iris_context *ice,
                     bool *draw_aux_buffer_disabled,
                     bool consider_framebuffer)
 {
-   uint32_t views = info ? (shs->bound_image_views & info->images_used[0]) : 0;
+   if (info == NULL)
+      return;
+
+   const uint64_t images_used =
+      (info->images_used[0] | ((uint64_t)info->images_used[1]) << 32);
+   uint64_t views = shs->bound_image_views & images_used;
 
    while (views) {
-      const int i = u_bit_scan(&views);
+      const int i = u_bit_scan64(&views);
       struct pipe_image_view *pview = &shs->image[i].base;
       struct iris_resource *res = (void *) pview->resource;
 
@@ -884,7 +893,9 @@ iris_resource_set_aux_state(struct iris_context *ice,
 enum isl_aux_usage
 iris_resource_texture_aux_usage(struct iris_context *ice,
                                 const struct iris_resource *res,
-                                enum isl_format view_format)
+                                enum isl_format view_format,
+                                unsigned start_level,
+                                unsigned num_levels)
 {
    struct iris_screen *screen = (void *) ice->ctx.screen;
    struct intel_device_info *devinfo = &screen->devinfo;
@@ -909,7 +920,7 @@ iris_resource_texture_aux_usage(struct iris_context *ice,
        * ISL_AUX_USAGE_NONE.  This way, texturing won't even look at the
        * aux surface and we can save some bandwidth.
        */
-      if (!iris_has_invalid_primary(res, 0, INTEL_REMAINING_LEVELS,
+      if (!iris_has_invalid_primary(res, start_level, num_levels,
                                     0, INTEL_REMAINING_LAYERS))
          return ISL_AUX_USAGE_NONE;
 
@@ -948,9 +959,12 @@ iris_image_view_aux_usage(struct iris_context *ice,
    const struct intel_device_info *devinfo = &screen->devinfo;
    struct iris_resource *res = (void *) pview->resource;
 
+   const unsigned level = res->base.b.target != PIPE_BUFFER ?
+                          pview->u.tex.level : 0;
+
    enum isl_format view_format = iris_image_view_get_format(ice, pview);
    enum isl_aux_usage aux_usage =
-      iris_resource_texture_aux_usage(ice, res, view_format);
+      iris_resource_texture_aux_usage(ice, res, view_format, level, 1);
 
    bool uses_atomic_load_store =
       ice->shaders.uncompiled[info->stage]->uses_atomic_load_store;
@@ -1011,7 +1025,8 @@ iris_resource_prepare_texture(struct iris_context *ice,
    const struct intel_device_info *devinfo = &screen->devinfo;
 
    enum isl_aux_usage aux_usage =
-      iris_resource_texture_aux_usage(ice, res, view_format);
+      iris_resource_texture_aux_usage(ice, res, view_format,
+                                      start_level, num_levels);
 
    bool clear_supported = isl_aux_usage_has_fast_clears(aux_usage);
 

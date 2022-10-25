@@ -303,7 +303,7 @@ public:
    fs_reg emit_mcs_fetch(const fs_reg &coordinate, unsigned components,
                          const fs_reg &texture,
                          const fs_reg &texture_handle);
-   fs_reg resolve_source_modifiers(const fs_reg &src);
+   fs_reg resolve_source_modifiers(const brw::fs_builder &bld, const fs_reg &src);
    void emit_fsign(const class brw::fs_builder &, const nir_alu_instr *instr,
                    fs_reg result, fs_reg *op, unsigned fsign_src);
    void emit_shader_float_controls_execution_mode();
@@ -412,6 +412,8 @@ public:
    void emit_gs_input_load(const fs_reg &dst, const nir_src &vertex_src,
                            unsigned base_offset, const nir_src &offset_src,
                            unsigned num_components, unsigned first_component);
+   bool mark_last_urb_write_with_eot();
+   void emit_tcs_thread_end();
    void emit_urb_fence();
    void emit_cs_terminate();
    fs_reg emit_work_group_id_setup();

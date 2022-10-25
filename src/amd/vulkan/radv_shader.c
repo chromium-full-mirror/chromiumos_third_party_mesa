@@ -41,7 +41,7 @@
 #include "util/debug.h"
 #include "ac_binary.h"
 #include "ac_nir.h"
-#ifndef _WIN32
+#if defined(USE_LIBELF)
 #include "ac_rtld.h"
 #endif
 #include "aco_interface.h"
@@ -1347,8 +1347,7 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
          BITSET_SET(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
 
    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
-      /* Need to add 1, because: V_028A6C_POINTLIST=0, V_028A6C_LINESTRIP=1, V_028A6C_TRISTRIP=2, etc. */
-      num_vertices_per_prim = si_conv_prim_to_gs_out(pl_key->vs.topology) + 1;
+      num_vertices_per_prim = radv_get_num_vertices_per_prim(pl_key);
 
       /* Manually mark the instance ID used, so the shader can repack it. */
       if (pl_key->vs.instance_rate_inputs)
@@ -1368,7 +1367,7 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
    }
 
    /* Invocations that process an input vertex */
-   unsigned max_vtx_in = MIN2(256, ngg_info->enable_vertex_grouping ? ngg_info->hw_max_esverts : num_vertices_per_prim * ngg_info->max_gsprims);
+   unsigned max_vtx_in = MIN2(256, ngg_info->hw_max_esverts);
 
    if (nir->info.stage == MESA_SHADER_VERTEX ||
        nir->info.stage == MESA_SHADER_TESS_EVAL) {
@@ -1384,7 +1383,7 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
                  max_vtx_in, num_vertices_per_prim,
                  info->workgroup_size, info->wave_size, info->has_ngg_culling,
                  info->has_ngg_early_prim_export, info->is_ngg_passthrough, export_prim_id,
-                 pl_key->vs.provoking_vtx_last, false, pl_key->primitives_generated_query,
+                 false, pl_key->primitives_generated_query,
                  true, pl_key->vs.instance_rate_inputs, 0, 0);
 
       /* Increase ESGS ring size so the LLVM binary contains the correct LDS size. */
@@ -1393,8 +1392,7 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
       assert(info->is_ngg);
       NIR_PASS_V(nir, ac_nir_lower_ngg_gs, info->wave_size, info->workgroup_size,
                  info->ngg_info.esgs_ring_size, info->gs.gsvs_vertex_size,
-                 info->ngg_info.ngg_emit_size * 4u, pl_key->vs.provoking_vtx_last,
-                 false, true);
+                 info->ngg_info.ngg_emit_size * 4u, false, true);
    } else if (nir->info.stage == MESA_SHADER_MESH) {
       bool scratch_ring = false;
       NIR_PASS_V(nir, ac_nir_lower_ngg_ms, &scratch_ring, info->wave_size, pl_key->has_multiview_view_index);
@@ -1955,7 +1953,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
    }
 }
 
-#ifndef _WIN32
+#if defined(USE_LIBELF)
 static bool
 radv_open_rtld_binary(struct radv_device *device, const struct radv_shader *shader,
                       const struct radv_shader_binary *binary, struct ac_rtld_binary *rtld_binary)
@@ -2006,7 +2004,7 @@ radv_shader_binary_upload(struct radv_device *device, const struct radv_shader_b
                           struct radv_shader *shader, void *dest_ptr)
 {
    if (binary->type == RADV_BINARY_TYPE_RTLD) {
-#ifdef _WIN32
+#if !defined(USE_LIBELF)
       return false;
 #else
       struct ac_rtld_binary rtld_binary = {0};
@@ -2059,7 +2057,7 @@ radv_shader_create(struct radv_device *device, struct radv_shader_binary *binary
    shader->binary = binary;
 
    if (binary->type == RADV_BINARY_TYPE_RTLD) {
-#ifdef _WIN32
+#if !defined(USE_LIBELF)
       free(shader);
       return NULL;
 #else
@@ -2110,7 +2108,7 @@ radv_shader_create(struct radv_device *device, struct radv_shader_binary *binary
    }
 
    if (binary->type == RADV_BINARY_TYPE_RTLD) {
-#ifdef _WIN32
+#if !defined(USE_LIBELF)
       free(shader);
       return NULL;
 #else

@@ -239,7 +239,7 @@ iris_init_batch(struct iris_context *ice,
       batch->decoder.surface_base = IRIS_MEMZONE_BINDER_START;
       batch->decoder.max_vbo_decoded_lines = 32;
       if (batch->name == IRIS_BATCH_BLITTER)
-         batch->decoder.engine = I915_ENGINE_CLASS_COPY;
+         batch->decoder.engine = INTEL_ENGINE_CLASS_COPY;
    }
 
    iris_init_batch_measure(ice, batch);
@@ -272,30 +272,29 @@ iris_create_engines_context(struct iris_context *ice, int priority)
    const struct intel_device_info *devinfo = &screen->devinfo;
    int fd = iris_bufmgr_get_fd(screen->bufmgr);
 
-   struct drm_i915_query_engine_info *engines_info =
-      intel_i915_query_alloc(fd, DRM_I915_QUERY_ENGINE_INFO, NULL);
+   struct intel_query_engine_info *engines_info = intel_engine_get_info(fd);
 
    if (!engines_info)
       return -1;
 
-   if (intel_gem_count_engines(engines_info, I915_ENGINE_CLASS_RENDER) < 1) {
+   if (intel_engines_count(engines_info, INTEL_ENGINE_CLASS_RENDER) < 1) {
       free(engines_info);
       return -1;
    }
 
    STATIC_ASSERT(IRIS_BATCH_COUNT == 3);
-   uint16_t engine_classes[IRIS_BATCH_COUNT] = {
-      [IRIS_BATCH_RENDER] = I915_ENGINE_CLASS_RENDER,
-      [IRIS_BATCH_COMPUTE] = I915_ENGINE_CLASS_RENDER,
-      [IRIS_BATCH_BLITTER] = I915_ENGINE_CLASS_COPY,
+   enum intel_engine_class engine_classes[IRIS_BATCH_COUNT] = {
+      [IRIS_BATCH_RENDER] = INTEL_ENGINE_CLASS_RENDER,
+      [IRIS_BATCH_COMPUTE] = INTEL_ENGINE_CLASS_RENDER,
+      [IRIS_BATCH_BLITTER] = INTEL_ENGINE_CLASS_COPY,
    };
 
    /* Blitter is only supported on Gfx12+ */
    unsigned num_batches = IRIS_BATCH_COUNT - (devinfo->ver >= 12 ? 0 : 1);
 
    if (env_var_as_boolean("INTEL_COMPUTE_CLASS", false) &&
-       intel_gem_count_engines(engines_info, I915_ENGINE_CLASS_COMPUTE) > 0)
-      engine_classes[IRIS_BATCH_COMPUTE] = I915_ENGINE_CLASS_COMPUTE;
+       intel_engines_count(engines_info, INTEL_ENGINE_CLASS_COMPUTE) > 0)
+      engine_classes[IRIS_BATCH_COMPUTE] = INTEL_ENGINE_CLASS_COMPUTE;
 
    int engines_ctx =
       intel_gem_create_context_engines(fd, engines_info, num_batches,
@@ -487,7 +486,7 @@ create_batch(struct iris_batch *batch)
 
    /* TODO: We probably could suballocate batches... */
    batch->bo = iris_bo_alloc(bufmgr, "command buffer",
-                             BATCH_SZ + BATCH_RESERVED, 1,
+                             BATCH_SZ + BATCH_RESERVED, 8,
                              IRIS_MEMZONE_OTHER, BO_ALLOC_NO_SUBALLOC);
    iris_get_backing_bo(batch->bo)->real.kflags |= EXEC_OBJECT_CAPTURE;
    batch->map = iris_bo_map(NULL, batch->bo, MAP_READ | MAP_WRITE);

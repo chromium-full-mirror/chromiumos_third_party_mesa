@@ -56,6 +56,7 @@ files_mesa_util = files(
   'format_srgb.h',
   'fossilize_db.c',
   'fossilize_db.h',
+  'futex.c',
   'futex.h',
   'half_float.c',
   'half_float.h',
@@ -86,6 +87,7 @@ files_mesa_util = files(
   'u_process.h',
   'u_qsort.cpp',
   'u_qsort.h',
+  'rwlock.c',
   'rwlock.h',
   'sha1/sha1.c',
   'sha1/sha1.h',
@@ -136,6 +138,7 @@ files_mesa_util = files(
   'u_queue.c',
   'u_queue.h',
   'u_string.h',
+  'u_thread.c',
   'u_thread.h',
   'u_vector.c',
   'u_vector.h',
@@ -247,16 +250,14 @@ u_indices_gen_c = custom_target(
   'u_indices_gen.c',
   input : 'indices/u_indices_gen.py',
   output : 'u_indices_gen.c',
-  command : [prog_python, '@INPUT@'],
-  capture : true,
+  command : [prog_python, '@INPUT@', '@OUTPUT@'],
 )
 
 u_unfilled_gen_c = custom_target(
   'u_unfilled_gen.c',
   input : 'indices/u_unfilled_gen.py',
   output : 'u_unfilled_gen.c',
-  command : [prog_python, '@INPUT@'],
-  capture : true,
+  command : [prog_python, '@INPUT@', '@OUTPUT@'],
 )
 
 libmesa_util_sse41 = static_library(
@@ -352,6 +353,7 @@ if with_tests
     'tests/string_buffer_test.cpp',
     'tests/timespec_test.cpp',
     'tests/u_atomic_test.cpp',
+    'tests/u_call_once_test.cpp',
     'tests/u_debug_stack_test.cpp',
     'tests/u_printf_test.cpp',
     'tests/u_qsort_test.cpp',

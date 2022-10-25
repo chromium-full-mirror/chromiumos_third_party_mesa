@@ -137,44 +137,6 @@ get_clear_data(struct zink_context *ctx, struct zink_framebuffer_clear *fb_clear
    return add_new_clear(fb_clear);
 }
 
-static void
-clamp_color(const struct util_format_description *desc, union pipe_color_union *dst, const union pipe_color_union *src, unsigned i)
-{
-   int non_void = util_format_get_first_non_void_channel(desc->format);
-   switch (desc->channel[i].type) {
-   case UTIL_FORMAT_TYPE_VOID:
-      if (desc->channel[non_void].type == UTIL_FORMAT_TYPE_FLOAT) {
-         dst->f[i] = uif(UINT32_MAX);
-      } else {
-         if (desc->channel[non_void].normalized)
-            dst->f[i] = 1.0;
-         else if (desc->channel[non_void].type == UTIL_FORMAT_TYPE_SIGNED)
-            dst->i[i] = INT32_MAX;
-         else
-            dst->ui[i] = UINT32_MAX;
-      }
-      break;
-   case UTIL_FORMAT_TYPE_SIGNED:
-      if (desc->channel[i].normalized)
-         dst->i[i] = src->i[i];
-      else {
-         dst->i[i] = MAX2(src->i[i], -(1<<(desc->channel[i].size - 1)));
-         dst->i[i] = MIN2(dst->i[i], (1 << (desc->channel[i].size - 1)) - 1);
-      }
-      break;
-   case UTIL_FORMAT_TYPE_UNSIGNED:
-      if (desc->channel[i].normalized)
-         dst->ui[i] = src->ui[i];
-      else
-         dst->ui[i] = MIN2(src->ui[i], BITFIELD_MASK(desc->channel[i].size));
-      break;
-   case UTIL_FORMAT_TYPE_FIXED:
-   case UTIL_FORMAT_TYPE_FLOAT:
-      dst->ui[i] = src->ui[i];
-      break;
-   }
-}
-
 void
 zink_clear(struct pipe_context *pctx,
            unsigned buffers,
@@ -186,9 +148,6 @@ zink_clear(struct pipe_context *pctx,
    struct pipe_framebuffer_state *fb = &ctx->fb_state;
    struct zink_batch *batch = &ctx->batch;
    bool needs_rp = false;
-
-   if (unlikely(!zink_screen(pctx->screen)->info.have_EXT_conditional_rendering && !zink_check_conditional_render(ctx)))
-      return;
 
    if (scissor_state) {
       struct u_rect scissor = {scissor_state->minx, scissor_state->maxx, scissor_state->miny, scissor_state->maxy};
@@ -297,13 +256,13 @@ zink_clear(struct pipe_context *pctx,
                   tmp.ui[2] = 0;
                   tmp.ui[3] = 0;
                } else if (util_format_is_luminance(psurf->format)) {
-                  tmp.ui[1] = tmp.ui[0];
-                  tmp.ui[2] = tmp.ui[0];
+                  tmp.ui[1] = 0;
+                  tmp.ui[2] = 0;
                   tmp.f[3] = 1.0;
                } else if (util_format_is_luminance_alpha(psurf->format)) {
-                  tmp.f[3] = tmp.ui[1];
-                  tmp.ui[1] = tmp.ui[0];
-                  tmp.ui[2] = tmp.ui[0];
+                  tmp.ui[1] = tmp.ui[3];
+                  tmp.ui[2] = 0;
+                  tmp.f[3] = 1.0;
                } else /* zink_format_is_red_alpha */ {
                   tmp.ui[1] = tmp.ui[3];
                   tmp.ui[2] = 0;
@@ -312,7 +271,7 @@ zink_clear(struct pipe_context *pctx,
                color = &tmp;
             }
             for (unsigned i = 0; i < 4; i++)
-               clamp_color(desc, &clear->color, color, i);
+               zink_format_clamp_channel_color(desc, &clear->color, color, i);
             if (zink_fb_clear_first_needs_explicit(fb_clear))
                ctx->rp_clears_enabled &= ~(PIPE_CLEAR_COLOR0 << i);
             else
@@ -541,13 +500,11 @@ zink_clear_buffer(struct pipe_context *pctx,
          - size is the number of bytes to fill, and must be either a multiple of 4,
            or VK_WHOLE_SIZE to fill the range from offset to the end of the buffer
        */
-      struct zink_batch *batch = &ctx->batch;
-      zink_batch_no_rp(ctx);
-      zink_batch_reference_resource_rw(batch, res, true);
       util_range_add(&res->base.b, &res->valid_buffer_range, offset, offset + size);
       zink_screen(ctx->base.screen)->buffer_barrier(ctx, res, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-      res->obj->unordered_read = res->obj->unordered_write = false;
-      VKCTX(CmdFillBuffer)(batch->state->cmdbuf, res->obj->buffer, offset, size, *(uint32_t*)clear_value);
+      VkCommandBuffer cmdbuf = zink_get_cmdbuf(ctx, NULL, res);
+      zink_batch_reference_resource_rw(&ctx->batch, res, true);
+      VKCTX(CmdFillBuffer)(cmdbuf, res->obj->buffer, offset, size, *(uint32_t*)clear_value);
       return;
    }
    struct pipe_transfer *xfer;

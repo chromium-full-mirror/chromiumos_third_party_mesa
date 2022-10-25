@@ -192,7 +192,6 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    switch (param) {
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_ANISOTROPIC_FILTER:
-   case PIPE_CAP_POINT_SPRITE:
    case PIPE_CAP_OCCLUSION_QUERY:
    case PIPE_CAP_QUERY_TIME_ELAPSED:
    case PIPE_CAP_TEXTURE_SWIZZLE:
@@ -210,7 +209,6 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
    case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
-   case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
    case PIPE_CAP_CONDITIONAL_RENDER:
@@ -503,9 +501,11 @@ iris_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
       return 0;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
+      return IRIS_MAX_SAMPLERS;
    case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
+      return IRIS_MAX_TEXTURES;
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      return IRIS_MAX_TEXTURE_SAMPLERS;
+      return IRIS_MAX_IMAGES;
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       return IRIS_MAX_ABOS + IRIS_MAX_SSBOS;
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -616,10 +616,11 @@ static uint64_t
 iris_get_timestamp(struct pipe_screen *pscreen)
 {
    struct iris_screen *screen = (struct iris_screen *) pscreen;
-   const unsigned TIMESTAMP = 0x2358;
    uint64_t result;
 
-   iris_reg_read(screen->bufmgr, TIMESTAMP | 1, &result);
+   if (!intel_gem_read_render_timestamp(iris_bufmgr_get_fd(screen->bufmgr),
+                                        &result))
+      return 0;
 
    result = intel_device_info_timebase_scale(&screen->devinfo, result);
    result &= (1ull << TIMESTAMP_BITS) - 1;
@@ -775,20 +776,6 @@ iris_init_identifier_bo(struct iris_screen *screen)
 struct pipe_screen *
 iris_screen_create(int fd, const struct pipe_screen_config *config)
 {
-   /* Here are the i915 features we need for Iris (in chronological order) :
-    *    - I915_PARAM_HAS_EXEC_NO_RELOC     (3.10)
-    *    - I915_PARAM_HAS_EXEC_HANDLE_LUT   (3.10)
-    *    - I915_PARAM_HAS_EXEC_BATCH_FIRST  (4.13)
-    *    - I915_PARAM_HAS_EXEC_FENCE_ARRAY  (4.14)
-    *    - I915_PARAM_HAS_CONTEXT_ISOLATION (4.16)
-    *
-    * Checking the last feature availability will include all previous ones.
-    */
-   if (iris_getparam_integer(fd, I915_PARAM_HAS_CONTEXT_ISOLATION) <= 0) {
-      debug_error("Kernel is too old for Iris. Consider upgrading to kernel v4.16.\n");
-      return NULL;
-   }
-
    struct iris_screen *screen = rzalloc(NULL, struct iris_screen);
    if (!screen)
       return NULL;
@@ -801,6 +788,21 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
 
    if (screen->devinfo.ver < 8 || screen->devinfo.platform == INTEL_PLATFORM_CHV)
       return NULL;
+
+   /* Here are the i915 features we need for Iris (in chronological order) :
+    *    - I915_PARAM_HAS_EXEC_NO_RELOC     (3.10)
+    *    - I915_PARAM_HAS_EXEC_HANDLE_LUT   (3.10)
+    *    - I915_PARAM_HAS_EXEC_BATCH_FIRST  (4.13)
+    *    - I915_PARAM_HAS_EXEC_FENCE_ARRAY  (4.14)
+    *    - I915_PARAM_HAS_CONTEXT_ISOLATION (4.16)
+    *
+    * Checking the last feature availability will include all previous ones.
+    */
+   if (iris_getparam_integer(fd, I915_PARAM_HAS_CONTEXT_ISOLATION) <= 0) {
+      debug_error("Kernel is too old (4.16+ required) or unusable for Iris.\n"
+                  "Check your dmesg logs for loading failures.\n");
+      return NULL;
+   }
 
    driParseConfigFiles(config->options, config->options_info, 0, "iris",
                        NULL, NULL, NULL, 0, NULL, 0);
@@ -827,7 +829,7 @@ iris_screen_create(int fd, const struct pipe_screen_config *config)
    screen->id = iris_bufmgr_create_screen_id(screen->bufmgr);
 
    screen->workaround_bo =
-      iris_bo_alloc(screen->bufmgr, "workaround", 4096, 1,
+      iris_bo_alloc(screen->bufmgr, "workaround", 4096, 4096,
                     IRIS_MEMZONE_OTHER, BO_ALLOC_NO_SUBALLOC);
    if (!screen->workaround_bo)
       return NULL;

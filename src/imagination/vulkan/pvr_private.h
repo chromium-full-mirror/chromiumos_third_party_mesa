@@ -121,6 +121,10 @@ enum pvr_event_type {
    PVR_EVENT_TYPE_BARRIER,
 };
 
+enum pvr_sub_command_flags {
+   PVR_SUB_COMMAND_FLAG_WAIT_ON_PREVIOUS_FRAG = BITFIELD_BIT(0),
+};
+
 enum pvr_depth_stencil_usage {
    PVR_DEPTH_STENCIL_USAGE_UNDEFINED = 0, /* explicitly treat 0 as undefined */
    PVR_DEPTH_STENCIL_USAGE_NEEDED,
@@ -286,6 +290,13 @@ struct pvr_queue {
    struct pvr_transfer_ctx *transfer_ctx;
 
    struct vk_sync *completion[PVR_JOB_TYPE_MAX];
+
+   /* Used to setup a job dependency from jobs previously submitted, onto
+    * the next job per job type.
+    *
+    * Used to create dependencies for pipeline barriers.
+    */
+   struct vk_sync *job_dependancy[PVR_JOB_TYPE_MAX];
 };
 
 struct pvr_vertex_binding {
@@ -760,6 +771,15 @@ struct pvr_sub_cmd_event {
          /* Stages to wait at. */
          uint32_t *wait_at_stage_masks;
       } wait;
+
+      struct {
+         bool in_render_pass;
+
+         /* Stages to wait for. */
+         uint32_t wait_for_stage_mask;
+         /* Stages to wait at. */
+         uint32_t wait_at_stage_mask;
+      } barrier;
    };
 };
 
@@ -768,6 +788,14 @@ struct pvr_sub_cmd {
    struct list_head link;
 
    enum pvr_sub_cmd_type type;
+
+   enum pvr_sub_command_flags flags;
+
+   /* True if the sub_cmd is owned by this command buffer. False if taken from
+    * a secondary command buffer, in that case we are not supposed to free any
+    * resources associated with the sub_cmd.
+    */
+   bool owned;
 
    union {
       struct pvr_sub_cmd_gfx gfx;
@@ -795,7 +823,7 @@ struct pvr_render_pass_info {
 
    bool process_empty_tiles;
    bool enable_bg_tag;
-   uint32_t userpass_spawn;
+   uint32_t isp_userpass;
 
    /* Have we had to scissor a depth/stencil clear because render area was not
     * tile aligned?
@@ -861,7 +889,11 @@ struct pvr_ppp_state {
 struct pvr_deferred_cs_command {
    enum pvr_deferred_cs_command_type type;
    union {
-      struct pvr_ppp_dbsc dbsc;
+      struct {
+         struct pvr_ppp_dbsc state;
+
+         uint32_t *vdm_state;
+      } dbsc;
 
       struct {
          struct pvr_ppp_dbsc state;
@@ -1012,7 +1044,7 @@ struct pvr_cmd_buffer_state {
       bool write_mask : 1;
       bool reference : 1;
 
-      bool userpass_spawn : 1;
+      bool isp_userpass : 1;
 
       /* Some draw state needs to be tracked for changes between draw calls
        * i.e. if we get a draw with baseInstance=0, followed by a call with
@@ -1383,7 +1415,7 @@ struct pvr_render_subpass {
 
    uint32_t index;
 
-   uint32_t userpass_spawn;
+   uint32_t isp_userpass;
 
    VkPipelineBindPoint pipeline_bind_point;
 };
@@ -1415,6 +1447,8 @@ struct pvr_load_op {
 
    uint32_t clear_mask;
 
+   bool load_depth;
+
    struct pvr_bo *usc_frag_prog_bo;
    uint32_t const_shareds_count;
    uint32_t shareds_dest_offset;
@@ -1424,6 +1458,11 @@ struct pvr_load_op {
 
    struct pvr_pds_upload pds_tex_state_prog;
    uint32_t temps_count;
+
+   union {
+      const struct pvr_renderpass_hwsetup_render *hw_render;
+      const struct pvr_render_subpass *subpass;
+   };
 };
 
 uint32_t pvr_calc_fscommon_size_and_tiles_in_flight(
@@ -1488,6 +1527,16 @@ VkResult pvr_emit_ppp_from_template(
    struct pvr_csb *const csb,
    const struct pvr_static_clear_ppp_template *const template,
    struct pvr_bo **const pvr_bo_out);
+
+VkResult
+pvr_copy_or_resolve_color_image_region(struct pvr_cmd_buffer *cmd_buffer,
+                                       const struct pvr_image *src,
+                                       const struct pvr_image *dst,
+                                       const VkImageCopy2 *region);
+
+void pvr_get_image_subresource_layout(const struct pvr_image *image,
+                                      const VkImageSubresource *subresource,
+                                      VkSubresourceLayout *layout);
 
 static inline struct pvr_compute_pipeline *
 to_pvr_compute_pipeline(struct pvr_pipeline *pipeline)

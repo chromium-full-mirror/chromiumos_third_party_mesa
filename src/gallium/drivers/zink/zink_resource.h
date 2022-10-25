@@ -75,6 +75,9 @@ zink_resource_object_init_storage(struct zink_context *ctx, struct zink_resource
 bool
 zink_resource_object_init_mutable(struct zink_context *ctx, struct zink_resource *res);
 
+VkDeviceAddress
+zink_resource_get_address(struct zink_screen *screen, struct zink_resource *res);
+
 static inline bool
 zink_resource_has_binds(const struct zink_resource *res)
 {
@@ -160,7 +163,7 @@ zink_batch_resource_usage_set(struct zink_batch *batch, struct zink_resource *re
             util_dynarray_append(&batch->state->acquires, VkSemaphore, acquire);
       }
       if (write && !res->obj->is_buffer) {
-         if (!res->valid && res->fb_binds)
+         if (!res->valid && res->fb_bind_count)
             batch->state->ctx->rp_loadop_changed = true;
          res->valid = true;
       }

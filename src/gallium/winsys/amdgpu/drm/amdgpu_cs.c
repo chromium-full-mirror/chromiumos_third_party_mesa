@@ -824,7 +824,8 @@ static void amdgpu_set_ib_size(struct radeon_cmdbuf *rcs, struct amdgpu_ib *ib)
 {
    if (ib->ptr_ib_size_inside_ib) {
       *ib->ptr_ib_size = rcs->current.cdw |
-                         S_3F2_CHAIN(1) | S_3F2_VALID(1);
+                         S_3F2_CHAIN(1) | S_3F2_VALID(1) |
+                         S_3F2_PRE_ENA(((struct amdgpu_cs*)ib)->preamble_ib_bo != NULL);
    } else {
       *ib->ptr_ib_size = rcs->current.cdw;
    }
@@ -1610,6 +1611,8 @@ static void amdgpu_cs_submit_ib(void *job, void *gdata, int thread_index)
        * quite often, but it eventually succeeds after enough attempts. This happens frequently
        * with dEQP using NGG streamout.
        */
+      r = 0;
+
       do {
          /* Wait 1 ms and try again. */
          if (r == -ENOMEM)

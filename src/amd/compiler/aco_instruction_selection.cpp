@@ -3686,17 +3686,20 @@ visit_alu_instr(isel_context* ctx, nir_alu_instr* instr)
 
          nir_const_value* const_offset = nir_src_as_const_value(instr->src[1].src);
          nir_const_value* const_bits = nir_src_as_const_value(instr->src[2].src);
+         aco_opcode opcode =
+            instr->op == nir_op_ubfe ? aco_opcode::s_bfe_u32 : aco_opcode::s_bfe_i32;
          if (const_offset && const_bits) {
             uint32_t extract = (const_bits->u32 << 16) | (const_offset->u32 & 0x1f);
-            aco_opcode opcode =
-               instr->op == nir_op_ubfe ? aco_opcode::s_bfe_u32 : aco_opcode::s_bfe_i32;
             bld.sop2(opcode, Definition(dst), bld.def(s1, scc), base, Operand::c32(extract));
             break;
          }
 
          Temp offset = get_alu_src(ctx, instr->src[1]);
          Temp bits = get_alu_src(ctx, instr->src[2]);
-         if (instr->op == nir_op_ubfe) {
+         if (ctx->program->gfx_level >= GFX9) {
+            Temp extract = bld.sop2(aco_opcode::s_pack_ll_b32_b16, bld.def(s1), offset, bits);
+            bld.sop2(opcode, Definition(dst), bld.def(s1, scc), base, extract);
+         } else if (instr->op == nir_op_ubfe) {
             Temp mask = bld.sop2(aco_opcode::s_bfm_b32, bld.def(s1), bits, offset);
             Temp masked =
                bld.sop2(aco_opcode::s_and_b32, bld.def(s1), bld.def(s1, scc), base, mask);
@@ -3988,6 +3991,7 @@ struct LoadEmitInfo {
    unsigned num_components;
    unsigned component_size;
    Temp resource = Temp(0, s1); /* buffer resource or base 64-bit address */
+   Temp idx = Temp(0, v1); /* buffer index */
    unsigned component_stride = 0;
    unsigned const_offset = 0;
    unsigned align_mul = 0;
@@ -4414,6 +4418,14 @@ mubuf_load_callback(Builder& bld, const LoadEmitInfo& info, Temp offset, unsigne
       soffset = Operand(info.soffset);
    }
 
+   bool offen = !vaddr.isUndefined();
+   bool idxen = info.idx.id();
+
+   if (offen && idxen)
+      vaddr = bld.pseudo(aco_opcode::p_create_vector, bld.def(v2), info.idx, vaddr);
+   else if (idxen)
+      vaddr = Operand(info.idx);
+
    unsigned bytes_size = 0;
    aco_opcode op;
    if (bytes_needed == 1 || align_ % 2) {
@@ -4439,7 +4451,8 @@ mubuf_load_callback(Builder& bld, const LoadEmitInfo& info, Temp offset, unsigne
    mubuf->operands[0] = Operand(info.resource);
    mubuf->operands[1] = vaddr;
    mubuf->operands[2] = soffset;
-   mubuf->offen = (offset.type() == RegType::vgpr);
+   mubuf->offen = offen;
+   mubuf->idxen = idxen;
    mubuf->glc = info.glc;
    mubuf->dlc =
       info.glc && (bld.program->gfx_level == GFX10 || bld.program->gfx_level == GFX10_3);
@@ -5075,9 +5088,9 @@ resolve_excess_vmem_const_offset(Builder& bld, Temp& voffset, unsigned const_off
 }
 
 void
-emit_single_mubuf_store(isel_context* ctx, Temp descriptor, Temp voffset, Temp soffset, Temp vdata,
-                        unsigned const_offset = 0u, memory_sync_info sync = memory_sync_info(),
-                        bool slc = false, bool swizzled = false)
+emit_single_mubuf_store(isel_context* ctx, Temp descriptor, Temp voffset, Temp soffset, Temp idx, Temp vdata,
+                        unsigned const_offset, memory_sync_info sync, bool glc, bool slc,
+                        bool swizzled)
 {
    assert(vdata.id());
    assert(vdata.size() != 3 || ctx->program->gfx_level != GFX6);
@@ -5087,23 +5100,32 @@ emit_single_mubuf_store(isel_context* ctx, Temp descriptor, Temp voffset, Temp s
    aco_opcode op = get_buffer_store_op(vdata.bytes());
    const_offset = resolve_excess_vmem_const_offset(bld, voffset, const_offset);
 
-   Operand voffset_op = voffset.id() ? Operand(as_vgpr(ctx, voffset)) : Operand(v1);
+   bool offen = voffset.id();
+   bool idxen = idx.id();
+
    Operand soffset_op = soffset.id() ? Operand(soffset) : Operand::zero();
-   bool glc = ctx->program->gfx_level < GFX11;
+   glc &= ctx->program->gfx_level < GFX11;
+
+   Operand vaddr_op(v1);
+   if (offen && idxen)
+      vaddr_op = bld.pseudo(aco_opcode::p_create_vector, bld.def(v2), idx, voffset);
+   else if (offen)
+      vaddr_op = Operand(voffset);
+   else if (idxen)
+      vaddr_op = Operand(idx);
+
    Builder::Result r =
-      bld.mubuf(op, Operand(descriptor), voffset_op, soffset_op, Operand(vdata), const_offset,
-                /* offen */ !voffset_op.isUndefined(), /* swizzled */ swizzled,
-                /* idxen*/ false, /* addr64 */ false, /* disable_wqm */ false,
-                /* glc */ glc, /* dlc*/ false, /* slc */ slc);
+      bld.mubuf(op, Operand(descriptor), vaddr_op, soffset_op, Operand(vdata), const_offset,
+                offen, swizzled, idxen, /* addr64 */ false, /* disable_wqm */ false, glc,
+                /* dlc*/ false, slc);
 
    r.instr->mubuf().sync = sync;
 }
 
 void
-store_vmem_mubuf(isel_context* ctx, Temp src, Temp descriptor, Temp voffset, Temp soffset,
+store_vmem_mubuf(isel_context* ctx, Temp src, Temp descriptor, Temp voffset, Temp soffset, Temp idx,
                  unsigned base_const_offset, unsigned elem_size_bytes, unsigned write_mask,
-                 bool allow_combining = true, memory_sync_info sync = memory_sync_info(),
-                 bool slc = false)
+                 bool swizzled, memory_sync_info sync, bool glc, bool slc)
 {
    Builder bld(ctx->program, ctx->block);
    assert(elem_size_bytes == 1 || elem_size_bytes == 2 || elem_size_bytes == 4 || elem_size_bytes == 8);
@@ -5113,33 +5135,32 @@ store_vmem_mubuf(isel_context* ctx, Temp src, Temp descriptor, Temp voffset, Tem
    unsigned write_count = 0;
    Temp write_datas[32];
    unsigned offsets[32];
-   split_buffer_store(ctx, NULL, false, RegType::vgpr, src, write_mask, allow_combining ? 16 : 4,
+   split_buffer_store(ctx, NULL, false, RegType::vgpr, src, write_mask, swizzled ? 4 : 16,
                       &write_count, write_datas, offsets);
 
    for (unsigned i = 0; i < write_count; i++) {
       unsigned const_offset = offsets[i] + base_const_offset;
-      emit_single_mubuf_store(ctx, descriptor, voffset, soffset, write_datas[i], const_offset, sync,
-                              slc, !allow_combining);
+      emit_single_mubuf_store(ctx, descriptor, voffset, soffset, idx, write_datas[i], const_offset, sync,
+                              glc, slc, swizzled);
    }
 }
 
 void
-load_vmem_mubuf(isel_context* ctx, Temp dst, Temp descriptor, Temp voffset, Temp soffset,
+load_vmem_mubuf(isel_context* ctx, Temp dst, Temp descriptor, Temp voffset, Temp soffset, Temp idx,
                 unsigned base_const_offset, unsigned elem_size_bytes, unsigned num_components,
-                unsigned stride = 0u, bool allow_combining = true, bool allow_reorder = true,
-                bool slc = false, memory_sync_info sync = memory_sync_info())
+                unsigned swizzle_element_size, bool glc, bool slc, memory_sync_info sync)
 {
    assert(elem_size_bytes == 1 || elem_size_bytes == 2 || elem_size_bytes == 4 || elem_size_bytes == 8);
    assert((num_components * elem_size_bytes) == dst.bytes());
-   assert(!!stride != allow_combining);
 
    Builder bld(ctx->program, ctx->block);
 
    LoadEmitInfo info = {Operand(voffset), dst, num_components, elem_size_bytes, descriptor};
-   info.component_stride = allow_combining ? 0 : stride;
-   info.glc = true;
+   info.idx = idx;
+   info.component_stride = swizzle_element_size;
+   info.glc = glc;
    info.slc = slc;
-   info.swizzle_component_size = allow_combining ? 0 : 4;
+   info.swizzle_component_size = swizzle_element_size ? 4 : 0;
    info.align_mul = MIN2(elem_size_bytes, 4);
    info.align_offset = 0;
    info.soffset = soffset;
@@ -5263,9 +5284,37 @@ visit_store_output(isel_context* ctx, nir_intrinsic_instr* instr)
 }
 
 void
+emit_interp_instr_gfx11(isel_context* ctx, unsigned idx, unsigned component, Temp src, Temp dst,
+                        Temp prim_mask)
+{
+   Temp coord1 = emit_extract_vector(ctx, src, 0, v1);
+   Temp coord2 = emit_extract_vector(ctx, src, 1, v1);
+
+   Builder bld(ctx->program, ctx->block);
+
+   //TODO: this doesn't work in quad-divergent control flow
+
+   Temp p = bld.ldsdir(aco_opcode::lds_param_load, bld.def(v1), bld.m0(prim_mask), idx, component);
+
+   if (dst.regClass() == v2b) {
+      Temp p10 =
+         bld.vinterp_inreg(aco_opcode::v_interp_p10_f16_f32_inreg, bld.def(v1), p, coord1, p);
+      bld.vinterp_inreg(aco_opcode::v_interp_p2_f16_f32_inreg, Definition(dst), p, coord2, p10);
+   } else {
+      Temp p10 = bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, bld.def(v1), p, coord1, p);
+      bld.vinterp_inreg(aco_opcode::v_interp_p2_f32_inreg, Definition(dst), p, coord2, p10);
+   }
+}
+
+void
 emit_interp_instr(isel_context* ctx, unsigned idx, unsigned component, Temp src, Temp dst,
                   Temp prim_mask)
 {
+   if (ctx->options->gfx_level >= GFX11) {
+      emit_interp_instr_gfx11(ctx, idx, component, src, dst, prim_mask);
+      return;
+   }
+
    Temp coord1 = emit_extract_vector(ctx, src, 0, v1);
    Temp coord2 = emit_extract_vector(ctx, src, 1, v1);
 
@@ -5301,6 +5350,22 @@ emit_interp_instr(isel_context* ctx, unsigned idx, unsigned component, Temp src,
 
       bld.vintrp(aco_opcode::v_interp_p2_f32, Definition(dst), coord2, bld.m0(prim_mask), interp_p1,
                  idx, component);
+   }
+}
+
+void
+emit_interp_mov_instr(isel_context* ctx, unsigned idx, unsigned component, unsigned vertex_id,
+                      Temp dst, Temp prim_mask)
+{
+   Builder bld(ctx->program, ctx->block);
+   if (ctx->options->gfx_level >= GFX11) {
+      //TODO: this doesn't work in quad-divergent control flow and ignores vertex_id
+      Temp p = bld.ldsdir(aco_opcode::lds_param_load, bld.def(v1), bld.m0(prim_mask), idx, component);
+      uint16_t dpp_ctrl = dpp_quad_perm(0, 0, 0, 0);
+      bld.vop1_dpp(aco_opcode::v_mov_b32, Definition(dst), p, dpp_ctrl);
+   } else {
+      bld.vintrp(aco_opcode::v_interp_mov_f32, Definition(dst), Operand::c32(vertex_id),
+                 bld.m0(prim_mask), idx, component);
    }
 }
 
@@ -5720,8 +5785,7 @@ visit_load_input(isel_context* ctx, nir_intrinsic_instr* instr)
 
       if (instr->dest.ssa.num_components == 1 &&
           instr->dest.ssa.bit_size != 64) {
-         bld.vintrp(aco_opcode::v_interp_mov_f32, Definition(dst), Operand::c32(vertex_id),
-                    bld.m0(prim_mask), idx, component);
+         emit_interp_mov_instr(ctx, idx, component, vertex_id, dst, prim_mask);
       } else {
          unsigned num_components = instr->dest.ssa.num_components;
          if (instr->dest.ssa.bit_size == 64)
@@ -5731,9 +5795,8 @@ visit_load_input(isel_context* ctx, nir_intrinsic_instr* instr)
          for (unsigned i = 0; i < num_components; i++) {
             unsigned chan_component = (component + i) % 4;
             unsigned chan_idx = idx + (component + i) / 4;
-            vec->operands[i] = bld.vintrp(
-               aco_opcode::v_interp_mov_f32, bld.def(instr->dest.ssa.bit_size == 16 ? v2b : v1),
-               Operand::c32(vertex_id), bld.m0(prim_mask), chan_idx, chan_component);
+            vec->operands[i] = Operand(bld.tmp(instr->dest.ssa.bit_size == 16 ? v2b : v1));
+            emit_interp_mov_instr(ctx, chan_idx, chan_component, vertex_id, vec->operands[i].getTemp(), prim_mask);
          }
          vec->definitions[0] = Definition(dst);
          bld.insert(std::move(vec));
@@ -6024,8 +6087,8 @@ static MIMG_instruction*
 emit_mimg(Builder& bld, aco_opcode op, Definition dst, Temp rsrc, Operand samp,
           std::vector<Temp> coords, unsigned wqm_mask = 0, Operand vdata = Operand(v1))
 {
-   /* Limit NSA instructions to 3 dwords on GFX10 to avoid stability issues. */
-   unsigned max_nsa_size = bld.program->gfx_level >= GFX10_3 ? 13 : 5;
+   /* Limit NSA instructions to 3 dwords on GFX10/11 to avoid stability/encoding issues. */
+   unsigned max_nsa_size = bld.program->gfx_level == GFX10_3 ? 13 : 5;
    bool use_nsa = bld.program->gfx_level >= GFX10 && coords.size() <= max_nsa_size;
 
    if (!use_nsa) {
@@ -6111,6 +6174,8 @@ visit_bvh64_intersect_ray_amd(isel_context* ctx, nir_intrinsic_instr* instr)
    mimg->dmask = 0xf;
    mimg->unrm = true;
    mimg->r128 = true;
+
+   emit_split_vector(ctx, dst, instr->dest.ssa.num_components);
 }
 
 static std::vector<Temp>
@@ -7131,14 +7196,17 @@ visit_load_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
 {
    Builder bld(ctx->program, ctx->block);
 
+   bool idxen = !nir_src_is_const(intrin->src[3]) || nir_src_as_uint(intrin->src[3]);
+
    Temp dst = get_ssa_temp(ctx, &intrin->dest.ssa);
    Temp descriptor = bld.as_uniform(get_ssa_temp(ctx, intrin->src[0].ssa));
    Temp v_offset = as_vgpr(ctx, get_ssa_temp(ctx, intrin->src[1].ssa));
    Temp s_offset = bld.as_uniform(get_ssa_temp(ctx, intrin->src[2].ssa));
+   Temp idx = idxen ? as_vgpr(ctx, get_ssa_temp(ctx, intrin->src[3].ssa)) : Temp();
 
    bool swizzled = nir_intrinsic_is_swizzled(intrin);
-   bool reorder = nir_intrinsic_can_reorder(intrin);
    bool slc = nir_intrinsic_slc_amd(intrin);
+   bool glc = nir_intrinsic_access(intrin) & ACCESS_COHERENT;
 
    unsigned const_offset = nir_intrinsic_base(intrin);
    unsigned elem_size_bytes = intrin->dest.ssa.bit_size / 8u;
@@ -7148,19 +7216,25 @@ visit_load_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
    nir_variable_mode mem_mode = nir_intrinsic_memory_modes(intrin);
    memory_sync_info sync(aco_storage_mode_from_nir_mem_mode(mem_mode));
 
-   load_vmem_mubuf(ctx, dst, descriptor, v_offset, s_offset, const_offset, elem_size_bytes,
-                   num_components, swizzle_element_size, !swizzled, reorder, slc, sync);
+   load_vmem_mubuf(ctx, dst, descriptor, v_offset, s_offset, idx, const_offset, elem_size_bytes,
+                   num_components, swizzle_element_size, glc, slc, sync);
 }
 
 void
 visit_store_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
 {
+   Builder bld(ctx->program, ctx->block);
+
+   bool idxen = !nir_src_is_const(intrin->src[4]) || nir_src_as_uint(intrin->src[4]);
+
    Temp store_src = get_ssa_temp(ctx, intrin->src[0].ssa);
-   Temp descriptor = get_ssa_temp(ctx, intrin->src[1].ssa);
-   Temp v_offset = get_ssa_temp(ctx, intrin->src[2].ssa);
-   Temp s_offset = get_ssa_temp(ctx, intrin->src[3].ssa);
+   Temp descriptor = bld.as_uniform(get_ssa_temp(ctx, intrin->src[1].ssa));
+   Temp v_offset = as_vgpr(ctx, get_ssa_temp(ctx, intrin->src[2].ssa));
+   Temp s_offset = bld.as_uniform(get_ssa_temp(ctx, intrin->src[3].ssa));
+   Temp idx = idxen ? as_vgpr(ctx, get_ssa_temp(ctx, intrin->src[4].ssa)) : Temp();
 
    bool swizzled = nir_intrinsic_is_swizzled(intrin);
+   bool glc = nir_intrinsic_access(intrin) & ACCESS_COHERENT;
    bool slc = nir_intrinsic_slc_amd(intrin);
 
    unsigned const_offset = nir_intrinsic_base(intrin);
@@ -7170,8 +7244,8 @@ visit_store_buffer(isel_context* ctx, nir_intrinsic_instr* intrin)
    nir_variable_mode mem_mode = nir_intrinsic_memory_modes(intrin);
    memory_sync_info sync(aco_storage_mode_from_nir_mem_mode(mem_mode));
 
-   store_vmem_mubuf(ctx, store_src, descriptor, v_offset, s_offset, const_offset, elem_size_bytes,
-                    write_mask, !swizzled, sync, slc);
+   store_vmem_mubuf(ctx, store_src, descriptor, v_offset, s_offset, idx, const_offset, elem_size_bytes,
+                    write_mask, swizzled, sync, glc, slc);
 }
 
 void
@@ -7425,6 +7499,8 @@ visit_shared_atomic(isel_context* ctx, nir_intrinsic_instr* instr)
    if (num_operands == 4) {
       Temp data2 = as_vgpr(ctx, get_ssa_temp(ctx, instr->src[2].ssa));
       ds->operands[2] = Operand(data2);
+      if (bld.program->gfx_level >= GFX11)
+         std::swap(ds->operands[1], ds->operands[2]);
    }
    ds->operands[num_operands - 1] = m;
    ds->offset0 = offset;
@@ -10341,7 +10417,8 @@ visit_loop(isel_context* ctx, nir_loop* loop)
 }
 
 static void
-begin_divergent_if_then(isel_context* ctx, if_context* ic, Temp cond)
+begin_divergent_if_then(isel_context* ctx, if_context* ic, Temp cond,
+                        nir_selection_control sel_ctrl = nir_selection_control_none)
 {
    ic->cond = cond;
 
@@ -10355,6 +10432,7 @@ begin_divergent_if_then(isel_context* ctx, if_context* ic, Temp cond)
                                                               Format::PSEUDO_BRANCH, 1, 1));
    branch->definitions[0] = Definition(ctx->program->allocateTmp(s2));
    branch->operands[0] = Operand(cond);
+   branch->selection_control = sel_ctrl;
    ctx->block->instructions.push_back(std::move(branch));
 
    ic->BB_if_idx = ctx->block->index;
@@ -10385,7 +10463,8 @@ begin_divergent_if_then(isel_context* ctx, if_context* ic, Temp cond)
 }
 
 static void
-begin_divergent_if_else(isel_context* ctx, if_context* ic)
+begin_divergent_if_else(isel_context* ctx, if_context* ic,
+                        nir_selection_control sel_ctrl = nir_selection_control_none)
 {
    Block* BB_then_logical = ctx->block;
    append_logical_end(BB_then_logical);
@@ -10423,6 +10502,7 @@ begin_divergent_if_else(isel_context* ctx, if_context* ic)
    branch.reset(create_instruction<Pseudo_branch_instruction>(aco_opcode::p_branch,
                                                               Format::PSEUDO_BRANCH, 0, 1));
    branch->definitions[0] = Definition(ctx->program->allocateTmp(s2));
+   branch->selection_control = sel_ctrl;
    ctx->block->instructions.push_back(std::move(branch));
 
    ic->exec_potentially_empty_discard_old |= ctx->cf_info.exec_potentially_empty_discard;
@@ -10653,10 +10733,10 @@ visit_if(isel_context* ctx, nir_if* if_stmt)
        * *) Exceptions may be due to break and continue statements within loops
        **/
 
-      begin_divergent_if_then(ctx, &ic, cond);
+      begin_divergent_if_then(ctx, &ic, cond, if_stmt->control);
       visit_cf_list(ctx, &if_stmt->then_list);
 
-      begin_divergent_if_else(ctx, &ic);
+      begin_divergent_if_else(ctx, &ic, if_stmt->control);
       visit_cf_list(ctx, &if_stmt->else_list);
 
       end_divergent_if(ctx, &ic);
@@ -11889,8 +11969,8 @@ select_gs_copy_shader(Program* program, struct nir_shader* gs_shader, ac_shader_
 
             Temp val = bld.tmp(v1);
             unsigned const_offset = offset * program->info.gs.vertices_out * 16 * 4;
-            load_vmem_mubuf(&ctx, val, gsvs_ring, vtx_offset, Temp(), const_offset, 4, 1, 0u, true,
-                            true, true);
+            load_vmem_mubuf(&ctx, val, gsvs_ring, vtx_offset, Temp(), Temp(), const_offset, 4, 1, 0, true,
+                            true, memory_sync_info());
 
             ctx.outputs.mask[i] |= 1 << j;
             ctx.outputs.temps[i * 4u + j] = val;
@@ -12107,6 +12187,7 @@ select_vs_prolog(Program* program, const struct aco_vs_prolog_key* key, ac_shade
 
    init_program(program, compute_cs, info, options->gfx_level, options->family, options->wgp_mode,
                 config);
+   program->dev.vgpr_limit = 256;
 
    Block* block = program->create_and_insert_block();
    block->kind = block_kind_top_level;

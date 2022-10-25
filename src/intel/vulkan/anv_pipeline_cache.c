@@ -73,7 +73,8 @@ anv_shader_bin_create(struct anv_device *device,
                       uint32_t prog_data_size,
                       const struct brw_compile_stats *stats, uint32_t num_stats,
                       const nir_xfb_info *xfb_info_in,
-                      const struct anv_pipeline_bind_map *bind_map)
+                      const struct anv_pipeline_bind_map *bind_map,
+                      const struct anv_push_descriptor_info *push_desc_info)
 {
    VK_MULTIALLOC(ma);
    VK_MULTIALLOC_DECL(&ma, struct anv_shader_bin, shader, 1);
@@ -91,7 +92,9 @@ anv_shader_bin_create(struct anv_device *device,
    VK_MULTIALLOC_DECL(&ma, struct anv_pipeline_binding, surface_to_descriptor,
                            bind_map->surface_count);
    VK_MULTIALLOC_DECL(&ma, struct anv_pipeline_binding, sampler_to_descriptor,
-                           bind_map->sampler_count);
+                      bind_map->sampler_count);
+   VK_MULTIALLOC_DECL(&ma, struct brw_kernel_arg_desc, kernel_args,
+                      bind_map->kernel_arg_count);
 
    if (!vk_multialloc_alloc(&ma, &device->vk.alloc,
                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE))
@@ -169,6 +172,8 @@ anv_shader_bin_create(struct anv_device *device,
       shader->xfb_info = NULL;
    }
 
+   typed_memcpy(&shader->push_desc_info, push_desc_info, 1);
+
    shader->bind_map = *bind_map;
    typed_memcpy(surface_to_descriptor, bind_map->surface_to_descriptor,
                 bind_map->surface_count);
@@ -176,6 +181,9 @@ anv_shader_bin_create(struct anv_device *device,
    typed_memcpy(sampler_to_descriptor, bind_map->sampler_to_descriptor,
                 bind_map->sampler_count);
    shader->bind_map.sampler_to_descriptor = sampler_to_descriptor;
+   typed_memcpy(kernel_args, bind_map->kernel_args,
+                bind_map->kernel_arg_count);
+   shader->bind_map.kernel_args = kernel_args;
 
    return shader;
 }
@@ -211,6 +219,10 @@ anv_shader_bin_serialize(struct vk_pipeline_cache_object *object,
       blob_write_uint32(blob, 0);
    }
 
+   blob_write_uint32(blob, shader->push_desc_info.used_descriptors);
+   blob_write_uint32(blob, shader->push_desc_info.fully_promoted_ubo_descriptors);
+   blob_write_uint8(blob, shader->push_desc_info.used_set_buffer);
+
    blob_write_bytes(blob, shader->bind_map.surface_sha1,
                     sizeof(shader->bind_map.surface_sha1));
    blob_write_bytes(blob, shader->bind_map.sampler_sha1,
@@ -219,12 +231,20 @@ anv_shader_bin_serialize(struct vk_pipeline_cache_object *object,
                     sizeof(shader->bind_map.push_sha1));
    blob_write_uint32(blob, shader->bind_map.surface_count);
    blob_write_uint32(blob, shader->bind_map.sampler_count);
+   if (shader->stage == MESA_SHADER_KERNEL) {
+      uint32_t packed = (uint32_t)shader->bind_map.kernel_args_size << 16 |
+                        (uint32_t)shader->bind_map.kernel_arg_count;
+      blob_write_uint32(blob, packed);
+   }
    blob_write_bytes(blob, shader->bind_map.surface_to_descriptor,
                     shader->bind_map.surface_count *
                     sizeof(*shader->bind_map.surface_to_descriptor));
    blob_write_bytes(blob, shader->bind_map.sampler_to_descriptor,
                     shader->bind_map.sampler_count *
                     sizeof(*shader->bind_map.sampler_to_descriptor));
+   blob_write_bytes(blob, shader->bind_map.kernel_args,
+                    shader->bind_map.kernel_arg_count *
+                    sizeof(*shader->bind_map.kernel_args));
    blob_write_bytes(blob, shader->bind_map.push_ranges,
                     sizeof(shader->bind_map.push_ranges));
 
@@ -265,18 +285,31 @@ anv_shader_bin_deserialize(struct vk_device *vk_device,
    if (xfb_size)
       xfb_info = blob_read_bytes(blob, xfb_size);
 
-   struct anv_pipeline_bind_map bind_map;
+   struct anv_push_descriptor_info push_desc_info = {};
+   push_desc_info.used_descriptors = blob_read_uint32(blob);
+   push_desc_info.fully_promoted_ubo_descriptors = blob_read_uint32(blob);
+   push_desc_info.used_set_buffer = blob_read_uint8(blob);
+
+   struct anv_pipeline_bind_map bind_map = {};
    blob_copy_bytes(blob, bind_map.surface_sha1, sizeof(bind_map.surface_sha1));
    blob_copy_bytes(blob, bind_map.sampler_sha1, sizeof(bind_map.sampler_sha1));
    blob_copy_bytes(blob, bind_map.push_sha1, sizeof(bind_map.push_sha1));
    bind_map.surface_count = blob_read_uint32(blob);
    bind_map.sampler_count = blob_read_uint32(blob);
+   if (stage == MESA_SHADER_KERNEL) {
+      uint32_t packed = blob_read_uint32(blob);
+      bind_map.kernel_args_size = (uint16_t)(packed >> 16);
+      bind_map.kernel_arg_count = (uint16_t)packed;
+   }
    bind_map.surface_to_descriptor = (void *)
       blob_read_bytes(blob, bind_map.surface_count *
                             sizeof(*bind_map.surface_to_descriptor));
    bind_map.sampler_to_descriptor = (void *)
       blob_read_bytes(blob, bind_map.sampler_count *
                             sizeof(*bind_map.sampler_to_descriptor));
+   bind_map.kernel_args = (void *)
+      blob_read_bytes(blob, bind_map.kernel_arg_count *
+                            sizeof(*bind_map.kernel_args));
    blob_copy_bytes(blob, bind_map.push_ranges, sizeof(bind_map.push_ranges));
 
    if (blob->overrun)
@@ -287,7 +320,8 @@ anv_shader_bin_deserialize(struct vk_device *vk_device,
                             key_data, key_size,
                             kernel_data, kernel_size,
                             &prog_data.base, prog_data_size,
-                            stats, num_stats, xfb_info, &bind_map);
+                            stats, num_stats, xfb_info, &bind_map,
+                            &push_desc_info);
    if (shader == NULL)
       return NULL;
 
@@ -329,7 +363,8 @@ anv_device_upload_kernel(struct anv_device *device,
                          const struct brw_compile_stats *stats,
                          uint32_t num_stats,
                          const nir_xfb_info *xfb_info,
-                         const struct anv_pipeline_bind_map *bind_map)
+                         const struct anv_pipeline_bind_map *bind_map,
+                         const struct anv_push_descriptor_info *push_desc_info)
 {
    /* Use the default pipeline cache if none is specified */
    if (cache == NULL)
@@ -341,7 +376,8 @@ anv_device_upload_kernel(struct anv_device *device,
                             kernel_data, kernel_size,
                             prog_data, prog_data_size,
                             stats, num_stats,
-                            xfb_info, bind_map);
+                            xfb_info, bind_map,
+                            push_desc_info);
    if (shader == NULL)
       return NULL;
 

@@ -465,6 +465,9 @@ struct threaded_context_options {
     * safe to call without synchronizing with driver thread.
     */
    bool unsynchronized_get_device_reset_status;
+
+   /* If true, create_fence_fd doesn't access the context in the driver. */
+   bool unsynchronized_create_fence_fd;
 };
 
 struct threaded_context {
@@ -538,7 +541,6 @@ struct threaded_context {
    uint32_t image_buffers[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_IMAGES];
    uint32_t shader_buffers_writeable_mask[PIPE_SHADER_TYPES];
    uint64_t image_buffers_writeable_mask[PIPE_SHADER_TYPES];
-   /* Don't use PIPE_MAX_SHADER_SAMPLER_VIEWS because it's too large. */
    uint32_t sampler_buffers[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    struct tc_batch batch_slots[TC_MAX_BATCHES];

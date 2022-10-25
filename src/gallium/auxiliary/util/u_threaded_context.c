@@ -32,6 +32,7 @@
 #include "util/u_upload_mgr.h"
 #include "driver_trace/tr_context.h"
 #include "util/log.h"
+#include "util/perf/cpu_trace.h"
 #include "compiler/shader_info.h"
 
 #if TC_DEBUG >= 1
@@ -59,12 +60,18 @@ enum tc_call_id {
    TC_NUM_CALLS,
 };
 
-#if TC_DEBUG >= 3
+#if TC_DEBUG >= 3 || defined(TC_TRACE)
 static const char *tc_call_names[] = {
 #define CALL(name) #name,
 #include "u_threaded_context_calls.h"
 #undef CALL
 };
+#endif
+
+#ifdef TC_TRACE
+#  define TC_TRACE_SCOPE(call_id) MESA_TRACE_SCOPE(tc_call_names[call_id])
+#else
+#  define TC_TRACE_SCOPE(call_id)
 #endif
 
 typedef uint16_t (*tc_execute)(struct pipe_context *pipe, void *call, uint64_t *last);
@@ -208,6 +215,8 @@ tc_batch_execute(void *job, UNUSED void *gdata, int thread_index)
       tc_printf("CALL: %s", tc_call_names[call->call_id]);
 #endif
 
+      TC_TRACE_SCOPE(call->call_id);
+
       iter += execute_func[call->call_id](pipe, call, last);
    }
 
@@ -288,6 +297,7 @@ static void *
 tc_add_sized_call(struct threaded_context *tc, enum tc_call_id id,
                   unsigned num_slots)
 {
+   TC_TRACE_SCOPE(id);
    struct tc_batch *next = &tc->batch_slots[tc->next];
    assert(num_slots <= TC_SLOTS_PER_BATCH);
    tc_debug_check(tc);
@@ -392,6 +402,8 @@ _tc_sync(struct threaded_context *tc, UNUSED const char *info, UNUSED const char
    struct tc_batch *next = &tc->batch_slots[tc->next];
    bool synced = false;
 
+   MESA_TRACE_BEGIN(func);
+
    tc_debug_check(tc);
 
    /* Only wait for queued calls... */
@@ -421,10 +433,12 @@ _tc_sync(struct threaded_context *tc, UNUSED const char *info, UNUSED const char
 
       if (tc_strcmp(func, "tc_destroy") != 0) {
          tc_printf("sync %s %s", func, info);
-	  }
+      }
    }
 
    tc_debug_check(tc);
+
+   MESA_TRACE_END();
 }
 
 #define tc_sync(tc) _tc_sync(tc, "", __func__)
@@ -2989,7 +3003,9 @@ tc_create_fence_fd(struct pipe_context *_pipe,
    struct threaded_context *tc = threaded_context(_pipe);
    struct pipe_context *pipe = tc->pipe;
 
-   tc_sync(tc);
+   if (!tc->options.unsynchronized_create_fence_fd)
+      tc_sync(tc);
+
    pipe->create_fence_fd(pipe, fence, fd, type);
 }
 
@@ -3255,8 +3271,6 @@ is_next_call_a_mergeable_draw(struct tc_draw_single *first,
    if (next->base.call_id != TC_CALL_draw_single)
       return false;
 
-   simplify_draw_info(&next->info);
-
    STATIC_ASSERT(offsetof(struct pipe_draw_info, min_index) ==
                  sizeof(struct pipe_draw_info) - 8);
    STATIC_ASSERT(offsetof(struct pipe_draw_info, max_index) ==
@@ -3278,8 +3292,6 @@ tc_call_draw_single(struct pipe_context *pipe, void *call, uint64_t *last_ptr)
    /* If at least 2 consecutive draw calls can be merged... */
    if (next != last &&
        next->base.call_id == TC_CALL_draw_single) {
-      simplify_draw_info(&first->info);
-
       if (is_next_call_a_mergeable_draw(first, next)) {
          /* The maximum number of merged draws is given by the batch size. */
          struct pipe_draw_start_count_bias multi[TC_SLOTS_PER_BATCH / call_size(tc_draw_single)];
@@ -3471,6 +3483,7 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
          p->info.min_index = offset >> util_logbase2(index_size);
          p->info.max_index = draws[0].count;
          p->index_bias = draws[0].index_bias;
+         simplify_draw_info(&p->info);
       } else {
          /* Non-indexed call or indexed with a real index buffer. */
          struct tc_draw_single *p = drawid_offset > 0 ?
@@ -3490,6 +3503,7 @@ tc_draw_vbo(struct pipe_context *_pipe, const struct pipe_draw_info *info,
          p->info.min_index = draws[0].start;
          p->info.max_index = draws[0].count;
          p->index_bias = draws[0].index_bias;
+         simplify_draw_info(&p->info);
       }
 
       /* This must be after tc_add_call, which can flush the batch. */

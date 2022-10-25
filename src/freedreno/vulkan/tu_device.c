@@ -754,7 +754,7 @@ tu_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
             (VkPhysicalDeviceExtendedDynamicState2FeaturesEXT *)ext;
          features->extendedDynamicState2 = true;
          features->extendedDynamicState2LogicOp = true;
-         features->extendedDynamicState2PatchControlPoints = false;
+         features->extendedDynamicState2PatchControlPoints = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR: {
@@ -1025,7 +1025,7 @@ tu_get_physical_device_properties_1_2(struct tu_physical_device *pdevice,
    p->maxPerStageDescriptorUpdateAfterBindStorageBuffers = max_descriptor_set_size;
    p->maxPerStageDescriptorUpdateAfterBindSampledImages  = max_descriptor_set_size;
    p->maxPerStageDescriptorUpdateAfterBindStorageImages  = max_descriptor_set_size;
-   p->maxPerStageDescriptorUpdateAfterBindInputAttachments = max_descriptor_set_size;
+   p->maxPerStageDescriptorUpdateAfterBindInputAttachments = MAX_RTS;
    p->maxPerStageUpdateAfterBindResources                = max_descriptor_set_size;
    p->maxDescriptorSetUpdateAfterBindSamplers            = max_descriptor_set_size;
    p->maxDescriptorSetUpdateAfterBindUniformBuffers      = max_descriptor_set_size;
@@ -1034,7 +1034,7 @@ tu_get_physical_device_properties_1_2(struct tu_physical_device *pdevice,
    p->maxDescriptorSetUpdateAfterBindStorageBuffersDynamic = MAX_DYNAMIC_STORAGE_BUFFERS;
    p->maxDescriptorSetUpdateAfterBindSampledImages       = max_descriptor_set_size;
    p->maxDescriptorSetUpdateAfterBindStorageImages       = max_descriptor_set_size;
-   p->maxDescriptorSetUpdateAfterBindInputAttachments    = max_descriptor_set_size;
+   p->maxDescriptorSetUpdateAfterBindInputAttachments    = MAX_RTS;
 
    p->supportedDepthResolveModes    = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
    p->supportedStencilResolveModes  = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;

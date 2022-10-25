@@ -13,7 +13,6 @@ use mesa_rust_util::properties::Properties;
 use mesa_rust_util::ptr::*;
 use rusticl_opencl_gen::*;
 
-use std::cell::Cell;
 use std::cmp::Ordering;
 use std::os::raw::c_void;
 use std::ptr;
@@ -506,6 +505,14 @@ fn validate_image_desc(
     }
 
     Ok((desc, parent))
+}
+
+fn validate_image_bounds(i: &Mem, origin: CLVec<usize>, region: CLVec<usize>) -> CLResult<()> {
+    let bound = region + origin;
+    if bound > i.image_desc.api_size() {
+        return Err(CL_INVALID_VALUE);
+    }
+    Ok(())
 }
 
 fn desc_eq_no_buffer(a: &cl_image_desc, b: &cl_image_desc) -> bool {
@@ -1586,35 +1593,17 @@ pub fn enqueue_map_buffer(
         return Err(CL_INVALID_CONTEXT);
     }
 
-    if block {
-        let ptr = Arc::new(Cell::new(Ok(ptr::null_mut())));
-        let cloned = ptr.clone();
-        create_and_queue(
-            q,
-            CL_COMMAND_MAP_BUFFER,
-            evs,
-            event,
-            block,
-            Box::new(move |q, ctx| {
-                cloned.set(b.map_buffer(q, Some(ctx), offset, size));
-                Ok(())
-            }),
-        )?;
+    let ptr = b.map_buffer(&q, offset, size)?;
+    create_and_queue(
+        q,
+        CL_COMMAND_MAP_BUFFER,
+        evs,
+        event,
+        block,
+        Box::new(move |q, ctx| b.sync_shadow_buffer(q, ctx, ptr)),
+    )?;
 
-        ptr.get()
-    } else {
-        let ptr = b.map_buffer(&q, None, offset, size);
-        create_and_queue(
-            q,
-            CL_COMMAND_MAP_BUFFER,
-            evs,
-            event,
-            block,
-            Box::new(move |q, ctx| b.sync_shadow_buffer(q, ctx, true)),
-        )?;
-
-        ptr
-    }
+    Ok(ptr)
 
     // TODO
     // CL_MISALIGNED_SUB_BUFFER_OFFSET if buffer is a sub-buffer object and offset specified when the sub-buffer object is created is not aligned to CL_DEVICE_MEM_BASE_ADDR_ALIGN value for the device associated with queue. This error code is missing before version 1.1.
@@ -1666,6 +1655,10 @@ pub fn enqueue_read_image(
     let r = unsafe { CLVec::from_raw(region) };
     let o = unsafe { CLVec::from_raw(origin) };
 
+    // CL_INVALID_VALUE if the region being read or written specified by origin and region is out of
+    // bounds.
+    validate_image_bounds(&i, o, r)?;
+
     // If row_pitch (or input_row_pitch) is set to 0, the appropriate row pitch is calculated based
     // on the size of each element in bytes multiplied by width.
     if row_pitch == 0 {
@@ -1700,7 +1693,6 @@ pub fn enqueue_read_image(
         }),
     )
 
-    //• CL_INVALID_VALUE if the region being read or written specified by origin and region is out of bounds.
     //• CL_INVALID_VALUE if values in origin and region do not follow rules described in the argument description for origin and region.
     //• CL_INVALID_IMAGE_SIZE if image dimensions (image width, height, specified or compute row and/or slice pitch) for image are not supported by device associated with queue.
     //• CL_IMAGE_FORMAT_NOT_SUPPORTED if image format (image channel order and data type) for image are not supported by device associated with queue.
@@ -1752,6 +1744,10 @@ pub fn enqueue_write_image(
     let r = unsafe { CLVec::from_raw(region) };
     let o = unsafe { CLVec::from_raw(origin) };
 
+    // CL_INVALID_VALUE if the region being read or written specified by origin and region is out of
+    // bounds.
+    validate_image_bounds(&i, o, r)?;
+
     // If row_pitch (or input_row_pitch) is set to 0, the appropriate row pitch is calculated based
     // on the size of each element in bytes multiplied by width.
     if row_pitch == 0 {
@@ -1786,7 +1782,6 @@ pub fn enqueue_write_image(
         }),
     )
 
-    //• CL_INVALID_VALUE if the region being read or written specified by origin and region is out of bounds.
     //• CL_INVALID_VALUE if values in origin and region do not follow rules described in the argument description for origin and region.
     //• CL_INVALID_IMAGE_SIZE if image dimensions (image width, height, specified or compute row and/or slice pitch) for image are not supported by device associated with queue.
     //• CL_IMAGE_FORMAT_NOT_SUPPORTED if image format (image channel order and data type) for image are not supported by device associated with queue.
@@ -1829,6 +1824,14 @@ pub fn enqueue_copy_image(
     let dst_origin = unsafe { CLVec::from_raw(dst_origin) };
     let src_origin = unsafe { CLVec::from_raw(src_origin) };
 
+    // CL_INVALID_VALUE if the 2D or 3D rectangular region specified by src_origin and
+    // src_origin + region refers to a region outside src_image, ...
+    validate_image_bounds(&src_image, src_origin, region)?;
+
+    // ... or if the 2D or 3D rectangular region specified by dst_origin and dst_origin + region
+    // refers to a region outside dst_image.
+    validate_image_bounds(&dst_image, dst_origin, region)?;
+
     create_and_queue(
         q,
         CL_COMMAND_COPY_IMAGE,
@@ -1840,7 +1843,6 @@ pub fn enqueue_copy_image(
         }),
     )
 
-    //• CL_INVALID_VALUE if the 2D or 3D rectangular region specified by src_origin and src_origin + region refers to a region outside src_image, or if the 2D or 3D rectangular region specified by dst_origin and dst_origin + region refers to a region outside dst_image.
     //• CL_INVALID_VALUE if values in src_origin, dst_origin and region do not follow rules described in the argument description for src_origin, dst_origin and region.
     //• CL_INVALID_IMAGE_SIZE if image dimensions (image width, height, specified or compute row and/or slice pitch) for src_image or dst_image are not supported by device associated with queue.
     //• CL_IMAGE_FORMAT_NOT_SUPPORTED if image format (image channel order and data type) for src_image or dst_image are not supported by device associated with queue.
@@ -1876,6 +1878,10 @@ pub fn enqueue_fill_image(
     let region = unsafe { CLVec::from_raw(region.cast()) };
     let origin = unsafe { CLVec::from_raw(origin.cast()) };
 
+    // CL_INVALID_VALUE if the region being filled as specified by origin and region is out of
+    // bounds.
+    validate_image_bounds(&i, origin, region)?;
+
     // we have to copy memory and it's always a 4 component int value
     // TODO but not for CL_DEPTH
     let fill_color = unsafe { slice::from_raw_parts(fill_color.cast(), 4).to_vec() };
@@ -1888,7 +1894,6 @@ pub fn enqueue_fill_image(
         Box::new(move |q, ctx| i.fill_image(q, ctx, &fill_color, &origin, &region)),
     )
 
-    //• CL_INVALID_VALUE if the region being filled as specified by origin and region is out of bounds.
     //• CL_INVALID_VALUE if values in origin and region do not follow rules described in the argument description for origin and region.
     //• CL_INVALID_IMAGE_SIZE if image dimensions (image width, height, specified or compute row and/or slice pitch) for image are not supported by device associated with queue.
     //• CL_IMAGE_FORMAT_NOT_SUPPORTED if image format (image channel order and data type) for
@@ -2013,6 +2018,7 @@ pub fn enqueue_map_image(
     let block = check_cl_bool(blocking_map).ok_or(CL_INVALID_VALUE)?;
     let evs = event_list_from_cl(&q, num_events_in_wait_list, event_wait_list)?;
 
+    // CL_INVALID_VALUE ... or if values specified in map_flags are not valid.
     validate_map_flags(&i, map_flags)?;
 
     // CL_INVALID_CONTEXT if context associated with command_queue and image are not the same
@@ -2029,6 +2035,9 @@ pub fn enqueue_map_image(
     let region = unsafe { CLVec::from_raw(region) };
     let origin = unsafe { CLVec::from_raw(origin) };
 
+    // CL_INVALID_VALUE if region being mapped given by (origin, origin + region) is out of bounds
+    validate_image_bounds(&i, origin, region)?;
+
     let mut dummy_slice_pitch: usize = 0;
     let image_slice_pitch = if image_slice_pitch.is_null() {
         // CL_INVALID_VALUE if image is a 3D image, 1D or 2D image array object and
@@ -2041,62 +2050,25 @@ pub fn enqueue_map_image(
         unsafe { image_slice_pitch.as_mut().unwrap() }
     };
 
-    if block {
-        let res = Arc::new(Cell::new((Ok(ptr::null_mut()), 0, 0)));
-        let cloned = res.clone();
+    let ptr = i.map_image(
+        &q,
+        &origin,
+        &region,
+        unsafe { image_row_pitch.as_mut().unwrap() },
+        image_slice_pitch,
+    )?;
 
-        create_and_queue(
-            q.clone(),
-            CL_COMMAND_MAP_IMAGE,
-            evs,
-            event,
-            block,
-            // we don't really have anything to do here?
-            Box::new(move |q, ctx| {
-                let mut image_row_pitch = 0;
-                let mut image_slice_pitch = 0;
+    create_and_queue(
+        q.clone(),
+        CL_COMMAND_MAP_IMAGE,
+        evs,
+        event,
+        block,
+        Box::new(move |q, ctx| i.sync_shadow_image(q, ctx, ptr)),
+    )?;
 
-                let ptr = i.map_image(
-                    q,
-                    Some(ctx),
-                    &origin,
-                    &region,
-                    &mut image_row_pitch,
-                    &mut image_slice_pitch,
-                );
-                cloned.set((ptr, image_row_pitch, image_slice_pitch));
+    Ok(ptr)
 
-                Ok(())
-            }),
-        )?;
-
-        let res = res.get();
-        unsafe { *image_row_pitch = res.1 };
-        *image_slice_pitch = res.2;
-        res.0
-    } else {
-        let ptr = i.map_image(
-            &q,
-            None,
-            &origin,
-            &region,
-            unsafe { image_row_pitch.as_mut().unwrap() },
-            image_slice_pitch,
-        );
-
-        create_and_queue(
-            q.clone(),
-            CL_COMMAND_MAP_IMAGE,
-            evs,
-            event,
-            block,
-            Box::new(move |q, ctx| i.sync_shadow_image(q, ctx, true)),
-        )?;
-
-        ptr
-    }
-
-    //• CL_INVALID_VALUE if region being mapped given by (origin, origin + region) is out of bounds or if values specified in map_flags are not valid.
     //• CL_INVALID_VALUE if values in origin and region do not follow rules described in the argument description for origin and region.
     //• CL_INVALID_IMAGE_SIZE if image dimensions (image width, height, specified or compute row and/or slice pitch) for image are not supported by device associated with queue.
     //• CL_IMAGE_FORMAT_NOT_SUPPORTED if image format (image channel order and data type) for image are not supported by device associated with queue.

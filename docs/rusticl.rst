@@ -12,7 +12,7 @@ To build Rusticl you need to satisfy the following build dependencies:
 -  `SPIRV-Tools <https://github.com/KhronosGroup/SPIRV-Tools>`__
 -  `SPIRV-LLVM-Translator
    <https://github.com/KhronosGroup/SPIRV-LLVM-Translator>`__ for a
-   ``libLLVMSPIRVLib.so`` matching your version of LLVM, ie. if you're
+   ``libLLVMSPIRVLib.so`` matching your version of LLVM, i.e. if you're
    using LLVM 15 (``libLLVM.so.15``), then you need a
    ``libLLVMSPIRVLib.so.15``.
 
@@ -20,6 +20,7 @@ The minimum versions to build Rusticl are:
 
 -  Rust: 1.59
 -  Meson: 0.61.4
+-  Bindgen: 0.58.0
 -  LLVM: 11.0.0 (recommended: 15.0.0)
 -  SPIRV-Tools: any version (recommended: v2022.3)
 

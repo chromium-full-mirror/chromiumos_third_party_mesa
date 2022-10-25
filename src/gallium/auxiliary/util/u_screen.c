@@ -43,12 +43,12 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
    case PIPE_CAP_ANISOTROPIC_FILTER:
-   case PIPE_CAP_POINT_SPRITE:
       return 0;
 
    case PIPE_CAP_GRAPHICS:
    case PIPE_CAP_GL_CLAMP:
    case PIPE_CAP_MAX_RENDER_TARGETS:
+   case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_DITHERING:
       return 1;
 
@@ -76,11 +76,6 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_FS_COORD_ORIGIN_LOWER_LEFT:
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
-      return 0;
-
-   case PIPE_CAP_POINT_COORD_ORIGIN_UPPER_LEFT:
-      return 1;
-
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
    case PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE:
    case PIPE_CAP_DEPTH_CLAMP_ENABLE:
@@ -88,7 +83,6 @@ u_pipe_screen_get_param_defaults(struct pipe_screen *pscreen,
    case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
-   case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
    case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:

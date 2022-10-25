@@ -57,12 +57,37 @@ struct morton_args {
    REF(key_id_pair) ids;
 };
 
-struct internal_args {
+struct lbvh_internal_args {
    VOID_REF bvh;
    REF(key_id_pair) src_ids;
    REF(key_id_pair) dst_ids;
    uint32_t dst_offset;
-   uint32_t fill_count;
+   uint32_t src_count;
+};
+
+#define RADV_COPY_MODE_COPY        0
+#define RADV_COPY_MODE_SERIALIZE   1
+#define RADV_COPY_MODE_DESERIALIZE 2
+
+struct copy_args {
+   VOID_REF src_addr;
+   VOID_REF dst_addr;
+   uint32_t mode;
+};
+
+struct convert_internal_args {
+   VOID_REF intermediate_bvh;
+   VOID_REF output_bvh;
+   uint32_t output_bvh_offset;
+   uint32_t leaf_node_count;
+   uint32_t internal_node_count;
+   uint32_t geometry_type;
+};
+
+struct convert_leaf_args {
+   VOID_REF intermediate_bvh;
+   VOID_REF output_bvh;
+   uint32_t geometry_type;
 };
 
 #endif

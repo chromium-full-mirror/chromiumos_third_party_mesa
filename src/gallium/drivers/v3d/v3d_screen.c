@@ -131,7 +131,6 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_EMULATE_NONFIXED_PRIMITIVE_RESTART:
         case PIPE_CAP_PRIMITIVE_RESTART:
         case PIPE_CAP_OCCLUSION_QUERY:
-        case PIPE_CAP_POINT_SPRITE:
         case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
         case PIPE_CAP_DRAW_INDIRECT:
         case PIPE_CAP_MULTI_DRAW_INDIRECT:
@@ -226,7 +225,6 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
                         return 0;
 
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
-        case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
                 return 1;
 

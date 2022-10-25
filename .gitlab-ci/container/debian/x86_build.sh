@@ -29,7 +29,6 @@ apt-get install -y --no-remove \
       libclang-cpp11-dev \
       libgbm-dev \
       libglvnd-dev \
-      libllvmspirvlib-dev \
       liblua5.3-dev \
       libxcb-dri2-0-dev \
       libxcb-dri3-dev \
@@ -69,6 +68,10 @@ tar -xvf $XORGMACROS_VERSION.tar.bz2 && rm $XORGMACROS_VERSION.tar.bz2
 cd $XORGMACROS_VERSION; ./configure; make install; cd ..
 rm -rf $XORGMACROS_VERSION
 
+. .gitlab-ci/container/build-llvm-spirv.sh
+
+. .gitlab-ci/container/build-libclc.sh
+
 . .gitlab-ci/container/build-libdrm.sh
 
 . .gitlab-ci/container/build-wayland.sh
@@ -80,7 +83,7 @@ cd shader-db
 make
 popd
 
-git clone https://github.com/microsoft/DirectX-Headers -b v1.606.3 --depth 1
+git clone https://github.com/microsoft/DirectX-Headers -b v1.606.4 --depth 1
 mkdir -p DirectX-Headers/build
 pushd DirectX-Headers/build
 meson .. --backend=ninja --buildtype=release -Dbuild-test=false

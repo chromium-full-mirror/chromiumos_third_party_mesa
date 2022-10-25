@@ -1892,7 +1892,8 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
    vk_dynamic_graphics_state_fill(&pipeline->dynamic_state, state);
 
    pipeline->depth_clamp_enable = state->rs->depth_clamp_enable;
-   pipeline->depth_clip_enable = state->rs->depth_clip_enable;
+   pipeline->depth_clip_enable =
+      vk_rasterization_state_depth_clip_enable(state->rs);
    pipeline->view_mask = state->rp->view_mask;
 
    result = anv_graphics_pipeline_compile(pipeline, cache, pCreateInfo, state);
@@ -1931,7 +1932,7 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
       pipeline->instance_multiplier = util_bitcount(pipeline->view_mask);
 
    pipeline->negative_one_to_one =
-      state->vp != NULL && state->vp->negative_one_to_one;
+      state->vp != NULL && state->vp->depth_clip_negative_one_to_one;
 
    /* Store line mode, polygon mode and rasterization samples, these are used
     * for dynamic primitive topology.
