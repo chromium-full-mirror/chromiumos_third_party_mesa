@@ -140,7 +140,6 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_CONDITIONAL_RENDER:
         case PIPE_CAP_TEXTURE_BARRIER:
         case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
-        case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
         case PIPE_CAP_CLIP_HALFZ:
         case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
         case PIPE_CAP_LEGACY_MATH_RULES:
@@ -517,7 +516,7 @@ static const nir_shader_compiler_options r500_vs_compiler_options = {
    /* Have HW loops support and 1024 max instr count, but don't unroll *too*
     * hard.
     */
-   .max_unroll_iterations = 32,
+   .max_unroll_iterations = 29,
 };
 
 static const nir_shader_compiler_options r500_fs_compiler_options = {

@@ -1,4 +1,5 @@
 use mesa_rust_gen::*;
+use mesa_rust_util::bitset;
 
 use std::convert::TryInto;
 use std::ffi::c_void;
@@ -173,6 +174,10 @@ impl NirShader {
         unsafe { (*self.nir.as_ptr()).info.num_images }
     }
 
+    pub fn num_textures(&self) -> u8 {
+        unsafe { (*self.nir.as_ptr()).info.num_textures }
+    }
+
     pub fn reset_scratch_size(&self) {
         unsafe {
             (*self.nir.as_ptr()).scratch_size = 0;
@@ -259,6 +264,11 @@ impl NirShader {
             self.nir.as_mut().info.float_controls_execution_mode |=
                 float_controls::FLOAT_CONTROLS_DENORM_PRESERVE_FP16 as u16;
         }
+    }
+
+    pub fn reads_sysval(&self, sysval: gl_system_value) -> bool {
+        let nir = unsafe { self.nir.as_ref() };
+        bitset::test_bit(&nir.info.system_values_read, sysval as u32)
     }
 
     pub fn add_var(

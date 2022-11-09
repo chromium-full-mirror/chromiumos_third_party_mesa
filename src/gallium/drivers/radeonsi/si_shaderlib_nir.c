@@ -284,8 +284,16 @@ void *si_create_passthrough_tcs(struct si_context *sctx)
       sctx->b.screen->get_compiler_options(sctx->b.screen, PIPE_SHADER_IR_NIR,
                                            PIPE_SHADER_TESS_CTRL);
 
-   nir_shader *tcs = nir_create_passthrough_tcs(options, sctx->shader.vs.cso->nir,
-                                                sctx->patch_vertices);
+   unsigned locations[PIPE_MAX_SHADER_OUTPUTS];
+
+   struct si_shader_info *info = &sctx->shader.vs.cso->info;
+   for (unsigned i = 0; i < info->num_outputs; i++) {
+      locations[i] = info->output_semantic[i];
+   }
+
+   nir_shader *tcs =
+         nir_create_passthrough_tcs_impl(options, locations, info->num_outputs,
+                                         sctx->patch_vertices);
 
    return create_shader_state(sctx, tcs);
 }
@@ -339,12 +347,26 @@ static nir_ssa_def *image_resolve_msaa(nir_builder *b, nir_variable *img, unsign
       nir_push_else(b, NULL);
    }
 
+   /* We need to hide the constant sample indices behind the optimization barrier, otherwise
+    * LLVM doesn't put loads into the same clause.
+    *
+    * TODO: nir_group_loads could do this.
+    */
+   nir_ssa_def *sample_index[16];
+   for (unsigned i = 0; i < num_samples; i++)
+      sample_index[i] = nir_optimization_barrier_vgpr_amd(b, 32, nir_imm_int(b, i));
+
+   /* Load all samples. */
+   nir_ssa_def *samples[16];
+   for (unsigned i = 0; i < num_samples; i++) {
+      samples[i] = nir_image_deref_load(b, 4, 32, deref_ssa(b, img),
+                                        coord, sample_index[i], zero);
+   }
+
    /* Average all samples. (the only options on gfx11) */
    result = NULL;
    for (unsigned i = 0; i < num_samples; i++) {
-      nir_ssa_def *sample = nir_image_deref_load(b, 4, 32, deref_ssa(b, img),
-                                                 coord, nir_imm_int(b, i), zero);
-      result = result ? nir_fadd(b, result, sample) : sample;
+      result = i ? nir_fadd(b, result, samples[i]) : samples[i];
    }
    result = nir_fmul_imm(b, result, 1.0 / num_samples); /* average the sum */
 
@@ -369,6 +391,19 @@ static nir_ssa_def *apply_blit_output_modifiers(nir_builder *b, nir_ssa_def *col
 
    if (options->dst_is_srgb)
       color = convert_linear_to_srgb(b, color);
+
+   nir_ssa_def *zero = nir_imm_int(b, 0);
+   nir_ssa_def *one = options->use_integer_one ? nir_imm_int(b, 1) : nir_imm_float(b, 1);
+
+   /* Set channels not present in src to 0 or 1. This will eliminate code loading and resolving
+    * those channels.
+    */
+   for (unsigned chan = options->last_src_channel + 1; chan <= options->last_dst_channel; chan++)
+      color = nir_vector_insert_imm(b, color, chan == 3 ? one : zero, chan);
+
+   /* Discard channels not present in dst. The hardware fills unstored channels with 0. */
+   if (options->last_dst_channel < 3)
+      color = nir_trim_vector(b, color, options->last_dst_channel + 1);
 
    /* Convert to FP16 with rtz to match the pixel shader. Not necessary, but it helps verify
     * the behavior of the whole shader by comparing it to the gfx blit.
@@ -457,16 +492,18 @@ void *si_create_blit_cs(struct si_context *sctx, const union si_compute_blit_sha
    coord_src = nir_iadd(&b, coord_src, src_xyz);
 
    /* Clamp to edge for src, only X and Y because Z can't be out of bounds. */
-   unsigned src_clamp_channels = options->src_is_1d ? 0x1 : 0x3;
-   nir_ssa_def *dim = nir_image_deref_size(&b, 4, 32, deref_ssa(&b, img_src), zero);
-   dim = nir_channels(&b, dim, src_clamp_channels);
+   if (options->xy_clamp_to_edge) {
+      unsigned src_clamp_channels = options->src_is_1d ? 0x1 : 0x3;
+      nir_ssa_def *dim = nir_image_deref_size(&b, 4, 32, deref_ssa(&b, img_src), zero);
+      dim = nir_channels(&b, dim, src_clamp_channels);
 
-   nir_ssa_def *coord_src_clamped = nir_channels(&b, coord_src, src_clamp_channels);
-   coord_src_clamped = nir_imax(&b, coord_src_clamped, nir_imm_int(&b, 0));
-   coord_src_clamped = nir_imin(&b, coord_src_clamped, nir_iadd_imm(&b, dim, -1));
+      nir_ssa_def *coord_src_clamped = nir_channels(&b, coord_src, src_clamp_channels);
+      coord_src_clamped = nir_imax(&b, coord_src_clamped, nir_imm_int(&b, 0));
+      coord_src_clamped = nir_imin(&b, coord_src_clamped, nir_iadd_imm(&b, dim, -1));
 
-   for (unsigned i = 0; i < util_bitcount(src_clamp_channels); i++)
-      coord_src = nir_vector_insert_imm(&b, coord_src, nir_channel(&b, coord_src_clamped, i), i);
+      for (unsigned i = 0; i < util_bitcount(src_clamp_channels); i++)
+         coord_src = nir_vector_insert_imm(&b, coord_src, nir_channel(&b, coord_src_clamped, i), i);
+   }
 
    /* Swizzle coordinates for 1D_ARRAY. */
    static unsigned swizzle_xz[] = {0, 2, 0, 0};

@@ -6152,7 +6152,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
       be.AlphaTestFunction = translate_compare_func(cso_zsa->cso.alpha_func);
       be.AlphaToCoverageEnable = cso_blend->cso.alpha_to_coverage;
       be.AlphaToOneEnable = cso_blend->cso.alpha_to_one;
-      be.AlphaToCoverageDitherEnable = GFX_VER >= 7 && cso_blend->cso.alpha_to_coverage;
+      be.AlphaToCoverageDitherEnable = GFX_VER >= 7 && cso_blend->cso.alpha_to_coverage_dither;
       be.ColorDitherEnable = cso_blend->cso.dither;
 
 #if GFX_VER >= 8
@@ -6446,9 +6446,11 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
           */
          ps.VectorMaskEnable = GFX_VER >= 8 && wm_prog_data->uses_vmask;
 
-         ps._8PixelDispatchEnable = wm_prog_data->dispatch_8;
-         ps._16PixelDispatchEnable = wm_prog_data->dispatch_16;
-         ps._32PixelDispatchEnable = wm_prog_data->dispatch_32;
+         brw_fs_get_dispatch_enables(&batch->screen->devinfo, wm_prog_data,
+                                     ice->state.framebuffer.samples,
+                                     &ps._8PixelDispatchEnable,
+                                     &ps._16PixelDispatchEnable,
+                                     &ps._32PixelDispatchEnable);
 
          ps.DispatchGRFStartRegisterForConstantSetupData0 =
             brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, ps, 0);

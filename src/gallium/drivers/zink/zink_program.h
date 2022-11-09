@@ -44,6 +44,8 @@ zink_desc_type_from_vktype(VkDescriptorType type)
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
       return ZINK_DESCRIPTOR_TYPE_UBO;
+   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+   case VK_DESCRIPTOR_TYPE_SAMPLER:
    case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
       return ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW;
@@ -105,10 +107,10 @@ void *
 zink_create_gfx_shader_state(struct pipe_context *pctx, const struct pipe_shader_state *shader);
 
 unsigned
-zink_program_num_bindings_typed(const struct zink_program *pg, enum zink_descriptor_type type, bool is_compute);
+zink_program_num_bindings_typed(const struct zink_program *pg, enum zink_descriptor_type type);
 
 unsigned
-zink_program_num_bindings(const struct zink_program *pg, bool is_compute);
+zink_program_num_bindings(const struct zink_program *pg);
 
 bool
 zink_program_descriptor_is_buffer(struct zink_context *ctx, gl_shader_stage stage, enum zink_descriptor_type type, unsigned i);
@@ -221,7 +223,7 @@ zink_program_reference(struct zink_screen *screen,
 }
 
 VkPipelineLayout
-zink_pipeline_layout_create(struct zink_screen *screen, struct zink_program *pg, uint32_t *compat);
+zink_pipeline_layout_create(struct zink_screen *screen, VkDescriptorSetLayout *dsl, unsigned num_dsl, bool is_compute);
 
 void
 zink_program_update_compute_pipeline_state(struct zink_context *ctx, struct zink_compute_program *comp, const uint block[3]);
@@ -253,6 +255,20 @@ zink_get_fs_key(struct zink_context *ctx)
    return zink_screen(ctx->base.screen)->optimal_keys ?
           &ctx->gfx_pipeline_state.shader_keys_optimal.key.fs :
           &ctx->gfx_pipeline_state.shader_keys.key[MESA_SHADER_FRAGMENT].key.fs;
+}
+
+static inline struct zink_gs_key *
+zink_set_gs_key(struct zink_context *ctx)
+{
+   ctx->dirty_gfx_stages |= BITFIELD_BIT(MESA_SHADER_GEOMETRY);
+   assert(!zink_screen(ctx->base.screen)->optimal_keys);
+   return &ctx->gfx_pipeline_state.shader_keys.key[MESA_SHADER_GEOMETRY].key.gs;
+}
+
+static inline const struct zink_gs_key *
+zink_get_gs_key(struct zink_context *ctx)
+{
+   return &ctx->gfx_pipeline_state.shader_keys.key[MESA_SHADER_GEOMETRY].key.gs;
 }
 
 static inline bool
@@ -323,6 +339,9 @@ zink_set_fs_point_coord_key(struct zink_context *ctx)
       zink_set_fs_key(ctx)->coord_replace_yinvert = coord_replace_yinvert;
    }
 }
+
+void
+zink_set_line_stipple_keys(struct zink_context *ctx);
 
 static inline const struct zink_shader_key_base *
 zink_get_shader_key_base(struct zink_context *ctx, gl_shader_stage pstage)

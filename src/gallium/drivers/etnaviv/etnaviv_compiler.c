@@ -41,6 +41,9 @@ etna_compiler_create(const char *renderer, const struct etna_specs *specs)
       .fuse_ffma16 = true,
       .fuse_ffma32 = true,
       .fuse_ffma64 = true,
+      .lower_uadd_carry = true,
+      .lower_usub_borrow = true,
+      .lower_mul_high = true,
       .lower_bitops = true,
       .lower_all_io_to_temps = true,
       .vertex_id_zero_based = true,
@@ -51,6 +54,8 @@ etna_compiler_create(const char *renderer, const struct etna_specs *specs)
       .lower_insert_byte = true,
       .lower_insert_word = true,
       .lower_fdiv = true, /* !specs->has_new_transcendentals */
+      .lower_extract_byte = true,
+      .lower_extract_word = true,
       .lower_fsign = !specs->has_sign_floor_ceil,
       .lower_ffloor = !specs->has_sign_floor_ceil,
       .lower_fceil = !specs->has_sign_floor_ceil,

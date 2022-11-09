@@ -146,19 +146,16 @@ enum zink_descriptor_type {
    ZINK_DESCRIPTOR_NON_BINDLESS_TYPES = ZINK_DESCRIPTOR_BASE_TYPES + 1, /**< for struct sizing */
 };
 
-enum zink_descriptor_mode {
-   ZINK_DESCRIPTOR_MODE_AUTO,
-   ZINK_DESCRIPTOR_MODE_LAZY,
-};
-
 /* indexing for descriptor template management */
 enum zink_descriptor_size_index {
    ZDS_INDEX_UBO,
    ZDS_INDEX_COMBINED_SAMPLER,
    ZDS_INDEX_UNIFORM_TEXELS,
+   ZDS_INDEX_SAMPLER,
    ZDS_INDEX_STORAGE_BUFFER,
    ZDS_INDEX_STORAGE_IMAGE,
    ZDS_INDEX_STORAGE_TEXELS,
+   ZDS_INDEX_MAX,
 };
 
 /* indexing for descriptor template management in COMPACT mode */
@@ -167,6 +164,7 @@ enum zink_descriptor_size_index_compact {
    ZDS_INDEX_COMP_STORAGE_BUFFER,
    ZDS_INDEX_COMP_COMBINED_SAMPLER,
    ZDS_INDEX_COMP_UNIFORM_TEXELS,
+   ZDS_INDEX_COMP_SAMPLER,
    ZDS_INDEX_COMP_STORAGE_IMAGE,
    ZDS_INDEX_COMP_STORAGE_TEXELS,
 };
@@ -203,6 +201,7 @@ enum zink_debug {
    ZINK_DEBUG_NOREORDER = (1<<6),
    ZINK_DEBUG_GPL = (1<<7),
    ZINK_DEBUG_SHADERDB = (1<<8),
+   ZINK_DEBUG_RP = (1<<9),
 };
 
 
@@ -289,7 +288,7 @@ struct zink_rasterizer_hw_state {
 
 struct zink_rasterizer_state {
    struct pipe_rasterizer_state base;
-   bool offset_point, offset_line, offset_tri;
+   bool offset_fill;
    float offset_units, offset_clamp, offset_scale;
    float line_width;
    VkFrontFace front_face;
@@ -502,7 +501,6 @@ struct zink_batch_state {
    struct zink_resource *swapchain;
    struct util_dynarray acquires;
    struct util_dynarray acquire_flags;
-   struct util_dynarray dead_swapchains;
    struct util_dynarray unref_semaphores;
 
    struct util_queue_fence flush_completed;
@@ -651,6 +649,7 @@ struct zink_shader_info {
    struct pipe_stream_output_info so_info;
    unsigned so_info_slots[PIPE_MAX_SO_OUTPUTS];
    uint32_t so_propagate; //left shifted by 32
+   uint32_t sampler_mask;
    bool last_vertex;
    bool have_xfb;
    bool have_sparse;
@@ -676,15 +675,22 @@ struct zink_shader {
    uint32_t ssbos_used; // bitfield of which ssbo indices are used
    bool bindless;
    bool can_inline;
+   bool has_uniforms;
    struct spirv_shader *spirv;
 
    simple_mtx_t lock;
    struct set *programs;
 
    union {
-      struct zink_shader *generated; // a generated shader that this shader "owns"
-      bool is_generated; // if this is a driver-created shader (e.g., tcs)
-      nir_variable *fbfetch; //for fs output
+      struct {
+         struct zink_shader *generated_tcs; // a generated shader that this shader "owns"; only valid in the tes stage
+         struct zink_shader *generated_gs; // a generated shader that this shader "owns"
+         bool is_generated; // if this is a driver-created shader (e.g., tcs)
+      } non_fs;
+
+      struct {
+         nir_variable *fbfetch; //for fs output
+      } fs;
    };
 };
 
@@ -788,15 +794,30 @@ struct zink_compute_pipeline_state {
 
 
 /** program types */
+
+/* create_gfx_pushconst must be kept in sync with this struct */
 struct zink_gfx_push_constant {
    unsigned draw_mode_is_indexed;
    unsigned draw_id;
+   unsigned framebuffer_is_layered;
    float default_inner_level[2];
    float default_outer_level[4];
+   uint32_t line_stipple_pattern;
+   float viewport_scale[2];
 };
 
-struct zink_cs_push_constant {
-   unsigned work_dim;
+/* The order of the enums MUST match the order of the zink_gfx_push_constant
+ * members.
+ */
+enum zink_gfx_push_constant_member {
+   ZINK_GFX_PUSHCONST_DRAW_MODE_IS_INDEXED,
+   ZINK_GFX_PUSHCONST_DRAW_ID,
+   ZINK_GFX_PUSHCONST_FRAMEBUFFER_IS_LAYERED,
+   ZINK_GFX_PUSHCONST_DEFAULT_INNER_LEVEL,
+   ZINK_GFX_PUSHCONST_DEFAULT_OUTER_LEVEL,
+   ZINK_GFX_PUSHCONST_LINE_STIPPLE_PATTERN,
+   ZINK_GFX_PUSHCONST_VIEWPORT_SCALE,
+   ZINK_GFX_PUSHCONST_MAX
 };
 
 /* a shader module is used for directly reusing a shader module between programs,
@@ -1250,6 +1271,7 @@ struct zink_screen {
    struct zink_modifier_prop modifier_props[PIPE_FORMAT_COUNT];
 
    VkExtent2D maxSampleLocationGridSize[5];
+   VkPipelineLayout gfx_push_constant_layout;
 
    struct {
       bool broken_l4a4;
@@ -1257,6 +1279,9 @@ struct zink_screen {
       bool implicit_sync;
       bool always_feedback_loop;
       bool always_feedback_loop_zs;
+      bool needs_sanitised_layer;
+      bool track_renderpasses;
+      bool no_linestipple;
       unsigned z16_unscaled_bias;
       unsigned z24_unscaled_bias;
    } driver_workarounds;
@@ -1270,31 +1295,37 @@ zink_screen(struct pipe_screen *pipe)
 
 /** surface types */
 
+/* info for validating/creating imageless framebuffers */
 struct zink_surface_info {
    VkImageCreateFlags flags;
    VkImageUsageFlags usage;
    uint32_t width;
    uint32_t height;
    uint32_t layerCount;
-   VkFormat format[2];
+   VkFormat format[2]; //base format, srgb format (for srgb framebuffer)
 };
 
+/* an imageview for a zink_resource:
+   - may be a fb attachment, samplerview, or shader image
+   - cached on the parent zink_resource_object
+   - also handles swapchains
+ */
 struct zink_surface {
    struct pipe_surface base;
+   /* all the info for creating a new imageview */
    VkImageViewCreateInfo ivci;
    VkImageViewUsageCreateInfo usage_info;
-   struct zink_surface_info info; //TODO: union with fb refs
-   uint32_t info_hash;
+   /* for framebuffer use */
+   struct zink_surface_info info;
    bool is_swapchain;
+   /* the current imageview */
    VkImageView image_view;
-   void *dt;
+   /* array of imageviews for swapchains, one for each image */
    VkImageView *swapchain;
    unsigned swapchain_size;
-   VkImageView *old_swapchain;
-   unsigned old_swapchain_size;
-   VkImageView simage_view;//old iview after storage replacement/rebind
-   void *obj; //backing resource object
-   uint32_t hash;
+   void *obj; //backing resource object; used to determine rebinds
+   void *dt; //current swapchain object; used to determine swapchain rebinds
+   uint32_t hash; //for surface caching
 };
 
 /* wrapper object that preserves the gallium expectation of having
@@ -1302,10 +1333,10 @@ struct zink_surface {
  */
 struct zink_ctx_surface {
    struct pipe_surface base;
-   struct zink_surface *surf;
-   struct zink_ctx_surface *transient; //zink_ctx_surface
-   /* TODO: need replicate EXT */
-   bool transient_init;
+   struct zink_surface *surf; //the actual surface
+   /* TODO: use VK_EXT_multisampled_render_to_single_sampled */
+   struct zink_ctx_surface *transient; //for use with EXT_multisample_render_to_texture
+   bool transient_init; //whether the transient surface has data
 };
 
 /* use this cast for framebuffer surfaces */
@@ -1519,6 +1550,7 @@ struct zink_context {
    struct {
       VkRenderingAttachmentInfo attachments[PIPE_MAX_COLOR_BUFS + 2]; //+depth, +stencil
       VkRenderingInfo info;
+      struct tc_renderpass_info tc_info;
    } dynamic_fb;
    uint32_t fb_layer_mismatch; //bitmask
    unsigned depth_bias_scale_factor;
@@ -1642,6 +1674,7 @@ struct zink_context {
 
    bool is_device_lost;
    bool primitive_restart;
+   bool blitting : 1;
    bool vertex_state_changed : 1;
    bool blend_state_changed : 1;
    bool sample_mask_changed : 1;
@@ -1649,6 +1682,7 @@ struct zink_context {
    bool dsa_state_changed : 1;
    bool stencil_ref_changed : 1;
    bool rasterizer_discard_changed : 1;
+   bool rp_tc_info_updated : 1;
 };
 
 static inline struct zink_context *

@@ -26,6 +26,7 @@
  */
 
 #include "zink_context.h"
+#include "zink_compiler.h"
 #include "zink_descriptors.h"
 #include "zink_program.h"
 #include "zink_render_pass.h"
@@ -308,7 +309,7 @@ init_template_entry(struct zink_shader *shader, enum zink_descriptor_type type,
                     unsigned idx, VkDescriptorUpdateTemplateEntry *entry, unsigned *entry_idx)
 {
     int index = shader->bindings[type][idx].index;
-    gl_shader_stage stage = shader->nir->info.stage;
+    gl_shader_stage stage = clamp_stage(shader->nir);
     entry->dstArrayElement = 0;
     entry->dstBinding = shader->bindings[type][idx].binding;
     entry->descriptorCount = shader->bindings[type][idx].size;
@@ -323,6 +324,8 @@ init_template_entry(struct zink_shader *shader, enum zink_descriptor_type type,
        entry->offset = offsetof(struct zink_context, di.ubos[stage][index]);
        entry->stride = sizeof(VkDescriptorBufferInfo);
        break;
+    case VK_DESCRIPTOR_TYPE_SAMPLER:
+    case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
     case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
        entry->offset = offsetof(struct zink_context, di.textures[stage][index]);
        entry->stride = sizeof(VkDescriptorImageInfo);
@@ -357,7 +360,8 @@ descriptor_program_num_sizes(VkDescriptorPoolSize *sizes, enum zink_descriptor_t
       return !!sizes[ZDS_INDEX_UBO].descriptorCount;
    case ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW:
       return !!sizes[ZDS_INDEX_COMBINED_SAMPLER].descriptorCount +
-             !!sizes[ZDS_INDEX_UNIFORM_TEXELS].descriptorCount;
+             !!sizes[ZDS_INDEX_UNIFORM_TEXELS].descriptorCount +
+             !!sizes[ZDS_INDEX_SAMPLER].descriptorCount;
    case ZINK_DESCRIPTOR_TYPE_SSBO:
       return !!sizes[ZDS_INDEX_STORAGE_BUFFER].descriptorCount;
    case ZINK_DESCRIPTOR_TYPE_IMAGE:
@@ -377,6 +381,7 @@ descriptor_program_num_sizes_compact(VkDescriptorPoolSize *sizes, unsigned desc_
    case ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW:
       return !!sizes[ZDS_INDEX_COMP_COMBINED_SAMPLER].descriptorCount +
              !!sizes[ZDS_INDEX_COMP_UNIFORM_TEXELS].descriptorCount +
+             !!sizes[ZDS_INDEX_COMP_SAMPLER].descriptorCount +
              !!sizes[ZDS_INDEX_COMP_STORAGE_IMAGE].descriptorCount +
              !!sizes[ZDS_INDEX_COMP_STORAGE_TEXELS].descriptorCount;
    case ZINK_DESCRIPTOR_TYPE_SSBO:
@@ -400,7 +405,7 @@ zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg)
    uint8_t has_bindings = 0;
    unsigned push_count = 0;
    uint16_t num_type_sizes[ZINK_DESCRIPTOR_BASE_TYPES];
-   VkDescriptorPoolSize sizes[6] = {0}; //zink_descriptor_size_index
+   VkDescriptorPoolSize sizes[ZDS_INDEX_MAX] = {0}; //zink_descriptor_size_index
 
    struct zink_shader **stages;
    if (pg->is_compute)
@@ -423,19 +428,16 @@ zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg)
       if (!shader)
          continue;
 
-      gl_shader_stage stage = shader->nir->info.stage;
+      gl_shader_stage stage = clamp_stage(shader->nir);
       VkShaderStageFlagBits stage_flags = mesa_to_vk_shader_stage(stage);
+      /* uniform ubos handled in push */
+      if (shader->has_uniforms) {
+         pg->dd.push_usage |= BITFIELD64_BIT(stage);
+         push_count++;
+      }
       for (int j = 0; j < ZINK_DESCRIPTOR_BASE_TYPES; j++) {
          unsigned desc_type = screen->desc_set_id[j] - 1;
          for (int k = 0; k < shader->num_bindings[j]; k++) {
-            /* dynamic ubos handled in push */
-            if (shader->bindings[j][k].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) {
-               pg->dd.push_usage |= BITFIELD64_BIT(stage);
-
-               push_count++;
-               continue;
-            }
-
             assert(num_bindings[desc_type] < ARRAY_SIZE(bindings[desc_type]));
             VkDescriptorSetLayoutBinding *binding = &bindings[desc_type][num_bindings[desc_type]];
             binding->binding = shader->bindings[j][k].binding;
@@ -460,7 +462,9 @@ zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg)
    }
    pg->dd.binding_usage = has_bindings;
    if (!has_bindings && !push_count && !pg->dd.bindless) {
-      pg->layout = zink_pipeline_layout_create(screen, pg, &pg->compat_id);
+      pg->layout = zink_pipeline_layout_create(screen, pg->dsl, pg->num_dsl, pg->is_compute);
+      if (pg->layout)
+         pg->compat_id = _mesa_hash_data(pg->dsl, pg->num_dsl * sizeof(pg->dsl[0]));
       return !!pg->layout;
    }
 
@@ -485,8 +489,8 @@ zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg)
                                                       zink_descriptor_type_to_size_idx(desc_type);
          /* some sets can have multiple descriptor types: ensure the size arrays for these types are contiguous for creating the pool key */
          VkDescriptorPoolSize *sz = &sizes[idx];
-         VkDescriptorPoolSize sz2[4];
-         if (screen->compact_descriptors) {
+         VkDescriptorPoolSize sz2[5];
+         if (screen->compact_descriptors || (pg->is_compute && stages[0]->nir->info.stage == MESA_SHADER_KERNEL)) {
             unsigned found = 0;
             while (found < num_type_sizes[desc_type]) {
                if (sz->descriptorCount) {
@@ -524,9 +528,10 @@ zink_descriptor_program_init(struct zink_context *ctx, struct zink_program *pg)
       pg->dd.binding_usage |= BITFIELD_MASK(ZINK_DESCRIPTOR_BASE_TYPES);
    }
 
-   pg->layout = zink_pipeline_layout_create(screen, pg, &pg->compat_id);
+   pg->layout = zink_pipeline_layout_create(screen, pg->dsl, pg->num_dsl, pg->is_compute);
    if (!pg->layout)
       return false;
+   pg->compat_id = _mesa_hash_data(pg->dsl, pg->num_dsl * sizeof(pg->dsl[0]));
 
    VkDescriptorUpdateTemplateCreateInfo template[ZINK_DESCRIPTOR_NON_BINDLESS_TYPES] = {0};
    /* type of template */
@@ -915,7 +920,7 @@ zink_descriptors_update(struct zink_context *ctx, bool is_compute)
    if (batch_changed) {
       /* update all sets and bind null sets */
       ctx->dd.state_changed[is_compute] = pg->dd.binding_usage & BITFIELD_MASK(ZINK_DESCRIPTOR_TYPE_UNIFORMS);
-      ctx->dd.push_state_changed[is_compute] = !!pg->dd.push_usage;
+      ctx->dd.push_state_changed[is_compute] = !!pg->dd.push_usage || ctx->dd.has_fbfetch != bs->dd.has_fbfetch;
    }
 
    if (pg != bs->dd.pg[is_compute]) {
@@ -935,15 +940,6 @@ zink_descriptors_update(struct zink_context *ctx, bool is_compute)
    }
 
    uint8_t changed_sets = pg->dd.binding_usage & ctx->dd.state_changed[is_compute];
-   bool need_push = pg->dd.push_usage &&
-                    (ctx->dd.push_state_changed[is_compute] || batch_changed);
-   VkDescriptorSet push_set = VK_NULL_HANDLE;
-   if (need_push && !have_KHR_push_descriptor) {
-      struct zink_descriptor_pool *pool = check_push_pool_alloc(ctx, &bs->dd.push_pool[pg->is_compute], bs, pg->is_compute);
-      push_set = get_descriptor_set(pool);
-      if (!push_set)
-         mesa_loge("ZINK: failed to get push descriptor set! prepare to crash!");
-   }
    /*
     * when binding a pipeline, the pipeline can correctly access any previously bound
     * descriptor sets which were bound with compatible pipeline layouts
@@ -957,13 +953,17 @@ zink_descriptors_update(struct zink_context *ctx, bool is_compute)
                                                         pg->layout, 0, ctx);
       } else {
          if (ctx->dd.push_state_changed[is_compute]) {
+            struct zink_descriptor_pool *pool = check_push_pool_alloc(ctx, &bs->dd.push_pool[pg->is_compute], bs, pg->is_compute);
+            VkDescriptorSet push_set = get_descriptor_set(pool);
+            if (!push_set)
+               mesa_loge("ZINK: failed to get push descriptor set! prepare to crash!");
             VKCTX(UpdateDescriptorSetWithTemplate)(screen->dev, push_set, pg->dd.templates[0], ctx);
             bs->dd.sets[is_compute][0] = push_set;
          }
-         assert(push_set || bs->dd.sets[is_compute][0]);
+         assert(bs->dd.sets[is_compute][0]);
          VKCTX(CmdBindDescriptorSets)(bs->cmdbuf,
                                  is_compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                 pg->layout, 0, 1, push_set ? &push_set : &bs->dd.sets[is_compute][0],
+                                 pg->layout, 0, 1, &bs->dd.sets[is_compute][0],
                                  0, NULL);
       }
    }

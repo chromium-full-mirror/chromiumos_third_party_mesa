@@ -214,6 +214,13 @@ void finish_to_hw_instr_test()
    aco_print_program(program.get(), output);
 }
 
+void finish_waitcnt_test()
+{
+   finish_program(program.get());
+   aco::insert_wait_states(program.get());
+   aco_print_program(program.get(), output);
+}
+
 void finish_insert_nops_test()
 {
    finish_program(program.get());
@@ -336,6 +343,16 @@ Temp fsat(Temp src, Builder b)
    else
       return b.vop3(aco_opcode::v_med3_f32, b.def(v1), Operand::zero(),
                     Operand::c32(0x3f800000u), src);
+}
+
+Temp fmin(Temp src0, Temp src1, Builder b)
+{
+   return b.vop2(aco_opcode::v_min_f32, b.def(v1), src0, src1);
+}
+
+Temp fmax(Temp src0, Temp src1, Builder b)
+{
+   return b.vop2(aco_opcode::v_max_f32, b.def(v1), src0, src1);
 }
 
 Temp ext_ushort(Temp src, unsigned idx, Builder b)

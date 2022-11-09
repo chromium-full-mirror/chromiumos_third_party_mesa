@@ -13,9 +13,13 @@
 #include "venus-protocol/vn_protocol_driver_command_buffer.h"
 #include "venus-protocol/vn_protocol_driver_command_pool.h"
 
+#include "vn_descriptor_set.h"
 #include "vn_device.h"
 #include "vn_image.h"
 #include "vn_render_pass.h"
+
+static void
+vn_cmd_submit(struct vn_command_buffer *cmd);
 
 #define VN_CMD_ENQUEUE(cmd_name, commandBuffer, ...)                         \
    do {                                                                      \
@@ -27,6 +31,9 @@
          vn_encode_##cmd_name(&_cmd->cs, 0, commandBuffer, ##__VA_ARGS__);   \
       else                                                                   \
          _cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;                      \
+                                                                             \
+      if (VN_PERF(NO_CMD_BATCHING))                                          \
+         vn_cmd_submit(_cmd);                                                \
    } while (0)
 
 static bool
@@ -638,6 +645,14 @@ vn_DestroyCommandPool(VkDevice device,
    vk_free(alloc, pool);
 }
 
+static void
+vn_cmd_reset(struct vn_command_buffer *cmd)
+{
+   vn_cs_encoder_reset(&cmd->cs);
+   cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
+   cmd->draw_cmd_batched = 0;
+}
+
 VkResult
 vn_ResetCommandPool(VkDevice device,
                     VkCommandPool commandPool,
@@ -649,8 +664,7 @@ vn_ResetCommandPool(VkDevice device,
 
    list_for_each_entry_safe(struct vn_command_buffer, cmd,
                             &pool->command_buffers, head) {
-      vn_cs_encoder_reset(&cmd->cs);
-      cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
+      vn_cmd_reset(cmd);
    }
 
    vn_async_vkResetCommandPool(dev->instance, device, commandPool, flags);
@@ -762,9 +776,7 @@ vn_ResetCommandBuffer(VkCommandBuffer commandBuffer,
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
 
-   vn_cs_encoder_reset(&cmd->cs);
-   cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-   cmd->draw_cmd_batched = 0;
+   vn_cmd_reset(cmd);
 
    vn_async_vkResetCommandBuffer(cmd->device->instance, commandBuffer, flags);
 
@@ -2030,4 +2042,39 @@ vn_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer,
 
    vn_cmd_count_draw_and_submit_on_batch_limit(
       vn_command_buffer_from_handle(commandBuffer));
+}
+
+void
+vn_CmdPushDescriptorSetKHR(VkCommandBuffer commandBuffer,
+                           VkPipelineBindPoint pipelineBindPoint,
+                           VkPipelineLayout layout,
+                           uint32_t set,
+                           uint32_t descriptorWriteCount,
+                           const VkWriteDescriptorSet *pDescriptorWrites)
+{
+   VN_CMD_ENQUEUE(vkCmdPushDescriptorSetKHR, commandBuffer, pipelineBindPoint,
+                  layout, set, descriptorWriteCount, pDescriptorWrites);
+}
+
+void
+vn_CmdPushDescriptorSetWithTemplateKHR(
+   VkCommandBuffer commandBuffer,
+   VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+   VkPipelineLayout layout,
+   uint32_t set,
+   const void *pData)
+{
+   struct vn_descriptor_update_template *templ =
+      vn_descriptor_update_template_from_handle(descriptorUpdateTemplate);
+
+   mtx_lock(&templ->mutex);
+
+   struct vn_update_descriptor_sets *update =
+      vn_update_descriptor_set_with_template_locked(templ, VK_NULL_HANDLE,
+                                                    pData);
+   VN_CMD_ENQUEUE(vkCmdPushDescriptorSetKHR, commandBuffer,
+                  templ->pipeline_bind_point, layout, set,
+                  update->write_count, update->writes);
+
+   mtx_unlock(&templ->mutex);
 }

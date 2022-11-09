@@ -64,6 +64,10 @@ nir_ssa_def *
 ac_nir_load_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg);
 
 nir_ssa_def *
+ac_nir_unpack_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg,
+                  unsigned rshift, unsigned bitwidth);
+
+nir_ssa_def *
 ac_nir_calc_io_offset(nir_builder *b,
                       nir_intrinsic_instr *intrin,
                       nir_ssa_def *base_stride,
@@ -119,35 +123,37 @@ bool
 ac_nir_lower_indirect_derefs(nir_shader *shader,
                              enum amd_gfx_level gfx_level);
 
-void
-ac_nir_lower_ngg_nogs(nir_shader *shader,
-                      enum radeon_family family,
-                      unsigned max_num_es_vertices,
-                      unsigned num_vertices_per_primitive,
-                      unsigned max_workgroup_size,
-                      unsigned wave_size,
-                      bool can_cull,
-                      bool early_prim_export,
-                      bool passthrough,
-                      bool export_prim_id,
-                      bool use_edgeflags,
-                      bool has_prim_query,
-                      bool disable_streamout,
-                      uint32_t instance_rate_inputs,
-                      uint32_t clipdist_enable_mask,
-                      uint32_t user_clip_plane_enable_mask);
+typedef struct {
+   enum radeon_family family;
+   enum amd_gfx_level gfx_level;
+
+   unsigned max_workgroup_size;
+   unsigned wave_size;
+   const uint8_t *vs_output_param_offset; /* GFX11+ */
+   bool can_cull;
+   bool disable_streamout;
+   bool has_gen_prim_query;
+   bool has_xfb_prim_query;
+
+   /* VS */
+   unsigned num_vertices_per_primitive;
+   bool early_prim_export;
+   bool passthrough;
+   bool use_edgeflags;
+   int primitive_id_location;
+   uint32_t instance_rate_inputs;
+   uint32_t clipdist_enable_mask;
+   uint32_t user_clip_plane_enable_mask;
+
+   /* GS */
+   unsigned gs_out_vtx_bytes;
+} ac_nir_lower_ngg_options;
 
 void
-ac_nir_lower_ngg_gs(nir_shader *shader,
-                    enum amd_gfx_level gfx_level,
-                    unsigned wave_size,
-                    unsigned max_workgroup_size,
-                    unsigned esgs_ring_lds_bytes,
-                    unsigned gs_out_vtx_bytes,
-                    unsigned gs_total_out_vtx_bytes,
-                    bool has_xfb_query,
-                    bool can_cull,
-                    bool disable_streamout);
+ac_nir_lower_ngg_nogs(nir_shader *shader, const ac_nir_lower_ngg_options *options);
+
+void
+ac_nir_lower_ngg_gs(nir_shader *shader, const ac_nir_lower_ngg_options *options);
 
 void
 ac_nir_lower_ngg_ms(nir_shader *shader,
@@ -183,14 +189,14 @@ bool ac_nir_lower_resinfo(nir_shader *nir, enum amd_gfx_level gfx_level);
 
 nir_shader *
 ac_nir_create_gs_copy_shader(const nir_shader *gs_nir,
-                             const struct pipe_stream_output_info *so_info, size_t num_outputs,
-                             const uint8_t *output_usage_mask, const uint8_t *output_streams,
-                             const uint8_t *output_semantics,
-                             const uint8_t num_stream_output_components[4]);
+                             bool disable_streamout,
+                             size_t num_outputs,
+                             const uint8_t *output_usage_mask,
+                             const uint8_t *output_streams,
+                             const uint8_t *output_semantics);
 
 void
-ac_nir_lower_legacy_vs(nir_shader *nir, int primitive_id_location,
-                       const struct pipe_stream_output_info *so_info);
+ac_nir_lower_legacy_vs(nir_shader *nir, int primitive_id_location, bool disable_streamout);
 
 #ifdef __cplusplus
 }

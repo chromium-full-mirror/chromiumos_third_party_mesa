@@ -79,7 +79,6 @@ static const struct debug_named_value lp_debug_flags[] = {
    { "fs", DEBUG_FS, NULL },
    { "cs", DEBUG_CS, NULL },
    { "tgsi_ir", DEBUG_TGSI_IR, NULL },
-   { "cache_stats", DEBUG_CACHE_STATS, NULL },
    { "accurate_a0", DEBUG_ACCURATE_A0 },
    DEBUG_NAMED_VALUE_END
 };
@@ -241,8 +240,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return PIPE_ENDIAN_NATIVE;
    case PIPE_CAP_TES_LAYER_VIEWPORT:
    case PIPE_CAP_VS_LAYER_VIEWPORT:
-      return 1;
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
       return 1;
    case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
       return 4;
@@ -867,10 +864,6 @@ llvmpipe_destroy_screen(struct pipe_screen *_screen)
 
    lp_jit_screen_cleanup(screen);
 
-   if (LP_DEBUG & DEBUG_CACHE_STATS)
-      printf("disk shader cache:   hits = %u, misses = %u\n",
-             screen->num_disk_shader_cache_hits,
-             screen->num_disk_shader_cache_misses);
    disk_cache_destroy(screen->disk_shader_cache);
    if (winsys->destroy)
       winsys->destroy(winsys);
@@ -919,13 +912,6 @@ llvmpipe_fence_finish(struct pipe_screen *screen,
       lp_fence_wait(f);
    }
    return true;
-}
-
-
-static uint64_t
-llvmpipe_get_timestamp(struct pipe_screen *_screen)
-{
-   return os_time_get_nano();
 }
 
 
@@ -991,12 +977,10 @@ lp_disk_cache_find_shader(struct llvmpipe_screen *screen,
                                     sha1, &binary_size);
    if (!buffer) {
       cache->data_size = 0;
-      p_atomic_inc(&screen->num_disk_shader_cache_misses);
       return;
    }
    cache->data_size = binary_size;
    cache->data = buffer;
-   p_atomic_inc(&screen->num_disk_shader_cache_hits);
 }
 
 
@@ -1091,7 +1075,7 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->base.fence_reference = llvmpipe_fence_reference;
    screen->base.fence_finish = llvmpipe_fence_finish;
 
-   screen->base.get_timestamp = llvmpipe_get_timestamp;
+   screen->base.get_timestamp = u_default_get_timestamp;
 
    screen->base.get_driver_uuid = llvmpipe_get_driver_uuid;
    screen->base.get_device_uuid = llvmpipe_get_device_uuid;
@@ -1105,9 +1089,6 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->use_tgsi = (LP_DEBUG & DEBUG_TGSI_IR);
    screen->num_threads = util_get_cpu_caps()->nr_cpus > 1
       ? util_get_cpu_caps()->nr_cpus : 0;
-#ifdef EMBEDDED_DEVICE
-   screen->num_threads = MIN2(screen->num_threads, 2);
-#endif
    screen->num_threads = debug_get_num_option("LP_NUM_THREADS",
                                               screen->num_threads);
    screen->num_threads = MIN2(screen->num_threads, LP_MAX_THREADS);

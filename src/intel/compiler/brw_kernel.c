@@ -226,7 +226,7 @@ lower_kernel_intrinsics(nir_shader *nir)
 
             /* We may need to do a bit-size cast here */
             nir_ssa_def *num_work_groups =
-               nir_u2u(&b, &load->dest.ssa, intrin->dest.ssa.bit_size);
+               nir_u2uN(&b, &load->dest.ssa, intrin->dest.ssa.bit_size);
 
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa, num_work_groups);
             progress = true;
@@ -299,6 +299,11 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
 
    spirv_options.clc_shader = load_clc_shader(compiler, disk_cache,
                                               nir_options, &spirv_options);
+   if (spirv_options.clc_shader == NULL) {
+      fprintf(stderr, "ERROR: libclc shader missing."
+              " Consider installing the libclc package\n");
+      abort();
+   }
 
    assert(spirv_size % 4 == 0);
    nir_shader *nir =

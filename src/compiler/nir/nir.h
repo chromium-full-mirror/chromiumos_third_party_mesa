@@ -49,7 +49,7 @@
 #include <stdio.h>
 
 #ifndef NDEBUG
-#include "util/debug.h"
+#include "util/u_debug.h"
 #endif /* NDEBUG */
 
 #include "nir_opcodes.h"
@@ -226,6 +226,30 @@ typedef enum {
    nir_rounding_mode_rd    = 3, /* round down */
    nir_rounding_mode_rtz   = 4, /* round towards zero */
 } nir_rounding_mode;
+
+/**
+ * Ray query values that can read from a RayQueryKHR object.
+ */
+typedef enum {
+   nir_ray_query_value_intersection_type,
+   nir_ray_query_value_intersection_t,
+   nir_ray_query_value_intersection_instance_custom_index,
+   nir_ray_query_value_intersection_instance_id,
+   nir_ray_query_value_intersection_instance_sbt_index,
+   nir_ray_query_value_intersection_geometry_index,
+   nir_ray_query_value_intersection_primitive_index,
+   nir_ray_query_value_intersection_barycentrics,
+   nir_ray_query_value_intersection_front_face,
+   nir_ray_query_value_intersection_object_ray_direction,
+   nir_ray_query_value_intersection_object_ray_origin,
+   nir_ray_query_value_intersection_object_to_world,
+   nir_ray_query_value_intersection_world_to_object,
+   nir_ray_query_value_intersection_candidate_aabb_opaque,
+   nir_ray_query_value_tmin,
+   nir_ray_query_value_flags,
+   nir_ray_query_value_world_ray_direction,
+   nir_ray_query_value_world_ray_origin,
+} nir_ray_query_value;
 
 typedef union {
    bool b;
@@ -1965,6 +1989,9 @@ void nir_rewrite_image_intrinsic(nir_intrinsic_instr *instr,
 static inline bool
 nir_intrinsic_can_reorder(nir_intrinsic_instr *instr)
 {
+   if (nir_intrinsic_has_access(instr) &&
+       nir_intrinsic_access(instr) & ACCESS_VOLATILE)
+      return false;
    if (instr->intrinsic == nir_intrinsic_load_deref) {
       nir_deref_instr *deref = nir_src_as_deref(instr->src[0]);
       return nir_deref_mode_is_in_set(deref, nir_var_read_only_modes) ||
@@ -1983,6 +2010,22 @@ nir_intrinsic_can_reorder(nir_intrinsic_instr *instr)
 }
 
 bool nir_intrinsic_writes_external_memory(const nir_intrinsic_instr *instr);
+
+static inline bool
+nir_intrinsic_is_ray_query(nir_intrinsic_op intrinsic)
+{
+   switch (intrinsic) {
+   case nir_intrinsic_rq_confirm_intersection:
+   case nir_intrinsic_rq_generate_intersection:
+   case nir_intrinsic_rq_initialize:
+   case nir_intrinsic_rq_load:
+   case nir_intrinsic_rq_proceed:
+   case nir_intrinsic_rq_terminate:
+      return true;
+   default:
+      return false;
+   }
+}
 
 /** Texture instruction source type */
 typedef enum {
@@ -4834,10 +4877,48 @@ bool nir_lower_explicit_io(nir_shader *shader,
                            nir_variable_mode modes,
                            nir_address_format);
 
+typedef bool (*nir_should_vectorize_mem_func)(unsigned align_mul,
+                                              unsigned align_offset,
+                                              unsigned bit_size,
+                                              unsigned num_components,
+                                              nir_intrinsic_instr *low, nir_intrinsic_instr *high,
+                                              void *data);
+
+typedef struct {
+   nir_should_vectorize_mem_func callback;
+   nir_variable_mode modes;
+   nir_variable_mode robust_modes;
+   void *cb_data;
+   bool has_shared2_amd;
+} nir_load_store_vectorize_options;
+
+bool nir_opt_load_store_vectorize(nir_shader *shader, const nir_load_store_vectorize_options *options);
+
+typedef struct nir_lower_shader_calls_options {
+   /* Address format used for load/store operations on the call stack. */
+   nir_address_format address_format;
+
+   /* Stack alignment */
+   unsigned stack_alignment;
+
+   /* Put loads from the stack as close as possible from where they're needed.
+    * You might want to disable combined_loads for best effects.
+    */
+   bool localized_loads;
+
+   /* If this function pointer is not NULL, lower_shader_calls will run
+    * nir_opt_load_store_vectorize for stack load/store operations. Otherwise
+    * the optimizaion is not run.
+    */
+   nir_should_vectorize_mem_func vectorizer_callback;
+
+   /* Data passed to vectorizer_callback */
+   void *vectorizer_data;
+} nir_lower_shader_calls_options;
+
 bool
 nir_lower_shader_calls(nir_shader *shader,
-                       nir_address_format address_format,
-                       unsigned stack_alignment,
+                       const nir_lower_shader_calls_options *options,
                        nir_shader ***resume_shaders_out,
                        uint32_t *num_resume_shaders_out,
                        void *mem_ctx);
@@ -4905,8 +4986,15 @@ void nir_lower_io_to_scalar(nir_shader *shader, nir_variable_mode mask);
 bool nir_lower_io_to_scalar_early(nir_shader *shader, nir_variable_mode mask);
 bool nir_lower_io_to_vector(nir_shader *shader, nir_variable_mode mask);
 bool nir_vectorize_tess_levels(nir_shader *shader);
+nir_shader * nir_create_passthrough_tcs_impl(const nir_shader_compiler_options *options,
+                                             unsigned *locations, unsigned num_locations,
+                                             uint8_t patch_vertices);
 nir_shader * nir_create_passthrough_tcs(const nir_shader_compiler_options *options,
                                         const nir_shader *vs, uint8_t patch_vertices);
+nir_shader * nir_create_passthrough_gs(const nir_shader_compiler_options *options,
+                                       const nir_shader *prev_stage,
+                                       enum shader_prim primitive_type,
+                                       unsigned vertices);
 
 bool nir_lower_fragcolor(nir_shader *shader, unsigned max_cbufs);
 bool nir_lower_fragcoord_wtrans(nir_shader *shader);
@@ -5242,18 +5330,6 @@ bool nir_lower_non_uniform_access(nir_shader *shader,
                                   const nir_lower_non_uniform_access_options *options);
 
 typedef struct {
-   /* If true, a 32-bit division lowering based on NV50LegalizeSSA::handleDIV()
-    * is used. It is the faster of the two but it is not exact in some cases
-    * (for example, 1091317713u / 1034u gives 5209173 instead of 1055432).
-    *
-    * If false, a lowering based on AMDGPUTargetLowering::LowerUDIVREM() and
-    * AMDGPUTargetLowering::LowerSDIVREM() is used. It requires more
-    * instructions than the nv50 path and many of them are integer
-    * multiplications, so it is probably slower. It should always return the
-    * correct result, though.
-    */
-   bool imprecise_32bit_lowering;
-
    /* Whether 16-bit floating point arithmetic should be allowed in 8-bit
     * division lowering
     */
@@ -5364,6 +5440,7 @@ bool nir_lower_gs_intrinsics(nir_shader *shader, nir_lower_gs_intrinsics_flags o
 typedef struct {
    bool payload_to_shared_for_atomics : 1;
    bool payload_to_shared_for_small_types : 1;
+   uint32_t payload_offset_in_bytes;
 } nir_lower_task_shader_options;
 
 bool nir_lower_task_shader(nir_shader *shader, nir_lower_task_shader_options options);
@@ -5490,7 +5567,7 @@ bool nir_lower_ssa_defs_to_regs_block(nir_block *block);
 bool nir_rematerialize_derefs_in_use_blocks_impl(nir_function_impl *impl);
 
 bool nir_lower_samplers(nir_shader *shader);
-bool nir_lower_cl_images(nir_shader *shader);
+bool nir_lower_cl_images(nir_shader *shader, bool lower_image_derefs, bool lower_sampler_derefs);
 bool nir_dedup_inline_samplers(nir_shader *shader);
 bool nir_lower_ssbo(nir_shader *shader);
 
@@ -5508,7 +5585,6 @@ bool nir_opt_comparison_pre(nir_shader *shader);
 
 typedef struct nir_opt_access_options {
    bool is_vulkan;
-   bool infer_non_readable;
 } nir_opt_access_options;
 
 bool nir_opt_access(nir_shader *shader, const nir_opt_access_options *options);
@@ -5632,22 +5708,7 @@ bool nir_opt_move_discards_to_top(nir_shader *shader);
 
 bool nir_opt_ray_queries(nir_shader *shader);
 
-typedef bool (*nir_should_vectorize_mem_func)(unsigned align_mul,
-                                              unsigned align_offset,
-                                              unsigned bit_size,
-                                              unsigned num_components,
-                                              nir_intrinsic_instr *low, nir_intrinsic_instr *high,
-                                              void *data);
-
-typedef struct {
-   nir_should_vectorize_mem_func callback;
-   nir_variable_mode modes;
-   nir_variable_mode robust_modes;
-   void *cb_data;
-   bool has_shared2_amd;
-} nir_load_store_vectorize_options;
-
-bool nir_opt_load_store_vectorize(nir_shader *shader, const nir_load_store_vectorize_options *options);
+bool nir_opt_ray_query_ranges(nir_shader *shader);
 
 void nir_sweep(nir_shader *shader);
 
@@ -5678,6 +5739,7 @@ nir_variable_is_in_block(const nir_variable *var)
    return nir_variable_is_in_ubo(var) || nir_variable_is_in_ssbo(var);
 }
 
+/* See default_ub_config in nir_range_analysis.c for documentation. */
 typedef struct nir_unsigned_upper_bound_config {
    unsigned min_subgroup_size;
    unsigned max_subgroup_size;
@@ -5697,27 +5759,6 @@ bool
 nir_addition_might_overflow(nir_shader *shader, struct hash_table *range_ht,
                             nir_ssa_scalar ssa, unsigned const_val,
                             const nir_unsigned_upper_bound_config *config);
-
-typedef enum {
-   nir_ray_query_value_intersection_type,
-   nir_ray_query_value_intersection_t,
-   nir_ray_query_value_intersection_instance_custom_index,
-   nir_ray_query_value_intersection_instance_id,
-   nir_ray_query_value_intersection_instance_sbt_index,
-   nir_ray_query_value_intersection_geometry_index,
-   nir_ray_query_value_intersection_primitive_index,
-   nir_ray_query_value_intersection_barycentrics,
-   nir_ray_query_value_intersection_front_face,
-   nir_ray_query_value_intersection_object_ray_direction,
-   nir_ray_query_value_intersection_object_ray_origin,
-   nir_ray_query_value_intersection_object_to_world,
-   nir_ray_query_value_intersection_world_to_object,
-   nir_ray_query_value_intersection_candidate_aabb_opaque,
-   nir_ray_query_value_tmin,
-   nir_ray_query_value_flags,
-   nir_ray_query_value_world_ray_direction,
-   nir_ray_query_value_world_ray_origin,
-} nir_ray_query_value;
 
 typedef struct {
    /* True if gl_DrawID is considered uniform, i.e. if the preamble is run

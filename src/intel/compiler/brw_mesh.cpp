@@ -28,6 +28,8 @@
 #include "compiler/nir/nir_builder.h"
 #include "dev/intel_debug.h"
 
+#include <memory>
+
 using namespace brw;
 
 static bool
@@ -202,6 +204,10 @@ brw_nir_adjust_task_payload_offsets_instr(struct nir_builder *b,
       nir_ssa_def *offset = nir_ishr_imm(b, offset_src->ssa, 2);
       nir_instr_rewrite_src(&intrin->instr, offset_src, nir_src_for_ssa(offset));
 
+      unsigned base = nir_intrinsic_base(intrin);
+      assert(base % 4 == 0);
+      nir_intrinsic_set_base(intrin, base / 4);
+
       return true;
    }
 
@@ -247,6 +253,10 @@ brw_compile_task(const struct brw_compiler *compiler,
    nir_lower_task_shader_options lower_ts_opt = {
       .payload_to_shared_for_atomics = true,
       .payload_to_shared_for_small_types = true,
+      /* The actual payload data starts after the TUE header and padding,
+       * so skip those when copying.
+       */
+      .payload_offset_in_bytes = prog_data->map.per_task_data_start_dw * 4,
    };
    NIR_PASS(_, nir, nir_lower_task_shader, lower_ts_opt);
 
@@ -263,15 +273,17 @@ brw_compile_task(const struct brw_compiler *compiler,
    prog_data->uses_drawid =
       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_DRAW_ID);
 
-   const unsigned required_dispatch_width =
-      brw_required_dispatch_width(&nir->info);
+   brw_simd_selection_state simd_state{
+      .mem_ctx = mem_ctx,
+      .devinfo = compiler->devinfo,
+      .prog_data = &prog_data->base,
+      .required_width = brw_required_dispatch_width(&nir->info),
+   };
 
-   fs_visitor *v[3]     = {0};
-   const char *error[3] = {0};
+   std::unique_ptr<fs_visitor> v[3];
 
    for (unsigned simd = 0; simd < 3; simd++) {
-      if (!brw_simd_should_compile(mem_ctx, simd, compiler->devinfo, &prog_data->base,
-                                   required_dispatch_width, &error[simd]))
+      if (!brw_simd_should_compile(simd_state, simd))
          continue;
 
       const unsigned dispatch_width = 8 << simd;
@@ -287,31 +299,31 @@ brw_compile_task(const struct brw_compiler *compiler,
 
       brw_nir_adjust_payload(shader, compiler);
 
-      v[simd] = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
-                               &prog_data->base.base, shader, dispatch_width,
-                               debug_enabled);
+      v[simd] = std::make_unique<fs_visitor>(compiler, params->log_data, mem_ctx, &key->base,
+                                             &prog_data->base.base, shader, dispatch_width,
+                                             debug_enabled);
 
       if (prog_data->base.prog_mask) {
          unsigned first = ffs(prog_data->base.prog_mask) - 1;
-         v[simd]->import_uniforms(v[first]);
+         v[simd]->import_uniforms(v[first].get());
       }
 
-      const bool allow_spilling = !prog_data->base.prog_mask;
-
+      const bool allow_spilling = !brw_simd_any_compiled(simd_state);
       if (v[simd]->run_task(allow_spilling))
-         brw_simd_mark_compiled(simd, &prog_data->base, v[simd]->spilled_any_registers);
+         brw_simd_mark_compiled(simd_state, simd, v[simd]->spilled_any_registers);
       else
-         error[simd] = ralloc_strdup(mem_ctx, v[simd]->fail_msg);
+         simd_state.error[simd] = ralloc_strdup(mem_ctx, v[simd]->fail_msg);
    }
 
-   int selected_simd = brw_simd_select(&prog_data->base);
+   int selected_simd = brw_simd_select(simd_state);
    if (selected_simd < 0) {
       params->error_str = ralloc_asprintf(mem_ctx, "Can't compile shader: %s, %s and %s.\n",
-                                          error[0], error[1], error[2]);;
+                                          simd_state.error[0], simd_state.error[1],
+                                          simd_state.error[2]);
       return NULL;
    }
 
-   fs_visitor *selected = v[selected_simd];
+   fs_visitor *selected = v[selected_simd].get();
    prog_data->base.prog_mask = 1 << selected_simd;
 
    if (unlikely(debug_enabled)) {
@@ -331,11 +343,6 @@ brw_compile_task(const struct brw_compiler *compiler,
 
    g.generate_code(selected->cfg, selected->dispatch_width, selected->shader_stats,
                    selected->performance_analysis.require(), params->stats);
-
-   delete v[0];
-   delete v[1];
-   delete v[2];
-
    return g.get_assembly();
 }
 
@@ -764,15 +771,17 @@ brw_compile_mesh(const struct brw_compiler *compiler,
    brw_compute_mue_map(nir, &prog_data->map);
    brw_nir_lower_mue_outputs(nir, &prog_data->map);
 
-   const unsigned required_dispatch_width =
-      brw_required_dispatch_width(&nir->info);
+   brw_simd_selection_state simd_state{
+      .mem_ctx = mem_ctx,
+      .devinfo = compiler->devinfo,
+      .prog_data = &prog_data->base,
+      .required_width = brw_required_dispatch_width(&nir->info),
+   };
 
-   fs_visitor *v[3]     = {0};
-   const char *error[3] = {0};
+   std::unique_ptr<fs_visitor> v[3];
 
    for (int simd = 0; simd < 3; simd++) {
-      if (!brw_simd_should_compile(mem_ctx, simd, compiler->devinfo, &prog_data->base,
-                                   required_dispatch_width, &error[simd]))
+      if (!brw_simd_should_compile(simd_state, simd))
          continue;
 
       const unsigned dispatch_width = 8 << simd;
@@ -800,31 +809,31 @@ brw_compile_mesh(const struct brw_compiler *compiler,
 
       brw_nir_adjust_payload(shader, compiler);
 
-      v[simd] = new fs_visitor(compiler, params->log_data, mem_ctx, &key->base,
-                               &prog_data->base.base, shader, dispatch_width,
-                               debug_enabled);
+      v[simd] = std::make_unique<fs_visitor>(compiler, params->log_data, mem_ctx, &key->base,
+                                             &prog_data->base.base, shader, dispatch_width,
+                                             debug_enabled);
 
       if (prog_data->base.prog_mask) {
          unsigned first = ffs(prog_data->base.prog_mask) - 1;
-         v[simd]->import_uniforms(v[first]);
+         v[simd]->import_uniforms(v[first].get());
       }
 
-      const bool allow_spilling = !prog_data->base.prog_mask;
-
+      const bool allow_spilling = !brw_simd_any_compiled(simd_state);
       if (v[simd]->run_mesh(allow_spilling))
-         brw_simd_mark_compiled(simd, &prog_data->base, v[simd]->spilled_any_registers);
+         brw_simd_mark_compiled(simd_state, simd, v[simd]->spilled_any_registers);
       else
-         error[simd] = ralloc_strdup(mem_ctx, v[simd]->fail_msg);
+         simd_state.error[simd] = ralloc_strdup(mem_ctx, v[simd]->fail_msg);
    }
 
-   int selected_simd = brw_simd_select(&prog_data->base);
+   int selected_simd = brw_simd_select(simd_state);
    if (selected_simd < 0) {
       params->error_str = ralloc_asprintf(mem_ctx, "Can't compile shader: %s, %s and %s.\n",
-                                          error[0], error[1], error[2]);;
+                                          simd_state.error[0], simd_state.error[1],
+                                          simd_state.error[2]);;
       return NULL;
    }
 
-   fs_visitor *selected = v[selected_simd];
+   fs_visitor *selected = v[selected_simd].get();
    prog_data->base.prog_mask = 1 << selected_simd;
 
    if (unlikely(debug_enabled)) {
@@ -848,11 +857,6 @@ brw_compile_mesh(const struct brw_compiler *compiler,
 
    g.generate_code(selected->cfg, selected->dispatch_width, selected->shader_stats,
                    selected->performance_analysis.require(), params->stats);
-
-   delete v[0];
-   delete v[1];
-   delete v[2];
-
    return g.get_assembly();
 }
 

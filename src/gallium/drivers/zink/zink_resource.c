@@ -408,20 +408,30 @@ get_image_usage(struct zink_screen *screen, VkImageCreateInfo *ici, const struct
                return usage;
          }
       }
-   } else
-   {
+   } else {
       VkFormatProperties props = screen->format_props[templ->format];
       VkFormatFeatureFlags feats = tiling == VK_IMAGE_TILING_LINEAR ? props.linearTilingFeatures : props.optimalTilingFeatures;
       if (ici->flags & VK_IMAGE_CREATE_EXTENDED_USAGE_BIT)
          feats = UINT32_MAX;
       VkImageUsageFlags usage = get_image_usage_for_feats(screen, feats, templ, bind, &need_extended);
       if (need_extended) {
-         ici->flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+         ici->flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
          feats = UINT32_MAX;
          usage = get_image_usage_for_feats(screen, feats, templ, bind, &need_extended);
       }
       if (double_check_ici(screen, ici, usage, mod))
          return usage;
+      if (util_format_is_depth_or_stencil(templ->format)) {
+         if (!(templ->bind & PIPE_BIND_DEPTH_STENCIL)) {
+            usage &= ~VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            if (double_check_ici(screen, ici, usage, mod))
+               return usage;
+         }
+      } else if (!(templ->bind & PIPE_BIND_RENDER_TARGET)) {
+         usage &= ~VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+         if (double_check_ici(screen, ici, usage, mod))
+            return usage;
+      }
    }
    *mod = DRM_FORMAT_MOD_INVALID;
    return 0;
@@ -546,7 +556,7 @@ retry:
                *success = false;
                return DRM_FORMAT_MOD_INVALID;
             }
-            ici->flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
+            ici->flags |= VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
             tried[0] = false;
             tried[1] = false;
             first = true;
@@ -1859,6 +1869,7 @@ zink_buffer_map(struct pipe_context *pctx,
               !res->obj->host_visible)) {
       assert(!(usage & (TC_TRANSFER_MAP_THREADED_UNSYNC | PIPE_MAP_THREAD_SAFE)));
       if (!res->obj->host_visible || !(usage & PIPE_MAP_ONCE)) {
+overwrite:
          trans->offset = box->x % screen->info.props.limits.minMemoryMapAlignment;
          trans->staging_res = pipe_buffer_create(&screen->base, PIPE_BIND_LINEAR, PIPE_USAGE_STAGING, box->width + trans->offset);
          if (!trans->staging_res)
@@ -1880,9 +1891,14 @@ zink_buffer_map(struct pipe_context *pctx,
    }
 
    if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
-      if (usage & PIPE_MAP_WRITE)
+      if (usage & PIPE_MAP_WRITE) {
+         if (!(usage & PIPE_MAP_READ)) {
+            zink_resource_usage_try_wait(ctx, res, ZINK_RESOURCE_ACCESS_RW);
+            if (zink_resource_has_unflushed_usage(res))
+               goto overwrite;
+         }
          zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_RW);
-      else
+      } else
          zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_WRITE);
       res->obj->access = 0;
       res->obj->access_stage = 0;

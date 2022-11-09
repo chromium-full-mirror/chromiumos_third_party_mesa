@@ -93,9 +93,14 @@ if with_dri2
     'drivers/dri2/egl_dri2.c',
     'drivers/dri2/egl_dri2.h',
   )
+  files_egl += sha1_h
   deps_for_egl += idep_xmlconfig
   link_for_egl += libloader
   incs_for_egl += inc_loader
+  incs_for_egl += inc_gallium
+  incs_for_egl += inc_gallium_aux
+  incs_for_egl += inc_mesa
+  incs_for_egl += inc_st_dri
 
   files_egl += files(
     'drivers/dri2/platform_device.c',
@@ -183,9 +188,7 @@ egl_def = custom_target(
   'egl.def',
   input: 'main/egl.def.in',
   output : 'egl.def',
-  command : [prog_python, gen_vs_module_defs_py,
-             '--in_file', '@INPUT@', '--out_file', '@OUTPUT@',
-             '--compiler_id', cc.get_argument_syntax(), '--cpu_family', host_machine.cpu_family()]
+  command : gen_vs_module_defs_normal_command,
 )
 
 libegl = shared_library(

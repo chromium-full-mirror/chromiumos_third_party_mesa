@@ -41,7 +41,7 @@
 
 #include "anv_private.h"
 #include "anv_measure.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/build_id.h"
 #include "util/disk_cache.h"
 #include "util/mesa-sha1.h"
@@ -67,9 +67,11 @@ static const driOptionDescription anv_dri_options[] = {
       DRI_CONF_ADAPTIVE_SYNC(true)
       DRI_CONF_VK_X11_OVERRIDE_MIN_IMAGE_COUNT(0)
       DRI_CONF_VK_X11_STRICT_IMAGE_COUNT(false)
+      DRI_CONF_VK_KHR_PRESENT_WAIT(false)
       DRI_CONF_VK_XWAYLAND_WAIT_READY(true)
       DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(false)
       DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(false)
+      DRI_CONF_ANV_FP64_WORKAROUND_ENABLED(false)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -153,6 +155,7 @@ static const struct vk_instance_extension_table instance_extensions = {
    .KHR_get_surface_capabilities2            = true,
    .KHR_surface                              = true,
    .KHR_surface_protected_capabilities       = true,
+   .EXT_swapchain_colorspace                 = true,
 #endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface                      = true,
@@ -182,15 +185,14 @@ get_device_extensions(const struct anv_physical_device *device,
    const bool has_syncobj_wait =
       (device->sync_syncobj_type.features & VK_SYNC_FEATURE_CPU_WAIT) != 0;
 
+   const bool rt_enabled = ANV_SUPPORT_RT && device->info.has_ray_tracing;
    const bool nv_mesh_shading_enabled =
-      env_var_as_boolean("ANV_EXPERIMENTAL_NV_MESH_SHADER", false);
+      debug_get_bool_option("ANV_EXPERIMENTAL_NV_MESH_SHADER", false);
 
    *ext = (struct vk_device_extension_table) {
       .KHR_8bit_storage                      = true,
       .KHR_16bit_storage                     = true,
-      .KHR_acceleration_structure            = device->info.has_ray_tracing,
-      .KHR_acceleration_structure            = ANV_SUPPORT_RT &&
-                                               device->info.has_ray_tracing,
+      .KHR_acceleration_structure            = rt_enabled,
       .KHR_bind_memory2                      = true,
       .KHR_buffer_device_address             = true,
       .KHR_copy_commands2                    = true,
@@ -229,11 +231,21 @@ get_device_extensions(const struct anv_physical_device *device,
          device->use_call_secondary,
       .KHR_pipeline_executable_properties    = true,
       .KHR_pipeline_library                  = true,
+      /* Hide these behind dri configs for now since we cannot implement it reliably on
+       * all surfaces yet. There is no surface capability query for present wait/id,
+       * but the feature is useful enough to hide behind an opt-in mechanism for now.
+       * If the instance only enables surface extensions that unconditionally support present wait,
+       * we can also expose the extension that way. */
+      .KHR_present_id =
+         driQueryOptionb(&device->instance->dri_options, "vk_khr_present_wait") ||
+         wsi_common_vk_instance_supports_present_wait(&device->instance->vk),
+      .KHR_present_wait =
+         driQueryOptionb(&device->instance->dri_options, "vk_khr_present_wait") ||
+         wsi_common_vk_instance_supports_present_wait(&device->instance->vk),
       .KHR_push_descriptor                   = true,
-      .KHR_ray_query                         =
-         ANV_SUPPORT_RT && device->info.has_ray_tracing,
-      .KHR_ray_tracing_pipeline              =
-         ANV_SUPPORT_RT && device->info.has_ray_tracing,
+      .KHR_ray_query                         = rt_enabled,
+      .KHR_ray_tracing_maintenance1          = rt_enabled,
+      .KHR_ray_tracing_pipeline              = rt_enabled,
       .KHR_relaxed_block_layout              = true,
       .KHR_sampler_mirror_clamp_to_edge      = true,
       .KHR_sampler_ycbcr_conversion          = true,
@@ -533,12 +545,16 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
       };
    }
 
-   device->memory.need_clflush = false;
    for (unsigned i = 0; i < device->memory.type_count; i++) {
       VkMemoryPropertyFlags props = device->memory.types[i].propertyFlags;
       if ((props & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
           !(props & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+#ifdef SUPPORT_INTEL_INTEGRATED_GPUS
          device->memory.need_clflush = true;
+#else
+         return vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                          "Memory configuration requires flushing, but it's not implemented for this architecture");
+#endif
    }
 
    return VK_SUCCESS;
@@ -684,7 +700,7 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
                              INTEL_ENGINE_CLASS_RENDER);
       int g_count = 0;
       int c_count = 0;
-      if (env_var_as_boolean("INTEL_COMPUTE_CLASS", false))
+      if (debug_get_bool_option("INTEL_COMPUTE_CLASS", false))
          c_count = intel_engines_count(pdevice->engine_info,
                                        INTEL_ENGINE_CLASS_COMPUTE);
       enum intel_engine_class compute_class =
@@ -740,41 +756,43 @@ static VkResult
 anv_i915_physical_device_get_parameters(struct anv_physical_device *device)
 {
    VkResult result = VK_SUCCESS;
-   int fd = device->local_fd;
+   int val, fd = device->local_fd;
 
-   if (!anv_gem_get_param(fd, I915_PARAM_HAS_WAIT_TIMEOUT)) {
+   if (!intel_gem_get_param(fd, I915_PARAM_HAS_WAIT_TIMEOUT, &val) || !val) {
        result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "kernel missing gem wait");
        return result;
    }
 
-   if (!anv_gem_get_param(fd, I915_PARAM_HAS_EXECBUF2)) {
+   if (!intel_gem_get_param(fd, I915_PARAM_HAS_EXECBUF2, &val) || !val) {
       result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                          "kernel missing execbuf2");
       return result;
    }
 
    if (!device->info.has_llc &&
-       anv_gem_get_param(fd, I915_PARAM_MMAP_VERSION) < 1) {
+       (!intel_gem_get_param(fd, I915_PARAM_MMAP_VERSION, &val) || val < 1)) {
        result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                           "kernel missing wc mmap");
        return result;
    }
 
-   if (!anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_SOFTPIN)) {
+   if (!intel_gem_get_param(fd, I915_PARAM_HAS_EXEC_SOFTPIN, &val) || !val) {
       result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                          "kernel missing softpin");
       return result;
    }
 
-   if (!anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_FENCE_ARRAY)) {
+   if (!intel_gem_get_param(fd, I915_PARAM_HAS_EXEC_FENCE_ARRAY, &val) || !val) {
       result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
                          "kernel missing syncobj support");
       return result;
    }
 
-   device->has_exec_async = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_ASYNC);
-   device->has_exec_capture = anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_CAPTURE);
+   if (intel_gem_get_param(fd, I915_PARAM_HAS_EXEC_ASYNC, &val))
+      device->has_exec_async = val;
+   if (intel_gem_get_param(fd, I915_PARAM_HAS_EXEC_CAPTURE, &val))
+      device->has_exec_capture = val;
 
    /* Start with medium; sorted low to high */
    const VkQueueGlobalPriorityKHR priorities[] = {
@@ -790,17 +808,8 @@ anv_i915_physical_device_get_parameters(struct anv_physical_device *device)
       device->max_context_priority = priorities[i];
    }
 
-   device->has_context_isolation =
-      anv_gem_get_param(fd, I915_PARAM_HAS_CONTEXT_ISOLATION);
-
-   device->has_exec_timeline =
-      anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_TIMELINE_FENCES);
-
-   device->has_mmap_offset =
-      anv_gem_get_param(fd, I915_PARAM_MMAP_GTT_VERSION) >= 4;
-
-   device->has_userptr_probe =
-      anv_gem_get_param(fd, I915_PARAM_HAS_USERPTR_PROBE);
+   if (intel_gem_get_param(fd, I915_PARAM_HAS_EXEC_TIMELINE_FENCES, &val))
+      device->has_exec_timeline = val;
 
    return result;
 }
@@ -900,11 +909,18 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
    device->supports_48bit_addresses =
       device->gtt_size > (4ULL << 30 /* GiB */);
 
+   /* We currently only have the right bits for instructions in Gen12+. If the
+    * kernel ever starts supporting that feature on previous generations,
+    * we'll need to edit genxml prior to enabling here.
+    */
+   device->has_protected_contexts = device->info.ver >= 12 &&
+      intel_gem_supports_protected_context(fd);
+
    result = anv_physical_device_init_heaps(device, fd);
    if (result != VK_SUCCESS)
       goto fail_base;
 
-   if (env_var_as_boolean("ANV_QUEUE_THREAD_DISABLE", false))
+   if (debug_get_bool_option("ANV_QUEUE_THREAD_DISABLE", false))
       device->has_exec_timeline = false;
 
    unsigned st_idx = 0;
@@ -929,10 +945,10 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
    device->vk.pipeline_cache_import_ops = anv_cache_import_ops;
 
    device->always_use_bindless =
-      env_var_as_boolean("ANV_ALWAYS_BINDLESS", false);
+      debug_get_bool_option("ANV_ALWAYS_BINDLESS", false);
 
    device->use_call_secondary =
-      !env_var_as_boolean("ANV_DISABLE_SECONDARY_CMD_BUFFER_CALLS", false);
+      !debug_get_bool_option("ANV_DISABLE_SECONDARY_CMD_BUFFER_CALLS", false);
 
    device->has_implicit_ccs = device->info.has_aux_map ||
                               device->info.verx10 >= 125;
@@ -952,7 +968,7 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
    device->compiler->shader_debug_log = compiler_debug_log;
    device->compiler->shader_perf_log = compiler_perf_log;
    device->compiler->constant_buffer_0_is_relative =
-      !device->has_context_isolation;
+      !device->info.has_context_isolation;
    device->compiler->supports_shader_constants = true;
    device->compiler->indirect_ubos_use_sampler = device->info.ver < 12;
 
@@ -967,10 +983,8 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
    if (instance->vk.enabled_extensions.KHR_display) {
       master_fd = open(primary_path, O_RDWR | O_CLOEXEC);
       if (master_fd >= 0) {
-         /* prod the device with a GETPARAM call which will fail if
-          * we don't have permission to even render on this device
-          */
-         if (anv_gem_get_param(master_fd, I915_PARAM_CHIPSET_ID) == 0) {
+         /* fail if we don't have permission to even render on this device */
+         if (!intel_gem_can_render_on_fd(master_fd)) {
             close(master_fd);
             master_fd = -1;
          }
@@ -985,16 +999,7 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
 
    get_device_extensions(device, &device->vk.supported_extensions);
 
-   result = anv_init_wsi(device);
-   if (result != VK_SUCCESS)
-      goto fail_perf;
-
-   anv_measure_device_init(device);
-
-   anv_genX(&device->info, init_physical_device_state)(device);
-
-   *out = &device->vk;
-
+   /* Gather major/minor before WSI. */
    struct stat st;
 
    if (stat(primary_path, &st) == 0) {
@@ -1016,6 +1021,16 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
       device->local_major = 0;
       device->local_minor = 0;
    }
+
+   result = anv_init_wsi(device);
+   if (result != VK_SUCCESS)
+      goto fail_perf;
+
+   anv_measure_device_init(device);
+
+   anv_genX(&device->info, init_physical_device_state)(device);
+
+   *out = &device->vk;
 
    return VK_SUCCESS;
 
@@ -1087,6 +1102,8 @@ anv_init_dri_options(struct anv_instance *instance)
             driQueryOptionb(&instance->dri_options, "anv_sample_mask_out_opengl_behaviour");
     instance->lower_depth_range_rate =
             driQueryOptionf(&instance->dri_options, "lower_depth_range_rate");
+    instance->fp64_workaround_enabled =
+            driQueryOptionb(&instance->dri_options, "fp64_workaround_enabled");
 }
 
 VkResult anv_CreateInstance(
@@ -1347,6 +1364,8 @@ void anv_GetPhysicalDeviceFeatures2(
    };
    anv_get_physical_device_features_1_3(pdevice, &core_1_3);
 
+   const bool rt_enabled = ANV_SUPPORT_RT && pdevice->info.has_ray_tracing;
+
    vk_foreach_struct(ext, pFeatures->pNext) {
       if (vk_get_physical_device_core_1_1_feature_ext(ext, &core_1_1))
          continue;
@@ -1366,13 +1385,12 @@ void anv_GetPhysicalDeviceFeatures2(
 
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR: {
          VkPhysicalDeviceAccelerationStructureFeaturesKHR *features = (void *)ext;
-         features->accelerationStructure =
-            ANV_SUPPORT_RT && pdevice->info.has_ray_tracing;
+         features->accelerationStructure = rt_enabled;
          features->accelerationStructureCaptureReplay = false; /* TODO */
          features->accelerationStructureIndirectBuild = false; /* TODO */
          features->accelerationStructureHostCommands = false;
          features->descriptorBindingAccelerationStructureUpdateAfterBind =
-            ANV_SUPPORT_RT && pdevice->info.has_ray_tracing;
+            rt_enabled;
          break;
       }
 
@@ -1572,17 +1590,24 @@ void anv_GetPhysicalDeviceFeatures2(
 
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR: {
          VkPhysicalDeviceRayQueryFeaturesKHR *features = (void *)ext;
-         features->rayQuery = ANV_SUPPORT_RT && pdevice->info.has_ray_tracing;
+         features->rayQuery = rt_enabled;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_MAINTENANCE_1_FEATURES_KHR: {
+         VkPhysicalDeviceRayTracingMaintenance1FeaturesKHR *features = (void *)ext;
+         features->rayTracingMaintenance1 = rt_enabled;
+         features->rayTracingPipelineTraceRaysIndirect2 = rt_enabled;
          break;
       }
 
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR: {
          VkPhysicalDeviceRayTracingPipelineFeaturesKHR *features = (void *)ext;
-         features->rayTracingPipeline = pdevice->info.has_ray_tracing;
+         features->rayTracingPipeline = rt_enabled;
          features->rayTracingPipelineShaderGroupHandleCaptureReplay = false;
          features->rayTracingPipelineShaderGroupHandleCaptureReplayMixed = false;
-         features->rayTracingPipelineTraceRaysIndirect = true;
-         features->rayTraversalPrimitiveCulling = true;
+         features->rayTracingPipelineTraceRaysIndirect = rt_enabled;
+         features->rayTraversalPrimitiveCulling = rt_enabled;
          break;
       }
 
@@ -1732,13 +1757,13 @@ void anv_GetPhysicalDeviceFeatures2(
          features->extendedDynamicState3ColorBlendEnable = true;
          features->extendedDynamicState3ColorWriteMask = true;
          features->extendedDynamicState3ColorBlendEquation = true;
+         features->extendedDynamicState3SampleLocationsEnable = true;
          features->extendedDynamicState3SampleMask = true;
 
          features->extendedDynamicState3RasterizationSamples = false;
          features->extendedDynamicState3AlphaToCoverageEnable = false;
          features->extendedDynamicState3ConservativeRasterizationMode = false;
          features->extendedDynamicState3ExtraPrimitiveOverestimationSize = false;
-         features->extendedDynamicState3SampleLocationsEnable = false;
          features->extendedDynamicState3ViewportWScalingEnable = false;
          features->extendedDynamicState3ViewportSwizzle = false;
          features->extendedDynamicState3ShadingRateImageEnable = false;
@@ -1779,6 +1804,20 @@ void anv_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceDepthClipControlFeaturesEXT *features =
             (VkPhysicalDeviceDepthClipControlFeaturesEXT *)ext;
          features->depthClipControl = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR: {
+         VkPhysicalDevicePresentIdFeaturesKHR *features =
+            (VkPhysicalDevicePresentIdFeaturesKHR *) ext;
+         features->presentId = pdevice->vk.supported_extensions.KHR_present_id;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR: {
+         VkPhysicalDevicePresentWaitFeaturesKHR *features =
+            (VkPhysicalDevicePresentWaitFeaturesKHR *) ext;
+         features->presentWait = pdevice->vk.supported_extensions.KHR_present_wait;
          break;
       }
 
@@ -2353,6 +2392,13 @@ void anv_GetPhysicalDeviceProperties2(
          props->renderMajor = pdevice->local_major;
          props->renderMinor = pdevice->local_minor;
 
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_PROPERTIES_EXT: {
+         VkPhysicalDeviceExtendedDynamicState3PropertiesEXT *props =
+            (VkPhysicalDeviceExtendedDynamicState3PropertiesEXT *) ext;
+         props->dynamicPrimitiveTopologyUnrestricted = true;
          break;
       }
 
@@ -3013,8 +3059,10 @@ anv_device_init_trivial_batch(struct anv_device *device)
    anv_batch_emit(&batch, GFX7_MI_BATCH_BUFFER_END, bbe);
    anv_batch_emit(&batch, GFX7_MI_NOOP, noop);
 
+#ifdef SUPPORT_INTEL_INTEGRATED_GPUS
    if (device->physical->memory.need_clflush)
       intel_clflush_range(batch.start, batch.next - batch.start);
+#endif
 
    return VK_SUCCESS;
 }
@@ -3053,7 +3101,11 @@ decode_get_bo(void *v_batch, bool ppgtt, uint64_t address)
       return ret_bo;
    if (get_bo_from_pool(&ret_bo, &device->binding_table_pool.block_pool, address))
       return ret_bo;
-   if (get_bo_from_pool(&ret_bo, &device->surface_state_pool.block_pool, address))
+   if (get_bo_from_pool(&ret_bo, &device->scratch_surface_state_pool.block_pool, address))
+      return ret_bo;
+   if (get_bo_from_pool(&ret_bo, &device->bindless_surface_state_pool.block_pool, address))
+      return ret_bo;
+   if (get_bo_from_pool(&ret_bo, &device->internal_surface_state_pool.block_pool, address))
       return ret_bo;
 
    if (!device->cmd_buffer_being_decoded)
@@ -3144,19 +3196,20 @@ anv_device_setup_context(struct anv_device *device,
          for (uint32_t j = 0; j < queueCreateInfo->queueCount; j++)
             engine_classes[engine_count++] = queue_family->engine_class;
       }
-      device->context_id =
-         intel_gem_create_context_engines(device->fd,
-                                          physical_device->engine_info,
-                                          engine_count, engine_classes);
+      if (!intel_gem_create_context_engines(device->fd,
+                                            physical_device->engine_info,
+                                            engine_count, engine_classes,
+                                            (uint32_t *)&device->context_id))
+         result = vk_errorf(device, VK_ERROR_INITIALIZATION_FAILED,
+                            "kernel context creation failed");
    } else {
       assert(num_queues == 1);
-      device->context_id = anv_gem_create_context(device);
+      if (!intel_gem_create_context(device->fd, &device->context_id))
+         result = vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
    }
 
-   if (device->context_id == -1) {
-      result = vk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+   if (result != VK_SUCCESS)
       return result;
-   }
 
    /* Here we tell the kernel not to attempt to recover our context but
     * immediately (on the next batchbuffer submission) report that the
@@ -3194,7 +3247,7 @@ anv_device_setup_context(struct anv_device *device,
    return result;
 
 fail_context:
-   anv_gem_destroy_context(device, device->context_id);
+   intel_gem_destroy_context(device->fd, device->context_id);
    return result;
 }
 
@@ -3282,7 +3335,7 @@ VkResult anv_CreateDevice(
                                   decode_get_bo, NULL, device);
 
       device->decoder_ctx.dynamic_base = DYNAMIC_STATE_POOL_MIN_ADDRESS;
-      device->decoder_ctx.surface_base = SURFACE_STATE_POOL_MIN_ADDRESS;
+      device->decoder_ctx.surface_base = INTERNAL_SURFACE_STATE_POOL_MIN_ADDRESS;
       device->decoder_ctx.instruction_base =
          INSTRUCTION_STATE_POOL_MIN_ADDRESS;
    }
@@ -3296,6 +3349,7 @@ VkResult anv_CreateDevice(
       goto fail_device;
    }
 
+   device->vk.command_buffer_ops = &anv_cmd_buffer_ops;
    device->vk.check_status = anv_device_check_status;
    device->vk.create_sync_for_memory = anv_create_sync_for_memory;
    vk_device_set_drm_fd(&device->vk, device->fd);
@@ -3423,11 +3477,33 @@ VkResult anv_CreateDevice(
    if (result != VK_SUCCESS)
       goto fail_dynamic_state_pool;
 
-   result = anv_state_pool_init(&device->surface_state_pool, device,
-                                "surface state pool",
-                                SURFACE_STATE_POOL_MIN_ADDRESS, 0, 4096);
+   if (device->info->verx10 >= 125) {
+      /* Put the scratch surface states at the beginning of the internal
+       * surface state pool.
+       */
+      result = anv_state_pool_init(&device->scratch_surface_state_pool, device,
+                                   "scratch surface state pool",
+                                   SCRATCH_SURFACE_STATE_POOL_MIN_ADDRESS, 0, 4096);
+      if (result != VK_SUCCESS)
+         goto fail_instruction_state_pool;
+
+      result = anv_state_pool_init(&device->internal_surface_state_pool, device,
+                                   "internal surface state pool",
+                                   INTERNAL_SURFACE_STATE_POOL_MIN_ADDRESS,
+                                   SCRATCH_SURFACE_STATE_POOL_SIZE, 4096);
+   } else {
+      result = anv_state_pool_init(&device->internal_surface_state_pool, device,
+                                   "internal surface state pool",
+                                   INTERNAL_SURFACE_STATE_POOL_MIN_ADDRESS, 0, 4096);
+   }
    if (result != VK_SUCCESS)
-      goto fail_instruction_state_pool;
+      goto fail_scratch_surface_state_pool;
+
+   result = anv_state_pool_init(&device->bindless_surface_state_pool, device,
+                                "bindless surface state pool",
+                                BINDLESS_SURFACE_STATE_POOL_MIN_ADDRESS, 0, 4096);
+   if (result != VK_SUCCESS)
+      goto fail_internal_surface_state_pool;
 
    if (device->info->verx10 >= 125) {
       /* We're using 3DSTATE_BINDING_TABLE_POOL_ALLOC to give the binding
@@ -3439,16 +3515,16 @@ VkResult anv_CreateDevice(
                                    BINDING_TABLE_POOL_BLOCK_SIZE);
    } else {
       int64_t bt_pool_offset = (int64_t)BINDING_TABLE_POOL_MIN_ADDRESS -
-                               (int64_t)SURFACE_STATE_POOL_MIN_ADDRESS;
+                               (int64_t)INTERNAL_SURFACE_STATE_POOL_MIN_ADDRESS;
       assert(INT32_MIN < bt_pool_offset && bt_pool_offset < 0);
       result = anv_state_pool_init(&device->binding_table_pool, device,
                                    "binding table pool",
-                                   SURFACE_STATE_POOL_MIN_ADDRESS,
+                                   INTERNAL_SURFACE_STATE_POOL_MIN_ADDRESS,
                                    bt_pool_offset,
                                    BINDING_TABLE_POOL_BLOCK_SIZE);
    }
    if (result != VK_SUCCESS)
-      goto fail_surface_state_pool;
+      goto fail_bindless_surface_state_pool;
 
    if (device->info->has_aux_map) {
       device->aux_map_ctx = intel_aux_map_init(device, &aux_map_allocator,
@@ -3502,8 +3578,10 @@ VkResult anv_CreateDevice(
    if (result != VK_SUCCESS)
       goto fail_ray_query_bo;
 
-   if (device->info->ver >= 12 &&
-       device->vk.enabled_extensions.KHR_fragment_shading_rate) {
+   /* Emit the CPS states before running the initialization batch as those
+    * structures are referenced.
+    */
+   if (device->info->ver >= 12) {
       uint32_t n_cps_states = 3 * 3; /* All combinaisons of X by Y CP sizes (1, 2, 4) */
 
       if (device->info->has_coarse_pixel_primitive_and_cb)
@@ -3529,7 +3607,9 @@ VkResult anv_CreateDevice(
     * to zero and they have a valid descriptor.
     */
    device->null_surface_state =
-      anv_state_pool_alloc(&device->surface_state_pool,
+      anv_state_pool_alloc(device->info->verx10 >= 125 ?
+                           &device->scratch_surface_state_pool :
+                           &device->internal_surface_state_pool,
                            device->isl_dev.ss.size,
                            device->isl_dev.ss.align);
    isl_null_fill_state(&device->isl_dev, device->null_surface_state.map,
@@ -3580,6 +3660,11 @@ VkResult anv_CreateDevice(
       goto fail_default_pipeline_cache;
    }
 
+   /* The device (currently is ICL/TGL) does not have float64 support. */
+   if (!device->info->has_64bit_float &&
+      device->physical->instance->fp64_workaround_enabled)
+      anv_load_fp64_shader(device);
+
    result = anv_device_init_rt_shaders(device);
    if (result != VK_SUCCESS) {
       result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -3621,8 +3706,13 @@ VkResult anv_CreateDevice(
    }
  fail_binding_table_pool:
    anv_state_pool_finish(&device->binding_table_pool);
- fail_surface_state_pool:
-   anv_state_pool_finish(&device->surface_state_pool);
+ fail_bindless_surface_state_pool:
+   anv_state_pool_finish(&device->bindless_surface_state_pool);
+ fail_internal_surface_state_pool:
+   anv_state_pool_finish(&device->internal_surface_state_pool);
+ fail_scratch_surface_state_pool:
+   if (device->info->verx10 >= 125)
+      anv_state_pool_finish(&device->scratch_surface_state_pool);
  fail_instruction_state_pool:
    anv_state_pool_finish(&device->instruction_state_pool);
  fail_dynamic_state_pool:
@@ -3646,7 +3736,7 @@ VkResult anv_CreateDevice(
       anv_queue_finish(&device->queues[i]);
    vk_free(&device->vk.alloc, device->queues);
  fail_context_id:
-   anv_gem_destroy_context(device, device->context_id);
+   intel_gem_destroy_context(device->fd, device->context_id);
  fail_fd:
    close(device->fd);
  fail_device:
@@ -3711,7 +3801,10 @@ void anv_DestroyDevice(
    }
 
    anv_state_pool_finish(&device->binding_table_pool);
-   anv_state_pool_finish(&device->surface_state_pool);
+   if (device->info->verx10 >= 125)
+      anv_state_pool_finish(&device->scratch_surface_state_pool);
+   anv_state_pool_finish(&device->internal_surface_state_pool);
+   anv_state_pool_finish(&device->bindless_surface_state_pool);
    anv_state_pool_finish(&device->instruction_state_pool);
    anv_state_pool_finish(&device->dynamic_state_pool);
    anv_state_pool_finish(&device->general_state_pool);
@@ -3731,7 +3824,7 @@ void anv_DestroyDevice(
       anv_queue_finish(&device->queues[i]);
    vk_free(&device->vk.alloc, device->queues);
 
-   anv_gem_destroy_context(device, device->context_id);
+   intel_gem_destroy_context(device->fd, device->context_id);
 
    if (INTEL_DEBUG(DEBUG_BATCH))
       intel_batch_decode_ctx_finish(&device->decoder_ctx);
@@ -4291,7 +4384,7 @@ VkResult anv_MapMemory(
 
    /* GEM will fail to map if the offset isn't 4k-aligned.  Round down. */
    uint64_t map_offset;
-   if (!device->physical->has_mmap_offset)
+   if (!device->physical->info.has_mmap_offset)
       map_offset = offset & ~4095ull;
    else
       map_offset = 0;
@@ -4337,6 +4430,7 @@ VkResult anv_FlushMappedMemoryRanges(
     uint32_t                                    memoryRangeCount,
     const VkMappedMemoryRange*                  pMemoryRanges)
 {
+#ifdef SUPPORT_INTEL_INTEGRATED_GPUS
    ANV_FROM_HANDLE(anv_device, device, _device);
 
    if (!device->physical->memory.need_clflush)
@@ -4358,7 +4452,7 @@ VkResult anv_FlushMappedMemoryRanges(
                           MIN2(pMemoryRanges[i].size,
                                mem->map_size - map_offset));
    }
-
+#endif
    return VK_SUCCESS;
 }
 
@@ -4367,6 +4461,7 @@ VkResult anv_InvalidateMappedMemoryRanges(
     uint32_t                                    memoryRangeCount,
     const VkMappedMemoryRange*                  pMemoryRanges)
 {
+#ifdef SUPPORT_INTEL_INTEGRATED_GPUS
    ANV_FROM_HANDLE(anv_device, device, _device);
 
    if (!device->physical->memory.need_clflush)
@@ -4388,7 +4483,7 @@ VkResult anv_InvalidateMappedMemoryRanges(
 
    /* Make sure no reads get moved up above the invalidate. */
    __builtin_ia32_mfence();
-
+#endif
    return VK_SUCCESS;
 }
 

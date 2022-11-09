@@ -271,10 +271,6 @@ setup_vs_variables(isel_context* ctx, nir_shader* nir)
 {
    if (ctx->stage == vertex_vs || ctx->stage == vertex_ngg) {
       setup_vs_output_info(ctx, nir);
-
-      /* TODO: NGG streamout */
-      if (ctx->stage.hw == HWStage::NGG)
-         assert(!ctx->program->info.so.num_outputs);
    }
 
    if (ctx->stage == vertex_ngg) {
@@ -312,10 +308,6 @@ setup_tes_variables(isel_context* ctx, nir_shader* nir)
 {
    if (ctx->stage == tess_eval_vs || ctx->stage == tess_eval_ngg) {
       setup_vs_output_info(ctx, nir);
-
-      /* TODO: NGG streamout */
-      if (ctx->stage.hw == HWStage::NGG)
-         assert(!ctx->program->info.so.num_outputs);
    }
 
    if (ctx->stage == tess_eval_ngg) {
@@ -443,7 +435,7 @@ init_context(isel_context* ctx, nir_shader* shader)
    /* we'll need these for isel */
    nir_metadata_require(impl, nir_metadata_block_index);
 
-   if (!ctx->stage.has(SWStage::GSCopy) && ctx->options->dump_preoptir) {
+   if (ctx->options->dump_preoptir) {
       fprintf(stderr, "NIR shader before instruction selection:\n");
       nir_print_shader(shader, stderr);
    }
@@ -605,8 +597,6 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_first_invocation:
                case nir_intrinsic_ballot:
                case nir_intrinsic_bindless_image_samples:
-               case nir_intrinsic_has_input_vertex_amd:
-               case nir_intrinsic_has_input_primitive_amd:
                case nir_intrinsic_load_force_vrs_rates_amd:
                case nir_intrinsic_load_scalar_arg_amd:
                case nir_intrinsic_load_smem_amd: type = RegType::sgpr; break;
@@ -693,7 +683,8 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_load_initial_edgeflags_amd:
                case nir_intrinsic_gds_atomic_add_amd:
                case nir_intrinsic_bvh64_intersect_ray_amd:
-               case nir_intrinsic_load_vector_arg_amd: type = RegType::vgpr; break;
+               case nir_intrinsic_load_vector_arg_amd:
+               case nir_intrinsic_ordered_xfb_counter_add_amd: type = RegType::vgpr; break;
                case nir_intrinsic_load_shared:
                case nir_intrinsic_load_shared2_amd:
                   /* When the result of these loads is only used by cross-lane instructions,
@@ -814,8 +805,7 @@ isel_context
 setup_isel_context(Program* program, unsigned shader_count, struct nir_shader* const* shaders,
                    ac_shader_config* config, const struct aco_compiler_options* options,
                    const struct aco_shader_info* info,
-                   const struct radv_shader_args* args, bool is_gs_copy_shader,
-                   bool is_ps_epilog)
+                   const struct radv_shader_args* args, bool is_ps_epilog)
 {
    SWStage sw_stage = SWStage::None;
    for (unsigned i = 0; i < shader_count; i++) {
@@ -823,9 +813,7 @@ setup_isel_context(Program* program, unsigned shader_count, struct nir_shader* c
       case MESA_SHADER_VERTEX: sw_stage = sw_stage | SWStage::VS; break;
       case MESA_SHADER_TESS_CTRL: sw_stage = sw_stage | SWStage::TCS; break;
       case MESA_SHADER_TESS_EVAL: sw_stage = sw_stage | SWStage::TES; break;
-      case MESA_SHADER_GEOMETRY:
-         sw_stage = sw_stage | (is_gs_copy_shader ? SWStage::GSCopy : SWStage::GS);
-         break;
+      case MESA_SHADER_GEOMETRY: sw_stage = sw_stage | SWStage::GS; break;
       case MESA_SHADER_FRAGMENT: sw_stage = sw_stage | SWStage::FS; break;
       case MESA_SHADER_COMPUTE: sw_stage = sw_stage | SWStage::CS; break;
       case MESA_SHADER_TASK: sw_stage = sw_stage | SWStage::TS; break;
@@ -854,8 +842,6 @@ setup_isel_context(Program* program, unsigned shader_count, struct nir_shader* c
       hw_stage = HWStage::FS;
    else if (sw_stage == SWStage::CS)
       hw_stage = HWStage::CS;
-   else if (sw_stage == SWStage::GSCopy)
-      hw_stage = HWStage::VS;
    else if (sw_stage == SWStage::TS)
       hw_stage = HWStage::CS; /* Task shaders are implemented with compute shaders. */
    else if (sw_stage == SWStage::MS)
@@ -907,18 +893,13 @@ setup_isel_context(Program* program, unsigned shader_count, struct nir_shader* c
    calc_min_waves(program);
 
    unsigned scratch_size = 0;
-   if (program->stage == gs_copy_vs) {
-      assert(shader_count == 1);
-      setup_vs_output_info(&ctx, shaders[0]);
-   } else {
-      for (unsigned i = 0; i < shader_count; i++) {
-         nir_shader* nir = shaders[i];
-         setup_nir(&ctx, nir);
-      }
-
-      for (unsigned i = 0; i < shader_count; i++)
-         scratch_size = std::max(scratch_size, shaders[i]->scratch_size);
+   for (unsigned i = 0; i < shader_count; i++) {
+      nir_shader* nir = shaders[i];
+      setup_nir(&ctx, nir);
    }
+
+   for (unsigned i = 0; i < shader_count; i++)
+      scratch_size = std::max(scratch_size, shaders[i]->scratch_size);
 
    ctx.program->config->scratch_bytes_per_wave = align(scratch_size * ctx.program->wave_size, 1024);
 

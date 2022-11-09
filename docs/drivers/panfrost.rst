@@ -9,6 +9,7 @@ hardware is currently supported:
 =========  ============ ============ =======
 Product    Architecture OpenGL ES    OpenGL
 =========  ============ ============ =======
+Mali T620  Midgard (v4) 2.0          2.1
 Mali T720  Midgard (v4) 2.0          2.1
 Mali T760  Midgard (v5) 3.1          3.1
 Mali T820  Midgard (v5) 3.1          3.1
@@ -23,7 +24,7 @@ Mali G76   Bifrost (v7) 3.1          3.1
 Mali G57   Valhall (v9) 3.1          3.1
 =========  ============ ============ =======
 
-Other Midgard and Bifrost chips (T604, T628, G71) are not yet supported.
+Other Midgard and Bifrost chips (T604, G71) are not yet supported.
 
 Older Mali chips based on the Utgard architecture (Mali 400, Mali 450) are
 supported in the Lima driver, not Panfrost. Lima is also available in Mesa.
@@ -42,7 +43,7 @@ it's easy to add support, see the commit ``cff7de4bb597e9`` as an example.
 LLVM is *not* required by Panfrost's compilers. LLVM support in Mesa can
 safely be disabled for most OpenGL ES users with Panfrost.
 
-Build like ``meson . build/ -Ddri-drivers= -Dvulkan-drivers=
+Build like ``meson . build/ -Dvulkan-drivers=
 -Dgallium-drivers=panfrost -Dllvm=disabled`` for a build directory
 ``build``.
 
@@ -53,8 +54,8 @@ Chat
 ----
 
 Panfrost developers and users hang out on IRC at ``#panfrost`` on OFTC. Note
-that registering and authenticating with `NickServ` is required to prevent
-spam. `Join the chat. <https://webchat.oftc.net/?channels=#panfrost>`_
+that registering and authenticating with ``NickServ`` is required to prevent
+spam. `Join the chat. <https://webchat.oftc.net/?channels=panfrost>`_
 
 drm-shim
 --------

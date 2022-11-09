@@ -19,6 +19,7 @@
 # SOFTWARE.
 
 files_asahi = files(
+  'agx_batch.c',
   'agx_blit.c',
   'agx_pipe.c',
   'agx_state.c',
@@ -37,5 +38,5 @@ libasahi = static_library(
 
 driver_asahi = declare_dependency(
   compile_args : '-DGALLIUM_ASAHI',
-  link_with : [libasahi, libasahi_compiler, libasahi_lib, libasahi_layout, libasahi_decode]
+  link_with : [libasahi, libasahiwinsys, libasahi_compiler, libasahi_lib, libasahi_layout, libasahi_decode]
 )

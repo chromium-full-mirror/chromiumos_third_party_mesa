@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,7 +22,7 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 #ifndef PIPE_DEFINES_H
@@ -249,7 +249,7 @@ enum pipe_map_flags
     * create time.
     */
    PIPE_MAP_READ = 1 << 0,
-   
+
    /**
     * Resource contents will be written back at buffer/texture_unmap
     * time (or modified as a result of being accessed directly).
@@ -261,7 +261,7 @@ enum pipe_map_flags
     */
    PIPE_MAP_READ_WRITE = PIPE_MAP_READ | PIPE_MAP_WRITE,
 
-   /** 
+   /**
     * The transfer should map the texture storage directly. The driver may
     * return NULL if that isn't possible, and the gallium frontend needs to cope
     * with that and use an alternative path without this flag.
@@ -443,6 +443,15 @@ enum pipe_flush_flags
 #define PIPE_CONTEXT_LOSE_CONTEXT_ON_RESET (1 << 6)
 
 /**
+ * Create a protected context to access protected content (surfaces,
+ * textures, ...)
+ *
+ * This is required to access protected images and surfaces if
+ * EGL_EXT_protected_surface is not supported.
+ */
+#define PIPE_CONTEXT_PROTECTED         (1 << 7)
+
+/**
  * Flags for pipe_context::memory_barrier.
  */
 #define PIPE_BARRIER_MAPPED_BUFFER     (1 << 0)
@@ -508,7 +517,7 @@ enum pipe_flush_flags
  * The shared flag is quite underspecified, but certainly isn't a
  * binding flag - it seems more like a message to the winsys to create
  * a shareable allocation.
- * 
+ *
  * The third flag has been added to be able to force textures to be created
  * in linear mode (no tiling).
  */
@@ -974,7 +983,8 @@ enum pipe_cap
    PIPE_CAP_NO_CLIP_ON_COPY_TEX,
    PIPE_CAP_MAX_TEXTURE_MB,
    PIPE_CAP_SHADER_ATOMIC_INT64,
-   PIPE_CAP_DEVICE_PROTECTED_CONTENT,
+   /** For EGL_EXT_protected_surface */
+   PIPE_CAP_DEVICE_PROTECTED_SURFACE,
    PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0,
    PIPE_CAP_GL_CLAMP,
    PIPE_CAP_TEXRECT,
@@ -1000,6 +1010,8 @@ enum pipe_cap
    PIPE_CAP_FBFETCH_ZS,
    PIPE_CAP_TIMELINE_SEMAPHORE_IMPORT,
    PIPE_CAP_QUERY_TIMESTAMP_BITS,
+   /** For EGL_EXT_protected_content */
+   PIPE_CAP_DEVICE_PROTECTED_CONTEXT,
 
    PIPE_CAP_LAST,
    /* XXX do not add caps after PIPE_CAP_LAST! */
@@ -1016,7 +1028,7 @@ enum pipe_texture_transfer_mode {
  * return a bitmask of the supported priorities.  If the driver does not
  * support prioritized contexts, it can return 0.
  *
- * Note that these match __DRI2_RENDERER_HAS_CONTEXT_PRIORITY_*
+ * Note that these match __EGL_CONTEXT_PRIORITY_*_BIT.
  */
 #define PIPE_CONTEXT_PRIORITY_LOW     (1 << 0)
 #define PIPE_CONTEXT_PRIORITY_MEDIUM  (1 << 1)
@@ -1384,7 +1396,7 @@ enum pipe_perf_counter_data_type
 #define PIPE_UUID_SIZE 16
 #define PIPE_LUID_SIZE 8
 
-#ifdef PIPE_OS_UNIX
+#if DETECT_OS_UNIX
 #define PIPE_MEMORY_FD
 #endif
 

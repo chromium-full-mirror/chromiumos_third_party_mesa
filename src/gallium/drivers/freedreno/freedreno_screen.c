@@ -198,7 +198,6 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
    case PIPE_CAP_STRING_MARKER:
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
    case PIPE_CAP_TEXTURE_BARRIER:
@@ -206,9 +205,12 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
    case PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS:
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
+   case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
+   case PIPE_CAP_GL_SPIRV:
       return 1;
 
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_CLEAR_TEXTURE:
       return is_a6xx(screen);
 
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
@@ -292,15 +294,19 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
        * splitting high bits of index into 2nd dimension..
        */
       if (is_a3xx(screen))
-         return 8192;
+         return A3XX_MAX_TEXEL_BUFFER_ELEMENTS_UINT;
 
       /* Note that the Vulkan blob on a540 and 640 report a
        * maxTexelBufferElements of just 65536 (the GLES3.2 and Vulkan
        * minimum).
        */
       if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen))
-         return 1 << 27;
+         return A4XX_MAX_TEXEL_BUFFER_ELEMENTS_UINT;
+
       return 0;
+
+   case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
+      return PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_FREEDRENO;
 
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_CUBE_MAP_ARRAY:
@@ -327,7 +333,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
       if (is_a6xx(screen))
-         return 400;
+         return 450;
       else if (is_ir3(screen))
          return 140;
       else
@@ -391,7 +397,12 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_NIR_IMAGES_AS_DEREF:
       return 0;
 
+   case PIPE_CAP_VS_LAYER_VIEWPORT:
+      return is_a6xx(screen);
+
    case PIPE_CAP_MAX_VIEWPORTS:
+      if (is_a6xx(screen))
+         return 16;
       return 1;
 
    case PIPE_CAP_MAX_VARYINGS:
@@ -462,9 +473,14 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
    case PIPE_CAP_FS_POSITION_IS_SYSVAL:
    case PIPE_CAP_TGSI_TEXCOORD:
+   case PIPE_CAP_SHADER_ARRAY_COMPONENTS:
+   case PIPE_CAP_TEXTURE_QUERY_SAMPLES:
+   case PIPE_CAP_FS_FINE_DERIVATIVE:
       if (is_ir3(screen))
          return 1;
       return 0;
+   case PIPE_CAP_SHADER_GROUP_VOTE:
+      return is_a6xx(screen);
    case PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL:
       return 1;
    case PIPE_CAP_FS_POINT_IS_SYSVAL:
@@ -493,8 +509,9 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 12;
 
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-      return (is_a3xx(screen) || is_a4xx(screen) || is_a5xx(screen) ||
-              is_a6xx(screen))
+      if (is_a6xx(screen))
+         return 2048;
+      return (is_a3xx(screen) || is_a4xx(screen) || is_a5xx(screen))
                 ? 256
                 : 0;
 
@@ -513,6 +530,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       /* only a4xx, requires new enough kernel so we know max_freq: */
       return (screen->max_freq > 0) &&
              (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen));
+   case PIPE_CAP_QUERY_BUFFER_OBJECT:
+      return is_a6xx(screen);
 
    case PIPE_CAP_VENDOR_ID:
       return 0x5143;
@@ -692,7 +711,11 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
       return (1 << PIPE_SHADER_IR_NIR) |
              COND(has_compute(screen) && (shader == PIPE_SHADER_COMPUTE),
                   (1 << PIPE_SHADER_IR_NIR_SERIALIZED)) |
-             (1 << PIPE_SHADER_IR_TGSI);
+             /* tgsi_to_nir doesn't support all stages: */
+             COND((shader == PIPE_SHADER_VERTEX) ||
+                  (shader == PIPE_SHADER_FRAGMENT) ||
+                  (shader == PIPE_SHADER_COMPUTE),
+                  (1 << PIPE_SHADER_IR_TGSI));
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
       if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen)) {
@@ -995,7 +1018,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
       DBG("could not get GMEM size");
       goto fail;
    }
-   screen->gmemsize_bytes = env_var_as_unsigned("FD_MESA_GMEM", val);
+   screen->gmemsize_bytes = debug_get_num_option("FD_MESA_GMEM", val);
 
    if (fd_device_version(dev) >= FD_VERSION_GMEM_BASE) {
       fd_pipe_get_param(screen->pipe, FD_GMEM_BASE, &screen->gmem_base);

@@ -36,7 +36,7 @@
 #include "genxml/genX_bits.h"
 #include "perf/intel_perf.h"
 
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/perf/u_trace.h"
 
 /** \file anv_batch_chain.c
@@ -792,16 +792,8 @@ anv_cmd_buffer_alloc_binding_table(struct anv_cmd_buffer *cmd_buffer,
    cmd_buffer->bt_next.map += bt_size;
    cmd_buffer->bt_next.alloc_size -= bt_size;
 
-   if (cmd_buffer->device->info->verx10 >= 125) {
-      /* We're using 3DSTATE_BINDING_TABLE_POOL_ALLOC to change the binding
-       * table address independently from surface state base address.  We no
-       * longer need any sort of offsetting.
-       */
-      *state_offset = 0;
-   } else {
-      assert(bt_block->offset < 0);
-      *state_offset = -bt_block->offset;
-   }
+   assert(bt_block->offset < 0);
+   *state_offset = -bt_block->offset;
 
    return state;
 }
@@ -1510,7 +1502,7 @@ execbuf_can_skip_relocations(struct anv_execbuf *exec)
 
    static int userspace_relocs = -1;
    if (userspace_relocs < 0)
-      userspace_relocs = env_var_as_boolean("ANV_USERSPACE_RELOCS", true);
+      userspace_relocs = debug_get_bool_option("ANV_USERSPACE_RELOCS", true);
    if (!userspace_relocs)
       return false;
 

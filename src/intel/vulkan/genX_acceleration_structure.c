@@ -25,12 +25,13 @@
 
 #include <math.h>
 
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/half_float.h"
 #include "util/u_atomic.h"
 
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
+#include "genxml/gen_rt_pack.h"
 
 #if GFX_VERx10 >= 125
 

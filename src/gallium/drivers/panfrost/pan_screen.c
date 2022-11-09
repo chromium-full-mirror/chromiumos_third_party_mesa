@@ -44,6 +44,7 @@
 #include "drm-uapi/panfrost_drm.h"
 
 #include "pan_bo.h"
+#include "pan_fence.h"
 #include "pan_shader.h"
 #include "pan_screen.h"
 #include "pan_resource.h"
@@ -59,7 +60,6 @@ static const struct debug_named_value panfrost_debug_options[] = {
         {"deqp",      PAN_DBG_DEQP,     "Hacks for dEQP"},
         {"dirty",     PAN_DBG_DIRTY,    "Always re-emit all state"},
         {"sync",      PAN_DBG_SYNC,     "Wait for each job's completion and abort on GPU faults"},
-        {"precompile", PAN_DBG_PRECOMPILE, "Precompile shaders for shader-db"},
         {"nofp16",     PAN_DBG_NOFP16,     "Disable 16-bit support"},
         {"gl3",       PAN_DBG_GL3,      "Enable experimental GL 3.x implementation, up to 3.3"},
         {"noafbc",    PAN_DBG_NO_AFBC,  "Disable AFBC support"},
@@ -211,8 +211,16 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_QUERY_TIMESTAMP:
                 return is_gl3;
 
-        /* TODO: Where does this req come from in practice? */
-        case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
+        /* The hardware requires element alignment for data conversion to work
+         * as expected. If data conversion is not required, this restriction is
+         * lifted on Midgard at a performance penalty. We conservatively
+         * require element alignment for vertex buffers, using u_vbuf to
+         * translate to match the hardware requirement.
+         *
+         * This is less heavy-handed than the 4BYTE_ALIGNED_ONLY caps, which
+         * would needlessly require alignment even for 8-bit formats.
+         */
+        case PIPE_CAP_VERTEX_ATTRIB_ELEMENT_ALIGNED_ONLY:
                 return 1;
 
         case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
@@ -341,6 +349,9 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
         case PIPE_CAP_IMAGE_STORE_FORMATTED:
                 return 1;
 
+        case PIPE_CAP_NATIVE_FENCE_FD:
+                return 1;
+
         default:
                 return u_pipe_screen_get_param_defaults(screen, param);
         }
@@ -366,13 +377,9 @@ panfrost_get_shader_param(struct pipe_screen *screen,
 
         /* We only allow observable side effects (memory writes) in compute and
          * fragment shaders. Side effects in the geometry pipeline cause
-         * trouble with IDVS.
-         *
-         * This restriction doesn't apply to Midgard, which does not implement
-         * IDVS and therefore executes vertex shaders exactly once.
+         * trouble with IDVS and conflict with our transform feedback lowering.
          */
-        bool allow_side_effects = (shader != PIPE_SHADER_VERTEX) ||
-                                  (dev->arch <= 5);
+        bool allow_side_effects = (shader != PIPE_SHADER_VERTEX);
 
         switch (param) {
         case PIPE_SHADER_CAP_MAX_INSTRUCTIONS:
@@ -686,9 +693,16 @@ panfrost_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_t
 
         case PIPE_COMPUTE_CAP_MAX_BLOCK_SIZE:
                 /* Unpredictable behaviour at larger sizes. Mali-G52 advertises
-                 * 384x384x384. The smaller size is advertised by Mali-T628,
-                 * use min until we have a need to key by arch */
-		RET(((uint64_t []) { 256, 256, 256 }));
+                 * 384x384x384.
+                 *
+                 * On Midgard, we don't allow more than 128 threads in each
+                 * direction to match PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK.
+                 * That still exceeds the minimum-maximum.
+                 */
+                if (dev->arch >= 6)
+                        RET(((uint64_t []) { 256, 256, 256 }));
+                else
+                        RET(((uint64_t []) { 128, 128, 128 }));
 
 	case PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK:
                 /* On Bifrost and newer, all GPUs can support at least 256 threads
@@ -751,102 +765,9 @@ panfrost_destroy_screen(struct pipe_screen *pscreen)
         if (dev->ro)
                 dev->ro->destroy(dev->ro);
         panfrost_close_device(dev);
+
+        disk_cache_destroy(screen->disk_cache);
         ralloc_free(pscreen);
-}
-
-static uint64_t
-panfrost_get_timestamp(struct pipe_screen *_screen)
-{
-        return os_time_get_nano();
-}
-
-static void
-panfrost_fence_reference(struct pipe_screen *pscreen,
-                         struct pipe_fence_handle **ptr,
-                         struct pipe_fence_handle *fence)
-{
-        struct panfrost_device *dev = pan_device(pscreen);
-        struct pipe_fence_handle *old = *ptr;
-
-        if (pipe_reference(&old->reference, &fence->reference)) {
-                drmSyncobjDestroy(dev->fd, old->syncobj);
-                free(old);
-        }
-
-        *ptr = fence;
-}
-
-static bool
-panfrost_fence_finish(struct pipe_screen *pscreen,
-                      struct pipe_context *ctx,
-                      struct pipe_fence_handle *fence,
-                      uint64_t timeout)
-{
-        struct panfrost_device *dev = pan_device(pscreen);
-        int ret;
-
-        if (fence->signaled)
-                return true;
-
-        uint64_t abs_timeout = os_time_get_absolute_timeout(timeout);
-        if (abs_timeout == OS_TIMEOUT_INFINITE)
-                abs_timeout = INT64_MAX;
-
-        ret = drmSyncobjWait(dev->fd, &fence->syncobj,
-                             1,
-                             abs_timeout, DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL,
-                             NULL);
-
-        fence->signaled = (ret >= 0);
-        return fence->signaled;
-}
-
-struct pipe_fence_handle *
-panfrost_fence_create(struct panfrost_context *ctx)
-{
-        struct pipe_fence_handle *f = calloc(1, sizeof(*f));
-        if (!f)
-                return NULL;
-
-        struct panfrost_device *dev = pan_device(ctx->base.screen);
-        int fd = -1, ret;
-
-        /* Snapshot the last rendering out fence. We'd rather have another
-         * syncobj instead of a sync file, but this is all we get.
-         * (HandleToFD/FDToHandle just gives you another syncobj ID for the
-         * same syncobj).
-         */
-        ret = drmSyncobjExportSyncFile(dev->fd, ctx->syncobj, &fd);
-        if (ret || fd == -1) {
-                fprintf(stderr, "export failed\n");
-                goto err_free_fence;
-        }
-
-        ret = drmSyncobjCreate(dev->fd, 0, &f->syncobj);
-        if (ret) {
-                fprintf(stderr, "create syncobj failed\n");
-                goto err_close_fd;
-        }
-
-        ret = drmSyncobjImportSyncFile(dev->fd, f->syncobj, fd);
-        if (ret) {
-                fprintf(stderr, "create syncobj failed\n");
-                goto err_destroy_syncobj;
-        }
-
-        assert(f->syncobj != ctx->syncobj);
-        close(fd);
-        pipe_reference_init(&f->reference, 1);
-
-        return f;
-
-err_destroy_syncobj:
-        drmSyncobjDestroy(dev->fd, f->syncobj);
-err_close_fd:
-        close(fd);
-err_free_fence:
-        free(f);
-        return NULL;
 }
 
 static const void *
@@ -856,6 +777,30 @@ panfrost_screen_get_compiler_options(struct pipe_screen *pscreen,
 {
         return pan_screen(pscreen)->vtbl.get_compiler_options();
 }
+
+static struct disk_cache *
+panfrost_get_disk_shader_cache(struct pipe_screen *pscreen)
+{
+        return pan_screen(pscreen)->disk_cache;
+}
+
+int
+panfrost_get_driver_query_info(struct pipe_screen *pscreen, unsigned index,
+                               struct pipe_driver_query_info *info)
+{
+        int num_queries = ARRAY_SIZE(panfrost_driver_query_list);
+
+        if (!info)
+           return num_queries;
+
+        if (index >= num_queries)
+           return 0;
+
+        *info = panfrost_driver_query_list[index];
+
+        return 1;
+}
+
 
 struct pipe_screen *
 panfrost_create_screen(int fd, struct renderonly *ro)
@@ -889,23 +834,29 @@ panfrost_create_screen(int fd, struct renderonly *ro)
         screen->base.get_name = panfrost_get_name;
         screen->base.get_vendor = panfrost_get_vendor;
         screen->base.get_device_vendor = panfrost_get_device_vendor;
+        screen->base.get_driver_query_info = panfrost_get_driver_query_info;
         screen->base.get_param = panfrost_get_param;
         screen->base.get_shader_param = panfrost_get_shader_param;
         screen->base.get_compute_param = panfrost_get_compute_param;
         screen->base.get_paramf = panfrost_get_paramf;
-        screen->base.get_timestamp = panfrost_get_timestamp;
+        screen->base.get_timestamp = u_default_get_timestamp;
         screen->base.is_format_supported = panfrost_is_format_supported;
         screen->base.query_dmabuf_modifiers = panfrost_query_dmabuf_modifiers;
         screen->base.is_dmabuf_modifier_supported =
                panfrost_is_dmabuf_modifier_supported;
         screen->base.context_create = panfrost_create_context;
         screen->base.get_compiler_options = panfrost_screen_get_compiler_options;
+        screen->base.get_disk_shader_cache = panfrost_get_disk_shader_cache;
         screen->base.fence_reference = panfrost_fence_reference;
         screen->base.fence_finish = panfrost_fence_finish;
+        screen->base.fence_get_fd = panfrost_fence_get_fd;
         screen->base.set_damage_region = panfrost_resource_set_damage_region;
 
         panfrost_resource_screen_init(&screen->base);
         pan_blend_shaders_init(dev);
+
+        panfrost_disk_cache_init(screen);
+
         panfrost_pool_init(&screen->indirect_draw.bin_pool, NULL, dev,
                            PAN_BO_EXECUTE, 65536, "Indirect draw shaders",
                            false, true);

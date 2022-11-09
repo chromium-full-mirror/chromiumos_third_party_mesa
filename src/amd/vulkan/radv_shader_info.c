@@ -78,8 +78,12 @@ gather_intrinsic_store_output_info(const nir_shader *nir, const nir_intrinsic_in
       output_usage_mask = info->gs.output_usage_mask;
       break;
    case MESA_SHADER_FRAGMENT:
-      if (idx >= FRAG_RESULT_DATA0)
+      if (idx >= FRAG_RESULT_DATA0) {
          info->ps.colors_written |= 0xf << (4 * (idx - FRAG_RESULT_DATA0));
+
+         if (idx == FRAG_RESULT_DATA0)
+            info->ps.color0_written = write_mask;
+      }
       break;
    default:
       break;
@@ -213,6 +217,9 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
    case nir_intrinsic_load_rt_dynamic_callable_stack_base_amd:
       info->cs.uses_dynamic_rt_callable_stack = true;
       break;
+   case nir_intrinsic_bvh64_intersect_ray_amd:
+      info->cs.uses_rt = true;
+      break;
    default:
       break;
    }
@@ -287,15 +294,9 @@ gather_xfb_info(const nir_shader *nir, struct radv_shader_info *info)
    so->num_outputs = xfb->output_count;
 
    for (unsigned i = 0; i < xfb->output_count; i++) {
-      struct radv_stream_output *output = &so->outputs[i];
-
-      output->buffer = xfb->outputs[i].buffer;
-      output->stream = xfb->buffer_to_stream[xfb->outputs[i].buffer];
-      output->offset = xfb->outputs[i].offset;
-      output->location = xfb->outputs[i].location;
-      output->component_mask = xfb->outputs[i].component_mask;
-
-      so->enabled_stream_buffers_mask |= (1 << output->buffer) << (output->stream * 4);
+      unsigned output_buffer = xfb->outputs[i].buffer;
+      unsigned stream = xfb->buffer_to_stream[xfb->outputs[i].buffer];
+      so->enabled_stream_buffers_mask |= (1 << output_buffer) << (stream * 4);
    }
 
    for (unsigned i = 0; i < NIR_MAX_XFB_BUFFERS; i++) {
@@ -463,7 +464,7 @@ gather_shader_info_gs(const nir_shader *nir, struct radv_shader_info *info)
       assert(stream < 4);
 
       info->gs.num_stream_output_components[stream] += num_components;
-      info->gs.output_streams[idx] = stream;
+      info->gs.output_streams[idx] = stream | (stream << 2) | (stream << 4) | (stream << 6);
    }
 }
 
@@ -569,6 +570,10 @@ gather_shader_info_fs(const nir_shader *nir, const struct radv_pipeline_key *pip
 
    info->ps.has_epilog = pipeline_key->ps.has_epilog;
 
+   info->ps.writes_mrt0_alpha =
+      (pipeline_key->ps.alpha_to_coverage_via_mrtz && (info->ps.color0_written & 0x8)) &&
+      (info->ps.writes_z || info->ps.writes_stencil || info->ps.writes_sample_mask);
+
    nir_foreach_shader_in_variable(var, nir) {
       unsigned attrib_count = glsl_count_attribute_slots(var->type, false);
       int idx = var->data.location;
@@ -617,8 +622,12 @@ gather_shader_info_cs(struct radv_device *device, const nir_shader *nir,
    unsigned req_subgroup_size = subgroup_size;
    bool require_full_subgroups = pipeline_key->cs.require_full_subgroups;
 
+   unsigned default_wave_size = device->physical_device->cs_wave_size;
+   if (info->cs.uses_rt)
+      default_wave_size = device->physical_device->rt_wave_size;
+
    if (!subgroup_size)
-      subgroup_size = device->physical_device->cs_wave_size;
+      subgroup_size = default_wave_size;
 
    unsigned local_size =
       nir->info.workgroup_size[0] * nir->info.workgroup_size[1] * nir->info.workgroup_size[2];
@@ -626,8 +635,8 @@ gather_shader_info_cs(struct radv_device *device, const nir_shader *nir,
    /* Games don't always request full subgroups when they should, which can cause bugs if cswave32
     * is enabled.
     */
-   if (device->physical_device->cs_wave_size == 32 && nir->info.uses_wide_subgroup_intrinsics &&
-       !req_subgroup_size && local_size % RADV_SUBGROUP_SIZE == 0)
+   if (default_wave_size == 32 && nir->info.uses_wide_subgroup_intrinsics && !req_subgroup_size &&
+       local_size % RADV_SUBGROUP_SIZE == 0)
       require_full_subgroups = true;
 
    if (require_full_subgroups && !req_subgroup_size) {
@@ -1048,8 +1057,13 @@ gfx10_get_ngg_info(const struct radv_device *device, struct radv_pipeline_stage 
       /* LDS size for passing data from GS to ES. */
       struct radv_streamout_info *so_info = &es_info->so;
 
-      if (so_info->num_outputs)
-         esvert_lds_size = 4 * so_info->num_outputs + 1;
+      if (so_info->num_outputs) {
+         /* Compute the same pervertex LDS size as the NGG streamout lowering pass which allocates
+          * space for all outputs.
+          * TODO: only alloc space for outputs that really need streamout.
+          */
+         esvert_lds_size = 4 * es_stage->nir->num_outputs + 1;
+      }
 
       /* GS stores Primitive IDs (one DWORD) into LDS at the address
        * corresponding to the ES thread of the provoking vertex. All
@@ -1199,6 +1213,19 @@ gfx10_get_ngg_info(const struct radv_device *device, struct radv_pipeline_stage 
 }
 
 static void
+gfx10_get_ngg_query_info(const struct radv_device *device, struct radv_pipeline_stage *es_stage,
+                         struct radv_pipeline_stage *gs_stage,
+                         const struct radv_pipeline_key *pipeline_key)
+{
+   struct radv_shader_info *info = gs_stage ? &gs_stage->info : &es_stage->info;
+
+   info->gs.has_ngg_pipeline_stat_query =
+      device->physical_device->emulate_ngg_gs_query_pipeline_stat && !!gs_stage;
+   info->has_ngg_xfb_query = gs_stage ? !!gs_stage->nir->xfb_info : !!es_stage->nir->xfb_info;
+   info->has_ngg_prim_query = pipeline_key->primitives_generated_query || info->has_ngg_xfb_query;
+}
+
+static void
 radv_determine_ngg_settings(struct radv_device *device, struct radv_pipeline_stage *es_stage,
                             struct radv_pipeline_stage *fs_stage,
                             const struct radv_pipeline_key *pipeline_key)
@@ -1260,7 +1287,7 @@ radv_link_shaders_info(struct radv_device *device,
 
       if (ps_prim_id_in &&
           (producer->stage == MESA_SHADER_VERTEX || producer->stage == MESA_SHADER_TESS_EVAL)) {
-         /* Mark the primitive ID as output when it's implicitly exported by VS or TES with NGG. */
+         /* Mark the primitive ID as output when it's implicitly exported by VS or TES. */
          if (outinfo->vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] == AC_EXP_PARAM_UNDEFINED)
             outinfo->vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] = outinfo->param_exports++;
 
@@ -1299,6 +1326,7 @@ radv_link_shaders_info(struct radv_device *device,
             consumer && consumer->stage == MESA_SHADER_GEOMETRY ? consumer : NULL;
 
          gfx10_get_ngg_info(device, producer, gs_stage);
+         gfx10_get_ngg_query_info(device, producer, gs_stage, pipeline_key);
 
          /* Determine other NGG settings like culling for VS or TES without GS. */
          if (!gs_stage && consumer) {

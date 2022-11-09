@@ -8,7 +8,7 @@
 #include "util/format/u_format_s3tc.h"
 #include "util/u_string.h"
 
-#include "os/os_mman.h"
+#include "util/os_mman.h"
 #include "util/os_time.h"
 
 #include <stdio.h>
@@ -17,6 +17,8 @@
 
 #include <nouveau_drm.h>
 #include <xf86drm.h>
+#include <nvif/class.h>
+#include <nvif/cl0080.h>
 
 #include "nouveau_winsys.h"
 #include "nouveau_screen.h"
@@ -104,14 +106,14 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
 
    if (whandle->offset != 0) {
       debug_printf("%s: attempt to import unsupported winsys offset %d\n",
-                   __FUNCTION__, whandle->offset);
+                   __func__, whandle->offset);
       return NULL;
    }
 
    if (whandle->type != WINSYS_HANDLE_TYPE_SHARED &&
        whandle->type != WINSYS_HANDLE_TYPE_FD) {
       debug_printf("%s: attempt to import unsupported handle type %d\n",
-                   __FUNCTION__, whandle->type);
+                   __func__, whandle->type);
       return NULL;
    }
 
@@ -122,7 +124,7 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
 
    if (ret) {
       debug_printf("%s: ref name 0x%08x failed with %d\n",
-                   __FUNCTION__, whandle->handle, ret);
+                   __func__, whandle->handle, ret);
       return NULL;
    }
 
@@ -241,6 +243,18 @@ nouveau_pushbuf_destroy(struct nouveau_pushbuf **push)
 {
    FREE((*push)->user_priv);
    nouveau_pushbuf_del(push);
+}
+
+static bool
+nouveau_check_for_uma(int chipset, struct nouveau_object *obj)
+{
+   struct nv_device_info_v0 info = {
+      .version = 0,
+   };
+
+   nouveau_object_mthd(obj, NV_DEVICE_V0_INFO, &info, sizeof(info));
+
+   return (info.platform == NV_DEVICE_INFO_V0_IGP) || (info.platform == NV_DEVICE_INFO_V0_SOC);
 }
 
 int
@@ -398,6 +412,8 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    screen->sysmem_bindings =
       PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_STREAM_OUTPUT |
       PIPE_BIND_COMMAND_ARGS_BUFFER;
+
+   screen->is_uma = nouveau_check_for_uma(dev->chipset, &dev->object);
 
    memset(&mm_config, 0, sizeof(mm_config));
    nouveau_fence_list_init(&screen->fence);

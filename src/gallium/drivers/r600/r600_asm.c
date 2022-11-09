@@ -1327,14 +1327,14 @@ int r600_bytecode_add_alu_type(struct r600_bytecode *bc,
 	}
 	/* number of gpr == the last gpr used in any alu */
 	for (i = 0; i < 3; i++) {
-		if (nalu->src[i].sel >= bc->ngpr && nalu->src[i].sel < 128) {
+		if (nalu->src[i].sel >= bc->ngpr && nalu->src[i].sel < 124) {
 			bc->ngpr = nalu->src[i].sel + 1;
 		}
 		if (nalu->src[i].sel == V_SQ_ALU_SRC_LITERAL)
 			r600_bytecode_special_constants(nalu->src[i].value,
 				&nalu->src[i].sel);
 	}
-	if (nalu->dst.write && nalu->dst.sel >= bc->ngpr) {
+	if (nalu->dst.write && nalu->dst.sel >= bc->ngpr && nalu->dst.sel < 124) {
 		bc->ngpr = nalu->dst.sel + 1;
 	}
 	list_addtail(&nalu->list, &bc->cf_last->alu);
@@ -2166,6 +2166,62 @@ static int print_indent(int p, int c)
 	return o;
 }
 
+const char *rat_instr_name[] = {
+   "NOP",
+   "STORE_TYPED",
+   "STORE_RAW",
+   "STORE_RAW_FDENORM",
+   "CMP_XCHG_INT",
+   "CMP_XCHG_FLT",
+   "CMP_XCHG_FDENORM",
+   "ADD",
+   "SUB",
+   "RSUB",
+   "MIN_INT",
+   "MIN_UINT",
+   "MAX_INT",
+   "MAX_UINT",
+   "AND",
+   "OR",
+   "XOR",
+   "MSKOR",
+   "INC_UINT",
+   "DEC_UINT",
+   "RESERVED20",
+   "RESERVED21",
+   "RESERVED22",
+   "RESERVED23",
+   "RESERVED24",
+   "RESERVED25",
+   "RESERVED26",
+   "RESERVED27",
+   "RESERVED28",
+   "RESERVED29",
+   "RESERVED30",
+   "RESERVED31",
+   "NOP_RTN",
+   "RESERVED33",
+   "XCHG_RTN",
+   "XCHG_FDENORM_RTN",
+   "CMPXCHG_INT_RTN",
+   "CMPXCHG_FLT_RTN",
+   "CMPXCHG_FDENORM_RTN",
+   "ADD_RTN",
+   "SUB_RTN",
+   "RSUB_RTN",
+   "MIN_INT_RTN",
+   "MIN_UINT_RTN",
+   "MAX_INT_RTN",
+   "MAX_UINT_RTN",
+   "AND_RTN",
+   "OR_RTN",
+   "XOR_RTN",
+   "MSKOR_RTN",
+   "INC_UINT_RTN",
+   "DEC_UINT_RTN",
+};
+
+
 void r600_bytecode_disasm(struct r600_bytecode *bc)
 {
 	const char *index_mode[] = {"CF_INDEX_NONE", "CF_INDEX_0", "CF_INDEX_1"};
@@ -2176,7 +2232,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 	struct r600_bytecode_tex *tex = NULL;
 	struct r600_bytecode_gds *gds = NULL;
 
-	unsigned i, id, ngr = 0, last;
+	unsigned id, ngr = 0, last;
 	uint32_t literal[4];
 	unsigned nliteral;
 	char chip = '6';
@@ -2216,7 +2272,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 				fprintf(stderr, "%04d %08X %08X  %s ", id, bc->bytecode[id],
 						bc->bytecode[id + 1], cfop->name);
 				fprintf(stderr, "%d @%d ", cf->ndw / 2, cf->addr);
-				for (i = 0; i < 4; ++i) {
+				for (int i = 0; i < 4; ++i) {
 					if (cf->kcache[i].mode) {
 						int c_start = (cf->kcache[i].addr << 4);
 						int c_end = c_start + (cf->kcache[i].mode << 4);
@@ -2292,7 +2348,8 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 					if (cf->rat.index_mode) {
 						o += fprintf(stderr, "[IDX%d]", cf->rat.index_mode - 1);
 					}
-					o += fprintf(stderr, " INST: %d ", cf->rat.inst);
+               assert(ARRAY_SIZE(rat_instr_name) > cf->rat.inst);
+					o += fprintf(stderr, " %s ", rat_instr_name[cf->rat.inst]);
 				}
 
 				if (cf->output.burst_count > 1) {
@@ -2306,7 +2363,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 					o += print_indent(o, 55);
 					o += fprintf(stderr, "R%d.", cf->output.gpr);
 				}
-				for (i = 0; i < 4; ++i) {
+				for (int i = 0; i < 4; ++i) {
 					if (cf->output.comp_mask & (1 << i))
 						o += print_swizzle(i);
 					else
@@ -2315,7 +2372,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 
 				if (cf->output.type == V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_WRITE_IND ||
 				    cf->output.type == V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_READ_IND)
-					o += fprintf(stderr, " R%d", cf->output.index_gpr);
+					o += fprintf(stderr, " R%d.xyz", cf->output.index_gpr);
 
 				o += print_indent(o, 67);
 
@@ -2354,6 +2411,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 		id = cf->addr;
 		nliteral = 0;
 		last = 1;
+		int chan_mask = 0;
 		LIST_FOR_EACH_ENTRY(alu, &cf->alu, list) {
 			const char chan[] = "xyzwt";
 			const char *omod_str[] = {"","*2","*4","/2"};
@@ -2366,7 +2424,14 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 				o += fprintf(stderr, "%4d ", ++ngr);
 			else
 				o += fprintf(stderr, "     ");
-			o += fprintf(stderr, "%c:", chan[alu->dst.chan]);
+
+			if ((chan_mask & (1 << alu->dst.chan)) ||
+				((aop->slots[bc->isa->hw_class] == AF_S) && !(bc->isa->hw_class == ISA_CC_CAYMAN)))
+				o += fprintf(stderr, "t:");
+			else
+				o += fprintf(stderr, "%c:", chan[alu->dst.chan]);
+			chan_mask |= 1 << alu->dst.chan;
+
 			o += fprintf(stderr, "%c%c %c ", alu->execute_mask ? 'M':' ',
 					alu->update_pred ? 'P':' ',
 					alu->pred_sel ? alu->pred_sel==2 ? '0':'1':' ');
@@ -2375,8 +2440,16 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 					omod_str[alu->omod], alu->dst.clamp ? "_sat":"");
 
 			o += print_indent(o,60);
-			o += print_dst(alu);
-			for (i = 0; i < aop->src_count; ++i) {
+			if (bc->isa->hw_class == ISA_CC_CAYMAN && alu->op == ALU_OP1_MOVA_INT) {
+				switch (alu->dst.sel) {
+				case 0: fprintf(stderr, "AR"); break;
+				case 2: fprintf(stderr, "CF_IDX0"); break;
+				case 3: fprintf(stderr, "CF_IDX1"); break;
+				}
+			} else {
+				o += print_dst(alu);
+			}
+			for (int i = 0; i < aop->src_count; ++i) {
 				o += fprintf(stderr, i == 0 ? ",  ": ", ");
 				o += print_src(alu, i);
 			}
@@ -2390,7 +2463,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 			id += 2;
 
 			if (alu->last) {
-				for (i = 0; i < nliteral; i++, id++) {
+				for (unsigned i = 0; i < nliteral; i++, id++) {
 					float *f = (float*)(bc->bytecode + id);
 					o = fprintf(stderr, " %04d %08X", id, bc->bytecode[id]);
 					print_indent(o, 60);
@@ -2398,6 +2471,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 				}
 				id += nliteral & 1;
 				nliteral = 0;
+				chan_mask = 0;
 			}
 			last = alu->last;
 		}
@@ -2508,7 +2582,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 		}
 
 		LIST_FOR_EACH_ENTRY(gds, &cf->gds, list) {
-			int o = 0;
+			UNUSED int o = 0;
 			o += fprintf(stderr, " %04d %08X %08X %08X   ", id, bc->bytecode[id],
 					bc->bytecode[id + 1], bc->bytecode[id + 2]);
 
@@ -2583,12 +2657,7 @@ void r600_vertex_data_type(enum pipe_format pformat,
 		goto out_unknown;
 	}
 
-	/* Find the first non-VOID channel. */
-	for (i = 0; i < 4; i++) {
-		if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID) {
-			break;
-		}
-	}
+	i = util_format_get_first_non_void_channel(pformat);
 
 	*endian = r600_endian_swap(desc->channel[i].size);
 

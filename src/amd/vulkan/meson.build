@@ -85,6 +85,7 @@ libradv_files = files(
   'radv_radeon_winsys.h',
   'radv_rra.c',
   'radv_rt_common.c',
+  'radv_rt_shader.c',
   'radv_sdma_copy_image.c',
   'radv_shader.c',
   'radv_shader.h',
@@ -98,10 +99,6 @@ libradv_files = files(
   'si_cmd_buffer.c',
   'vk_format.h',
 )
-
-files_drirc = files('00-radv-defaults.conf')
-
-install_data(files_drirc, install_dir : join_paths(get_option('datadir'), 'drirc.d'))
 
 if not with_platform_windows
   libradv_files += files(

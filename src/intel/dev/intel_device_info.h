@@ -135,17 +135,26 @@ struct intel_device_info
    bool disable_ccs_repack;
 
    /**
+    * True if CCS needs to be initialized before use.
+    */
+   bool has_illegal_ccs_values;
+
+   /**
     * True if CCS uses a flat virtual address translation to a memory
     * carve-out, rather than aux map translations, or additional surfaces.
     */
    bool has_flat_ccs;
    bool has_aux_map;
+   bool has_caching_uapi;
    bool has_tiling_uapi;
    bool has_ray_tracing;
    bool has_ray_query;
    bool has_local_mem;
    bool has_lsc;
    bool has_mesh_shading;
+   bool has_mmap_offset;
+   bool has_userptr_probe;
+   bool has_context_isolation;
 
    /**
     * \name Intel hardware quirks

@@ -401,7 +401,7 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_ZERO_INIT:
    case PIPE_CAP_BLEND_EQUATION_ADVANCED:
    case PIPE_CAP_NO_CLIP_ON_COPY_TEX:
-   case PIPE_CAP_DEVICE_PROTECTED_CONTENT:
+   case PIPE_CAP_DEVICE_PROTECTED_SURFACE:
    case PIPE_CAP_NIR_IMAGES_AS_DEREF:
    case PIPE_CAP_SAMPLER_REDUCTION_MINMAX:
    case PIPE_CAP_SAMPLER_REDUCTION_MINMAX_ARB:
@@ -431,7 +431,7 @@ nv50_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_VIDEO_MEMORY:
       return dev->vram_size >> 20;
    case PIPE_CAP_UMA:
-      return 0;
+      return nouveau_screen(pscreen)->is_uma;
 
    default:
       if (!debug_cap_printed[param]) {
@@ -988,8 +988,9 @@ nv50_screen_get_compiler_options(struct pipe_screen *pscreen,
                                  enum pipe_shader_ir ir,
                                  enum pipe_shader_type shader)
 {
+   struct nouveau_screen *screen = nouveau_screen(pscreen);
    if (ir == PIPE_SHADER_IR_NIR)
-      return nv50_ir_nir_shader_compiler_options(NVISA_G80_CHIPSET, shader);
+      return nv50_ir_nir_shader_compiler_options(NVISA_G80_CHIPSET, shader, screen->prefer_nir);
    return NULL;
 }
 

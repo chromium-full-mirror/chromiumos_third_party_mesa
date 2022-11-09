@@ -154,7 +154,6 @@ fd6_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
          .key = {
             .rasterflat = ctx->rasterizer->flatshade,
             .ucp_enables = ctx->rasterizer->clip_plane_enable,
-            .layer_zero = !gs_info || !(gs_info->outputs_written & VARYING_BIT_LAYER),
             .sample_shading = (ctx->min_samples > 1),
             .msaa = (ctx->framebuffer.samples > 1),
          },
@@ -430,18 +429,21 @@ fd6_clear_lrz(struct fd_batch *batch, struct fd_resource *zsbuf, double depth) a
 
    fd6_event_write(batch, ring, 0x3f, false);
 
-   OUT_WFI5(ring);
-
-   OUT_PKT4(ring, REG_A6XX_RB_DBG_ECO_CNTL, 1);
-   OUT_RING(ring, screen->info->a6xx.magic.RB_DBG_ECO_CNTL_blit);
+   if (screen->info->a6xx.magic.RB_DBG_ECO_CNTL_blit != screen->info->a6xx.magic.RB_DBG_ECO_CNTL) {
+      /* This a non-context register, so we have to WFI before changing. */
+      OUT_WFI5(ring);
+      OUT_PKT4(ring, REG_A6XX_RB_DBG_ECO_CNTL, 1);
+      OUT_RING(ring, screen->info->a6xx.magic.RB_DBG_ECO_CNTL_blit);
+   }
 
    OUT_PKT7(ring, CP_BLIT, 1);
    OUT_RING(ring, CP_BLIT_0_OP(BLIT_OP_SCALE));
 
-   OUT_WFI5(ring);
-
-   OUT_PKT4(ring, REG_A6XX_RB_DBG_ECO_CNTL, 1);
-   OUT_RING(ring, 0x0); /* RB_DBG_ECO_CNTL */
+   if (screen->info->a6xx.magic.RB_DBG_ECO_CNTL_blit != screen->info->a6xx.magic.RB_DBG_ECO_CNTL) {
+      OUT_WFI5(ring);
+      OUT_PKT4(ring, REG_A6XX_RB_DBG_ECO_CNTL, 1);
+      OUT_RING(ring, screen->info->a6xx.magic.RB_DBG_ECO_CNTL);
+   }
 
    fd6_event_write(batch, ring, PC_CCU_FLUSH_COLOR_TS, true);
    fd6_event_write(batch, ring, PC_CCU_FLUSH_DEPTH_TS, true);

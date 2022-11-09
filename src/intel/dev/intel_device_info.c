@@ -34,7 +34,7 @@
 #include "intel_hwconfig.h"
 #include "intel/common/intel_gem.h"
 #include "util/bitscan.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/log.h"
 #include "util/macros.h"
 #include "util/os_misc.h"
@@ -73,6 +73,7 @@ static const struct {
    { "sg1", 0x4907 },
    { "rpl", 0xa780 },
    { "dg2", 0x5690 },
+   { "mtl", 0x7d60 },
 };
 
 /**
@@ -562,6 +563,7 @@ static const struct intel_device_info intel_device_info_chv = {
    .gt = 1,                                        \
    .has_llc = false,                               \
    .has_sample_with_hiz = true,                    \
+   .has_illegal_ccs_values = true,                 \
    .num_slices = 1,                                \
    .num_thread_per_eu = 6,                         \
    .max_vs_threads = 112,                          \
@@ -613,7 +615,8 @@ static const struct intel_device_info intel_device_info_chv = {
 #define GFX9_FEATURES                               \
    GFX8_FEATURES,                                   \
    GFX9_HW_INFO,                                    \
-   .has_sample_with_hiz = true
+   .has_sample_with_hiz = true,                     \
+   .has_illegal_ccs_values = true
 
 static const struct intel_device_info intel_device_info_skl_gt1 = {
    GFX9_FEATURES, .gt = 1,
@@ -836,6 +839,7 @@ static const struct intel_device_info intel_device_info_cfl_gt3 = {
    .has_64bit_int = false,                            \
    .has_integer_dword_mul = false,                    \
    .has_sample_with_hiz = false,                      \
+   .has_illegal_ccs_values = true,                    \
    .gt = _gt, .num_slices = _slices, .l3_banks = _l3, \
    .num_subslices = _subslices,                       \
    .max_eus_per_subslice = 8
@@ -889,6 +893,7 @@ static const struct intel_device_info intel_device_info_icl_gt0_5 = {
       GFX11_URB_MIN_MAX_ENTRIES,                    \
    },                                               \
    .disable_ccs_repack = true,                      \
+   .has_illegal_ccs_values = true,                  \
    .simulator_id = 28
 
 static const struct intel_device_info intel_device_info_ehl_4x8 = {
@@ -996,11 +1001,13 @@ static const struct intel_device_info intel_device_info_rkl_gt1 = {
 static const struct intel_device_info intel_device_info_adl_gt05 = {
    GFX12_GT05_FEATURES,
    .platform = INTEL_PLATFORM_ADL,
+   .display_ver = 13,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt1 = {
    GFX12_GT_FEATURES(1),
    .platform = INTEL_PLATFORM_ADL,
+   .display_ver = 13,
 };
 
 static const struct intel_device_info intel_device_info_adl_n = {
@@ -1019,6 +1026,7 @@ static const struct intel_device_info intel_device_info_rpl = {
    GFX12_FEATURES(1, 1, 4),
    .num_subslices = dual_subslices(2),
    .platform = INTEL_PLATFORM_RPL,
+   .display_ver = 13,
 };
 
 static const struct intel_device_info intel_device_info_rpl_p = {
@@ -1048,6 +1056,7 @@ static const struct intel_device_info intel_device_info_sg1 = {
    .num_thread_per_eu = 8 /* BSpec 44472 */,                    \
    .verx10 = 125,                                               \
    .has_llc = false,                                            \
+   .has_lsc = true,                                             \
    .has_local_mem = true,                                       \
    .has_aux_map = false,                                        \
    .simulator_id = 29
@@ -1055,13 +1064,14 @@ static const struct intel_device_info intel_device_info_sg1 = {
 #define DG2_FEATURES                                            \
    /* (Sub)slice info comes from the kernel topology info */    \
    XEHP_FEATURES(0, 1, 0),                                      \
+   .display_ver = 13,                                           \
    .revision = 4, /* For offline compiler */                    \
    .num_subslices = dual_subslices(1),                          \
-   .has_lsc = true,                                             \
    .apply_hwconfig = true,                                      \
    .has_coarse_pixel_primitive_and_cb = true,                   \
    .has_mesh_shading = true,                                    \
-   .has_ray_tracing = true
+   .has_ray_tracing = true,                                     \
+   .has_flat_ccs = true
 
 static const struct intel_device_info intel_device_info_dg2_g10 = {
    DG2_FEATURES,
@@ -1076,6 +1086,28 @@ static const struct intel_device_info intel_device_info_dg2_g11 = {
 static const struct intel_device_info intel_device_info_dg2_g12 = {
    DG2_FEATURES,
    .platform = INTEL_PLATFORM_DG2_G12,
+};
+
+#define MTL_FEATURES                                            \
+   /* (Sub)slice info comes from the kernel topology info */    \
+   XEHP_FEATURES(0, 1, 0),                                      \
+   .num_subslices = dual_subslices(1),                          \
+   .has_local_mem = false,                                      \
+   .apply_hwconfig = true,                                      \
+   .has_64bit_float = true,                                     \
+   .has_integer_dword_mul = false,                              \
+   .has_coarse_pixel_primitive_and_cb = true,                   \
+   .has_mesh_shading = true,                                    \
+   .has_ray_tracing = true
+
+UNUSED static const struct intel_device_info intel_device_info_mtl_m = {
+   MTL_FEATURES,
+   .platform = INTEL_PLATFORM_MTL_M,
+};
+
+UNUSED static const struct intel_device_info intel_device_info_mtl_p = {
+   MTL_FEATURES,
+   .platform = INTEL_PLATFORM_MTL_P,
 };
 
 static void
@@ -1951,10 +1983,9 @@ intel_i915_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
       update_cs_workgroup_threads(devinfo);
    }
 
-   int timestamp_frequency;
-   if (getparam(fd, I915_PARAM_CS_TIMESTAMP_FREQUENCY,
-                &timestamp_frequency))
-      devinfo->timestamp_frequency = timestamp_frequency;
+   int val;
+   if (getparam(fd, I915_PARAM_CS_TIMESTAMP_FREQUENCY, &val))
+      devinfo->timestamp_frequency = val;
    else if (devinfo->ver >= 10) {
       mesa_loge("Kernel 4.15 required to read the CS timestamp frequency.");
       return false;
@@ -2000,6 +2031,15 @@ intel_i915_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
    intel_get_aperture_size(fd, &devinfo->aperture_bytes);
    get_context_param(fd, 0, I915_CONTEXT_PARAM_GTT_SIZE, &devinfo->gtt_size);
    devinfo->has_tiling_uapi = has_get_tiling(fd);
+   devinfo->has_caching_uapi =
+      devinfo->platform < INTEL_PLATFORM_DG2_START && !devinfo->has_local_mem;
+
+   if (getparam(fd, I915_PARAM_MMAP_GTT_VERSION, &val))
+      devinfo->has_mmap_offset = val >= 4;
+   if (getparam(fd, I915_PARAM_HAS_USERPTR_PROBE, &val))
+      devinfo->has_userptr_probe = val;
+   if (getparam(fd, I915_PARAM_HAS_CONTEXT_ISOLATION, &val))
+      devinfo->has_context_isolation = val;
 
    return true;
 }
@@ -2033,7 +2073,7 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
    devinfo->pci_device_id = drmdev->deviceinfo.pci->device_id;
    devinfo->pci_revision_id = drmdev->deviceinfo.pci->revision_id;
    drmFreeDevice(&drmdev);
-   devinfo->no_hw = env_var_as_boolean("INTEL_NO_HW", false);
+   devinfo->no_hw = debug_get_bool_option("INTEL_NO_HW", false);
 
    if (devinfo->ver == 10) {
       mesa_loge("Gfx10 support is redacted.");

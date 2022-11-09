@@ -263,6 +263,7 @@ struct ir3_stream_output_info {
  */
 struct ir3_sampler_prefetch {
    uint8_t src;
+   bool bindless;
    uint8_t samp_id;
    uint8_t tex_id;
    uint16_t samp_bindless_id;
@@ -270,7 +271,7 @@ struct ir3_sampler_prefetch {
    uint8_t dst;
    uint8_t wrmask;
    uint8_t half_precision;
-   uint8_t cmd;
+   opc_t tex_opc;
 };
 
 /* Configuration key used to identify a shader variant.. different
@@ -324,13 +325,6 @@ struct ir3_shader_key {
           * the limit:
           */
          unsigned safe_constlen : 1;
-
-         /* Whether gl_Layer must be forced to 0 because it isn't written. */
-         unsigned layer_zero : 1;
-
-         /* Whether gl_ViewportIndex must be forced to 0 because it isn't
-          * written. */
-         unsigned view_zero : 1;
       };
       uint32_t global;
    };
@@ -401,9 +395,6 @@ ir3_shader_key_changes_fs(struct ir3_shader_key *key,
    }
 
    if (last_key->rasterflat != key->rasterflat)
-      return true;
-
-   if (last_key->layer_zero != key->layer_zero)
       return true;
 
    if (last_key->ucp_enables != key->ucp_enables)
@@ -530,6 +521,8 @@ struct ir3_shader_variant {
     * after assembly.
     */
    void *constant_data;
+
+   struct ir3_disasm_info disasm_info;
 
    /*
     * Below here is serialized when written to disk cache:
@@ -704,6 +697,8 @@ struct ir3_shader_variant {
 
    bool per_samp;
 
+   bool post_depth_coverage;
+
    /* Are we using split or merged register file? */
    bool mergedregs;
 
@@ -782,8 +777,6 @@ struct ir3_shader_variant {
 
    /* For when we don't have a shader, variant's copy of streamout state */
    struct ir3_stream_output_info stream_output;
-
-   struct ir3_disasm_info disasm_info;
 };
 
 static inline const char *

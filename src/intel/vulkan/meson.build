@@ -43,6 +43,20 @@ anv_entrypoints = custom_target(
   depend_files : vk_entrypoints_gen_depend_files,
 )
 
+float64_spv_h = custom_target(
+  'float64_spv.h',
+  input : [glsl2spirv, float64_glsl_file],
+  output : 'float64_spv.h',
+  command : [
+    prog_python, '@INPUT@', '@OUTPUT@',
+    prog_glslang,
+    '--create-entry', 'main',
+    '--vn', 'float64_spv_source',
+    '--glsl-version', '450',
+    '-Olib',
+  ]
+)
+
 idep_anv_headers = declare_dependency(
   sources : [anv_entrypoints[0]],
   include_directories : inc_anv,
@@ -144,7 +158,6 @@ libanv_files = files(
   'anv_measure.c',
   'anv_measure.h',
   'anv_nir.h',
-  'anv_nir_add_base_work_group_id.c',
   'anv_nir_apply_pipeline_layout.c',
   'anv_nir_compute_push_layout.c',
   'anv_nir_lower_multiview.c',
@@ -195,7 +208,7 @@ libanv_common = static_library(
   'anv_common',
   [
     libanv_files, anv_entrypoints, sha1_h,
-    gen_xml_pack,
+    gen_xml_pack, float64_spv_h,
   ],
   include_directories : [
     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel, inc_compiler,
