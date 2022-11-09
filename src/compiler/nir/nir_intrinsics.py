@@ -275,6 +275,9 @@ index("unsigned", "value_id")
 # Whether to sign-extend offsets in address arithmatic (else zero extend)
 index("bool", "sign_extend")
 
+# Instruction specific flags
+index("unsigned", "flags")
+
 intrinsic("nop", flags=[CAN_ELIMINATE])
 
 intrinsic("convert_alu_types", dest_comp=0, src_comp=[0],
@@ -587,15 +590,15 @@ intrinsic("rt_trace_ray", src_comp=[-1, 1, 1, 1, 1, 1, 3, 1, 3, 1, -1],
 # undefined.")
 def atomic(name, flags=[]):
     intrinsic(name + "_deref", src_comp=[-1], dest_comp=1, flags=flags)
-    intrinsic(name, src_comp=[1], dest_comp=1, indices=[BASE], flags=flags)
+    intrinsic(name, src_comp=[1], dest_comp=1, indices=[BASE, RANGE_BASE], flags=flags)
 
 def atomic2(name):
     intrinsic(name + "_deref", src_comp=[-1, 1], dest_comp=1)
-    intrinsic(name, src_comp=[1, 1], dest_comp=1, indices=[BASE])
+    intrinsic(name, src_comp=[1, 1], dest_comp=1, indices=[BASE, RANGE_BASE])
 
 def atomic3(name):
     intrinsic(name + "_deref", src_comp=[-1, 1, 1], dest_comp=1)
-    intrinsic(name, src_comp=[1, 1, 1], dest_comp=1, indices=[BASE])
+    intrinsic(name, src_comp=[1, 1, 1], dest_comp=1, indices=[BASE, RANGE_BASE])
 
 atomic("atomic_counter_inc")
 atomic("atomic_counter_pre_dec")
@@ -633,7 +636,7 @@ def image(name, src_comp=[], extra_indices=[], **kwargs):
     intrinsic("image_deref_" + name, src_comp=[-1] + src_comp,
               indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS] + extra_indices, **kwargs)
     intrinsic("image_" + name, src_comp=[1] + src_comp,
-              indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS] + extra_indices, **kwargs)
+              indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS, RANGE_BASE] + extra_indices, **kwargs)
     intrinsic("bindless_image_" + name, src_comp=[-1] + src_comp,
               indices=[IMAGE_DIM, IMAGE_ARRAY, FORMAT, ACCESS] + extra_indices, **kwargs)
 
@@ -665,6 +668,9 @@ image("descriptor_amd", dest_comp=0, src_comp=[], flags=[CAN_ELIMINATE, CAN_REOR
 # CL-specific format queries
 image("format", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
 image("order", dest_comp=1, flags=[CAN_ELIMINATE, CAN_REORDER])
+# Multisample fragment mask load
+# src_comp[0] is same as image load src_comp[0]
+image("fragment_mask_load_amd", src_comp=[4], dest_comp=1, bit_sizes=[32], flags=[CAN_ELIMINATE, CAN_REORDER])
 
 # Vulkan descriptor set intrinsics
 #
@@ -1417,10 +1423,6 @@ intrinsic("load_cull_any_enabled_amd", dest_comp=1, bit_sizes=[1], flags=[CAN_EL
 intrinsic("load_cull_small_prim_precision_amd", dest_comp=1, bit_sizes=[32], flags=[CAN_ELIMINATE, CAN_REORDER])
 # Initial edge flags in a Vertex Shader, packed into the format the HW needs for primitive export.
 intrinsic("load_initial_edgeflags_amd", src_comp=[], dest_comp=1, bit_sizes=[32], indices=[])
-# Exports the current invocation's vertex. This is a placeholder where all vertex attribute export instructions should be emitted.
-intrinsic("export_vertex_amd", src_comp=[], indices=[])
-# Exports the current invocation's primitive. src[] = {packed_primitive_data}.
-intrinsic("export_primitive_amd", src_comp=[1], indices=[])
 # Allocates export space for vertices and primitives. src[] = {num_vertices, num_primitives}.
 intrinsic("alloc_vertices_and_primitives_amd", src_comp=[1, 1], indices=[])
 # Overwrites VS input registers, for use with vertex compaction after culling. src = {vertex_id, instance_id}.
@@ -1543,6 +1545,12 @@ system_value("lds_ngg_scratch_base_amd", 1)
 # LDS offset for NGG GS shader vertex emit
 system_value("lds_ngg_gs_out_vertex_base_amd", 1)
 
+# AMD GPU shader output export instruction
+# src[] = { export_value }
+# BASE = export target
+# FLAGS = AC_EXP_FLAG_*
+intrinsic("export_amd", [0], indices=[BASE, WRITE_MASK, FLAGS])
+
 # V3D-specific instrinc for tile buffer color reads.
 #
 # The hardware requires that we read the samples and components of a pixel
@@ -1613,7 +1621,7 @@ intrinsic("store_zs_agx", [1, 1, 1], indices=[BASE], flags=[])
 intrinsic("block_image_store_agx", [1, 1], bit_sizes=[32, 16],
           indices=[FORMAT, IMAGE_DIM], flags=[CAN_REORDER])
 
-# Formatted loads. The format is the pipe_format in memory (see
+# Formatted load/store. The format is the pipe_format in memory (see
 # agx_internal_formats.h for the supported list). This accesses:
 #
 #     address + extend(index) << (format shift + shift)
@@ -1621,13 +1629,16 @@ intrinsic("block_image_store_agx", [1, 1], bit_sizes=[32, 16],
 # The nir_intrinsic_base() index encodes the shift. The sign_extend index
 # determines whether sign- or zero-extension is used for the index.
 #
-# All loads on AGX uses these hardware instructions, so while these are
-# logically load_global_agx (etc), the _global is omitted as it adds nothing.
+# All loads and stores on AGX uses these hardware instructions, so while these are
+# logically load_global_agx/load_global_constant_agx/store_global_agx, the
+# _global is omitted as it adds nothing.
 #
 # src[] = { address, index }.
 load("agx", [1, 1], [ACCESS, BASE, FORMAT, SIGN_EXTEND], [CAN_ELIMINATE])
 load("constant_agx", [1, 1], [ACCESS, BASE, FORMAT, SIGN_EXTEND],
      [CAN_ELIMINATE, CAN_REORDER])
+# src[] = { value, address, index }.
+store("agx", [1, 1], [ACCESS, BASE, FORMAT, SIGN_EXTEND])
 
 # Logical complement of load_front_face, mapping to an AGX system value
 system_value("back_face_agx", 1, bit_sizes=[1, 32])

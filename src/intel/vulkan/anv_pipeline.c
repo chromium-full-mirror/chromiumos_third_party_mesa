@@ -36,6 +36,7 @@
 #include "compiler/brw_nir.h"
 #include "compiler/brw_nir_rt.h"
 #include "anv_nir.h"
+#include "nir/nir_vulkan.h"
 #include "nir/nir_xfb_info.h"
 #include "spirv/nir_spirv.h"
 #include "vk_pipeline.h"
@@ -219,6 +220,9 @@ anv_shader_stage_to_nir(struct anv_device *device,
        * with certain code / code generators.
        */
       .shared_addr_format = nir_address_format_32bit_offset,
+
+      .min_ubo_alignment = ANV_UBO_ALIGNMENT,
+      .min_ssbo_alignment = ANV_SSBO_ALIGNMENT,
    };
 
    nir_shader *nir;
@@ -542,7 +546,8 @@ populate_wm_prog_key(const struct anv_graphics_pipeline *pipeline,
     * code to workaround the issue that hardware disables alpha to coverage
     * when there is SampleMask output.
     */
-   key->alpha_to_coverage = ms != NULL && ms->alpha_to_coverage_enable;
+   key->alpha_to_coverage = ms != NULL && ms->alpha_to_coverage_enable ?
+      BRW_ALWAYS : BRW_NEVER;
 
    /* Vulkan doesn't support fixed-function alpha test */
    key->alpha_test_replicate_alpha = false;
@@ -552,9 +557,11 @@ populate_wm_prog_key(const struct anv_graphics_pipeline *pipeline,
        * harmless to compute it and then let dead-code take care of it.
        */
       if (ms->rasterization_samples > 1) {
-         key->persample_interp = ms->sample_shading_enable &&
-            (ms->min_sample_shading * ms->rasterization_samples) > 1;
-         key->multisample_fbo = true;
+         key->persample_interp =
+            (ms->sample_shading_enable &&
+             (ms->min_sample_shading * ms->rasterization_samples) > 1) ?
+            BRW_ALWAYS : BRW_NEVER;
+         key->multisample_fbo = BRW_ALWAYS;
       }
 
       if (device->physical->instance->sample_mask_out_opengl_behaviour)
@@ -735,38 +742,6 @@ anv_pipeline_hash_ray_tracing_combined_shader(struct anv_ray_tracing_pipeline *p
    _mesa_sha1_final(&ctx, sha1_out);
 }
 
-static void
-anv_stage_nullify_unused_push_desc_surfaces(struct anv_pipeline_stage *stage,
-                                            struct anv_pipeline_layout *layout)
-{
-   uint8_t push_set;
-   const struct anv_descriptor_set_layout *push_set_layout =
-      anv_pipeline_layout_get_push_set(layout, &push_set);
-   if (push_set_layout == NULL)
-      return;
-
-   const uint32_t to_keep_descriptors =
-      stage->push_desc_info.used_descriptors &
-      ~stage->push_desc_info.fully_promoted_ubo_descriptors;
-
-   for (unsigned s = 0; s < stage->bind_map.surface_count; s++) {
-      if (stage->bind_map.surface_to_descriptor[s].set == ANV_DESCRIPTOR_SET_DESCRIPTORS &&
-          stage->bind_map.surface_to_descriptor[s].index == push_set &&
-          !stage->push_desc_info.used_set_buffer)
-         stage->bind_map.surface_to_descriptor[s].set = ANV_DESCRIPTOR_SET_NULL;
-
-
-      if (stage->bind_map.surface_to_descriptor[s].set == push_set) {
-         const uint32_t binding =
-            stage->bind_map.surface_to_descriptor[s].binding;
-         const uint32_t desc_index =
-            push_set_layout->binding[binding].descriptor_index;
-         if (!(BITFIELD_BIT(desc_index) & to_keep_descriptors))
-            stage->bind_map.surface_to_descriptor[s].set = ANV_DESCRIPTOR_SET_NULL;
-      }
-   }
-}
-
 static nir_shader *
 anv_pipeline_stage_get_nir(struct anv_pipeline *pipeline,
                            struct vk_pipeline_cache *cache,
@@ -795,6 +770,28 @@ anv_pipeline_stage_get_nir(struct anv_pipeline *pipeline,
    }
 
    return NULL;
+}
+
+static const struct vk_ycbcr_conversion_state *
+lookup_ycbcr_conversion(const void *_pipeline_layout, uint32_t set,
+                        uint32_t binding, uint32_t array_index)
+{
+   const struct anv_pipeline_layout *pipeline_layout = _pipeline_layout;
+
+   assert(set < MAX_SETS);
+   assert(binding < pipeline_layout->set[set].layout->binding_count);
+   const struct anv_descriptor_set_binding_layout *bind_layout =
+      &pipeline_layout->set[set].layout->binding[binding];
+
+   if (bind_layout->immutable_samplers == NULL)
+      return NULL;
+
+   array_index = MIN2(array_index, bind_layout->array_size - 1);
+
+   const struct anv_sampler *sampler =
+      bind_layout->immutable_samplers[array_index];
+
+   return sampler && sampler->conversion ? &sampler->conversion->state : NULL;
 }
 
 static void
@@ -847,7 +844,7 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
       NIR_PASS(_, nir, nir_lower_compute_system_values, &options);
    }
 
-   NIR_PASS(_, nir, anv_nir_lower_ycbcr_textures, layout);
+   NIR_PASS(_, nir, nir_vk_lower_ycbcr_tex, lookup_ycbcr_conversion, layout);
 
    if (pipeline->type == ANV_PIPELINE_GRAPHICS) {
       struct anv_graphics_pipeline *gfx_pipeline =
@@ -949,7 +946,6 @@ anv_pipeline_lower_nir(struct anv_pipeline *pipeline,
       anv_nir_loads_push_desc_buffer(nir, layout, &stage->bind_map);
    stage->push_desc_info.fully_promoted_ubo_descriptors =
       anv_nir_push_desc_ubo_fully_promoted(nir, layout, &stage->bind_map);
-   anv_stage_nullify_unused_push_desc_surfaces(stage, layout);
 
    stage->nir = nir;
 }
@@ -2626,11 +2622,11 @@ anv_pipeline_init_ray_tracing_stages(struct anv_ray_tracing_pipeline *pipeline,
 }
 
 static bool
-anv_pipeline_load_cached_shaders(struct anv_ray_tracing_pipeline *pipeline,
-                                 struct vk_pipeline_cache *cache,
-                                 const VkRayTracingPipelineCreateInfoKHR *info,
-                                 struct anv_pipeline_stage *stages,
-                                 uint32_t *stack_max)
+anv_ray_tracing_pipeline_load_cached_shaders(struct anv_ray_tracing_pipeline *pipeline,
+                                             struct vk_pipeline_cache *cache,
+                                             const VkRayTracingPipelineCreateInfoKHR *info,
+                                             struct anv_pipeline_stage *stages,
+                                             uint32_t *stack_max)
 {
    uint32_t shaders = 0, cache_hits = 0;
    for (uint32_t i = 0; i < info->stageCount; i++) {
@@ -2694,7 +2690,8 @@ anv_pipeline_compile_ray_tracing(struct anv_ray_tracing_pipeline *pipeline,
    uint32_t stack_max[MESA_VULKAN_SHADER_STAGES] = {};
 
    if (!skip_cache_lookup &&
-       anv_pipeline_load_cached_shaders(pipeline, cache, info, stages, stack_max)) {
+       anv_ray_tracing_pipeline_load_cached_shaders(pipeline, cache, info,
+                                                    stages, stack_max)) {
       pipeline_feedback.flags |=
          VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
       goto done;

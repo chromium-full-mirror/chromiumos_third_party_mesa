@@ -2062,7 +2062,7 @@
     </field>
     <field name="Pixel Shader Kills Pixel" start="60" end="60" type="bool" />
     <field name="oMask Present to Render Target" start="61" end="61" type="bool" />
-    <field name="Pixel Shader Does not write to RT" start="62" end="62" type="bool" />
+    <field name="Pixel Shader Does not write to RT" start="62" end="62" type="mbz" />
     <field name="Pixel Shader Valid" start="63" end="63" type="bool" />
   </instruction>
   <instruction name="3DSTATE_PUSH_CONSTANT_ALLOC_DS" bias="2" length="2" engine="render">
@@ -6648,16 +6648,6 @@
     <field name="NP Early Z Fails Disable Mask" start="29" end="29" type="bool" />
     <field name="Blend Optimization Fix Disable Mask" start="30" end="30" type="bool" />
     <field name="Color Compression Disable Mask" start="31" end="31" type="bool" />
-  </register>
-  <register name="CACHE_MODE_SS" length="1" num="0x0e420">
-    <field name="Instruction Level 1 Cache Disable" start="0" end="0" type="bool" />
-    <field name="Instruction Level 1 Cache and In-Flight Queue Disable " start="1" end="1" type="bool" />
-    <field name="Float Blend Optimization Enable" start="4" end="4" type="bool" />
-    <field name="Per Sample Blend Opt Disable" start="11" end="11" type="bool" />
-    <field name="Instruction Level 1 Cache Disable Mask" start="16" end="16" type="bool" />
-    <field name="Instruction Level 1 Cache and In-Flight Queue Disable Mask" start="17" end="17" type="bool" />
-    <field name="Float Blend Optimization Enable Mask" start="20" end="20" type="bool" />
-    <field name="Per Sample Blend Opt Disable Mask" start="27" end="27" type="bool" />
   </register>
   <register name="CL_INVOCATION_COUNT" length="2" num="0x2338">
     <field name="CL Invocation Count Report" start="0" end="63" type="uint" />

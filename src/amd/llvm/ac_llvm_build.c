@@ -59,7 +59,7 @@ void ac_llvm_context_init(struct ac_llvm_context *ctx, struct ac_llvm_compiler *
                           enum amd_gfx_level gfx_level, enum radeon_family family,
                           bool has_3d_cube_border_color_mipmap,
                           enum ac_float_mode float_mode, unsigned wave_size,
-                          unsigned ballot_mask_bits)
+                          unsigned ballot_mask_bits, bool exports_color_null, bool exports_mrtz)
 {
    ctx->context = LLVMContextCreate();
 
@@ -69,6 +69,8 @@ void ac_llvm_context_init(struct ac_llvm_context *ctx, struct ac_llvm_compiler *
    ctx->wave_size = wave_size;
    ctx->ballot_mask_bits = ballot_mask_bits;
    ctx->float_mode = float_mode;
+   ctx->exports_color_null = exports_color_null;
+   ctx->exports_mrtz = exports_mrtz;
    ctx->module = ac_create_module(compiler->tm, ctx->context);
    ctx->builder = ac_create_builder(ctx->context, float_mode);
 
@@ -125,6 +127,8 @@ void ac_llvm_context_init(struct ac_llvm_context *ctx, struct ac_llvm_compiler *
 
    ctx->empty_md = LLVMMDNodeInContext(ctx->context, NULL, 0);
    ctx->flow = calloc(1, sizeof(*ctx->flow));
+
+   ctx->ring_offsets_index = INT32_MAX;
 }
 
 void ac_llvm_context_dispose(struct ac_llvm_context *ctx)
@@ -227,6 +231,7 @@ LLVMTypeRef ac_to_integer_type(struct ac_llvm_context *ctx, LLVMTypeRef t)
    if (LLVMGetTypeKind(t) == LLVMPointerTypeKind) {
       switch (LLVMGetPointerAddressSpace(t)) {
       case AC_ADDR_SPACE_GLOBAL:
+      case AC_ADDR_SPACE_CONST:
          return ctx->i64;
       case AC_ADDR_SPACE_CONST_32BIT:
       case AC_ADDR_SPACE_LDS:
@@ -4581,12 +4586,22 @@ struct ac_llvm_pointer ac_build_main(const struct ac_shader_args *args, struct a
                            LLVMTypeRef ret_type, LLVMModuleRef module)
 {
    LLVMTypeRef arg_types[AC_MAX_ARGS];
+   enum ac_arg_regfile arg_regfiles[AC_MAX_ARGS];
 
+   /* ring_offsets doesn't have a corresponding function parameter because LLVM can allocate it
+    * itself for scratch memory purposes and gives us access through llvm.amdgcn.implicit.buffer.ptr
+    */
+   unsigned arg_count = 0;
    for (unsigned i = 0; i < args->arg_count; i++) {
-      arg_types[i] = arg_llvm_type(args->args[i].type, args->args[i].size, ctx);
+      if (args->ring_offsets.used && i == args->ring_offsets.arg_index) {
+         ctx->ring_offsets_index = i;
+         continue;
+      }
+      arg_regfiles[arg_count] = args->args[i].file;
+      arg_types[arg_count++] = arg_llvm_type(args->args[i].type, args->args[i].size, ctx);
    }
 
-   LLVMTypeRef main_function_type = LLVMFunctionType(ret_type, arg_types, args->arg_count, 0);
+   LLVMTypeRef main_function_type = LLVMFunctionType(ret_type, arg_types, arg_count, 0);
 
    LLVMValueRef main_function = LLVMAddFunction(module, name, main_function_type);
    LLVMBasicBlockRef main_function_body =
@@ -4594,10 +4609,10 @@ struct ac_llvm_pointer ac_build_main(const struct ac_shader_args *args, struct a
    LLVMPositionBuilderAtEnd(ctx->builder, main_function_body);
 
    LLVMSetFunctionCallConv(main_function, convention);
-   for (unsigned i = 0; i < args->arg_count; ++i) {
+   for (unsigned i = 0; i < arg_count; ++i) {
       LLVMValueRef P = LLVMGetParam(main_function, i);
 
-      if (args->args[i].file != AC_ARG_SGPR)
+      if (arg_regfiles[i] != AC_ARG_SGPR)
          continue;
 
       ac_add_function_attr(ctx->context, main_function, i + 1, "inreg");
@@ -4607,6 +4622,14 @@ struct ac_llvm_pointer ac_build_main(const struct ac_shader_args *args, struct a
          ac_add_attr_dereferenceable(P, UINT64_MAX);
          ac_add_attr_alignment(P, 4);
       }
+   }
+
+   if (args->ring_offsets.used) {
+      ctx->ring_offsets =
+         ac_build_intrinsic(ctx, "llvm.amdgcn.implicit.buffer.ptr",
+                            LLVMPointerType(ctx->i8, AC_ADDR_SPACE_CONST), NULL, 0, 0);
+      ctx->ring_offsets = LLVMBuildBitCast(ctx->builder, ctx->ring_offsets,
+                                           ac_array_in_const_addr_space(ctx->v4i32), "");
    }
 
    ctx->main_function = (struct ac_llvm_pointer) {
@@ -4619,6 +4642,14 @@ struct ac_llvm_pointer ac_build_main(const struct ac_shader_args *args, struct a
    /* Disable denormals for FP32: */
    LLVMAddTargetDependentFunctionAttr(main_function, "denormal-fp-math-f32",
                                       "preserve-sign,preserve-sign");
+
+   if (LLVM_VERSION_MAJOR >= 15 && convention == AC_LLVM_AMDGPU_PS) {
+      LLVMAddTargetDependentFunctionAttr(main_function, "amdgpu-depth-export",
+                                         ctx->exports_mrtz ? "1" : "0");
+      LLVMAddTargetDependentFunctionAttr(main_function, "amdgpu-color-export",
+                                         ctx->exports_color_null ? "1" : "0");
+   }
+
    return ctx->main_function;
 }
 

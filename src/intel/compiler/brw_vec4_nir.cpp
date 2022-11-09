@@ -545,7 +545,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
    case nir_intrinsic_ssbo_atomic_xor:
    case nir_intrinsic_ssbo_atomic_exchange:
    case nir_intrinsic_ssbo_atomic_comp_swap:
-      nir_emit_ssbo_atomic(brw_aop_for_nir_intrinsic(instr), instr);
+      nir_emit_ssbo_atomic(lsc_op_to_legacy_atomic(lsc_aop_for_nir_intrinsic(instr)), instr);
       break;
 
    case nir_intrinsic_load_vertex_id:
@@ -1552,27 +1552,6 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
          emit_conversion_to_double(dst, negate(op[0]));
       } else {
          emit(MOV(dst, negate(op[0])));
-      }
-      break;
-
-   case nir_op_f2b32:
-      if (nir_src_bit_size(instr->src[0].src) == 64) {
-         /* We use a MOV with conditional_mod to check if the provided value is
-          * 0.0. We want this to flush denormalized numbers to zero, so we set a
-          * source modifier on the source operand to trigger this, as source
-          * modifiers don't affect the result of the testing against 0.0.
-          */
-         src_reg value = op[0];
-         value.abs = true;
-         vec4_instruction *inst = emit(MOV(dst_null_df(), value));
-         inst->conditional_mod = BRW_CONDITIONAL_NZ;
-
-         src_reg one = src_reg(this, glsl_type::ivec4_type);
-         emit(MOV(dst_reg(one), brw_imm_d(~0)));
-         inst = emit(BRW_OPCODE_SEL, dst, one, brw_imm_d(0));
-         inst->predicate = BRW_PREDICATE_NORMAL;
-      } else {
-         emit(CMP(dst, op[0], brw_imm_f(0.0f), BRW_CONDITIONAL_NZ));
       }
       break;
 

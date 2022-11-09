@@ -2725,6 +2725,7 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
    CASE(samples)
    CASE(load_raw_intel)
    CASE(store_raw_intel)
+   CASE(fragment_mask_load_amd)
 #undef CASE
    default:
       unreachable("Unhanded image intrinsic");
@@ -3108,10 +3109,6 @@ nir_alu_instr_is_comparison(const nir_alu_instr *instr)
    CASE_ALL_SIZES(nir_op_uge)
    CASE_ALL_SIZES(nir_op_ieq)
    CASE_ALL_SIZES(nir_op_ine)
-   case nir_op_f2b1:
-   case nir_op_f2b8:
-   case nir_op_f2b16:
-   case nir_op_f2b32:
    case nir_op_inot:
       return true;
    default:
@@ -3264,6 +3261,9 @@ nir_tex_instr_is_query(const nir_tex_instr *instr)
    case nir_texop_txf_ms_fb:
    case nir_texop_txf_ms_mcs_intel:
    case nir_texop_tg4:
+   case nir_texop_samples_identical:
+   case nir_texop_fragment_mask_fetch_amd:
+   case nir_texop_fragment_fetch_amd:
       return false;
    default:
       unreachable("Invalid texture opcode");

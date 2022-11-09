@@ -319,20 +319,14 @@ struct gl_colorbuffer_attrib
    GLboolean sRGBEnabled;  /**< Framebuffer sRGB blending/updating requested */
 };
 
-
 /**
  * Vertex format to describe a vertex element.
  */
 struct gl_vertex_format
 {
-   GLenum16 Type;        /**< datatype: GL_FLOAT, GL_INT, etc */
-   GLenum16 Format;      /**< default: GL_RGBA, but may be GL_BGRA */
+   union gl_vertex_format_user User;
    enum pipe_format _PipeFormat:16; /**< pipe_format for Gallium */
-   GLubyte Size:5;       /**< components per element (1,2,3,4) */
-   GLubyte Normalized:1; /**< GL_ARB_vertex_program */
-   GLubyte Integer:1;    /**< Integer-valued? */
-   GLubyte Doubles:1;    /**< double values are not converted to floats */
-   GLubyte _ElementSize; /**< Size of each element in bytes */
+   GLushort _ElementSize; /**< Size of each element in bytes */
 };
 
 
@@ -951,6 +945,8 @@ struct gl_texture_object
    /** GL_OES_EGL_image_external */
    GLboolean External;
    GLubyte RequiredTextureImageUnits;
+
+   GLboolean NullTexture; /**< this texture is incomplete and should be passed to the driver as NULL */
 
    /** GL_EXT_memory_object */
    GLenum16 TextureTiling;
@@ -2419,7 +2415,7 @@ struct gl_shared_state
    struct gl_texture_object *DefaultTex[NUM_TEXTURE_TARGETS];
 
    /** Fallback texture used when a bound texture is incomplete */
-   struct gl_texture_object *FallbackTex[NUM_TEXTURE_TARGETS];
+   struct gl_texture_object *FallbackTex[NUM_TEXTURE_TARGETS][2]; /**< [color, depth] */
 
    /**
     * \name Thread safety and statechange notification for texture

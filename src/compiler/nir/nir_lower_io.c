@@ -314,8 +314,7 @@ emit_load(struct lower_io_state *state,
             assert(array_index == NULL);
 
             nir_intrinsic_op bary_op;
-            if (var->data.sample ||
-                (state->options & nir_lower_io_force_sample_interpolation))
+            if (var->data.sample)
                bary_op = nir_intrinsic_load_barycentric_sample;
             else if (var->data.centroid)
                bary_op = nir_intrinsic_load_barycentric_centroid;
@@ -588,9 +587,7 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
    nir_intrinsic_op bary_op;
    switch (intrin->intrinsic) {
    case nir_intrinsic_interp_deref_at_centroid:
-      bary_op = (state->options & nir_lower_io_force_sample_interpolation) ?
-                nir_intrinsic_load_barycentric_sample :
-                nir_intrinsic_load_barycentric_centroid;
+      bary_op = nir_intrinsic_load_barycentric_centroid;
       break;
    case nir_intrinsic_interp_deref_at_sample:
       bary_op = nir_intrinsic_load_barycentric_at_sample;
@@ -1184,8 +1181,9 @@ addr_is_in_bounds(nir_builder *b, nir_ssa_def *addr,
 {
    assert(addr_format == nir_address_format_64bit_bounded_global);
    assert(addr->num_components == 4);
-   return nir_ige(b, nir_channel(b, addr, 2),
-                     nir_iadd_imm(b, nir_channel(b, addr, 3), size));
+   assert(size > 0);
+   return nir_ult(b, nir_iadd_imm(b, nir_channel(b, addr, 3), size - 1),
+                     nir_channel(b, addr, 2));
 }
 
 static void

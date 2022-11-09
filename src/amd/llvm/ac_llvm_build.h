@@ -156,14 +156,20 @@ struct ac_llvm_context {
 
    unsigned float_mode;
 
+   bool exports_color_null;
+   bool exports_mrtz;
+
    struct ac_llvm_pointer lds;
+
+   LLVMValueRef ring_offsets;
+   int ring_offsets_index;
 };
 
 void ac_llvm_context_init(struct ac_llvm_context *ctx, struct ac_llvm_compiler *compiler,
                           enum amd_gfx_level gfx_level, enum radeon_family family,
                           bool has_3d_cube_border_color_mipmap,
                           enum ac_float_mode float_mode, unsigned wave_size,
-                          unsigned ballot_mask_bits);
+                          unsigned ballot_mask_bits, bool exports_color_null, bool exports_mrtz);
 
 void ac_llvm_context_dispose(struct ac_llvm_context *ctx);
 
@@ -577,6 +583,8 @@ LLVMValueRef ac_build_atomic_rmw(struct ac_llvm_context *ctx, LLVMAtomicRMWBinOp
 LLVMValueRef ac_build_atomic_cmp_xchg(struct ac_llvm_context *ctx, LLVMValueRef ptr,
                                       LLVMValueRef cmp, LLVMValueRef val, const char *sync_scope);
 
+void ac_add_sinking_pass(LLVMPassManagerRef PM);
+
 void ac_export_mrt_z(struct ac_llvm_context *ctx, LLVMValueRef depth, LLVMValueRef stencil,
                      LLVMValueRef samplemask, LLVMValueRef mrt0_alpha, bool is_last,
                      struct ac_export_args *args);
@@ -602,7 +610,10 @@ LLVMTypeRef ac_arg_type_to_pointee_type(struct ac_llvm_context *ctx, enum ac_arg
 static inline LLVMValueRef ac_get_arg(struct ac_llvm_context *ctx, struct ac_arg arg)
 {
    assert(arg.used);
-   return LLVMGetParam(ctx->main_function.value, arg.arg_index);
+   if (arg.arg_index == ctx->ring_offsets_index)
+      return ctx->ring_offsets;
+   int offset = arg.arg_index > ctx->ring_offsets_index ? -1 : 0;
+   return LLVMGetParam(ctx->main_function.value, arg.arg_index + offset);
 }
 
 static inline struct ac_llvm_pointer
@@ -610,7 +621,7 @@ ac_get_ptr_arg(struct ac_llvm_context *ctx, const struct ac_shader_args *args, s
 {
    struct ac_llvm_pointer ptr;
    ptr.pointee_type = ac_arg_type_to_pointee_type(ctx, args->args[arg.arg_index].type);
-   ptr.value = LLVMGetParam(ctx->main_function.value, arg.arg_index);
+   ptr.value = ac_get_arg(ctx, arg);
    return ptr;
 }
 

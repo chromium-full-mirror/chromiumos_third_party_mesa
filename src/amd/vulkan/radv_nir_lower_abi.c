@@ -34,8 +34,8 @@ typedef struct {
    const struct radv_shader_args *args;
    const struct radv_shader_info *info;
    const struct radv_pipeline_key *pl_key;
-   bool use_llvm;
    uint32_t address32_hi;
+   nir_ssa_def *gsvs_ring[4];
 } lower_abi_state;
 
 static nir_ssa_def *
@@ -44,7 +44,7 @@ load_ring(nir_builder *b, unsigned ring, lower_abi_state *s)
    struct ac_arg arg =
       b->shader->info.stage == MESA_SHADER_TASK ?
       s->args->task_ring_offsets :
-      s->args->ring_offsets;
+      s->args->ac.ring_offsets;
 
    nir_ssa_def *ring_offsets = ac_nir_load_arg(b, &s->args->ac, arg);
    ring_offsets = nir_pack_64_2x32_split(b, nir_channel(b, ring_offsets, 0), nir_channel(b, ring_offsets, 1));
@@ -65,6 +65,50 @@ ngg_query_bool_setting(nir_builder *b, unsigned mask, lower_abi_state *s)
    return nir_test_mask(b, settings, mask);
 }
 
+static nir_ssa_def *
+lower_load_vs_input_from_prolog(nir_builder *b,
+                                nir_intrinsic_instr *intrin,
+                                lower_abi_state *s)
+{
+   nir_src *offset_src = nir_get_io_offset_src(intrin);
+   assert(nir_src_is_const(*offset_src));
+
+   const unsigned base = nir_intrinsic_base(intrin);
+   const unsigned base_offset = nir_src_as_uint(*offset_src);
+   const unsigned driver_location = base + base_offset - VERT_ATTRIB_GENERIC0;
+   const unsigned component = nir_intrinsic_component(intrin);
+   const unsigned bit_size = intrin->dest.ssa.bit_size;
+   const unsigned num_components = intrin->dest.ssa.num_components;
+
+   /* 64-bit inputs: they occupy twice as many 32-bit components.
+    * 16-bit inputs: they occupy a 32-bit component (not packed).
+    */
+   const unsigned arg_bit_size = MAX2(bit_size, 32);
+
+   unsigned num_input_args = 1;
+   nir_ssa_def *input_args[2] = {ac_nir_load_arg(b, &s->args->ac, s->args->vs_inputs[driver_location]), NULL};
+   if (component * 32 + arg_bit_size * num_components > 128) {
+      assert(bit_size == 64);
+
+      num_input_args++;
+      input_args[1] = ac_nir_load_arg(b, &s->args->ac, s->args->vs_inputs[driver_location + 1]);
+   }
+
+   nir_ssa_def *extracted = nir_extract_bits(b, input_args, num_input_args, component * 32,
+                                             num_components, arg_bit_size);
+
+   if (bit_size < arg_bit_size) {
+      assert(bit_size == 16);
+
+      if (nir_alu_type_get_base_type(nir_intrinsic_dest_type(intrin)) == nir_type_float)
+         return nir_f2f16(b, extracted);
+      else
+         return nir_u2u16(b, extracted);
+   }
+
+   return extracted;
+}
+
 static bool
 lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
 {
@@ -83,22 +127,12 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
 
    switch (intrin->intrinsic) {
    case nir_intrinsic_load_ring_tess_factors_amd:
-      if (s->use_llvm) {
-         progress = false;
-         break;
-      }
-
       replacement = load_ring(b, RING_HS_TESS_FACTOR, s);
       break;
    case nir_intrinsic_load_ring_tess_factors_offset_amd:
       replacement = ac_nir_load_arg(b, &s->args->ac, s->args->ac.tcs_factor_offset);
       break;
    case nir_intrinsic_load_ring_tess_offchip_amd:
-      if (s->use_llvm) {
-         progress = false;
-         break;
-      }
-
       replacement = load_ring(b, RING_HS_TESS_OFFCHIP, s);
       break;
    case nir_intrinsic_load_ring_tess_offchip_offset_amd:
@@ -117,31 +151,22 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
       }
       break;
    case nir_intrinsic_load_ring_esgs_amd:
-      if (s->use_llvm) {
-         progress = false;
-         break;
-      }
-
       replacement = load_ring(b, stage == MESA_SHADER_GEOMETRY ? RING_ESGS_GS : RING_ESGS_VS, s);
       break;
    case nir_intrinsic_load_ring_gsvs_amd:
-      if (s->use_llvm) {
-         progress = false;
-         break;
-      }
-
-      replacement = load_ring(b, RING_GSVS_VS, s);
+      if (stage == MESA_SHADER_VERTEX)
+         replacement = load_ring(b, RING_GSVS_VS, s);
+      else
+         replacement = s->gsvs_ring[nir_intrinsic_stream_id(intrin)];
+      break;
+   case nir_intrinsic_load_ring_gs2vs_offset_amd:
+      replacement = ac_nir_load_arg(b, &s->args->ac, s->args->ac.gs2vs_offset);
       break;
    case nir_intrinsic_load_ring_es2gs_offset_amd:
       replacement = ac_nir_load_arg(b, &s->args->ac, s->args->ac.es2gs_offset);
       break;
 
    case nir_intrinsic_load_ring_attr_amd:
-      if (s->use_llvm) {
-         progress = false;
-         break;
-      }
-
       replacement = load_ring(b, RING_PS_ATTR, s);
 
       nir_ssa_def *dword1 = nir_channel(b, replacement, 1);
@@ -310,7 +335,7 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
    case nir_intrinsic_load_sample_positions_amd: {
       uint32_t sample_pos_offset = (RING_PS_SAMPLE_POSITIONS * 16) - 8;
 
-      nir_ssa_def *ring_offsets = ac_nir_load_arg(b, &s->args->ac, s->args->ring_offsets);
+      nir_ssa_def *ring_offsets = ac_nir_load_arg(b, &s->args->ac, s->args->ac.ring_offsets);
       nir_ssa_def *addr = nir_pack_64_2x32(b, ring_offsets);
       nir_ssa_def *sample_id = nir_umin(b, intrin->src[0].ssa, nir_imm_int(b, 7));
       nir_ssa_def *offset = nir_ishl_imm(b, sample_id, 3); /* 2 floats containing samplepos.xy */
@@ -434,6 +459,23 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
    case nir_intrinsic_load_ordered_id_amd:
       replacement = nir_ubfe_imm(b, ac_nir_load_arg(b, &s->args->ac, s->args->ac.gs_tg_info), 0, 12);
       break;
+   case nir_intrinsic_load_input: {
+      /* Only VS inputs need to be lowered at this point. */
+      if (stage != MESA_SHADER_VERTEX)
+         return false;
+
+      if (s->info->vs.dynamic_inputs) {
+         replacement = lower_load_vs_input_from_prolog(b, intrin, s);
+      } else {
+         /* TODO: Lower non-dynamic inputs too. */
+         return false;
+      }
+
+      break;
+   }
+   case nir_intrinsic_load_force_vrs_rates_amd:
+      replacement = ac_nir_load_arg(b, &s->args->ac, s->args->ac.force_vrs_rates);
+      break;
    default:
       progress = false;
       break;
@@ -451,19 +493,57 @@ lower_abi_instr(nir_builder *b, nir_instr *instr, void *state)
    return true;
 }
 
+static nir_ssa_def *
+load_gsvs_ring(nir_builder *b, lower_abi_state *s, unsigned stream_id)
+{
+   nir_ssa_def *ring = load_ring(b, RING_GSVS_GS, s);
+   unsigned stream_offset = 0;
+   unsigned stride = 0;
+   for (unsigned i = 0; i <= stream_id; i++) {
+      stride = 4 * s->info->gs.num_stream_output_components[i] * s->info->gs.vertices_out;
+      if (i < stream_id)
+         stream_offset += stride * s->info->wave_size;
+   }
+
+   /* Limit on the stride field for <= GFX7. */
+   assert(stride < (1 << 14));
+
+   if (stream_offset) {
+      nir_ssa_def *addr =
+         nir_pack_64_2x32_split(b, nir_channel(b, ring, 0), nir_channel(b, ring, 1));
+      addr = nir_iadd_imm(b, addr, stream_offset);
+      ring = nir_vector_insert_imm(b, ring, nir_unpack_64_2x32_split_x(b, addr), 0);
+      ring = nir_vector_insert_imm(b, ring, nir_unpack_64_2x32_split_y(b, addr), 1);
+   }
+
+   ring = nir_vector_insert_imm(
+      b, ring, nir_ior_imm(b, nir_channel(b, ring, 1), S_008F04_STRIDE(stride)), 1);
+   return nir_vector_insert_imm(b, ring, nir_imm_int(b, s->info->wave_size), 2);
+}
+
 void
 radv_nir_lower_abi(nir_shader *shader, enum amd_gfx_level gfx_level,
                    const struct radv_shader_info *info, const struct radv_shader_args *args,
-                   const struct radv_pipeline_key *pl_key, bool use_llvm, uint32_t address32_hi)
+                   const struct radv_pipeline_key *pl_key, uint32_t address32_hi)
 {
    lower_abi_state state = {
       .gfx_level = gfx_level,
       .info = info,
       .args = args,
       .pl_key = pl_key,
-      .use_llvm = use_llvm,
       .address32_hi = address32_hi,
    };
+
+   if (shader->info.stage == MESA_SHADER_GEOMETRY && !info->is_ngg) {
+      nir_function_impl *impl = nir_shader_get_entrypoint(shader);
+
+      nir_builder b;
+      nir_builder_init(&b, impl);
+      b.cursor = nir_before_cf_list(&impl->body);
+
+      u_foreach_bit (i, shader->info.gs.active_stream_mask)
+         state.gsvs_ring[i] = load_gsvs_ring(&b, &state, i);
+   }
 
    nir_shader_instructions_pass(shader, lower_abi_instr,
                                 nir_metadata_dominance | nir_metadata_block_index, &state);

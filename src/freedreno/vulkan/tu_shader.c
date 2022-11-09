@@ -90,7 +90,7 @@ tu_spirv_to_nir(struct tu_device *dev,
    if (result != VK_SUCCESS)
       return NULL;
 
-   if (unlikely(dev->physical_device->instance->debug_flags & TU_DEBUG_NIR)) {
+   if (TU_DEBUG(NIR)) {
       fprintf(stderr, "translated nir:\n");
       nir_print_shader(nir, stderr);
    }
@@ -120,9 +120,8 @@ tu_spirv_to_nir(struct tu_device *dev,
    NIR_PASS_V(nir, nir_opt_copy_prop_vars);
    NIR_PASS_V(nir, nir_opt_combine_stores, nir_var_all);
 
-   NIR_PASS_V(nir, nir_lower_is_helper_invocation);
-
    NIR_PASS_V(nir, nir_lower_system_values);
+   NIR_PASS_V(nir, nir_lower_is_helper_invocation);
 
    NIR_PASS_V(nir, nir_lower_frexp);
 
@@ -362,7 +361,7 @@ build_bindless(struct tu_device *dev, nir_builder *b,
 
    /* input attachments use non bindless workaround */
    if (bind_layout->type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT &&
-       likely(!(dev->instance->debug_flags & TU_DEBUG_DYNAMIC))) {
+       !TU_DEBUG(DYNAMIC)) {
       const struct glsl_type *glsl_type = glsl_without_array(var->type);
       uint32_t idx = var->data.index * 2;
 

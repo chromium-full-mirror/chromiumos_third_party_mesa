@@ -365,6 +365,9 @@ batch_flush(struct fd_batch *batch) assert_dt
    if (batch == batch->ctx->batch)
       fd_batch_reference_locked(&batch->ctx->batch, NULL);
 
+   if (batch == batch->ctx->batch_nondraw)
+      fd_batch_reference_locked(&batch->ctx->batch_nondraw, NULL);
+
    fd_screen_unlock(batch->ctx->screen);
 
    if (batch->fence)
@@ -533,6 +536,11 @@ void
 fd_batch_check_size(struct fd_batch *batch)
 {
    if (FD_DBG(FLUSH)) {
+      fd_batch_flush(batch);
+      return;
+   }
+
+   if (batch->num_draws > 100000) {
       fd_batch_flush(batch);
       return;
    }

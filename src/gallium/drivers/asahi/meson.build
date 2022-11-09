@@ -21,12 +21,16 @@
 files_asahi = files(
   'agx_batch.c',
   'agx_blit.c',
+  'agx_disk_cache.c',
   'agx_pipe.c',
+  'agx_nir_lower_sysvals.c',
   'agx_query.c',
   'agx_state.c',
   'agx_uniforms.c',
-  'magic.c',
 )
+if host_machine.system() == 'darwin'
+  files_asahi += files('magic.c')
+endif
 
 libasahi = static_library(
   'asahi',
@@ -34,7 +38,7 @@ libasahi = static_library(
   include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src],
   c_args : [c_msvc_compat_args],
   gnu_symbol_visibility : 'hidden',
-  dependencies : [idep_nir, idep_agx_pack],
+  dependencies : [idep_nir, idep_mesautil, idep_agx_pack],
 )
 
 driver_asahi = declare_dependency(

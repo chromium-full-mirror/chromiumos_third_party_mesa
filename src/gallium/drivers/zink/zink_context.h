@@ -53,7 +53,9 @@ struct zink_vertex_elements_state;
 static inline struct zink_resource *
 zink_descriptor_surface_resource(struct zink_descriptor_surface *ds)
 {
-   return ds->is_buffer ? (struct zink_resource*)ds->bufferview->pres : (struct zink_resource*)ds->surface->base.texture;
+   return ds->is_buffer ?
+          zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB ? (struct zink_resource*)ds->bufferview->pres : zink_resource(ds->db.pres) :
+          (struct zink_resource*)ds->surface->base.texture;
 }
 
 static inline bool
@@ -162,6 +164,11 @@ void
 zink_init_grid_functions(struct zink_context *ctx);
 struct zink_context *
 zink_tc_context_unwrap(struct pipe_context *pctx, bool threaded);
+
+void
+zink_update_barriers(struct zink_context *ctx, bool is_compute,
+                     struct pipe_resource *index, struct pipe_resource *indirect, struct pipe_resource *indirect_draw_count);
+
 #ifdef __cplusplus
 }
 #endif
@@ -210,6 +217,9 @@ zink_component_mapping(enum pipe_swizzle swizzle)
       unreachable("unexpected swizzle");
    }
 }
+
+void
+zink_update_shadow_samplerviews(struct zink_context *ctx, unsigned mask);
 
 enum pipe_swizzle
 zink_clamp_void_swizzle(const struct util_format_description *desc, enum pipe_swizzle swizzle);

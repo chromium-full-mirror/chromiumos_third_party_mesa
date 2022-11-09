@@ -314,6 +314,11 @@ vn_device_fix_create_info(const struct vn_device *dev,
       block_exts[block_count++] = VK_EXT_TOOLING_INFO_EXTENSION_NAME;
    }
 
+   if (app_exts->EXT_pci_bus_info) {
+      /* always filter for simplicity */
+      block_exts[block_count++] = VK_EXT_PCI_BUS_INFO_EXTENSION_NAME;
+   }
+
    assert(extra_count <= ARRAY_SIZE(extra_exts));
    assert(block_count <= ARRAY_SIZE(block_exts));
 
@@ -341,7 +346,8 @@ vn_device_feedback_pool_init(struct vn_device *dev)
    static const uint32_t pool_size = 4096;
    const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
 
-   if (VN_PERF(NO_EVENT_FEEDBACK) && VN_PERF(NO_FENCE_FEEDBACK))
+   if (VN_PERF(NO_EVENT_FEEDBACK) && VN_PERF(NO_FENCE_FEEDBACK) &&
+       VN_PERF(NO_TIMELINE_SEM_FEEDBACK))
       return VK_SUCCESS;
 
    return vn_feedback_pool_init(dev, &dev->feedback_pool, pool_size, alloc);
@@ -350,7 +356,8 @@ vn_device_feedback_pool_init(struct vn_device *dev)
 static inline void
 vn_device_feedback_pool_fini(struct vn_device *dev)
 {
-   if (VN_PERF(NO_EVENT_FEEDBACK) && VN_PERF(NO_FENCE_FEEDBACK))
+   if (VN_PERF(NO_EVENT_FEEDBACK) && VN_PERF(NO_FENCE_FEEDBACK) &&
+       VN_PERF(NO_TIMELINE_SEM_FEEDBACK))
       return;
 
    vn_feedback_pool_fini(&dev->feedback_pool);
@@ -474,6 +481,11 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
       vn_device_base_fini(&dev->base);
       vk_free(alloc, dev);
       return vn_error(instance, result);
+   }
+
+   if (VN_DEBUG(LOG_CTX_INFO)) {
+      vn_log(instance, "%s", physical_dev->properties.vulkan_1_0.deviceName);
+      vn_log(instance, "%s", physical_dev->properties.vulkan_1_2.driverInfo);
    }
 
    *pDevice = vn_device_to_handle(dev);

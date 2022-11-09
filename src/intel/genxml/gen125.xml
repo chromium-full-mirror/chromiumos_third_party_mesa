@@ -2380,7 +2380,7 @@
     </field>
     <field name="Pixel Shader Kills Pixel" start="60" end="60" type="bool" />
     <field name="oMask Present to Render Target" start="61" end="61" type="bool" />
-    <field name="Pixel Shader Does not write to RT" start="62" end="62" type="bool" />
+    <field name="Pixel Shader Does not write to RT" start="62" end="62" type="mbz" />
     <field name="Pixel Shader Valid" start="63" end="63" type="bool" />
   </instruction>
   <instruction name="3DSTATE_PUSH_CONSTANT_ALLOC_DS" bias="2" length="2" engine="render">
@@ -3449,6 +3449,15 @@
       <value name="EDSC_NORMAL" value="0" />
       <value name="EDSC_PSEXEC" value="1" />
       <value name="EDSC_PREPS" value="2" />
+    </field>
+    <field name="Walker Direction" start="55" end="55" type="uint" default="0">
+      <value name="Snake Walk" value="0" />
+      <value name="Z Walk" value="1" />
+    </field>
+    <field name="Walking Granularity" start="56" end="57" type="uint" default="2">
+      <value name="16x16 granularity" value="0" />
+      <value name="32x32 granularity" value="1" />
+      <value name="64x64 granularity" value="2" />
     </field>
     <field name="Legacy Diamond Line Rasterization" start="58" end="58" type="bool" />
     <field name="Legacy Hierarchical Depth Buffer Resolve Enable" start="59" end="59" type="bool" />
@@ -6563,7 +6572,6 @@
     <field name="Generic Media State Clear" start="48" end="48" type="bool" />
     <field name="PSS Stall Sync Enable" start="49" end="49" type="bool" />
     <field name="TLB Invalidate" start="50" end="50" type="bool" />
-    <field name="Global Snapshot Count Reset" start="51" end="51" type="bool" />
     <field name="Command Streamer Stall Enable" start="52" end="52" type="bool" />
     <field name="Store Data Index" start="53" end="53" type="uint" />
     <field name="Protected Memory Enable" start="54" end="54" type="bool" />
@@ -7377,16 +7385,6 @@
     <field name="Blend Optimization Fix Disable Mask" start="30" end="30" type="bool" />
     <field name="Color Compression Disable Mask" start="31" end="31" type="bool" />
   </register>
-  <register name="CACHE_MODE_SS" length="1" num="0x0e420">
-    <field name="Instruction Level 1 Cache Disable" start="0" end="0" type="bool" />
-    <field name="Instruction Level 1 Cache and In-Flight Queue Disable " start="1" end="1" type="bool" />
-    <field name="Float Blend Optimization Enable" start="4" end="4" type="bool" />
-    <field name="Per Sample Blend Opt Disable" start="11" end="11" type="bool" />
-    <field name="Instruction Level 1 Cache Disable Mask" start="16" end="16" type="bool" />
-    <field name="Instruction Level 1 Cache and In-Flight Queue Disable Mask" start="17" end="17" type="bool" />
-    <field name="Float Blend Optimization Enable Mask" start="20" end="20" type="bool" />
-    <field name="Per Sample Blend Opt Disable Mask" start="27" end="27" type="bool" />
-  </register>
   <register name="CHICKEN_RASTER_1" length="1" num="0x6204">
     <field name="AA Line Quality Fix" start="5" end="5" type="bool" />
     <field name="AA Line Quality Fix Mask" start="21" end="21" type="bool" />
@@ -7414,7 +7412,9 @@
       <value name="Mid-cmdbuffer Preemption" value="0" />
       <value name="Object Level Preemption" value="1" />
     </field>
+    <field name="Disable Preemption and High Priority Pausing due to 3DPRIMITIVE Command" start="10" end="10" type="bool" />
     <field name="Replay Mode Mask" start="16" end="16" type="bool" />
+    <field name="Disable Preemption and High Priority Pausing due to 3DPRIMITIVE Command Mask" start="26" end="26" type="bool" />
   </register>
   <register name="CS_DEBUG_MODE2" length="1" num="0x20d8">
     <field name="3D Rendering Instruction Disable" start="0" end="0" type="bool" />

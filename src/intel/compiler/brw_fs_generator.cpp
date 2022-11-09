@@ -1554,67 +1554,6 @@ fs_generator::generate_uniform_pull_constant_load(fs_inst *inst,
 }
 
 void
-fs_generator::generate_uniform_pull_constant_load_gfx7(fs_inst *inst,
-                                                       struct brw_reg dst,
-                                                       struct brw_reg index,
-                                                       struct brw_reg payload)
-{
-   assert(index.type == BRW_REGISTER_TYPE_UD);
-   assert(payload.file == BRW_GENERAL_REGISTER_FILE);
-   assert(type_sz(dst.type) == 4);
-   assert(!devinfo->has_lsc);
-
-   if (index.file == BRW_IMMEDIATE_VALUE) {
-      const uint32_t surf_index = index.ud;
-
-      brw_push_insn_state(p);
-      brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-      brw_inst *send = brw_next_insn(p, BRW_OPCODE_SEND);
-      brw_pop_insn_state(p);
-
-      brw_inst_set_sfid(devinfo, send, GFX6_SFID_DATAPORT_CONSTANT_CACHE);
-      brw_set_dest(p, send, retype(dst, BRW_REGISTER_TYPE_UD));
-      brw_set_src0(p, send, retype(payload, BRW_REGISTER_TYPE_UD));
-      brw_set_desc(p, send,
-                   brw_message_desc(devinfo, 1, DIV_ROUND_UP(inst->size_written,
-                                                             REG_SIZE), true) |
-                   brw_dp_desc(devinfo, surf_index,
-                               GFX7_DATAPORT_DC_OWORD_BLOCK_READ,
-                               BRW_DATAPORT_OWORD_BLOCK_DWORDS(inst->exec_size)));
-
-   } else {
-      const tgl_swsb swsb = brw_get_default_swsb(p);
-      struct brw_reg addr = vec1(retype(brw_address_reg(0), BRW_REGISTER_TYPE_UD));
-
-      brw_push_insn_state(p);
-      brw_set_default_mask_control(p, BRW_MASK_DISABLE);
-
-      /* a0.0 = surf_index & 0xff */
-      brw_set_default_swsb(p, tgl_swsb_src_dep(swsb));
-      brw_inst *insn_and = brw_next_insn(p, BRW_OPCODE_AND);
-      brw_inst_set_exec_size(p->devinfo, insn_and, BRW_EXECUTE_1);
-      brw_set_dest(p, insn_and, addr);
-      brw_set_src0(p, insn_and, vec1(retype(index, BRW_REGISTER_TYPE_UD)));
-      brw_set_src1(p, insn_and, brw_imm_ud(0x0ff));
-
-      /* dst = send(payload, a0.0 | <descriptor>) */
-      brw_set_default_swsb(p, tgl_swsb_dst_dep(swsb, 1));
-      brw_send_indirect_message(
-         p, GFX6_SFID_DATAPORT_CONSTANT_CACHE,
-         retype(dst, BRW_REGISTER_TYPE_UD),
-         retype(payload, BRW_REGISTER_TYPE_UD), addr,
-         brw_message_desc(devinfo, 1,
-                          DIV_ROUND_UP(inst->size_written, REG_SIZE), true) |
-         brw_dp_desc(devinfo, 0 /* surface */,
-                     GFX7_DATAPORT_DC_OWORD_BLOCK_READ,
-                     BRW_DATAPORT_OWORD_BLOCK_DWORDS(inst->exec_size)),
-         false /* EOT */);
-
-      brw_pop_insn_state(p);
-   }
-}
-
-void
 fs_generator::generate_varying_pull_constant_load_gfx4(fs_inst *inst,
                                                        struct brw_reg dst,
                                                        struct brw_reg index)
@@ -1670,31 +1609,6 @@ fs_generator::generate_varying_pull_constant_load_gfx4(fs_inst *inst,
                 brw_sampler_desc(devinfo, surf_index,
                                  0, /* sampler (unused) */
                                  msg_type, simd_mode, return_format));
-}
-
-void
-fs_generator::generate_pixel_interpolator_query(fs_inst *inst,
-                                                struct brw_reg dst,
-                                                struct brw_reg src,
-                                                struct brw_reg msg_data,
-                                                unsigned msg_type)
-{
-   const bool has_payload = inst->src[0].file != BAD_FILE;
-   assert(msg_data.type == BRW_REGISTER_TYPE_UD);
-   assert(inst->size_written % REG_SIZE == 0);
-
-   struct brw_wm_prog_data *prog_data = brw_wm_prog_data(this->prog_data);
-
-   brw_pixel_interpolator_query(p,
-         retype(dst, BRW_REGISTER_TYPE_UW),
-         /* If we don't have a payload, what we send doesn't matter */
-         has_payload ? src : brw_vec8_grf(0, 0),
-         inst->pi_noperspective,
-         prog_data->per_coarse_pixel_dispatch,
-         msg_type,
-         msg_data,
-         has_payload ? 2 * inst->exec_size / 8 : 1,
-         inst->size_written / REG_SIZE);
 }
 
 /* Sets vstride=1, width=4, hstride=0 of register src1 during
@@ -2294,12 +2208,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
          send_count++;
 	 break;
 
-      case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD_GFX7:
-         assert(inst->force_writemask_all);
-	 generate_uniform_pull_constant_load_gfx7(inst, dst, src[0], src[1]);
-         send_count++;
-	 break;
-
       case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GFX4:
 	 generate_varying_pull_constant_load_gfx4(inst, dst, src[0]);
          send_count++;
@@ -2454,24 +2362,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width,
                disasm_info->use_tail = true;
             }
          }
-         break;
-
-      case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
-         generate_pixel_interpolator_query(inst, dst, src[0], src[1],
-                                           GFX7_PIXEL_INTERPOLATOR_LOC_SAMPLE);
-         send_count++;
-         break;
-
-      case FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET:
-         generate_pixel_interpolator_query(inst, dst, src[0], src[1],
-                                           GFX7_PIXEL_INTERPOLATOR_LOC_SHARED_OFFSET);
-         send_count++;
-         break;
-
-      case FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET:
-         generate_pixel_interpolator_query(inst, dst, src[0], src[1],
-                                           GFX7_PIXEL_INTERPOLATOR_LOC_PER_SLOT_OFFSET);
-         send_count++;
          break;
 
       case CS_OPCODE_CS_TERMINATE:

@@ -256,6 +256,8 @@ fd_submit_sp_flush_cleanup(void *job, void *gdata, int thread_index)
 static void
 flush_deferred_submits(struct fd_device *dev)
 {
+   MESA_TRACE_FUNC();
+
    simple_mtx_assert_locked(&dev->submit_lock);
 
    if (list_is_empty(&dev->deferred_submits))
@@ -323,6 +325,8 @@ fd_submit_sp_flush(struct fd_submit *submit, int in_fence_fd, bool use_fence_fd)
    struct fd_device *dev = submit->pipe->dev;
    struct fd_pipe *pipe = submit->pipe;
 
+   MESA_TRACE_FUNC();
+
    /* Acquire lock before flush_prep() because it is possible to race between
     * this and pipe->flush():
     */
@@ -388,6 +392,8 @@ void
 fd_pipe_sp_flush(struct fd_pipe *pipe, uint32_t fence)
 {
    struct fd_device *dev = pipe->dev;
+
+   MESA_TRACE_FUNC();
 
    simple_mtx_lock(&dev->submit_lock);
 
@@ -571,6 +577,10 @@ fd_ringbuffer_sp_check_size(struct fd_ringbuffer *ring)
    struct fd_submit *submit = fd_ring->u.submit;
 
    if (to_fd_submit_sp(submit)->nr_bos > MAX_ARRAY_SIZE/2) {
+      return false;
+   }
+
+   if (to_fd_submit_sp(submit)->nr_suballoc_bos > MAX_ARRAY_SIZE/2) {
       return false;
    }
 

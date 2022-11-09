@@ -148,8 +148,6 @@ bool si_init_compiler(struct si_screen *sscreen, struct ac_llvm_compiler *compil
       (sscreen->debug_flags & DBG(CHECK_IR) ? AC_TM_CHECK_IR : 0) |
       (create_low_opt_compiler ? AC_TM_CREATE_LOW_OPT : 0);
 
-   ac_init_llvm_once();
-
    if (!ac_init_llvm_compiler(compiler, sscreen->info.family, tm_options))
       return false;
 
@@ -1362,23 +1360,23 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
                             sscreen->debug_flags & DBG(DPBB));
 
    if (sscreen->dpbb_allowed) {
-      if (sscreen->info.has_dedicated_vram) {
-         if (sscreen->info.max_render_backends > 4) {
-            sscreen->pbb_context_states_per_bin = 1;
-            sscreen->pbb_persistent_states_per_bin = 1;
-         } else {
-            sscreen->pbb_context_states_per_bin = 3;
-            sscreen->pbb_persistent_states_per_bin = 8;
-         }
+      if (sscreen->info.has_dedicated_vram && sscreen->info.max_render_backends > 4) {
+         sscreen->pbb_context_states_per_bin = 1;
+         sscreen->pbb_persistent_states_per_bin = 1;
       } else {
          /* This is a workaround for:
           *    https://bugs.freedesktop.org/show_bug.cgi?id=110214
           * (an alternative is to insert manual BATCH_BREAK event when
           *  a context_roll is detected). */
-         sscreen->pbb_context_states_per_bin = sscreen->info.has_gfx9_scissor_bug ? 1 : 6;
-         /* Using 32 here can cause GPU hangs on RAVEN1 */
-         sscreen->pbb_persistent_states_per_bin = 16;
+         sscreen->pbb_context_states_per_bin = sscreen->info.has_gfx9_scissor_bug ? 1 : 3;
+         sscreen->pbb_persistent_states_per_bin = 8;
       }
+
+      if (!sscreen->info.has_gfx9_scissor_bug)
+         sscreen->pbb_context_states_per_bin =
+            debug_get_num_option("AMD_DEBUG_DPBB_CS", sscreen->pbb_context_states_per_bin);
+      sscreen->pbb_persistent_states_per_bin =
+         debug_get_num_option("AMD_DEBUG_DPBB_PS", sscreen->pbb_persistent_states_per_bin);
 
       assert(sscreen->pbb_context_states_per_bin >= 1 &&
              sscreen->pbb_context_states_per_bin <= 6);
@@ -1426,10 +1424,7 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
    sscreen->ngg_subgroup_size = 128;
 
    if (sscreen->info.gfx_level >= GFX11) {
-      /* TODO: tweak this */
-      unsigned attr_ring_size_per_se = align(1400000, 64 * 1024);
-      unsigned attr_ring_size = attr_ring_size_per_se * sscreen->info.max_se;
-      assert(attr_ring_size <= 16 * 1024 * 1024); /* maximum size */
+      unsigned attr_ring_size = sscreen->info.attribute_ring_size_per_se * sscreen->info.max_se;
       sscreen->attribute_ring = si_aligned_buffer_create(&sscreen->b,
                                                          PIPE_RESOURCE_FLAG_UNMAPPABLE |
                                                          SI_RESOURCE_FLAG_32BIT |
@@ -1486,8 +1481,20 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
 
 struct pipe_screen *radeonsi_screen_create(int fd, const struct pipe_screen_config *config)
 {
-   drmVersionPtr version = drmGetVersion(fd);
    struct radeon_winsys *rw = NULL;
+   drmVersionPtr version;
+
+   version = drmGetVersion(fd);
+   if (!version)
+     return NULL;
+
+   /* LLVM must be initialized before util_queue because both u_queue and LLVM call atexit,
+    * and LLVM must call it first because its atexit handler executes C++ destructors,
+    * which must be done after our compiler threads using LLVM in u_queue are finished
+    * by their atexit handler. Since atexit handlers are called in the reverse order,
+    * LLVM must be initialized first, followed by u_queue.
+    */
+   ac_init_llvm_once();
 
    driParseConfigFiles(config->options, config->options_info, 0, "radeonsi",
                        NULL, NULL, NULL, 0, NULL, 0);

@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "agx_nir_format_helpers.h"
 #include "agx_tilebuffer.h"
 #include "nir.h"
 #include "nir_builder.h"
-#include "agx_nir_format_helpers.h"
 
 #define ALL_SAMPLES 0xFF
 
@@ -30,9 +30,7 @@ static nir_ssa_def *
 tib_impl(nir_builder *b, nir_instr *instr, void *data)
 {
    struct agx_tilebuffer_layout *tib = data;
-
    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-   nir_ssa_def *sample_mask = nir_imm_intN_t(b, ALL_SAMPLES, 16); /* TODO */
 
    nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
    unsigned rt = sem.location - FRAG_RESULT_DATA0;
@@ -52,12 +50,21 @@ tib_impl(nir_builder *b, nir_instr *instr, void *data)
       /* Trim to format as required by hardware */
       value = nir_trim_vector(b, intr->src[0].ssa, comps);
 
-      nir_store_local_pixel_agx(b, value,
-                                sample_mask,
-                                .base = tib->offset_B[rt],
-                                .write_mask = nir_intrinsic_write_mask(intr) &
-                                              BITFIELD_MASK(comps),
-                                .format = format);
+      /* The hardware cannot extend for a 32-bit format. Extend ourselves. */
+      if (format == PIPE_FORMAT_R32_UINT && value->bit_size == 16) {
+         if (util_format_is_pure_sint(logical_format))
+            value = nir_i2i32(b, value);
+         else if (util_format_is_pure_uint(logical_format))
+            value = nir_u2u32(b, value);
+         else
+            value = nir_f2f32(b, value);
+      }
+
+      nir_store_local_pixel_agx(
+         b, value, nir_imm_intN_t(b, ALL_SAMPLES, 16),
+         .base = tib->offset_B[rt],
+         .write_mask = nir_intrinsic_write_mask(intr) & BITFIELD_MASK(comps),
+         .format = format);
 
       return NIR_LOWER_INSTR_PROGRESS_REPLACE;
    } else {
@@ -75,11 +82,10 @@ tib_impl(nir_builder *b, nir_instr *instr, void *data)
       if (f16)
          format = PIPE_FORMAT_R16_UINT;
 
-      nir_ssa_def *res = nir_load_local_pixel_agx(b, MIN2(intr->num_components, comps),
-                                      f16 ? 16 : bit_size,
-                                      sample_mask,
-                                      .base = tib->offset_B[rt],
-                                      .format = format);
+      nir_ssa_def *res = nir_load_local_pixel_agx(
+         b, MIN2(intr->num_components, comps), f16 ? 16 : bit_size,
+         nir_imm_intN_t(b, ALL_SAMPLES, 16), .base = tib->offset_B[rt],
+         .format = format);
 
       /* Extend floats */
       if (f16 && nir_dest_bit_size(intr->dest) != 16) {

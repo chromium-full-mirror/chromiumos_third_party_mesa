@@ -68,15 +68,21 @@ struct radeon_info {
    uint32_t memory_freq_mhz_effective;
    uint32_t memory_bus_width;
    uint32_t memory_bandwidth_gbps;
+   uint32_t pcie_gen;
+   uint32_t pcie_num_lanes;
+   uint32_t pcie_bandwidth_mbps;
    uint32_t clock_crystal_freq;
    struct amd_ip_info ip[AMD_NUM_IP_TYPES];
 
    /* Identification. */
    /* PCI info: domain:bus:dev:func */
-   uint32_t pci_domain;
-   uint32_t pci_bus;
-   uint32_t pci_dev;
-   uint32_t pci_func;
+   struct {
+      uint32_t domain;
+      uint32_t bus;
+      uint32_t dev;
+      uint32_t func;
+      bool valid;
+   } pci;
 
    uint32_t pci_id;
    uint32_t pci_rev_id;
@@ -118,6 +124,7 @@ struct radeon_info {
    bool discardable_allows_big_page;
    bool has_export_conflict_bug;
    bool has_vrs_ds_export_bug;
+   bool has_taskmesh_indirect0_bug;
 
    /* Display features. */
    /* There are 2 display DCC codepaths, because display expects unaligned DCC. */
@@ -158,6 +165,8 @@ struct radeon_info {
    uint32_t mec_fw_feature;
    uint32_t pfp_fw_version;
    uint32_t pfp_fw_feature;
+   bool has_set_reg_pairs;
+   bool has_set_sh_reg_pairs_n;
 
    /* Multimedia info. */
    struct {
@@ -168,7 +177,7 @@ struct radeon_info {
    uint32_t vce_fw_version;
    uint32_t vce_harvest_config;
    struct video_caps_info {
-      struct {
+      struct video_codec_cap {
          uint32_t valid;
          uint32_t max_width;
          uint32_t max_height;
@@ -192,6 +201,8 @@ struct radeon_info {
    bool has_eqaa_surface_allocator;
    bool has_sparse_vm_mappings;
    bool has_scheduled_fence_dependency;
+   bool has_gang_submit;
+   bool has_pcie_bandwidth_info;
    bool has_stable_pstate;
    /* Whether SR-IOV is enabled or amdgpu.mcbp=1 was set on the kernel command line. */
    bool mid_command_buffer_preemption_enabled;
@@ -216,6 +227,7 @@ struct radeon_info {
    uint32_t max_vgpr_alloc;
    uint32_t wave64_vgpr_alloc_granularity;
    uint32_t max_scratch_waves;
+   uint32_t attribute_ring_size_per_se;
 
    /* Render backends (color + depth blocks). */
    uint32_t r300_num_gb_pipes;
@@ -243,6 +255,7 @@ struct radeon_info {
 };
 
 bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info);
+bool ac_query_pci_bus_info(int fd, struct radeon_info *info);
 
 void ac_compute_driver_uuid(char *uuid, size_t size);
 

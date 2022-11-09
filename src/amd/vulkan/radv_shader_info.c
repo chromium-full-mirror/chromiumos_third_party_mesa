@@ -56,7 +56,7 @@ gather_intrinsic_load_input_info(const nir_shader *nir, const nir_intrinsic_inst
 
 static void
 gather_intrinsic_store_output_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
-                                   struct radv_shader_info *info)
+                                   struct radv_shader_info *info, bool consider_force_vrs)
 {
    unsigned idx = nir_intrinsic_base(instr);
    unsigned num_slots = nir_intrinsic_io_semantics(instr).num_slots;
@@ -92,6 +92,19 @@ gather_intrinsic_store_output_info(const nir_shader *nir, const nir_intrinsic_in
       }
    }
 
+   if (consider_force_vrs && idx == VARYING_SLOT_POS) {
+      unsigned pos_w_chan = 3 - component;
+
+      if (write_mask & BITFIELD_BIT(pos_w_chan)) {
+         nir_ssa_scalar pos_w = nir_ssa_scalar_resolved(instr->src[0].ssa, pos_w_chan);
+         /* Use coarse shading if the value of Pos.W can't be determined or if its value is != 1
+          * (typical for non-GUI elements).
+          */
+         if (!nir_ssa_scalar_is_const(pos_w) || nir_ssa_scalar_as_uint(pos_w) != 0x3f800000u)
+            info->force_vrs_per_vertex = true;
+      }
+   }
+
    if (nir->info.stage == MESA_SHADER_GEOMETRY) {
       uint8_t gs_streams = nir_intrinsic_io_semantics(instr).gs_streams;
       info->gs.output_streams[idx] |= gs_streams << (component * 2);
@@ -119,7 +132,7 @@ gather_push_constant_info(const nir_shader *nir, const nir_intrinsic_instr *inst
 
 static void
 gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
-                      struct radv_shader_info *info)
+                      struct radv_shader_info *info, bool consider_force_vrs)
 {
    switch (instr->intrinsic) {
    case nir_intrinsic_load_barycentric_sample:
@@ -208,13 +221,10 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr,
       gather_intrinsic_load_input_info(nir, instr, info);
       break;
    case nir_intrinsic_store_output:
-      gather_intrinsic_store_output_info(nir, instr, info);
+      gather_intrinsic_store_output_info(nir, instr, info, consider_force_vrs);
       break;
    case nir_intrinsic_load_sbt_base_amd:
       info->cs.uses_sbt = true;
-      break;
-   case nir_intrinsic_load_force_vrs_rates_amd:
-      info->force_vrs_per_vertex = true;
       break;
    case nir_intrinsic_load_rt_dynamic_callable_stack_base_amd:
       info->cs.uses_dynamic_rt_callable_stack = true;
@@ -245,12 +255,13 @@ gather_tex_info(const nir_shader *nir, const nir_tex_instr *instr, struct radv_s
 }
 
 static void
-gather_info_block(const nir_shader *nir, const nir_block *block, struct radv_shader_info *info)
+gather_info_block(const nir_shader *nir, const nir_block *block, struct radv_shader_info *info,
+                  bool consider_force_vrs)
 {
    nir_foreach_instr (instr, block) {
       switch (instr->type) {
       case nir_instr_type_intrinsic:
-         gather_intrinsic_info(nir, nir_instr_as_intrinsic(instr), info);
+         gather_intrinsic_info(nir, nir_instr_as_intrinsic(instr), info, consider_force_vrs);
          break;
       case nir_instr_type_tex:
          gather_tex_info(nir, nir_instr_as_tex(instr), info);
@@ -578,6 +589,10 @@ gather_shader_info_fs(const nir_shader *nir, const struct radv_pipeline_key *pip
       (pipeline_key->ps.alpha_to_coverage_via_mrtz && (info->ps.color0_written & 0x8)) &&
       (info->ps.writes_z || info->ps.writes_stencil || info->ps.writes_sample_mask);
 
+   info->ps.mrt0_is_dual_src = pipeline_key->ps.epilog.mrt0_is_dual_src;
+
+   info->ps.spi_shader_col_format = pipeline_key->ps.epilog.spi_shader_col_format;
+
    nir_foreach_shader_in_variable(var, nir) {
       unsigned attrib_count = glsl_count_attribute_slots(var->type, false);
       int idx = var->data.location;
@@ -683,6 +698,8 @@ void
 radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *nir,
                           const struct radv_pipeline_layout *layout,
                           const struct radv_pipeline_key *pipeline_key,
+                          const enum radv_pipeline_type pipeline_type,
+                          bool consider_force_vrs,
                           struct radv_shader_info *info)
 {
    struct nir_function *func = (struct nir_function *)exec_list_get_head_const(&nir->functions);
@@ -694,7 +711,7 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
    }
 
    nir_foreach_block (block, func->impl) {
-      gather_info_block(nir, block, info);
+      gather_info_block(nir, block, info, consider_force_vrs);
    }
 
    if (nir->info.stage == MESA_SHADER_VERTEX || nir->info.stage == MESA_SHADER_TESS_EVAL ||
@@ -724,7 +741,8 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
       outinfo->writes_pointsize = per_vtx_mask & VARYING_BIT_PSIZ;
       outinfo->writes_viewport_index = per_vtx_mask & VARYING_BIT_VIEWPORT;
       outinfo->writes_layer = per_vtx_mask & VARYING_BIT_LAYER;
-      outinfo->writes_primitive_shading_rate = per_vtx_mask & VARYING_BIT_PRIMITIVE_SHADING_RATE;
+      outinfo->writes_primitive_shading_rate =
+         (per_vtx_mask & VARYING_BIT_PRIMITIVE_SHADING_RATE) || info->force_vrs_per_vertex;
 
       /* Per primitive outputs. */
       outinfo->writes_viewport_index_per_primitive = per_prim_mask & VARYING_BIT_VIEWPORT;
@@ -823,6 +841,16 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
    case MESA_SHADER_TASK:
       info->workgroup_size =
          ac_compute_cs_workgroup_size(nir->info.workgroup_size, false, UINT32_MAX);
+
+      /* Allow the compiler to assume that the shader always has full subgroups,
+       * meaning that the initial EXEC mask is -1 in all waves (all lanes enabled).
+       * This assumption is incorrect for ray tracing and internal (meta) shaders
+       * because they can use unaligned dispatch.
+       */
+      info->cs.uses_full_subgroups =
+         pipeline_type != RADV_PIPELINE_RAY_TRACING &&
+         !nir->info.internal &&
+         (info->workgroup_size % info->wave_size) == 0;
       break;
    case MESA_SHADER_MESH:
       /* Already computed in gather_shader_info_mesh(). */

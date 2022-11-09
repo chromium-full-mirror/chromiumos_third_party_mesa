@@ -639,6 +639,13 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
                                PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS)
       ? true : false;
 
+   st->validate_all_dirty_states =
+      screen->get_param(screen, PIPE_CAP_VALIDATE_ALL_DIRTY_STATES)
+      ? true : false;
+   st->can_null_texture =
+      screen->get_param(screen, PIPE_CAP_NULL_TEXTURES)
+      ? true : false;
+
    util_throttle_init(&st->throttle,
                       screen->get_param(screen,
                                         PIPE_CAP_MAX_TEXTURE_UPLOAD_MEMORY_BUDGET));
@@ -940,17 +947,14 @@ st_destroy_context(struct st_context *st)
     * context.
     */
    for (unsigned i = 0; i < NUM_TEXTURE_TARGETS; i++) {
-      struct gl_texture_object *stObj =
-         ctx->Shared->FallbackTex[i];
-      if (stObj) {
-         st_texture_release_context_sampler_view(st, stObj);
+      for (unsigned j = 0; j < ARRAY_SIZE(ctx->Shared->FallbackTex[0]); j++) {
+         struct gl_texture_object *stObj =
+            ctx->Shared->FallbackTex[i][j];
+         if (stObj) {
+            st_texture_release_context_sampler_view(st, stObj);
+         }
       }
    }
-
-   st_context_free_zombie_objects(st);
-
-   simple_mtx_destroy(&st->zombie_sampler_views.mutex);
-   simple_mtx_destroy(&st->zombie_shaders.mutex);
 
    st_release_program(st, &st->fp);
    st_release_program(st, &st->gp);
@@ -978,6 +982,11 @@ st_destroy_context(struct st_context *st)
    _vbo_DestroyContext(ctx);
 
    st_destroy_program_variants(st);
+
+   st_context_free_zombie_objects(st);
+
+   simple_mtx_destroy(&st->zombie_sampler_views.mutex);
+   simple_mtx_destroy(&st->zombie_shaders.mutex);
 
    /* Do not release debug_output yet because it might be in use by other threads.
     * These threads will be terminated by _mesa_free_context_data and

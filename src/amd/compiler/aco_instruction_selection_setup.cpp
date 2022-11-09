@@ -258,14 +258,6 @@ setup_vs_output_info(isel_context* ctx, nir_shader* nir)
    ctx->num_cull_distances = util_bitcount(outinfo->cull_dist_mask);
 
    assert(ctx->num_clip_distances + ctx->num_cull_distances <= 8);
-
-   /* GFX10+ early rasterization:
-    * When there are no param exports in an NGG (or legacy VS) shader,
-    * RADV sets NO_PC_EXPORT=1, which means the HW will start clipping and rasterization
-    * as soon as it encounters a DONE pos export. When this happens, PS waves can launch
-    * before the NGG (or VS) waves finish.
-    */
-   ctx->program->early_rast = ctx->program->gfx_level >= GFX10 && outinfo->param_exports == 0;
 }
 
 void
@@ -495,6 +487,7 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_op_i2f16:
                case nir_op_i2f32:
                case nir_op_i2f64:
+               case nir_op_pack_half_2x16_rtz_split:
                case nir_op_pack_half_2x16_split:
                case nir_op_pack_unorm_2x16:
                case nir_op_pack_snorm_2x16:
@@ -638,6 +631,7 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_ssbo_atomic_xor:
                case nir_intrinsic_ssbo_atomic_exchange:
                case nir_intrinsic_ssbo_atomic_comp_swap:
+               case nir_intrinsic_ssbo_atomic_fadd:
                case nir_intrinsic_ssbo_atomic_fmin:
                case nir_intrinsic_ssbo_atomic_fmax:
                case nir_intrinsic_global_atomic_add_amd:
@@ -650,6 +644,7 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_global_atomic_xor_amd:
                case nir_intrinsic_global_atomic_exchange_amd:
                case nir_intrinsic_global_atomic_comp_swap_amd:
+               case nir_intrinsic_global_atomic_fadd_amd:
                case nir_intrinsic_global_atomic_fmin_amd:
                case nir_intrinsic_global_atomic_fmax_amd:
                case nir_intrinsic_bindless_image_atomic_add:
@@ -662,6 +657,7 @@ init_context(isel_context* ctx, nir_shader* shader)
                case nir_intrinsic_bindless_image_atomic_xor:
                case nir_intrinsic_bindless_image_atomic_exchange:
                case nir_intrinsic_bindless_image_atomic_comp_swap:
+               case nir_intrinsic_bindless_image_atomic_fadd:
                case nir_intrinsic_bindless_image_atomic_fmin:
                case nir_intrinsic_bindless_image_atomic_fmax:
                case nir_intrinsic_bindless_image_size:
@@ -903,7 +899,7 @@ setup_isel_context(Program* program, unsigned shader_count, struct nir_shader* c
    for (unsigned i = 0; i < shader_count; i++)
       scratch_size = std::max(scratch_size, shaders[i]->scratch_size);
 
-   ctx.program->config->scratch_bytes_per_wave = align(scratch_size * ctx.program->wave_size, 1024);
+   ctx.program->config->scratch_bytes_per_wave = scratch_size * ctx.program->wave_size;
 
    unsigned nir_num_blocks = 0;
    for (unsigned i = 0; i < shader_count; i++)

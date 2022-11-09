@@ -26,6 +26,7 @@
 
 #include "sfn_instr_alu.h"
 
+#include "sfn_alu_defines.h"
 #include "sfn_debug.h"
 #include "sfn_instr_alugroup.h"
 #include "sfn_instr_tex.h"
@@ -67,6 +68,18 @@ AluInstr::AluInstr(EAluOp opcode,
       ASSERT_OR_THROW(dest, "Write flag is set, but no destination register is given");
 
    update_uses();
+
+   if (dest && slots > 1) {
+      switch (m_opcode) {
+      case op2_dot_ieee: m_allowed_desk_mask = (1 << (5 - slots)) - 1;
+         break;
+      default:
+         if (has_alu_flag(alu_is_cayman_trans)) {
+            m_allowed_desk_mask = (1 << slots) - 1;
+         }
+      }
+   }
+   assert(!dest || (m_allowed_desk_mask & (1 << dest->chan())));
 }
 
 AluInstr::AluInstr(EAluOp opcode):
@@ -408,8 +421,16 @@ AluInstr::replace_source(PRegister old_src, PVirtualValue new_src)
       }
    }
 
-   /* Check the readports */
-   if (m_alu_slots * alu_ops.at(m_opcode).nsrc > 2 || m_parent_group) {
+   /* If we have a parent group, we have to check the readports with the
+    * current constellation of the parent group
+    * REMARK: this is a bit fishy, because the parent group constellation
+    * has the fields for the old sourcess set, so we will reject more
+    * possibilities, but with this is becomes  conservative check, and this is
+    * fine.
+    * TODO: handle instructions that have to be greated as a group differently
+    * so we can get rid of this (mostly fp64 instructions that are multi-slot with
+    * more than just one dest value.*/
+   if (m_parent_group) {
       AluReadportReservation read_port_check =
          !m_parent_group ? AluReadportReservation() : m_parent_group->readport_reserer();
 
@@ -423,7 +444,9 @@ AluInstr::replace_source(PRegister old_src, PVirtualValue new_src)
          }
          AluBankSwizzle bs = alu_vec_012;
          while (bs != alu_vec_unknown) {
-            if (read_port_check.schedule_vec_src(src, nsrc, bs)) {
+            AluReadportReservation rpc = read_port_check;
+            if (rpc.schedule_vec_src(src, nsrc, bs)) {
+               read_port_check = rpc;
                break;
             }
             ++bs;
@@ -431,8 +454,7 @@ AluInstr::replace_source(PRegister old_src, PVirtualValue new_src)
          if (bs == alu_vec_unknown)
             return false;
       }
-      if (m_parent_group)
-         m_parent_group->set_readport_reserer(read_port_check);
+      m_parent_group->set_readport_reserer(read_port_check);
    }
 
    for (unsigned i = 0; i < m_src.size(); ++i) {
@@ -490,15 +512,6 @@ uint8_t AluInstr::allowed_src_chan_mask() const
            mask |= 1 << i;
    }
    return mask;
-}
-
-uint8_t
-AluInstr::allowed_dest_chan_mask() const
-{
-   if (alu_slots() != 1 && has_alu_flag(alu_is_cayman_trans)) {
-         return (1 << alu_slots()) - 1;
-   }
-   return 0xf;
 }
 
 bool
@@ -574,32 +587,34 @@ AluInstr::pin_sources_to_chan()
 bool
 AluInstr::check_readport_validation(PRegister old_src, PVirtualValue new_src) const
 {
-   bool success = true;
-   AluReadportReservation rpr_sum;
-
    if (m_src.size() < 3)
       return true;
+
+   bool success = true;
+   AluReadportReservation rpr_sum;
 
    unsigned nsrc = alu_ops.at(m_opcode).nsrc;
    assert(nsrc * m_alu_slots == m_src.size());
 
    for (int s = 0; s < m_alu_slots && success; ++s) {
-      for (AluBankSwizzle i = alu_vec_012; i != alu_vec_unknown; ++i) {
-         auto ireg = m_src.begin() + s * nsrc;
+      PVirtualValue src[3];
+      auto ireg = m_src.begin() + s * nsrc;
 
+      for (unsigned i = 0; i < nsrc; ++i, ++ireg)
+         src[i] = old_src->equal_to(**ireg) ? new_src : *ireg;
+
+      AluBankSwizzle bs = alu_vec_012;
+      while (bs != alu_vec_unknown) {
          AluReadportReservation rpr = rpr_sum;
-         PVirtualValue s[3];
-
-         for (unsigned i = 0; i < nsrc; ++i, ++ireg)
-            s[i] = old_src->equal_to(**ireg) ? new_src : *ireg;
-
-         if (rpr.schedule_vec_src(s, nsrc, i)) {
+         if (rpr.schedule_vec_src(src, nsrc, bs)) {
             rpr_sum = rpr;
             break;
-         } else {
-            success = false;
          }
+         ++bs;
       }
+
+      if (bs == alu_vec_unknown)
+         success = false;
    }
    return success;
 }
@@ -716,12 +731,12 @@ AluInstr::split(ValueFactory& vf)
    m_dest->del_parent(this);
 
    int start_slot = 0;
-   bool is_dot = m_opcode == op2_dot || opcode() == op2_dot_ieee;
+   bool is_dot = m_opcode == op2_dot_ieee;
    auto last_opcode = m_opcode;
 
    if (is_dot) {
       start_slot = m_dest->chan();
-      last_opcode = m_opcode == op2_dot ? op2_mul : op2_mul_ieee;
+      last_opcode = op2_mul_ieee;
    }
 
 
@@ -737,8 +752,9 @@ AluInstr::split(ValueFactory& vf)
       }
 
       SrcValues src;
-      for (int i = 0; i < alu_ops.at(m_opcode).nsrc; ++i) {
-         auto old_src = m_src[s * alu_ops.at(m_opcode).nsrc + i];
+      int nsrc = alu_ops.at(m_opcode).nsrc;
+      for (int i = 0; i < nsrc; ++i) {
+         auto old_src = m_src[k * nsrc + i];
          // Make it easy for the scheduler and pin the register to the
          // channel, otherwise scheduler would have to check whether a
          // channel switch is possible
@@ -1536,8 +1552,6 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
    case nir_op_b32csel:
       return emit_alu_op3(*alu, op3_cnde_int, shader, {0, 2, 1});
 
-   case nir_op_f2b32:
-      return emit_alu_comb_with_zero(*alu, op2_setne_dx10, shader);
    case nir_op_fabs:
       return emit_alu_op1(*alu, op1_mov, shader, {1 << alu_src0_abs});
    case nir_op_fadd:
@@ -2509,9 +2523,7 @@ emit_dot(const nir_alu_instr& alu, int n, Shader& shader)
       srcs[2 * i + 1] = value_factory.src(src1, i);
    }
 
-   auto op =
-      unlikely(shader.has_flag(Shader::sh_legacy_math_rules)) ? op2_dot : op2_dot_ieee;
-   AluInstr *ir = new AluInstr(op, dest, srcs, AluInstr::last_write, n);
+   AluInstr *ir = new AluInstr(op2_dot_ieee, dest, srcs, AluInstr::last_write, n);
 
    if (src0.negate)
       ir->set_alu_flag(alu_src0_neg);
@@ -2550,9 +2562,7 @@ emit_dot4(const nir_alu_instr& alu, int nelm, Shader& shader)
        srcs[2 * i + 1] = value_factory.zero();
    }
 
-   auto op =
-      unlikely(shader.has_flag(Shader::sh_legacy_math_rules)) ? op2_dot4 : op2_dot4_ieee;
-   AluInstr *ir = new AluInstr(op, dest, srcs, AluInstr::last_write, 4);
+   AluInstr *ir = new AluInstr(op2_dot4_ieee, dest, srcs, AluInstr::last_write, 4);
 
    if (src0.negate)
       ir->set_alu_flag(alu_src0_neg);
@@ -2589,9 +2599,7 @@ emit_fdph(const nir_alu_instr& alu, Shader& shader)
    srcs[6] = value_factory.one();
    srcs[7] = value_factory.src(src1, 3);
 
-   auto op =
-      unlikely(shader.has_flag(Shader::sh_legacy_math_rules)) ? op2_dot4 : op2_dot4_ieee;
-   AluInstr *ir = new AluInstr(op, dest, srcs, AluInstr::last_write, 4);
+   AluInstr *ir = new AluInstr(op2_dot4_ieee, dest, srcs, AluInstr::last_write, 4);
 
    if (src0.negate)
       ir->set_alu_flag(alu_src0_neg);

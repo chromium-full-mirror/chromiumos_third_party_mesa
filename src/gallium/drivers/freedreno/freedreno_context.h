@@ -299,6 +299,10 @@ struct fd_context {
     */
    struct fd_batch *batch dt;
 
+   /* Current nondraw batch.  Rules are the same as for draw batch.
+    */
+   struct fd_batch *batch_nondraw dt;
+
    /* NULL if there has been rendering since last flush.  Otherwise
     * keeps a reference to the last fence so we can re-use it rather
     * than having to flush no-op batch.
@@ -319,6 +323,12 @@ struct fd_context {
     * be building up cmdstream.
     */
    int in_fence_fd dt;
+
+   /**
+    * If we *ever* see an in-fence-fd, assume that userspace is
+    * not relying on implicit fences.
+    */
+   bool no_implicit_sync;
 
    /* track last known reset status globally and per-context to
     * determine if more resets occurred since then.  If global reset
@@ -510,9 +520,6 @@ struct fd_context {
    void (*validate_format)(struct fd_context *ctx, struct fd_resource *rsc,
                            enum pipe_format format) dt;
 
-   /* handling for barriers: */
-   void (*framebuffer_barrier)(struct fd_context *ctx) dt;
-
    /* logger: */
    void (*record_timestamp)(struct fd_ringbuffer *ring, struct fd_bo *bo,
                             unsigned offset);
@@ -664,13 +671,6 @@ fd_context_all_clean(struct fd_context *ctx) assert_dt
    ctx->dirty = (enum fd_dirty_3d_state)0;
    ctx->gen_dirty = 0;
    for (unsigned i = 0; i < PIPE_SHADER_TYPES; i++) {
-      /* don't mark compute state as clean, since it is not emitted
-       * during normal draw call.  The places that call _all_dirty(),
-       * it is safe to mark compute state dirty as well, but the
-       * inverse is not true.
-       */
-      if (i == PIPE_SHADER_COMPUTE)
-         continue;
       ctx->dirty_shader[i] = (enum fd_dirty_shader_state)0;
    }
 }
@@ -714,11 +714,19 @@ void fd_context_switch_to(struct fd_context *ctx,
                           struct fd_batch *batch) assert_dt;
 struct fd_batch *fd_context_batch(struct fd_context *ctx) assert_dt;
 struct fd_batch *fd_context_batch_locked(struct fd_context *ctx) assert_dt;
+struct fd_batch *fd_context_batch_nondraw(struct fd_context *ctx) assert_dt;
 
 void fd_context_setup_common_vbos(struct fd_context *ctx);
 void fd_context_cleanup_common_vbos(struct fd_context *ctx);
 void fd_emit_string(struct fd_ringbuffer *ring, const char *string, int len);
 void fd_emit_string5(struct fd_ringbuffer *ring, const char *string, int len);
+__attribute__((format(printf, 3, 4))) void
+fd_cs_trace_msg(struct u_trace_context *utctx, void *cs, const char *fmt, ...);
+__attribute__((format(printf, 3, 4))) void
+fd_cs_trace_start(struct u_trace_context *utctx, void *cs, const char *fmt,
+                  ...);
+__attribute__((format(printf, 3, 4))) void
+fd_cs_trace_end(struct u_trace_context *utctx, void *cs, const char *fmt, ...);
 
 struct pipe_context *fd_context_init(struct fd_context *ctx,
                                      struct pipe_screen *pscreen,

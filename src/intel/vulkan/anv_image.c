@@ -133,7 +133,7 @@ image_binding_grow(const struct anv_device *device,
       &image->bindings[binding].memory_range;
 
    if (has_implicit_offset) {
-      offset = align_u64(container->offset + container->size, alignment);
+      offset = align64(container->offset + container->size, alignment);
    } else {
       /* Offset must be validated because it comes from
        * VkImageDrmFormatModifierExplicitCreateInfoEXT.
@@ -599,7 +599,7 @@ add_aux_state_tracking_buffer(struct anv_device *device,
    if (image->planes[plane].aux_usage == ISL_AUX_USAGE_CCS_E) {
       if (image->vk.image_type == VK_IMAGE_TYPE_3D) {
          for (uint32_t l = 0; l < image->vk.mip_levels; l++)
-            state_size += anv_minify(image->vk.extent.depth, l) * 4;
+            state_size += u_minify(image->vk.extent.depth, l) * 4;
       } else {
          state_size += image->vk.mip_levels * image->vk.array_layers * 4;
       }
@@ -827,11 +827,21 @@ add_primary_surface(struct anv_device *device,
    struct anv_surface *anv_surf = &image->planes[plane].primary_surface;
    bool ok;
 
+   uint32_t width = image->vk.extent.width;
+   uint32_t height = image->vk.extent.height;
+   const struct vk_format_ycbcr_info *ycbcr_info =
+      vk_format_get_ycbcr_info(image->vk.format);
+   if (ycbcr_info) {
+      assert(plane < ycbcr_info->n_planes);
+      width /= ycbcr_info->planes[plane].denominator_scales[0];
+      height /= ycbcr_info->planes[plane].denominator_scales[1];
+   }
+
    ok = isl_surf_init(&device->isl_dev, &anv_surf->isl,
       .dim = vk_to_isl_surf_dim[image->vk.image_type],
       .format = plane_format.isl_format,
-      .width = image->vk.extent.width / plane_format.denominator_scales[0],
-      .height = image->vk.extent.height / plane_format.denominator_scales[1],
+      .width = width,
+      .height = height,
       .depth = image->vk.extent.depth,
       .levels = image->vk.mip_levels,
       .array_len = image->vk.array_layers,
@@ -1942,8 +1952,8 @@ void anv_GetImageSubresourceLayout(
                                           0 /* logical_z_offset_px */,
                                           &offset_B, NULL, NULL);
       layout->offset += offset_B;
-      layout->size = layout->rowPitch * anv_minify(image->vk.extent.height,
-                                                   subresource->mipLevel) *
+      layout->size = layout->rowPitch * u_minify(image->vk.extent.height,
+                                                 subresource->mipLevel) *
                      image->vk.extent.depth;
    } else {
       layout->size = surface->memory_range.size;
@@ -2118,7 +2128,8 @@ anv_layout_to_aux_state(const struct intel_device_info * const devinfo,
 
    case ISL_AUX_USAGE_CCS_D:
       /* We only support clear in exactly one state */
-      if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+      if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
+          layout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL) {
          assert(aux_supported);
          assert(clear_supported);
          return ISL_AUX_STATE_PARTIAL_CLEAR;
@@ -2262,7 +2273,8 @@ anv_layout_to_fast_clear_type(const struct intel_device_info * const devinfo,
    case ISL_AUX_STATE_COMPRESSED_CLEAR:
       if (aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
          return ANV_FAST_CLEAR_DEFAULT_VALUE;
-      } else if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+      } else if (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
+                 layout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL) {
          /* The image might not support non zero fast clears when mutable. */
          if (!image->planes[plane].can_non_zero_fast_clear)
             return ANV_FAST_CLEAR_DEFAULT_VALUE;
@@ -2428,7 +2440,7 @@ anv_image_fill_surface_state(struct anv_device *device,
           */
          assert(surface->isl.samples == 1);
          assert(view.levels == 1);
-         assert(view.array_len == 1);
+         assert(surface->isl.dim == ISL_SURF_DIM_3D || view.array_len == 1);
 
          ASSERTED bool ok =
             isl_surf_get_uncompressed_surf(&device->isl_dev, isl_surf, &view,
@@ -2515,7 +2527,7 @@ anv_CreateImageView(VkDevice _device,
    iview->n_planes = anv_image_aspect_get_planes(iview->vk.aspects);
 
    /* Check if a conversion info was passed. */
-   const struct anv_format *conv_format = NULL;
+   VkFormat conv_format = VK_FORMAT_UNDEFINED;
    const VkSamplerYcbcrConversionInfo *conv_info =
       vk_find_struct_const(pCreateInfo->pNext, SAMPLER_YCBCR_CONVERSION_INFO);
 
@@ -2528,8 +2540,8 @@ anv_CreateImageView(VkDevice _device,
 #endif
 
    if (conv_info) {
-      ANV_FROM_HANDLE(anv_ycbcr_conversion, conversion, conv_info->conversion);
-      conv_format = conversion->format;
+      VK_FROM_HANDLE(vk_ycbcr_conversion, conversion, conv_info->conversion);
+      conv_format = conversion->state.format;
    }
 
 #ifdef ANDROID
@@ -2542,7 +2554,7 @@ anv_CreateImageView(VkDevice _device,
     * view format from the passed conversion info.
     */
    if (iview->vk.view_format == VK_FORMAT_UNDEFINED && conv_format)
-      iview->vk.view_format = conv_format->vk_format;
+      iview->vk.view_format = conv_format;
 
    /* Now go through the underlying image selected planes and map them to
     * planes in the image view.

@@ -161,8 +161,6 @@ sa_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op)
    /* expire completed fences */
    fd_bo_state(bo);
 
-   assert(fd_bo_state(bo) == FD_BO_STATE_IDLE);
-
    return 0;
 }
 
@@ -261,6 +259,8 @@ fd_bo_heap_alloc(struct fd_bo_heap *heap, uint32_t size)
       heap->blocks[idx] = fd_bo_new(
             heap->dev, FD_BO_HEAP_BLOCK_SIZE, heap->flags,
             "heap-%x-block-%u", heap->flags, idx);
+      if (heap->flags == RING_FLAGS)
+         fd_bo_mark_for_dump(heap->blocks[idx]);
    }
    /* Take a reference to the backing obj: */
    fd_bo_ref(heap->blocks[idx]);

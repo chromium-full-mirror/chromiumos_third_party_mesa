@@ -859,25 +859,6 @@ blorp_emit_ps_config(struct blorp_batch *batch,
       if (GFX_VER == 11)
          ps.SamplerCount = 0;
 
-      if (prog_data) {
-         intel_set_ps_dispatch_state(&ps, devinfo, prog_data,
-                                     params->num_samples);
-
-         ps.DispatchGRFStartRegisterForConstantSetupData0 =
-            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
-         ps.DispatchGRFStartRegisterForConstantSetupData1 =
-            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 1);
-         ps.DispatchGRFStartRegisterForConstantSetupData2 =
-            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 2);
-
-         ps.KernelStartPointer0 = params->wm_prog_kernel +
-                                  brw_wm_prog_data_prog_offset(prog_data, ps, 0);
-         ps.KernelStartPointer1 = params->wm_prog_kernel +
-                                  brw_wm_prog_data_prog_offset(prog_data, ps, 1);
-         ps.KernelStartPointer2 = params->wm_prog_kernel +
-                                  brw_wm_prog_data_prog_offset(prog_data, ps, 2);
-      }
-
       /* 3DSTATE_PS expects the number of threads per PSD, which is always 64
        * for pre Gfx11 and 128 for gfx11+; On gfx11+ If a programmed value is
        * k, it implies 2(k+1) threads. It implicitly scales for different GT
@@ -915,6 +896,26 @@ blorp_emit_ps_config(struct blorp_batch *batch,
       default:
          unreachable("Invalid fast clear op");
       }
+
+      if (prog_data) {
+         intel_set_ps_dispatch_state(&ps, devinfo, prog_data,
+                                     params->num_samples,
+                                     0 /* msaa_flags */);
+
+         ps.DispatchGRFStartRegisterForConstantSetupData0 =
+            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
+         ps.DispatchGRFStartRegisterForConstantSetupData1 =
+            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 1);
+         ps.DispatchGRFStartRegisterForConstantSetupData2 =
+            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 2);
+
+         ps.KernelStartPointer0 = params->wm_prog_kernel +
+                                  brw_wm_prog_data_prog_offset(prog_data, ps, 0);
+         ps.KernelStartPointer1 = params->wm_prog_kernel +
+                                  brw_wm_prog_data_prog_offset(prog_data, ps, 1);
+         ps.KernelStartPointer2 = params->wm_prog_kernel +
+                                  brw_wm_prog_data_prog_offset(prog_data, ps, 2);
+      }
    }
 
    blorp_emit(batch, GENX(3DSTATE_PS_EXTRA), psx) {
@@ -933,6 +934,7 @@ blorp_emit_ps_config(struct blorp_batch *batch,
    }
 
 #elif GFX_VER >= 7
+   const struct intel_device_info *devinfo = batch->blorp->compiler->devinfo;
 
    blorp_emit(batch, GENX(3DSTATE_WM), wm) {
       switch (params->hiz_op) {
@@ -979,9 +981,9 @@ blorp_emit_ps_config(struct blorp_batch *batch,
 #endif
 
       if (prog_data) {
-         ps._8PixelDispatchEnable = prog_data->dispatch_8;
-         ps._16PixelDispatchEnable = prog_data->dispatch_16;
-         ps._32PixelDispatchEnable = prog_data->dispatch_32;
+         intel_set_ps_dispatch_state(&ps, devinfo, prog_data,
+                                     params->num_samples,
+                                     0 /* msaa_flags */);
 
          ps.DispatchGRFStartRegisterForConstantSetupData0 =
             brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
@@ -1761,7 +1763,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
 
    isl_emit_depth_stencil_hiz_s(isl_dev, dw, &info);
 
-#if GFX_VER >= 12
+#if GFX_VER >= 11
    /* Wa_1408224581
     *
     * Workaround: Gfx12LP Astep only An additional pipe control with
@@ -1769,7 +1771,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
     * have an additional pipe control after the stencil state whenever
     * the surface state bits of this state is changing).
     *
-    * This also seems sufficient to handle Wa_14014148106.
+    * This also seems sufficient to handle Wa_14014097488.
     */
    blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
       pc.PostSyncOperation = WriteImmediateData;

@@ -299,6 +299,7 @@ iris_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
    case PIPE_CAP_LEGACY_MATH_RULES:
    case PIPE_CAP_ALPHA_TO_COVERAGE_DITHER_CONTROL:
+   case PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE:
       return true;
    case PIPE_CAP_UMA:
       return iris_bufmgr_vram_size(screen->bufmgr) == 0;
@@ -640,7 +641,7 @@ iris_get_timestamp(struct pipe_screen *pscreen)
    uint64_t result;
 
    if (!intel_gem_read_render_timestamp(iris_bufmgr_get_fd(screen->bufmgr),
-                                        &result))
+                                        screen->devinfo->kmd_type, &result))
       return 0;
 
    result = intel_device_info_timebase_scale(screen->devinfo, result);
@@ -743,10 +744,11 @@ iris_shader_perf_log(void *data, unsigned *id, const char *fmt, ...)
 static void
 iris_detect_kernel_features(struct iris_screen *screen)
 {
+   const struct intel_device_info *devinfo = screen->devinfo;
    /* Kernel 5.2+ */
    if (intel_gem_supports_syncobj_wait(screen->fd))
       screen->kernel_features |= KERNEL_HAS_WAIT_FOR_SUBMIT;
-   if (intel_gem_supports_protected_context(screen->fd))
+   if (intel_gem_supports_protected_context(screen->fd, devinfo->kmd_type))
       screen->kernel_features |= KERNEL_HAS_PROTECTED_CONTEXT;
 }
 

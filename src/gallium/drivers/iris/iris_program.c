@@ -157,10 +157,10 @@ iris_to_brw_fs_key(const struct iris_screen *screen,
       .nr_color_regions = key->nr_color_regions,
       .flat_shade = key->flat_shade,
       .alpha_test_replicate_alpha = key->alpha_test_replicate_alpha,
-      .alpha_to_coverage = key->alpha_to_coverage,
+      .alpha_to_coverage = key->alpha_to_coverage ? BRW_ALWAYS : BRW_NEVER,
       .clamp_fragment_color = key->clamp_fragment_color,
-      .persample_interp = key->persample_interp,
-      .multisample_fbo = key->multisample_fbo,
+      .persample_interp = key->persample_interp ? BRW_ALWAYS : BRW_NEVER,
+      .multisample_fbo = key->multisample_fbo ? BRW_ALWAYS : BRW_NEVER,
       .force_dual_color_blend = key->force_dual_color_blend,
       .coherent_fb_fetch = key->coherent_fb_fetch,
       .color_outputs_valid = key->color_outputs_valid,
@@ -532,13 +532,18 @@ iris_setup_uniforms(ASSERTED const struct intel_device_info *devinfo,
             unsigned max_offset = b.shader->constant_data_size - load_size;
             offset = nir_umin(&b, offset, nir_imm_int(&b, max_offset));
 
-            nir_ssa_def *const_data_base_addr = nir_pack_64_2x32_split(&b,
-               nir_load_reloc_const_intel(&b, BRW_SHADER_RELOC_CONST_DATA_ADDR_LOW),
-               nir_load_reloc_const_intel(&b, BRW_SHADER_RELOC_CONST_DATA_ADDR_HIGH));
+            /* Constant data lives in buffers within IRIS_MEMZONE_SHADER
+             * and cannot cross that 4GB boundary, so we can do the address
+             * calculation with 32-bit adds.  Also, we can ignore the high
+             * bits because IRIS_MEMZONE_SHADER is in the [0, 4GB) range.
+             */
+            assert(IRIS_MEMZONE_SHADER_START >> 32 == 0ull);
+
+            nir_ssa_def *const_data_addr =
+               nir_iadd(&b, nir_load_reloc_const_intel(&b, BRW_SHADER_RELOC_CONST_DATA_ADDR_LOW), offset);
 
             nir_ssa_def *data =
-               nir_load_global_constant(&b, nir_iadd(&b, const_data_base_addr,
-                                                     nir_u2u64(&b, offset)),
+               nir_load_global_constant(&b, nir_u2u64(&b, const_data_addr),
                                         load_align,
                                         intrin->dest.ssa.num_components,
                                         intrin->dest.ssa.bit_size);
@@ -2404,7 +2409,7 @@ iris_get_scratch_space(struct iris_context *ice,
       assert(stage < ARRAY_SIZE(devinfo->max_scratch_ids));
       uint32_t size = per_thread_scratch * devinfo->max_scratch_ids[stage];
       *bop = iris_bo_alloc(bufmgr, "scratch", size, 1024,
-                           IRIS_MEMZONE_SHADER, 0);
+                           IRIS_MEMZONE_SHADER, BO_ALLOC_PLAIN);
    }
 
    return *bop;

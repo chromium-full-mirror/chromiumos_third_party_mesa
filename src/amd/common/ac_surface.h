@@ -345,7 +345,7 @@ struct radeon_surf {
     * - CMASK if it's TC-compatible or if the gen is GFX9
     * - depth/stencil if HTILE is not TC-compatible and if the gen is not GFX9
     */
-   uint8_t tile_swizzle;
+   uint16_t tile_swizzle; /* it has 16 bits because gfx11 shifts it by 2 bits */
    uint8_t fmask_tile_swizzle;
 
    /* Use (1 << log2) to compute the alignment. */
@@ -421,7 +421,7 @@ struct ac_surf_nbc_view {
    uint32_t width;
    uint32_t height;
    uint32_t level;
-   uint32_t max_mip; /* Used for max_mip in the resource descriptor */
+   uint32_t num_levels; /* Used for max_mip in the resource descriptor */
    uint8_t tile_swizzle;
    uint64_t base_address_offset;
 };
