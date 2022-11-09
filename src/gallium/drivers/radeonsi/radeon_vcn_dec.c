@@ -1243,6 +1243,8 @@ static rvcn_dec_message_av1_t get_av1_msg(struct radeon_decoder *dec,
    rvcn_dec_film_grain_params_t* fg_params = &result.film_grain;
    fg_params->apply_grain = pic->picture_parameter.film_grain_info.film_grain_info_fields.apply_grain;
    if (fg_params->apply_grain) {
+      rvcn_dec_av1_fg_init_buf_t *fg_buf = (rvcn_dec_av1_fg_init_buf_t *)(dec->probs + 256);
+
       fg_params->random_seed = pic->picture_parameter.film_grain_info.grain_seed;
       fg_params->grain_scale_shift =
          pic->picture_parameter.film_grain_info.film_grain_info_fields.grain_scale_shift;
@@ -1289,6 +1291,8 @@ static rvcn_dec_message_av1_t get_av1_msg(struct radeon_decoder *dec,
       fg_params->overlap_flag = pic->picture_parameter.film_grain_info.film_grain_info_fields.overlap_flag;
       fg_params->clip_to_restricted_range =
          pic->picture_parameter.film_grain_info.film_grain_info_fields.clip_to_restricted_range;
+
+      rvcn_av1_init_film_grain_buffer(fg_params, fg_buf);
    }
 
    result.uncompressed_header_size = 0;
