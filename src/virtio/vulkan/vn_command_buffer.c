@@ -1451,8 +1451,8 @@ vn_CmdSetEvent(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdSetEvent, commandBuffer, event, stageMask);
 
-   vn_feedback_event_cmd_record(commandBuffer, event, stageMask,
-                                VK_EVENT_SET);
+   vn_feedback_event_cmd_record(commandBuffer, event, stageMask, VK_EVENT_SET,
+                                false);
 }
 
 static VkPipelineStageFlags2
@@ -1488,8 +1488,8 @@ vn_CmdSetEvent2(VkCommandBuffer commandBuffer,
    VkPipelineStageFlags2 src_stage_mask =
       vn_dependency_info_collect_src_stage_mask(pDependencyInfo);
 
-   vn_feedback_event_cmd_record2(commandBuffer, event, src_stage_mask,
-                                 VK_EVENT_SET);
+   vn_feedback_event_cmd_record(commandBuffer, event, src_stage_mask,
+                                VK_EVENT_SET, true);
 }
 
 void
@@ -1500,7 +1500,7 @@ vn_CmdResetEvent(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdResetEvent, commandBuffer, event, stageMask);
 
    vn_feedback_event_cmd_record(commandBuffer, event, stageMask,
-                                VK_EVENT_RESET);
+                                VK_EVENT_RESET, false);
 }
 
 void
@@ -1509,8 +1509,8 @@ vn_CmdResetEvent2(VkCommandBuffer commandBuffer,
                   VkPipelineStageFlags2 stageMask)
 {
    VN_CMD_ENQUEUE(vkCmdResetEvent2, commandBuffer, event, stageMask);
-   vn_feedback_event_cmd_record2(commandBuffer, event, stageMask,
-                                 VK_EVENT_RESET);
+   vn_feedback_event_cmd_record(commandBuffer, event, stageMask,
+                                VK_EVENT_RESET, true);
 }
 
 void
