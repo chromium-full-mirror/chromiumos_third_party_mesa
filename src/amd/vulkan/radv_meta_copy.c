@@ -484,7 +484,10 @@ copy_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *src_image,
        * clamping depth when copying multiple layers of a 2D image to
        * a 3D image.
        */
+      VkImageType imageType = src_image->vk.image_type;
+      src_image->vk.image_type = dst_image->vk.image_type;
       const VkExtent3D img_extent_el = vk_image_extent_to_elements(&src_image->vk, region->extent);
+      src_image->vk.image_type = imageType;
 
       /* Start creating blit rect */
       struct radv_meta_blit2d_rect rect = {
