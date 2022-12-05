@@ -40,6 +40,7 @@
 extern "C" {
 #endif
 
+#define PIPE_DEFAULT_DECODER_FEEDBACK_TIMEOUT_NS 100000000
 /*
  * see table 6-12 in the spec
  */
