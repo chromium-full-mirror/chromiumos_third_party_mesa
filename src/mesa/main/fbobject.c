@@ -1290,6 +1290,7 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
    fb->_HasAttachments = true;
    fb->_IntegerBuffers = 0;
    fb->_RGBBuffers = 0;
+   fb->_IsRGB = 0;
    fb->_FP32Buffers = 0;
 
    /* Start at -2 to more easily loop over all attachment points.
@@ -1452,6 +1453,9 @@ _mesa_test_framebuffer_completeness(struct gl_context *ctx,
 
          if (baseFormat == GL_RGB)
             fb->_RGBBuffers |= (1 << i);
+
+         if (baseFormat == GL_RGB)
+            fb->_IsRGB |= (1 << i);
 
          if (type == GL_FLOAT && _mesa_get_format_max_bits(attFormat) > 16)
             fb->_FP32Buffers |= (1 << i);
