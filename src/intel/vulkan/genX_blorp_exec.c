@@ -42,7 +42,7 @@ static void blorp_measure_start(struct blorp_batch *_batch,
    struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
    trace_intel_begin_blorp(&cmd_buffer->trace);
    anv_measure_snapshot(cmd_buffer,
-                        params->snapshot_type,
+                        blorp_op_to_intel_measure_snapshot(params->op),
                         NULL, 0);
 }
 
@@ -51,12 +51,13 @@ static void blorp_measure_end(struct blorp_batch *_batch,
 {
    struct anv_cmd_buffer *cmd_buffer = _batch->driver_batch;
    trace_intel_end_blorp(&cmd_buffer->trace,
+                         params->op,
                          params->x1 - params->x0,
                          params->y1 - params->y0,
-                         params->hiz_op,
-                         params->fast_clear_op,
-                         params->shader_type,
-                         params->shader_pipeline);
+                         params->num_samples,
+                         params->shader_pipeline,
+                         params->dst.view.format,
+                         params->src.view.format);
 }
 
 static void *
@@ -110,8 +111,8 @@ blorp_get_surface_base_address(struct blorp_batch *batch)
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
    return (struct blorp_address) {
-      .buffer = cmd_buffer->device->surface_state_pool.block_pool.bo,
-      .offset = 0,
+      .buffer = cmd_buffer->device->internal_surface_state_pool.block_pool.bo,
+      .offset = -cmd_buffer->device->internal_surface_state_pool.start_offset,
    };
 }
 #endif
@@ -180,7 +181,11 @@ static uint32_t
 blorp_binding_table_offset_to_pointer(struct blorp_batch *batch,
                                       uint32_t offset)
 {
+#if GFX_VERX10 >= 125
+   return SCRATCH_SURFACE_STATE_POOL_SIZE + offset;
+#else
    return offset;
+#endif
 }
 
 static void *
@@ -207,6 +212,7 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *batch,
                                            uint32_t *sizes,
                                            unsigned num_vbs)
 {
+#if GFX_VER == 9
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
 
    for (unsigned i = 0; i < num_vbs; i++) {
@@ -226,6 +232,7 @@ blorp_vf_invalidate_for_vb_48b_transitions(struct blorp_batch *batch,
     */
    genX(cmd_buffer_update_dirty_vbs_for_gfx8_vb_flush)(cmd_buffer, SEQUENTIAL,
                                                        (1 << num_vbs) - 1);
+#endif
 }
 
 UNUSED static struct blorp_address

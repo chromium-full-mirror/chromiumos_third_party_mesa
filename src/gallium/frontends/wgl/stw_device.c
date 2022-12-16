@@ -28,7 +28,6 @@
 #include <windows.h>
 
 #include "glapi/glapi.h"
-#include "util/debug.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -128,7 +127,7 @@ stw_init(const struct stw_winsys *stw_winsys)
 {
    static struct stw_device stw_dev_storage;
 
-   if (env_var_as_boolean("WGL_DISABLE_ERROR_DIALOGS", false))
+   if (debug_get_bool_option("WGL_DISABLE_ERROR_DIALOGS", false))
       debug_disable_win32_error_dialogs();
 
    assert(!stw_dev);
@@ -140,9 +139,8 @@ stw_init(const struct stw_winsys *stw_winsys)
 
    stw_dev->stw_winsys = stw_winsys;
 
-   stw_dev->stapi = stw_st_create_api();
    stw_dev->smapi = CALLOC_STRUCT(st_manager);
-   if (!stw_dev->stapi || !stw_dev->smapi)
+   if (!stw_dev->smapi)
       goto error1;
 
    stw_dev->smapi->get_param = stw_get_param;
@@ -169,8 +167,6 @@ stw_init(const struct stw_winsys *stw_winsys)
 
 error1:
    FREE(stw_dev->smapi);
-   if (stw_dev->stapi)
-      stw_dev->stapi->destroy(stw_dev->stapi);
 
    stw_dev = NULL;
    return FALSE;
@@ -256,7 +252,6 @@ stw_cleanup(void)
       stw_dev->smapi->destroy(stw_dev->smapi);
 
    FREE(stw_dev->smapi);
-   stw_dev->stapi->destroy(stw_dev->stapi);
 
    stw_dev->screen->destroy(stw_dev->screen);
 

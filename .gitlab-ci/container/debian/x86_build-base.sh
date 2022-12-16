@@ -38,7 +38,6 @@ apt-get install -y --no-remove \
         kmod \
         libclang-13-dev \
         libclang-11-dev \
-        libclc-dev \
         libelf-dev \
         libepoxy-dev \
         libexpat1-dev \
@@ -58,13 +57,13 @@ apt-get install -y --no-remove \
         libxrandr-dev \
         libxrender-dev \
         libxshmfence-dev \
-        libxvmc-dev \
         libxxf86vm-dev \
         make \
         meson \
         pkg-config \
         python3-mako \
         python3-pil \
+        python3-ply \
         python3-requests \
         qemu-user \
         valgrind \
@@ -77,7 +76,7 @@ apt-get install -y --no-remove \
 	zstd
 
 # Needed for ci-fairy, this revision is able to upload files to MinIO
-pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@34f4ade99434043f88e164933f570301fd18b125
+pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@ffe4d1b10aab7534489f0c4bbc4c5899df17d3f2
 
 # We need at least 0.61.4 for proper Rust
 pip3 install meson==0.61.5

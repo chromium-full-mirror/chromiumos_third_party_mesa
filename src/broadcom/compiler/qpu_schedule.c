@@ -1326,6 +1326,12 @@ update_scoreboard_for_chosen(struct choose_scoreboard *scoreboard,
                 }
         }
 
+        if (v3d_qpu_sig_writes_address(devinfo, &inst->sig) && inst->sig_magic) {
+                update_scoreboard_for_magic_waddr(scoreboard,
+                                                  inst->sig_addr,
+                                                  devinfo);
+        }
+
         if (inst->sig.ldvary)
                 scoreboard->last_ldvary_tick = scoreboard->tick;
 }
@@ -1945,6 +1951,14 @@ emit_branch(struct v3d_compile *c,
                 if (scoreboard->last_unifa_write_tick + 3 >=
                     branch_tick - slots_filled - 1) {
                         break;
+                }
+
+                /* Do not move up a branch if it can disrupt an ldvary sequence
+                 * as that can cause stomping of the r5 register.
+                 */
+                if (scoreboard->last_ldvary_tick + 2 >=
+                    branch_tick - slots_filled) {
+                       break;
                 }
 
                 /* Can't move a conditional branch before the instruction

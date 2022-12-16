@@ -63,6 +63,8 @@ struct radv_pipeline_key {
    uint32_t image_2d_view_of_3d : 1;
    uint32_t primitives_generated_query : 1;
    uint32_t dynamic_patch_control_points : 1;
+   uint32_t dynamic_rasterization_samples : 1;
+   uint32_t enable_remove_point_size : 1;
 
    struct {
       uint32_t instance_rate_inputs;
@@ -149,10 +151,12 @@ enum radv_ud_index {
    AC_UD_VS_PROLOG_INPUTS,
    AC_UD_VS_MAX_UD,
    AC_UD_PS_EPILOG_PC,
+   AC_UD_PS_NUM_SAMPLES,
    AC_UD_PS_MAX_UD,
    AC_UD_CS_GRID_SIZE = AC_UD_SHADER_START,
    AC_UD_CS_SBT_DESCRIPTORS,
    AC_UD_CS_RAY_LAUNCH_SIZE_ADDR,
+   AC_UD_CS_RAY_DYNAMIC_CALLABLE_STACK_BASE,
    AC_UD_CS_TASK_RING_OFFSETS,
    AC_UD_CS_TASK_DRAW_ID,
    AC_UD_CS_TASK_IB,
@@ -224,8 +228,8 @@ struct gfx10_ngg_info {
    uint32_t prim_amp_factor;
    uint32_t vgt_esgs_ring_itemsize;
    uint32_t esgs_ring_size;
+   uint32_t scratch_lds_base;
    bool max_vert_out_per_gs_instance;
-   bool enable_vertex_grouping;
 };
 
 struct radv_shader_info {
@@ -244,6 +248,8 @@ struct radv_shader_info {
    bool is_ngg_passthrough;
    bool has_ngg_culling;
    bool has_ngg_early_prim_export;
+   bool has_ngg_prim_query;
+   bool has_ngg_xfb_query;
    uint32_t num_lds_blocks_when_not_culling;
    uint32_t num_tess_patches;
    uint32_t esgs_itemsize; /* Only for VS or TES as ES */
@@ -281,6 +287,7 @@ struct radv_shader_info {
       unsigned invocations;
       unsigned es_type; /* GFX9: VS or TES */
       uint8_t num_linked_inputs;
+      bool has_ngg_pipeline_stat_query;
    } gs;
    struct {
       uint8_t output_usage_mask[VARYING_SLOT_VAR31 + 1];
@@ -345,6 +352,7 @@ struct radv_shader_info {
 
       bool uses_sbt;
       bool uses_ray_launch_size;
+      bool uses_dynamic_rt_callable_stack;
    } cs;
    struct {
       uint64_t tes_inputs_read;
@@ -410,6 +418,7 @@ struct radv_ps_epilog_key {
    uint8_t color_is_int10;
    uint8_t enable_mrt_output_nan_fixup;
 
+   bool mrt0_is_dual_src;
    bool wave32;
 };
 
@@ -481,6 +490,7 @@ union radv_shader_arena_block {
 struct radv_shader {
    uint32_t ref_count;
 
+   struct radeon_winsys_bo *bo; /* Not NULL if imported from a lib */
    uint64_t va;
 
    struct ac_shader_config config;
@@ -488,7 +498,6 @@ struct radv_shader {
    uint32_t code_size;
    uint32_t exec_size;
    struct radv_shader_info info;
-   struct radv_shader_binary *binary;
 
    /* debug only */
    char *spirv;
@@ -543,7 +552,8 @@ nir_shader *radv_shader_spirv_to_nir(struct radv_device *device,
 
 void radv_nir_lower_abi(nir_shader *shader, enum amd_gfx_level gfx_level,
                         const struct radv_shader_info *info, const struct radv_shader_args *args,
-                        const struct radv_pipeline_key *pl_key, bool use_llvm);
+                        const struct radv_pipeline_key *pl_key, bool use_llvm,
+                        uint32_t address32_hi);
 
 void radv_init_shader_arenas(struct radv_device *device);
 void radv_destroy_shader_arenas(struct radv_device *device);
@@ -565,12 +575,13 @@ VkResult radv_create_shaders(struct radv_pipeline *pipeline,
 struct radv_shader_args;
 
 struct radv_shader *radv_shader_create(struct radv_device *device,
-                                       struct radv_shader_binary *binary,
+                                       const struct radv_shader_binary *binary,
                                        bool keep_shader_info, bool from_cache,
                                        const struct radv_shader_args *args);
 struct radv_shader *radv_shader_nir_to_asm(
    struct radv_device *device, struct radv_pipeline_stage *stage, struct nir_shader *const *shaders,
-   int shader_count, const struct radv_pipeline_key *key, bool keep_shader_info, bool keep_statistic_info);
+   int shader_count, const struct radv_pipeline_key *key, bool keep_shader_info, bool keep_statistic_info,
+   struct radv_shader_binary **binary_out);
 
 bool radv_shader_binary_upload(struct radv_device *device, const struct radv_shader_binary *binary,
                                struct radv_shader *shader, void *dest_ptr);
@@ -584,6 +595,7 @@ void radv_free_shader_memory(struct radv_device *device, union radv_shader_arena
 struct radv_shader *
 radv_create_gs_copy_shader(struct radv_device *device, struct nir_shader *nir,
                            const struct radv_shader_info *info, const struct radv_shader_args *args,
+                           struct radv_shader_binary **binary_out,
                            bool keep_shader_info, bool keep_statistic_info,
                            bool disable_optimizations);
 

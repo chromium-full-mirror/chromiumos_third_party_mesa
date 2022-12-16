@@ -124,7 +124,7 @@ like this:
 
 .. code-block:: console
 
-   meson builddir/ -Dprefix="$MESA_INSTALLDIR" -Ddri-drivers= \
+   meson builddir/ -Dprefix="$MESA_INSTALLDIR" \
       -Dgallium-drivers=swrast -Dvulkan-drivers=swrast
    ninja -C builddir/ install
 
@@ -151,7 +151,7 @@ Vulkan
    VK_ICD_FILENAMES="$MESA_INSTALLDIR/share/vulkan/icd/my_icd.json" vulkaninfo
 
 where ``my_icd.json`` is replaced with the actual ICD json file name.  This
-will depend on your driver.  For instance, the 64-bit lavapipe driver ICD file
+will depend on your driver.  For instance, the 64-bit Lavapipe driver ICD file
 is named ``lvp_icd.x86_64.json``.
 
 OpenCL
@@ -182,10 +182,10 @@ here are a few things to check:
     32-bit and your Mesa build is probably 64-bit by default.
 
  4. 32 and 64-bit builds in the same local install directory doesn't typically
-    work.  Distros go to great lengths to make this work in your system install
-    and it's hard to get it right for a local install.  If you've recently
-    built 64-bit and are now building 32-bit, throw away the install directory
-    first to prevent conflicts.
+    work.  Distributions go to great lengths to make this work in your system
+    install and it's hard to get it right for a local install.  If you've
+    recently built 64-bit and are now building 32-bit, throw away the install
+    directory first to prevent conflicts.
 
 4. Building with AOSP (Android)
 -------------------------------

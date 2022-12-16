@@ -35,6 +35,7 @@ enum tu_draw_state_group_id
    TU_DRAW_STATE_LRZ_AND_DEPTH_PLANE,
    TU_DRAW_STATE_PRIM_MODE_GMEM,
    TU_DRAW_STATE_PRIM_MODE_SYSMEM,
+   TU_DRAW_STATE_MSAA,
 
    /* dynamic state related draw states */
    TU_DRAW_STATE_DYNAMIC,
@@ -65,8 +66,9 @@ enum tu_cmd_dirty_bits
    TU_CMD_DIRTY_RASTERIZER_DISCARD = BIT(10),
    TU_CMD_DIRTY_VIEWPORTS = BIT(11),
    TU_CMD_DIRTY_BLEND = BIT(12),
+   TU_CMD_DIRTY_PATCH_CONTROL_POINTS = BIT(13),
    /* all draw states were disabled and need to be re-enabled: */
-   TU_CMD_DIRTY_DRAW_STATE = BIT(13)
+   TU_CMD_DIRTY_DRAW_STATE = BIT(14)
 };
 
 /* There are only three cache domains we have to care about: the CCU, or
@@ -252,6 +254,13 @@ struct tu_vs_params {
    uint32_t draw_id;
 };
 
+struct tu_primitive_params {
+   bool valid;
+   bool primitive_restart;
+   bool provoking_vtx_last;
+   bool tess_upper_left_domain_origin;
+};
+
 /* This should be for state that is set inside a renderpass and used at
  * renderpass end time, e.g. to decide whether to use sysmem. This needs
  * special handling for secondary cmdbufs and suspending/resuming render
@@ -324,6 +333,8 @@ struct tu_cmd_state
    uint32_t dynamic_stencil_mask;
    uint32_t dynamic_stencil_wrmask;
    uint32_t dynamic_stencil_ref;
+   bool stencil_front_write;
+   bool stencil_back_write;
 
    uint32_t gras_su_cntl, rb_depth_cntl, rb_stencil_cntl;
    uint32_t pc_raster_cntl, vpc_unknown_9107;
@@ -342,6 +353,7 @@ struct tu_cmd_state
    struct tu_draw_state vertex_buffers;
    struct tu_draw_state shader_const;
    struct tu_draw_state desc_sets;
+   struct tu_draw_state msaa;
 
    struct tu_draw_state vs_params;
 
@@ -400,7 +412,11 @@ struct tu_cmd_state
    bool tessfactor_addr_set;
    bool predication_active;
    enum a5xx_line_mode line_mode;
+   VkSampleCountFlagBits samples;
+   bool msaa_disable;
    bool z_negative_one_to_one;
+
+   unsigned patch_control_points;
 
    /* VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT and
     * VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT are allowed to run simultaniously,
@@ -506,6 +522,8 @@ struct tu_cmd_state
    struct tu_draw_state lrz_and_depth_plane_state;
 
    struct tu_vs_params last_vs_params;
+
+   struct tu_primitive_params last_prim_params;
 };
 
 enum tu_cmd_buffer_status
@@ -579,6 +597,7 @@ struct tu_cmd_buffer
 
    uint32_t vsc_draw_strm_pitch;
    uint32_t vsc_prim_strm_pitch;
+   bool vsc_initialized;
 };
 VK_DEFINE_HANDLE_CASTS(tu_cmd_buffer, vk.base, VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
@@ -645,7 +664,7 @@ tu_get_descriptors_state(struct tu_cmd_buffer *cmd_buffer,
 }
 
 void tu6_emit_msaa(struct tu_cs *cs, VkSampleCountFlagBits samples,
-                   enum a5xx_line_mode line_mode);
+                   bool msaa_disable);
 
 void tu6_emit_window_scissor(struct tu_cs *cs, uint32_t x1, uint32_t y1, uint32_t x2, uint32_t y2);
 

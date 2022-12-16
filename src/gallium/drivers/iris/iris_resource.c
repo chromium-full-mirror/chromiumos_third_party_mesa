@@ -480,6 +480,9 @@ iris_resource_alloc_flags(const struct iris_screen *screen,
        util_format_get_num_planes(templ->format) > 1)
       flags |= BO_ALLOC_NO_SUBALLOC;
 
+   if (templ->bind & PIPE_BIND_PROTECTED)
+      flags |= BO_ALLOC_PROTECTED;
+
    return flags;
 }
 
@@ -1076,6 +1079,22 @@ iris_resource_finish_aux_import(struct pipe_screen *pscreen,
    }
 }
 
+static uint32_t
+iris_buffer_alignment(uint64_t size)
+{
+   /* Some buffer operations want some amount of alignment.  The largest
+    * buffer texture pixel size is 4 * 4 = 16B.  OpenCL data is also supposed
+    * to be aligned and largest OpenCL data type is a double16 which is
+    * 8 * 16 = 128B.  Align to the largest power of 2 which fits in the size,
+    * up to 128B.
+    */
+   uint32_t align = MAX2(4 * 4, 8 * 16);
+   while (align > size)
+      align >>= 1;
+
+   return align;
+}
+
 static struct pipe_resource *
 iris_resource_create_for_buffer(struct pipe_screen *pscreen,
                                 const struct pipe_resource *templ)
@@ -1103,15 +1122,16 @@ iris_resource_create_for_buffer(struct pipe_screen *pscreen,
    } else if (templ->flags & IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE) {
       memzone = IRIS_MEMZONE_DYNAMIC;
       name = "dynamic state";
-   } else if (templ->flags & IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE) {
-      memzone = IRIS_MEMZONE_BINDLESS;
-      name = "bindless surface state";
+   } else if (templ->flags & IRIS_RESOURCE_FLAG_SCRATCH_MEMZONE) {
+      memzone = IRIS_MEMZONE_SCRATCH;
+      name = "scratch surface state";
    }
 
    unsigned flags = iris_resource_alloc_flags(screen, templ, res->aux.usage);
 
-   res->bo =
-      iris_bo_alloc(screen->bufmgr, name, templ->width0, 1, memzone, flags);
+   res->bo = iris_bo_alloc(screen->bufmgr, name, templ->width0,
+                           iris_buffer_alignment(templ->width0),
+                           memzone, flags);
 
    if (!res->bo) {
       iris_resource_destroy(pscreen, &res->base.b);
@@ -1176,7 +1196,7 @@ iris_resource_create_with_modifiers(struct pipe_screen *pscreen,
    assert(!(templ->flags & (IRIS_RESOURCE_FLAG_SHADER_MEMZONE |
                             IRIS_RESOURCE_FLAG_SURFACE_MEMZONE |
                             IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE |
-                            IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE)));
+                            IRIS_RESOURCE_FLAG_SCRATCH_MEMZONE)));
 
    /* Modifiers require the aux data to be in the same buffer as the main
     * surface, but we combine them even when a modifier is not being used.
@@ -1925,8 +1945,10 @@ iris_invalidate_resource(struct pipe_context *ctx,
 
    struct iris_bo *old_bo = res->bo;
    struct iris_bo *new_bo =
-      iris_bo_alloc(screen->bufmgr, res->bo->name, resource->width0, 1,
-                    iris_memzone_for_address(old_bo->address), 0);
+      iris_bo_alloc(screen->bufmgr, res->bo->name, resource->width0,
+                    iris_buffer_alignment(resource->width0),
+                    iris_memzone_for_address(old_bo->address),
+                    old_bo->real.protected ? BO_ALLOC_PROTECTED : 0);
    if (!new_bo)
       return;
 

@@ -962,7 +962,7 @@ radv_device_init_dgc_prepare_state(struct radv_device *device)
    };
 
    result = radv_CreateComputePipelines(
-      radv_device_to_handle(device), radv_pipeline_cache_to_handle(&device->meta_state.cache), 1,
+      radv_device_to_handle(device), device->meta_state.cache, 1,
       &pipeline_info, &device->meta_state.alloc, &device->meta_state.dgc_prepare.pipeline);
    if (result != VK_SUCCESS)
       goto cleanup;
@@ -972,7 +972,7 @@ cleanup:
    return result;
 }
 
-VkResult
+VKAPI_ATTR VkResult VKAPI_CALL
 radv_CreateIndirectCommandsLayoutNV(VkDevice _device,
                                     const VkIndirectCommandsLayoutCreateInfoNV *pCreateInfo,
                                     const VkAllocationCallbacks *pAllocator,
@@ -1048,7 +1048,7 @@ radv_CreateIndirectCommandsLayoutNV(VkDevice _device,
    return VK_SUCCESS;
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_DestroyIndirectCommandsLayoutNV(VkDevice _device,
                                      VkIndirectCommandsLayoutNV indirectCommandsLayout,
                                      const VkAllocationCallbacks *pAllocator)
@@ -1063,7 +1063,7 @@ radv_DestroyIndirectCommandsLayoutNV(VkDevice _device,
    vk_free2(&device->vk.alloc, pAllocator, layout);
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_GetGeneratedCommandsMemoryRequirementsNV(
    VkDevice _device, const VkGeneratedCommandsMemoryRequirementsInfoNV *pInfo,
    VkMemoryRequirements2 *pMemoryRequirements)
@@ -1086,7 +1086,7 @@ radv_GetGeneratedCommandsMemoryRequirementsNV(
       align(cmd_buf_size + upload_buf_size, pMemoryRequirements->memoryRequirements.alignment);
 }
 
-void
+VKAPI_ATTR void VKAPI_CALL
 radv_CmdPreprocessGeneratedCommandsNV(VkCommandBuffer commandBuffer,
                                       const VkGeneratedCommandsInfoNV *pGeneratedCommandsInfo)
 {

@@ -35,20 +35,21 @@ struct vn_physical_device_features {
    /* EXT */
    VkPhysicalDeviceConditionalRenderingFeaturesEXT conditional_rendering;
    VkPhysicalDeviceCustomBorderColorFeaturesEXT custom_border_color;
+   VkPhysicalDeviceDepthClipControlFeaturesEXT depth_clip_control;
    VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable;
    VkPhysicalDeviceImageViewMinLodFeaturesEXT image_view_min_lod;
    VkPhysicalDeviceIndexTypeUint8FeaturesEXT index_type_uint8;
    VkPhysicalDeviceLineRasterizationFeaturesEXT line_rasterization;
    VkPhysicalDeviceMultiDrawFeaturesEXT multi_draw;
+   VkPhysicalDeviceMutableDescriptorTypeFeaturesEXT mutable_descriptor_type;
    VkPhysicalDevicePrimitiveTopologyListRestartFeaturesEXT
       primitive_topology_list_restart;
+   VkPhysicalDevicePrimitivesGeneratedQueryFeaturesEXT
+      primitives_generated_query;
    VkPhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex;
    VkPhysicalDeviceRobustness2FeaturesEXT robustness_2;
    VkPhysicalDeviceTransformFeedbackFeaturesEXT transform_feedback;
    VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vertex_attribute_divisor;
-
-   /* vendor */
-   VkPhysicalDeviceMutableDescriptorTypeFeaturesVALVE mutable_descriptor_type;
 };
 
 struct vn_physical_device_properties {
@@ -56,6 +57,9 @@ struct vn_physical_device_properties {
    VkPhysicalDeviceVulkan11Properties vulkan_1_1;
    VkPhysicalDeviceVulkan12Properties vulkan_1_2;
    VkPhysicalDeviceVulkan13Properties vulkan_1_3;
+
+   /* KHR */
+   VkPhysicalDevicePushDescriptorPropertiesKHR push_descriptor;
 
    /* EXT */
    VkPhysicalDeviceConservativeRasterizationPropertiesEXT

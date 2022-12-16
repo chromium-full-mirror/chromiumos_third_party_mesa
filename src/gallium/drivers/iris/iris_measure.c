@@ -25,7 +25,7 @@
  */
 
 #include <stdio.h>
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/list.h"
 #include "util/crc32.h"
 #include "iris_context.h"
@@ -118,7 +118,7 @@ iris_init_batch_measure(struct iris_context *ice, struct iris_batch *batch)
    struct iris_measure_batch *measure = batch->measure;
 
    measure->bo = iris_bo_alloc(bufmgr, "measure",
-                               config->batch_size * sizeof(uint64_t), 1,
+                               config->batch_size * sizeof(uint64_t), 8,
                                IRIS_MEMZONE_OTHER, BO_ALLOC_ZEROED);
    measure->base.timestamps = iris_bo_map(NULL, measure->bo, MAP_READ);
    measure->base.framebuffer =
@@ -241,7 +241,7 @@ state_changed(const struct iris_context *ice,
    /* else blorp, all programs NULL */
 
    return intel_measure_state_changed(&batch->measure->base,
-                                      vs, tcs, tes, gs, fs, cs);
+                                      vs, tcs, tes, gs, fs, cs, 0, 0);
 }
 
 static void

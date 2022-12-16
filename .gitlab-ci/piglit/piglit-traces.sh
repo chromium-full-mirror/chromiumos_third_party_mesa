@@ -3,7 +3,7 @@
 set -ex
 
 INSTALL=$(realpath -s "$PWD"/install)
-MINIO_ARGS="--credentials=/tmp/.minio_credentials"
+MINIO_ARGS="--token-file ${CI_JOB_JWT_FILE}"
 
 RESULTS=$(realpath -s "$PWD"/results)
 mkdir -p "$RESULTS"
@@ -17,8 +17,19 @@ if [ "$PIGLIT_REPLAY_SUBCOMMAND" = "profile" ]; then
 fi
 
 # WINE
+case "$PIGLIT_REPLAY_DEVICE_NAME" in
+  vk-*)
+    export WINEPREFIX="/dxvk-wine64"
+    ;;
+  *)
+    export WINEPREFIX="/generic-wine64"
+    ;;
+esac
+
 PATH="/opt/wine-stable/bin/:$PATH" # WineHQ path
-export WINEPREFIX="/dxvk-wine64" # hardcode DXVK for now
+
+# Avoid asking about Gecko or Mono instalation
+export WINEDLLOVERRIDES=mscoree=d;mshtml=d
 
 # Set environment for DXVK.
 export DXVK_LOG_LEVEL="info"
@@ -126,8 +137,8 @@ replay_minio_upload_images() {
             __DESTINATION_FILE_PATH="$__MINIO_TRACES_PREFIX/${line##*-}"
         fi
 
-        ci-fairy minio cp $MINIO_ARGS "$RESULTS/$__PREFIX/$line" \
-            "minio://${__MINIO_PATH}/${__DESTINATION_FILE_PATH}"
+        ci-fairy s3cp $MINIO_ARGS "$RESULTS/$__PREFIX/$line" \
+            "https://${__MINIO_PATH}/${__DESTINATION_FILE_PATH}"
     done
 }
 
@@ -161,8 +172,6 @@ RUN_CMD="export LD_LIBRARY_PATH=$__LD_LIBRARY_PATH; $SANITY_MESA_VERSION_CMD && 
 if [ "$RUN_CMD_WRAPPER" ]; then
     RUN_CMD="set +e; $RUN_CMD_WRAPPER "$(/usr/bin/printf "%q" "$RUN_CMD")"; set -e"
 fi
-
-ci-fairy minio login $MINIO_ARGS --token-file "${CI_JOB_JWT_FILE}"
 
 # The replayer doesn't do any size or checksum verification for the traces in
 # the replayer db, so if we had to restart the system due to intermittent device

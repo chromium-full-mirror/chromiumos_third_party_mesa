@@ -107,11 +107,11 @@ create_submission_data(struct tu_device *dev, struct tu_autotune *at,
       list_del(&submission_data->node);
    } else {
       submission_data = calloc(1, sizeof(struct tu_submission_data));
+      tu_cs_init(&submission_data->fence_cs, dev, TU_CS_MODE_GROW, 5, "autotune fence cs");
    }
    submission_data->fence = fence;
 
    struct tu_cs* fence_cs = &submission_data->fence_cs;
-   tu_cs_init(fence_cs, dev, TU_CS_MODE_GROW, 5);
    tu_cs_begin(fence_cs);
 
    tu_cs_emit_pkt7(fence_cs, CP_EVENT_WRITE, 4);
@@ -144,40 +144,26 @@ free_submission_data(struct tu_submission_data *data)
    free(data);
 }
 
-#define APPEND_TO_HASH(state, field) \
-   XXH64_update(state, &field, sizeof(field));
-
 static uint64_t
 hash_renderpass_instance(const struct tu_render_pass *pass,
                          const struct tu_framebuffer *framebuffer,
                          const struct tu_cmd_buffer *cmd) {
-   XXH64_state_t hash_state;
-   XXH64_reset(&hash_state, 0);
+   uint32_t data[3 + pass->attachment_count * 5];
+   uint32_t* ptr = data;
 
-   APPEND_TO_HASH(&hash_state, framebuffer->width);
-   APPEND_TO_HASH(&hash_state, framebuffer->height);
-   APPEND_TO_HASH(&hash_state, framebuffer->layers);
-
-   APPEND_TO_HASH(&hash_state, pass->attachment_count);
-   XXH64_update(&hash_state, pass->attachments, pass->attachment_count * sizeof(pass->attachments[0]));
+   *ptr++ = framebuffer->width;
+   *ptr++ = framebuffer->height;
+   *ptr++ = framebuffer->layers;
 
    for (unsigned i = 0; i < pass->attachment_count; i++) {
-      APPEND_TO_HASH(&hash_state, cmd->state.attachments[i]->view.width);
-      APPEND_TO_HASH(&hash_state, cmd->state.attachments[i]->view.height);
-      APPEND_TO_HASH(&hash_state, cmd->state.attachments[i]->image->vk.format);
-      APPEND_TO_HASH(&hash_state, cmd->state.attachments[i]->image->vk.array_layers);
-      APPEND_TO_HASH(&hash_state, cmd->state.attachments[i]->image->vk.mip_levels);
+      *ptr++ = cmd->state.attachments[i]->view.width;
+      *ptr++ = cmd->state.attachments[i]->view.height;
+      *ptr++ = cmd->state.attachments[i]->image->vk.format;
+      *ptr++ = cmd->state.attachments[i]->image->vk.array_layers;
+      *ptr++ = cmd->state.attachments[i]->image->vk.mip_levels;
    }
 
-   APPEND_TO_HASH(&hash_state, pass->subpass_count);
-   for (unsigned i = 0; i < pass->subpass_count; i++) {
-      APPEND_TO_HASH(&hash_state, pass->subpasses[i].samples);
-      APPEND_TO_HASH(&hash_state, pass->subpasses[i].input_count);
-      APPEND_TO_HASH(&hash_state, pass->subpasses[i].color_count);
-      APPEND_TO_HASH(&hash_state, pass->subpasses[i].resolve_count);
-   }
-
-   return XXH64_digest(&hash_state);
+   return XXH64(data, sizeof(data), pass->autotune_hash);
 }
 
 static void

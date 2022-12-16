@@ -24,6 +24,8 @@
 #include "d3d12_video_dec_references_mgr.h"
 #include "d3d12_video_dec_h264.h"
 #include "d3d12_video_dec_hevc.h"
+#include "d3d12_video_dec_av1.h"
+#include "d3d12_video_dec_vp9.h"
 #include "d3d12_video_texture_array_dpb_manager.h"
 #include "d3d12_video_array_of_textures_dpb_manager.h"
 #include "d3d12_screen.h"
@@ -43,6 +45,10 @@ GetInvalidReferenceIndex(d3d12_video_decode_profile_type DecodeProfileType)
          return DXVA_H264_INVALID_PICTURE_INDEX;
       case d3d12_video_decode_profile_type_hevc:
          return DXVA_HEVC_INVALID_PICTURE_INDEX;
+      case d3d12_video_decode_profile_type_av1:
+         return DXVA_AV1_INVALID_PICTURE_INDEX;
+      case d3d12_video_decode_profile_type_vp9:
+         return DXVA_VP9_INVALID_PICTURE_INDEX;
       default:
          return 0;
    };
@@ -202,7 +208,6 @@ d3d12_video_decoder_references_manager::d3d12_video_decoder_references_manager(
    d3d12_video_decode_profile_type   DecodeProfileType,
    d3d12_video_decode_dpb_descriptor m_dpbDescriptor)
    : m_DecodeTargetToOriginalIndex7Bits({ }),
-     m_CurrentIndex7BitsAvailable(0),
      m_pD3D12Screen(pD3D12Screen),
      m_invalidIndex(GetInvalidReferenceIndex(DecodeProfileType)),
      m_dpbDescriptor(m_dpbDescriptor),

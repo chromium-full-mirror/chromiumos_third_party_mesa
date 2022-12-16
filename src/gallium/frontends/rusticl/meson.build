@@ -23,6 +23,7 @@ rust = import('unstable-rust')
 libmesa_rust_util_files = files(
   'util/lib.rs',
   'util/assert.rs',
+  'util/bitset.rs',
   'util/properties.rs',
   'util/ptr.rs',
   'util/string.rs',
@@ -134,8 +135,8 @@ rusticl_opencl_bindings_rs = rust.bindgen(
     '--ignore-functions',
     # needed because bindgen adds *mut void fields...
     '--raw-line', 'unsafe impl std::marker::Sync for _cl_icd_dispatch {}',
-    '--whitelist-type', 'cl_.*',
-    '--whitelist-var', 'CL_.*',
+    '--allowlist-type', 'cl_.*',
+    '--allowlist-var', 'CL_.*',
     # some info types need to be strongly typed so we can implement various get_infos
     '--new-type-alias-deref', 'cl_(mem|image|pipe)_info',
     '--new-type-alias-deref', 'cl_kernel_(arg|work_group)_info',
@@ -153,6 +154,21 @@ rusticl_opencl_gen = static_library(
     '-Anon_snake_case',
     '-Anon_camel_case_types',
     '-Anon_upper_case_globals',
+  ],
+)
+
+rusticl_system_bindings_wrapper = static_library(
+  'system_bindings',
+  [
+    'rusticl_system_bindings.c',
+    'rusticl_system_bindings.h',
+  ],
+  gnu_symbol_visibility : 'hidden',
+  include_directories : [
+    inc_include,
+  ],
+  c_args : [
+    pre_args,
   ],
 )
 
@@ -198,32 +214,33 @@ rusticl_mesa_bindings_rs = rust.bindgen(
   ],
   args : [
     rusticl_bindgen_args,
-    '--whitelist-function', 'blob_.*',
-    '--whitelist-function', 'clc_.*',
-    '--whitelist-function', 'disk_cache_.*',
-    '--whitelist-function', 'free',
-    '--whitelist-function', 'glsl_.*',
-    '--whitelist-function', 'malloc',
-    '--whitelist-function', 'mesa_.*',
-    '--whitelist-function', 'nir_.*',
-    '--whitelist-function', 'pipe_.*',
-    '--whitelist-function', 'rusticl_.*',
-    '--whitelist-function', 'rz?alloc_.*',
-    '--whitelist-function', 'spirv_.*',
-    '--whitelist-function', 'u_.*',
-    '--whitelist-function', 'util_format_.*',
-    '--whitelist-type', 'pipe_endian',
-    '--whitelist-type', 'clc_kernel_arg_access_qualifier',
+    '--allowlist-function', 'blob_.*',
+    '--allowlist-function', 'clc_.*',
+    '--allowlist-function', 'disk_cache_.*',
+    '--allowlist-function', 'free',
+    '--allowlist-function', 'glsl_.*',
+    '--allowlist-function', 'malloc',
+    '--allowlist-function', 'mesa_.*',
+    '--allowlist-function', 'nir_.*',
+    '--allowlist-function', 'pipe_.*',
+    '--allowlist-function', 'rusticl_.*',
+    '--allowlist-function', 'rz?alloc_.*',
+    '--allowlist-function', 'spirv_.*',
+    '--allowlist-function', 'u_.*',
+    '--allowlist-function', 'util_format_.*',
+    '--allowlist-type', 'pipe_endian',
+    '--allowlist-type', 'pipe_resource_usage',
+    '--bitfield-enum', 'pipe_resource_usage',
+    '--allowlist-type', 'clc_kernel_arg_access_qualifier',
     '--bitfield-enum', 'clc_kernel_arg_access_qualifier',
-    '--whitelist-type', 'clc_kernel_arg_type_qualifier',
+    '--allowlist-type', 'clc_kernel_arg_type_qualifier',
     '--bitfield-enum', 'clc_kernel_arg_type_qualifier',
     '--bitfield-enum', 'nir_opt_if_options',
     '--bitfield-enum', 'nir_variable_mode',
-    '--whitelist-type', 'float_controls',
-    '--whitelist-var', 'PIPE_.*',
+    '--allowlist-type', 'float_controls',
+    '--allowlist-var', 'PIPE_.*',
     '--bitfield-enum', 'pipe_map_flags',
-    '--allowlist-var', 'stderr',
-    '--allowlist-var', 'stdout',
+    '--allowlist-function', 'std(err|out)_ptr',
     '--bitfield-enum', 'nir_lower_int64_options',
     '--allowlist-type', 'pipe_tex_wrap',
     '--constified-enum-module', 'pipe_tex_wrap',
@@ -283,6 +300,7 @@ libmesa_rust = static_library(
     libmesa_rust_gen,
     libmesa_rust_util,
     rusticl_mesa_bindings_inline_wrapper,
+    rusticl_system_bindings_wrapper,
   ]
 )
 

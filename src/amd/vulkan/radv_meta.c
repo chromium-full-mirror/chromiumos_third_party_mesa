@@ -41,6 +41,9 @@ radv_suspend_queries(struct radv_meta_saved_state *state, struct radv_cmd_buffer
    if (cmd_buffer->state.active_pipeline_queries > 0) {
       cmd_buffer->state.flush_bits &= ~RADV_CMD_FLAG_START_PIPELINE_STATS;
       cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_STOP_PIPELINE_STATS;
+
+      state->active_pipeline_gds_queries = cmd_buffer->state.active_pipeline_gds_queries;
+      cmd_buffer->state.active_pipeline_gds_queries = 0;
    }
 
    /* Occlusion queries. */
@@ -48,16 +51,22 @@ radv_suspend_queries(struct radv_meta_saved_state *state, struct radv_cmd_buffer
       radv_set_db_count_control(cmd_buffer, false);
    }
 
-   /* Primitives generated queries. */
-   if (cmd_buffer->state.prims_gen_query_enabled) {
+   /* Primitives generated queries (legacy). */
+   if (cmd_buffer->state.active_prims_gen_queries) {
       cmd_buffer->state.suspend_streamout = true;
       radv_emit_streamout_enable(cmd_buffer);
+   }
 
-      /* Save the number of active GDS queries and reset it to make sure internal operations won't
-       * increment the counters via GDS.
-       */
-      state->active_pipeline_gds_queries = cmd_buffer->state.active_pipeline_gds_queries;
-      cmd_buffer->state.active_pipeline_gds_queries = 0;
+   /* Primitives generated queries (NGG). */
+   if (cmd_buffer->state.active_prims_gen_gds_queries) {
+      state->active_prims_gen_gds_queries = cmd_buffer->state.active_prims_gen_gds_queries;
+      cmd_buffer->state.active_prims_gen_gds_queries = 0;
+   }
+
+   /* Transform feedback queries (NGG). */
+   if (cmd_buffer->state.active_prims_xfb_gds_queries) {
+      state->active_prims_xfb_gds_queries = cmd_buffer->state.active_prims_xfb_gds_queries;
+      cmd_buffer->state.active_prims_xfb_gds_queries = 0;
    }
 }
 
@@ -68,6 +77,8 @@ radv_resume_queries(const struct radv_meta_saved_state *state, struct radv_cmd_b
    if (cmd_buffer->state.active_pipeline_queries > 0) {
       cmd_buffer->state.flush_bits &= ~RADV_CMD_FLAG_STOP_PIPELINE_STATS;
       cmd_buffer->state.flush_bits |= RADV_CMD_FLAG_START_PIPELINE_STATS;
+
+      cmd_buffer->state.active_pipeline_gds_queries = state->active_pipeline_gds_queries;
    }
 
    /* Occlusion queries. */
@@ -75,13 +86,20 @@ radv_resume_queries(const struct radv_meta_saved_state *state, struct radv_cmd_b
       radv_set_db_count_control(cmd_buffer, true);
    }
 
-   /* Primitives generated queries. */
-   if (cmd_buffer->state.prims_gen_query_enabled) {
+   /* Primitives generated queries (legacy). */
+   if (cmd_buffer->state.active_prims_gen_queries) {
       cmd_buffer->state.suspend_streamout = false;
       radv_emit_streamout_enable(cmd_buffer);
+   }
 
-      /* Restore the number of active GDS queries to resume counting. */
-      cmd_buffer->state.active_pipeline_gds_queries = state->active_pipeline_gds_queries;
+   /* Primitives generated queries (NGG). */
+   if (state->active_prims_gen_gds_queries) {
+      cmd_buffer->state.active_prims_gen_gds_queries = state->active_prims_gen_gds_queries;
+   }
+
+   /* Transform feedback queries (NGG). */
+   if (state->active_prims_xfb_gds_queries) {
+      cmd_buffer->state.active_prims_xfb_gds_queries = state->active_prims_xfb_gds_queries;
    }
 }
 
@@ -98,6 +116,8 @@ radv_meta_save(struct radv_meta_saved_state *state, struct radv_cmd_buffer *cmd_
    assert(flags & (RADV_META_SAVE_GRAPHICS_PIPELINE | RADV_META_SAVE_COMPUTE_PIPELINE));
 
    state->flags = flags;
+   state->active_prims_gen_gds_queries = 0;
+   state->active_prims_xfb_gds_queries = 0;
 
    if (state->flags & RADV_META_SAVE_GRAPHICS_PIPELINE) {
       assert(!(state->flags & RADV_META_SAVE_COMPUTE_PIPELINE));
@@ -155,6 +175,9 @@ radv_meta_restore(const struct radv_meta_saved_state *state, struct radv_cmd_buf
       /* Restore all dynamic states. */
       cmd_buffer->state.dynamic = state->dynamic;
       cmd_buffer->state.dirty |= RADV_DYNAMIC_ALL;
+
+      /* Re-emit the guardband state because meta operations changed dynamic states. */
+      cmd_buffer->state.dirty |= RADV_CMD_DIRTY_GUARDBAND;
    }
 
    if (state->flags & RADV_META_SAVE_COMPUTE_PIPELINE) {
@@ -295,13 +318,19 @@ radv_load_meta_pipeline(struct radv_device *device)
    struct stat st;
    void *data = NULL;
    bool ret = false;
+   int fd = -1;
+   VkResult result = VK_SUCCESS;
+
+   VkPipelineCacheCreateInfo create_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+   };
 
    if (!radv_builtin_cache_path(path))
-      return false;
+      goto fail;
 
-   int fd = open(path, O_RDONLY);
+   fd = open(path, O_RDONLY);
    if (fd < 0)
-      return false;
+      goto fail;
    if (fstat(fd, &st))
       goto fail;
    data = malloc(st.st_size);
@@ -310,10 +339,19 @@ radv_load_meta_pipeline(struct radv_device *device)
    if (read(fd, data, st.st_size) == -1)
       goto fail;
 
-   ret = radv_pipeline_cache_load(&device->meta_state.cache, data, st.st_size);
+   create_info.initialDataSize = st.st_size;
+   create_info.pInitialData = data;
+
 fail:
+   result = radv_CreatePipelineCache(radv_device_to_handle(device), &create_info, NULL, &device->meta_state.cache);
+   if (result == VK_SUCCESS) {
+      device->meta_state.initial_cache_entries = radv_pipeline_cache_from_handle(device->meta_state.cache)->kernel_count;
+      ret = device->meta_state.initial_cache_entries > 0;
+   }
+
    free(data);
-   close(fd);
+   if (fd >= 0)
+      close(fd);
    return ret;
 #endif
 }
@@ -326,11 +364,15 @@ radv_store_meta_pipeline(struct radv_device *device)
    size_t size;
    void *data = NULL;
 
-   if (!device->meta_state.cache.modified)
+   if (device->meta_state.cache == VK_NULL_HANDLE)
+      return;
+
+   /* Skip serialization if no entries were added. */
+   if (radv_pipeline_cache_from_handle(device->meta_state.cache)->kernel_count <= device->meta_state.initial_cache_entries)
       return;
 
    if (radv_GetPipelineCacheData(radv_device_to_handle(device),
-                                 radv_pipeline_cache_to_handle(&device->meta_state.cache), &size,
+                                 device->meta_state.cache, &size,
                                  NULL))
       return;
 
@@ -347,7 +389,7 @@ radv_store_meta_pipeline(struct radv_device *device)
       goto fail;
 
    if (radv_GetPipelineCacheData(radv_device_to_handle(device),
-                                 radv_pipeline_cache_to_handle(&device->meta_state.cache), &size,
+                                 device->meta_state.cache, &size,
                                  data))
       goto fail;
    if (write(fd, data, size) == -1)
@@ -375,8 +417,6 @@ radv_device_init_meta(struct radv_device *device)
       .pfnFree = meta_free,
    };
 
-   device->meta_state.cache.alloc = device->meta_state.alloc;
-   radv_pipeline_cache_init(&device->meta_state.cache, device);
    bool loaded_cache = radv_load_meta_pipeline(device);
    bool on_demand = !loaded_cache;
 
@@ -428,19 +468,21 @@ radv_device_init_meta(struct radv_device *device)
    if (result != VK_SUCCESS)
       goto fail_resolve_fragment;
 
-   result = radv_device_init_meta_fmask_expand_state(device);
-   if (result != VK_SUCCESS)
-      goto fail_fmask_expand;
+   if (device->physical_device->use_fmask) {
+      result = radv_device_init_meta_fmask_expand_state(device);
+      if (result != VK_SUCCESS)
+         goto fail_fmask_expand;
+
+      result = radv_device_init_meta_fmask_copy_state(device);
+      if (result != VK_SUCCESS)
+         goto fail_fmask_copy;
+   }
 
    if (radv_enable_rt(device->physical_device, false)) {
       result = radv_device_init_accel_struct_build_state(device);
       if (result != VK_SUCCESS)
          goto fail_accel_struct_build;
    }
-
-   result = radv_device_init_meta_fmask_copy_state(device);
-   if (result != VK_SUCCESS)
-      goto fail_fmask_copy;
 
    result = radv_device_init_meta_etc_decode_state(device, on_demand);
    if (result != VK_SUCCESS)
@@ -460,10 +502,10 @@ fail_dgc:
    radv_device_finish_dgc_prepare_state(device);
 fail_etc_decode:
    radv_device_finish_meta_etc_decode_state(device);
-fail_fmask_copy:
-   radv_device_finish_meta_fmask_copy_state(device);
 fail_accel_struct_build:
    radv_device_finish_accel_struct_build_state(device);
+fail_fmask_copy:
+   radv_device_finish_meta_fmask_copy_state(device);
 fail_fmask_expand:
    radv_device_finish_meta_fmask_expand_state(device);
 fail_resolve_fragment:
@@ -490,7 +532,7 @@ fail_clear:
    radv_device_finish_meta_clear_state(device);
 
    mtx_destroy(&device->meta_state.mtx);
-   radv_pipeline_cache_finish(&device->meta_state.cache);
+   radv_DestroyPipelineCache(radv_device_to_handle(device), device->meta_state.cache, NULL);
    return result;
 }
 
@@ -517,7 +559,7 @@ radv_device_finish_meta(struct radv_device *device)
    radv_device_finish_meta_fmask_copy_state(device);
 
    radv_store_meta_pipeline(device);
-   radv_pipeline_cache_finish(&device->meta_state.cache);
+   radv_DestroyPipelineCache(radv_device_to_handle(device), device->meta_state.cache, NULL);
    mtx_destroy(&device->meta_state.mtx);
 }
 
@@ -567,13 +609,12 @@ radv_meta_build_nir_fs_noop(struct radv_device *dev)
 }
 
 void
-radv_meta_build_resolve_shader_core(nir_builder *b, bool is_integer, int samples,
-                                    nir_variable *input_img, nir_variable *color,
+radv_meta_build_resolve_shader_core(struct radv_device *device, nir_builder *b, bool is_integer,
+                                    int samples, nir_variable *input_img, nir_variable *color,
                                     nir_ssa_def *img_coord)
 {
    /* do a txf_ms on each sample */
    nir_ssa_def *tmp;
-   bool inserted_if = false;
 
    nir_ssa_def *input_img_deref = &nir_build_deref_var(b, input_img)->dest.ssa;
 
@@ -595,7 +636,12 @@ radv_meta_build_resolve_shader_core(nir_builder *b, bool is_integer, int samples
 
    tmp = &tex->dest.ssa;
 
-   if (!is_integer && samples > 1) {
+   if (is_integer || samples <= 1) {
+      nir_store_var(b, color, &tex->dest.ssa, 0xf);
+      return;
+   }
+
+   if (device->physical_device->use_fmask) {
       nir_tex_instr *tex_all_same = nir_tex_instr_create(b->shader, 2);
       tex_all_same->sampler_dim = GLSL_SAMPLER_DIM_MS;
       tex_all_same->op = nir_texop_samples_identical;
@@ -612,35 +658,36 @@ radv_meta_build_resolve_shader_core(nir_builder *b, bool is_integer, int samples
 
       nir_ssa_def *not_all_same = nir_inot(b, &tex_all_same->dest.ssa);
       nir_push_if(b, not_all_same);
-      for (int i = 1; i < samples; i++) {
-         nir_tex_instr *tex_add = nir_tex_instr_create(b->shader, 3);
-         tex_add->sampler_dim = GLSL_SAMPLER_DIM_MS;
-         tex_add->op = nir_texop_txf_ms;
-         tex_add->src[0].src_type = nir_tex_src_coord;
-         tex_add->src[0].src = nir_src_for_ssa(img_coord);
-         tex_add->src[1].src_type = nir_tex_src_ms_index;
-         tex_add->src[1].src = nir_src_for_ssa(nir_imm_int(b, i));
-         tex_add->src[2].src_type = nir_tex_src_texture_deref;
-         tex_add->src[2].src = nir_src_for_ssa(input_img_deref);
-         tex_add->dest_type = nir_type_float32;
-         tex_add->is_array = false;
-         tex_add->coord_components = 2;
-
-         nir_ssa_dest_init(&tex_add->instr, &tex_add->dest, 4, 32, "tex");
-         nir_builder_instr_insert(b, &tex_add->instr);
-
-         tmp = nir_fadd(b, tmp, &tex_add->dest.ssa);
-      }
-
-      tmp = nir_fdiv(b, tmp, nir_imm_float(b, samples));
-      nir_store_var(b, color, tmp, 0xf);
-      nir_push_else(b, NULL);
-      inserted_if = true;
    }
-   nir_store_var(b, color, &tex->dest.ssa, 0xf);
 
-   if (inserted_if)
+   for (int i = 1; i < samples; i++) {
+      nir_tex_instr *tex_add = nir_tex_instr_create(b->shader, 3);
+      tex_add->sampler_dim = GLSL_SAMPLER_DIM_MS;
+      tex_add->op = nir_texop_txf_ms;
+      tex_add->src[0].src_type = nir_tex_src_coord;
+      tex_add->src[0].src = nir_src_for_ssa(img_coord);
+      tex_add->src[1].src_type = nir_tex_src_ms_index;
+      tex_add->src[1].src = nir_src_for_ssa(nir_imm_int(b, i));
+      tex_add->src[2].src_type = nir_tex_src_texture_deref;
+      tex_add->src[2].src = nir_src_for_ssa(input_img_deref);
+      tex_add->dest_type = nir_type_float32;
+      tex_add->is_array = false;
+      tex_add->coord_components = 2;
+
+      nir_ssa_dest_init(&tex_add->instr, &tex_add->dest, 4, 32, "tex");
+      nir_builder_instr_insert(b, &tex_add->instr);
+
+      tmp = nir_fadd(b, tmp, &tex_add->dest.ssa);
+   }
+
+   tmp = nir_fdiv(b, tmp, nir_imm_float(b, samples));
+   nir_store_var(b, color, tmp, 0xf);
+
+   if (device->physical_device->use_fmask) {
+      nir_push_else(b, NULL);
+      nir_store_var(b, color, &tex->dest.ssa, 0xf);
       nir_pop_if(b, NULL);
+   }
 }
 
 nir_ssa_def *

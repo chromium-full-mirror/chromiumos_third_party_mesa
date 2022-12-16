@@ -12,7 +12,17 @@ Features
 --------
 
 The feature-level of Zink depends on two things; what's implemented in Zink,
-as well as the features of the Vulkan driver.
+as well as the capabilities of the Vulkan driver. 
+
+The feature-levels implemented by Zink are exposed by `Vulkan Profiles
+<https://dev.vulkan.org/tools#vulkan-profiles>`__ in the
+:file:`VP_ZINK_requirements.json` profiles file.
+
+Used with the `Vulkan Profiles tools <https://github.com/KhronosGroup/Vulkan-Profiles>`__,
+we can compare the ZINK profiles with Vulkan devices profiles generated with 
+`Vulkaninfo <https://vulkan.lunarg.com/doc/view/latest/windows/vulkaninfo.html>`__
+or `downloaded from GPUinfo.org`_
+to establish the feature-levels supported by these drivers.
 
 OpenGL 2.1
 ^^^^^^^^^^
@@ -108,6 +118,7 @@ supported, although some of these might not actually get verified:
 * ``VkPhysicalDeviceFeatures``:
 
   * ``occlusionQueryPrecise``
+  * ``dualSrcBlend``
 
 * Device extensions:
 
@@ -163,15 +174,14 @@ supported:
 
   * ``shaderStorageImageExtendedFormats``
   * ``shaderStorageImageWriteWithoutFormat``
+  * ``vertexPipelineStoresAndAtomics``
+  * ``fragmentStoresAndAtomics``
 
 * For Vulkan 1.2 and above:
 
   * ``VkPhysicalDeviceVulkan11Features``:
 
     * ``shaderDrawParameters``
-    * ``vertexPipelineStoresAndAtomics``
-    * ``fragmentStoresAndAtomics``
-    * ``textureCompressionBC``
 
 * For Vulkan 1.1 and below:
 
@@ -273,6 +283,8 @@ variable:
    Use a maximum of 4 descriptor sets
 ``noreorder``
    Do not reorder or optimize GL command streams
+``gpl``
+   Force using Graphics Pipeline Library for all shaders
 
 Vulkan Validation Layers
 ^^^^^^^^^^^^^^^^^^^^^^^^
@@ -295,6 +307,7 @@ questions, don't hesitate to visit `#zink on OFTC
 <irc://irc.oftc.net/zink>`__ and say hi!
 
 
+.. _downloaded from GPUinfo.org: https://www.saschawillems.de/blog/2022/03/12/vulkan-profiles-support-for-the-vulkan-hardware-capability-viewer-and-database/
 .. _VK_KHR_maintenance1: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_maintenance1.html
 .. _VK_KHR_create_renderpass2: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_create_renderpass2.html
 .. _VK_KHR_imageless_framebuffer: https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VK_KHR_imageless_framebuffer.html

@@ -145,6 +145,7 @@ struct st_context
    boolean has_astc_5x5_ldr;
    boolean has_s3tc;
    boolean has_rgtc;
+   boolean has_latc;
    boolean has_bptc;
    boolean prefer_blit_based_texture_transfer;
    boolean allow_compute_based_texture_transfer;
@@ -155,6 +156,7 @@ struct st_context
    boolean has_half_float_packing;
    boolean has_multi_draw_indirect;
    boolean has_indirect_partial_stride;
+   boolean has_occlusion_query;
    boolean has_single_pipe_stat;
    boolean has_indep_blend_func;
    boolean needs_rgb_dst_alpha_override;
@@ -167,7 +169,6 @@ struct st_context
    boolean lower_ucp;
    boolean prefer_real_buffer_in_constbuf0;
    boolean has_conditional_render;
-   boolean lower_texcoord_replace;
    boolean lower_rect_tex;
 
    /* There are consequences for drivers wanting to call st_finalize_nir

@@ -1098,16 +1098,13 @@ emit_3dstate_clip(struct anv_graphics_pipeline *pipeline,
 #if GFX_VER == 7
    clip.UserClipDistanceClipTestEnableBitmask = last->clip_distance_mask;
    clip.UserClipDistanceCullTestEnableBitmask = last->cull_distance_mask;
-#endif
-
-#if GFX_VER == 7
    clip.FrontWinding            = genX(vk_to_intel_front_face)[rs->front_face];
    clip.CullMode                = genX(vk_to_intel_cullmode)[rs->cull_mode];
    clip.ViewportZClipTestEnable = pipeline->depth_clip_enable;
-#else
+#endif
+
    clip.NonPerspectiveBarycentricEnable = wm_prog_data ?
       wm_prog_data->uses_nonperspective_interp_modes : 0;
-#endif
 
    GENX(3DSTATE_CLIP_pack)(NULL, pipeline->gfx7.clip, &clip);
 }
@@ -1685,7 +1682,7 @@ emit_3dstate_wm(struct anv_graphics_pipeline *pipeline,
    wm.StatisticsEnable                    = true;
    wm.LineEndCapAntialiasingRegionWidth   = _05pixels;
    wm.LineAntialiasingRegionWidth         = _10pixels;
-   wm.PointRasterizationRule              = RASTRULE_UPPER_RIGHT;
+   wm.PointRasterizationRule              = RASTRULE_UPPER_LEFT;
 
    if (anv_pipeline_has_stage(pipeline, MESA_SHADER_FRAGMENT)) {
       if (wm_prog_data->early_fragment_tests) {
@@ -1809,9 +1806,11 @@ emit_3dstate_ps(struct anv_graphics_pipeline *pipeline,
 #endif
 
    anv_batch_emit(&pipeline->base.batch, GENX(3DSTATE_PS), ps) {
-      ps._8PixelDispatchEnable      = wm_prog_data->dispatch_8;
-      ps._16PixelDispatchEnable     = wm_prog_data->dispatch_16;
-      ps._32PixelDispatchEnable     = wm_prog_data->dispatch_32;
+      brw_fs_get_dispatch_enables(devinfo, wm_prog_data,
+                                  ms != NULL ? ms->rasterization_samples : 1,
+                                  &ps._8PixelDispatchEnable,
+                                  &ps._16PixelDispatchEnable,
+                                  &ps._32PixelDispatchEnable);
 
       /* From the Sky Lake PRM 3DSTATE_PS::32 Pixel Dispatch Enable:
        *

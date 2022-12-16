@@ -1886,30 +1886,20 @@ nir_visitor::visit(ir_expression *ir)
 
       deref->accept(this);
 
+      assert(nir_deref_mode_is(this->deref, nir_var_shader_in));
       nir_intrinsic_op op;
-      if (nir_deref_mode_is(this->deref, nir_var_shader_in)) {
-         switch (ir->operation) {
-         case ir_unop_interpolate_at_centroid:
-            op = nir_intrinsic_interp_deref_at_centroid;
-            break;
-         case ir_binop_interpolate_at_offset:
-            op = nir_intrinsic_interp_deref_at_offset;
-            break;
-         case ir_binop_interpolate_at_sample:
-            op = nir_intrinsic_interp_deref_at_sample;
-            break;
-         default:
-            unreachable("Invalid interpolation intrinsic");
-         }
-      } else {
-         /* This case can happen if the vertex shader does not write the
-          * given varying.  In this case, the linker will lower it to a
-          * global variable.  Since interpolating a variable makes no
-          * sense, we'll just turn it into a load which will probably
-          * eventually end up as an SSA definition.
-          */
-         assert(nir_deref_mode_is(this->deref, nir_var_shader_temp));
-         op = nir_intrinsic_load_deref;
+      switch (ir->operation) {
+      case ir_unop_interpolate_at_centroid:
+         op = nir_intrinsic_interp_deref_at_centroid;
+         break;
+      case ir_binop_interpolate_at_offset:
+         op = nir_intrinsic_interp_deref_at_offset;
+         break;
+      case ir_binop_interpolate_at_sample:
+         op = nir_intrinsic_interp_deref_at_sample;
+         break;
+      default:
+         unreachable("Invalid interpolation intrinsic");
       }
 
       nir_intrinsic_instr *intrin = nir_intrinsic_instr_create(shader, op);
@@ -2371,11 +2361,25 @@ nir_visitor::visit(ir_expression *ir)
       result = ir->type->is_int_16_32() ?
          nir_ibitfield_extract(&b, nir_i2i32(&b, srcs[0]), nir_i2i32(&b, srcs[1]), nir_i2i32(&b, srcs[2])) :
          nir_ubitfield_extract(&b, nir_u2u32(&b, srcs[0]), nir_i2i32(&b, srcs[1]), nir_i2i32(&b, srcs[2]));
+
+      if (ir->type->base_type == GLSL_TYPE_INT16) {
+         result = nir_i2i16(&b, result);
+      } else if (ir->type->base_type == GLSL_TYPE_UINT16) {
+         result = nir_u2u16(&b, result);
+      }
+
       break;
    case ir_quadop_bitfield_insert:
       result = nir_bitfield_insert(&b,
                                    nir_u2u32(&b, srcs[0]), nir_u2u32(&b, srcs[1]),
                                    nir_i2i32(&b, srcs[2]), nir_i2i32(&b, srcs[3]));
+
+      if (ir->type->base_type == GLSL_TYPE_INT16) {
+         result = nir_i2i16(&b, result);
+      } else if (ir->type->base_type == GLSL_TYPE_UINT16) {
+         result = nir_u2u16(&b, result);
+      }
+
       break;
    case ir_quadop_vector:
       result = nir_vec(&b, srcs, ir->type->vector_elements);
@@ -2384,6 +2388,11 @@ nir_visitor::visit(ir_expression *ir)
    default:
       unreachable("not reached");
    }
+
+   /* The bit-size of the NIR SSA value must match the bit-size of the
+    * original GLSL IR expression.
+    */
+   assert(result->bit_size == glsl_base_type_get_bit_size(ir->type->base_type));
 }
 
 void

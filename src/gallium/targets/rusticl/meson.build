@@ -44,6 +44,7 @@ librusticl = shared_library(
   dependencies : [
     driver_iris,
     driver_nouveau,
+    driver_panfrost,
     driver_swrast,
     idep_nir,
   ],
@@ -60,3 +61,11 @@ configure_file(
   install : true,
   install_dir : join_paths(get_option('sysconfdir'), 'OpenCL', 'vendors'),
 )
+
+if meson.version().version_compare('>= 0.58')
+  # .so is hardcoded in the icd as well
+  devenv.prepend(
+    'OCL_ICD_VENDORS',
+    meson.current_build_dir() / 'libRusticlOpenCL.so.@0@'.format(opencl_version)
+  )
+endif

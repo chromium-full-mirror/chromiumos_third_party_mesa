@@ -33,9 +33,12 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info, bool *
        info->alpha_blend)
       return false;
 
-   if (info->src.box.width != info->dst.box.width ||
-       info->src.box.height != info->dst.box.height ||
-       info->src.box.depth != info->dst.box.depth)
+   if (info->src.box.width < 0 ||
+       info->dst.box.width < 0 ||
+       info->src.box.height < 0 ||
+       info->dst.box.height < 0 ||
+       info->src.box.depth < 0 ||
+       info->dst.box.depth < 0)
       return false;
 
    if (info->render_condition_enable &&
@@ -281,10 +284,6 @@ zink_blit(struct pipe_context *pctx,
    const struct util_format_description *src_desc = util_format_description(info->src.format);
    const struct util_format_description *dst_desc = util_format_description(info->dst.format);
 
-   if (info->render_condition_enable &&
-       unlikely(!zink_screen(pctx->screen)->info.have_EXT_conditional_rendering && !zink_check_conditional_render(ctx)))
-      return;
-
    struct zink_resource *src = zink_resource(info->src.resource);
    struct zink_resource *dst = zink_resource(info->dst.resource);
    bool needs_present_readback = false;
@@ -345,6 +344,7 @@ zink_blit(struct pipe_context *pctx,
    /* this will draw a full-resource quad, so ignore existing data */
    if (util_blit_covers_whole_resource(info))
       pctx->invalidate_resource(pctx, info->dst.resource);
+   ctx->blitting = true;
    zink_blit_begin(ctx, ZINK_BLIT_SAVE_FB | ZINK_BLIT_SAVE_FS | ZINK_BLIT_SAVE_TEXTURES);
 
    if (stencil_blit) {
@@ -369,6 +369,7 @@ zink_blit(struct pipe_context *pctx,
    } else {
       util_blitter_blit(ctx->blitter, info);
    }
+   ctx->blitting = false;
 end:
    if (needs_present_readback)
       zink_kopper_present_readback(ctx, src);

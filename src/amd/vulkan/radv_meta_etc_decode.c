@@ -161,9 +161,9 @@ static nir_shader *
 build_shader(struct radv_device *dev)
 {
    const struct glsl_type *sampler_type_2d =
-      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, true, GLSL_TYPE_FLOAT);
+      glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, true, GLSL_TYPE_UINT);
    const struct glsl_type *sampler_type_3d =
-      glsl_sampler_type(GLSL_SAMPLER_DIM_3D, false, false, GLSL_TYPE_FLOAT);
+      glsl_sampler_type(GLSL_SAMPLER_DIM_3D, false, false, GLSL_TYPE_UINT);
    const struct glsl_type *img_type_2d =
       glsl_image_type(GLSL_SAMPLER_DIM_2D, true, GLSL_TYPE_FLOAT);
    const struct glsl_type *img_type_3d =
@@ -595,7 +595,7 @@ create_decode_pipeline(struct radv_device *device, VkPipeline *pipeline)
    };
 
    result = radv_CreateComputePipelines(radv_device_to_handle(device),
-                                        radv_pipeline_cache_to_handle(&device->meta_state.cache), 1,
+                                        device->meta_state.cache, 1,
                                         &vk_pipeline_info, NULL, pipeline);
    if (result != VK_SUCCESS)
       goto fail;

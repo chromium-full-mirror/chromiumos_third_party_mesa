@@ -631,7 +631,8 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
                                   offset,
                                   .base = var->data.driver_location,
                                   .component = component,
-                                  .io_semantics = semantics);
+                                  .io_semantics = semantics,
+                                  .dest_type = nir_type_float | intrin->dest.ssa.bit_size);
 
    return load;
 }
@@ -2306,8 +2307,7 @@ nir_lower_explicit_io_impl(nir_function_impl *impl, nir_variable_mode modes,
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                  nir_metadata_dominance);
+      nir_metadata_preserve(impl, nir_metadata_none);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }

@@ -212,7 +212,7 @@ cmp_phi_src(const void *data1, const void *data2)
 {
    nir_phi_src *src1 = *(nir_phi_src **)data1;
    nir_phi_src *src2 = *(nir_phi_src **)data2;
-   return src1->pred - src2->pred;
+   return src1->pred > src2->pred ? 1 : (src1->pred == src2->pred ? 0 : -1);
 }
 
 static uint32_t
@@ -705,6 +705,14 @@ nir_instrs_equal(const nir_instr *instr1, const nir_instr *instr2)
       nir_phi_instr *phi2 = nir_instr_as_phi(instr2);
 
       if (phi1->instr.block != phi2->instr.block)
+         return false;
+
+      /* In case of phis with no sources, the dest needs to be checked
+       * to ensure that phis with incompatible dests won't get merged
+       * during CSE. */
+      if (phi1->dest.ssa.num_components != phi2->dest.ssa.num_components)
+         return false;
+      if (phi1->dest.ssa.bit_size != phi2->dest.ssa.bit_size)
          return false;
 
       nir_foreach_phi_src(src1, phi1) {

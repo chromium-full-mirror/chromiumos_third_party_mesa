@@ -41,7 +41,7 @@
 
 #include "anv_private.h"
 #include "anv_measure.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/build_id.h"
 #include "util/disk_cache.h"
 #include "util/mesa-sha1.h"
@@ -76,6 +76,10 @@ static const driOptionDescription anv_dri_options[] = {
       DRI_CONF_ALWAYS_FLUSH_CACHE(false)
       DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(false)
       DRI_CONF_LIMIT_TRIG_INPUT_RANGE(false)
+   DRI_CONF_SECTION_END
+
+   DRI_CONF_SECTION_QUALITY
+      DRI_CONF_PP_LOWER_DEPTH_RANGE_RATE()
    DRI_CONF_SECTION_END
 };
 
@@ -136,7 +140,11 @@ compiler_perf_log(UNUSED void *data, UNUSED unsigned *id, const char *fmt, ...)
 VkResult anv_EnumerateInstanceVersion(
     uint32_t*                                   pApiVersion)
 {
+#ifdef ANDROID
+   *pApiVersion = ANV_API_VERSION;
+#else
    *pApiVersion = ANV_API_VERSION_1_3;
+#endif
    return VK_SUCCESS;
 }
 
@@ -286,9 +294,7 @@ get_device_extensions(const struct anv_physical_device *device,
       /* Enable the extension only if we have support on both the local &
        * system memory
        */
-      .EXT_memory_budget                     = (!device->info.has_local_mem ||
-                                                device->vram_mappable.available > 0) &&
-                                               device->sys.available,
+      .EXT_memory_budget                     = device->sys.available,
       .EXT_non_seamless_cube_map             = true,
       .EXT_pci_bus_info                      = true,
       .EXT_physical_device_drm               = true,
@@ -373,24 +379,9 @@ anv_init_meminfo(struct anv_physical_device *device, int fd)
 {
    const struct intel_device_info *devinfo = &device->info;
 
-   device->sys.region.memory_class = devinfo->mem.sram.mem_class;
-   device->sys.region.memory_instance = devinfo->mem.sram.mem_instance;
    device->sys.size =
       anv_compute_sys_heap_size(device, devinfo->mem.sram.mappable.size);
    device->sys.available = devinfo->mem.sram.mappable.free;
-
-   device->vram_mappable.region.memory_class = devinfo->mem.vram.mem_class;
-   device->vram_mappable.region.memory_instance =
-      devinfo->mem.vram.mem_instance;
-   device->vram_mappable.size = devinfo->mem.vram.mappable.size;
-   device->vram_mappable.available = devinfo->mem.vram.mappable.free;
-
-   device->vram_non_mappable.region.memory_class =
-      devinfo->mem.vram.mem_class;
-   device->vram_non_mappable.region.memory_instance =
-      devinfo->mem.vram.mem_instance;
-   device->vram_non_mappable.size = devinfo->mem.vram.unmappable.size;
-   device->vram_non_mappable.available = devinfo->mem.vram.unmappable.free;
 
    return VK_SUCCESS;
 }
@@ -403,8 +394,6 @@ anv_update_meminfo(struct anv_physical_device *device, int fd)
 
    const struct intel_device_info *devinfo = &device->info;
    device->sys.available = devinfo->mem.sram.mappable.free;
-   device->vram_mappable.available = devinfo->mem.vram.mappable.free;
-   device->vram_non_mappable.available = devinfo->mem.vram.unmappable.free;
 }
 
 
@@ -417,66 +406,11 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
 
    assert(device->sys.size != 0);
 
-   if (anv_physical_device_has_vram(device)) {
-      /* We can create 2 or 3 different heaps when we have local memory
-       * support, first heap with local memory size and second with system
-       * memory size and the third is added only if part of the vram is
-       * mappable to the host.
-       */
-      device->memory.heap_count = 2;
-      device->memory.heaps[0] = (struct anv_memory_heap) {
-         /* If there is a vram_non_mappable, use that for the device only
-          * heap. Otherwise use the vram_mappable.
-          */
-         .size = device->vram_non_mappable.size != 0 ?
-                 device->vram_non_mappable.size : device->vram_mappable.size,
-         .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-         .is_local_mem = true,
-      };
-      device->memory.heaps[1] = (struct anv_memory_heap) {
-         .size = device->sys.size,
-         .flags = 0,
-         .is_local_mem = false,
-      };
-      /* Add an additional smaller vram mappable heap if we can't map all the
-       * vram to the host.
-       */
-      if (device->vram_non_mappable.size > 0) {
-         device->memory.heap_count++;
-         device->memory.heaps[2] = (struct anv_memory_heap) {
-            .size = device->vram_mappable.size,
-            .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-            .is_local_mem = true,
-         };
-      }
-
-      device->memory.type_count = 3;
-      device->memory.types[0] = (struct anv_memory_type) {
-         .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-         .heapIndex = 0,
-      };
-      device->memory.types[1] = (struct anv_memory_type) {
-         .propertyFlags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                          VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-         .heapIndex = 1,
-      };
-      device->memory.types[2] = (struct anv_memory_type) {
-         .propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-         /* This memory type either comes from heaps[0] if there is only
-          * mappable vram region, or from heaps[2] if there is both mappable &
-          * non-mappable vram regions.
-          */
-         .heapIndex = device->vram_non_mappable.size > 0 ? 2 : 0,
-      };
-   } else if (device->info.has_llc) {
+   if (device->info.has_llc) {
       device->memory.heap_count = 1;
       device->memory.heaps[0] = (struct anv_memory_heap) {
          .size = device->sys.size,
          .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-         .is_local_mem = false,
       };
 
       /* Big core GPUs share LLC with the CPU and thus one memory type can be
@@ -495,7 +429,6 @@ anv_physical_device_init_heaps(struct anv_physical_device *device, int fd)
       device->memory.heaps[0] = (struct anv_memory_heap) {
          .size = device->sys.size,
          .flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT,
-         .is_local_mem = false,
       };
 
       /* The spec requires that we expose a host-visible, coherent memory
@@ -671,15 +604,10 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
 
    if (pdevice->engine_info) {
       int gc_count =
-         intel_gem_count_engines(pdevice->engine_info,
-                                 I915_ENGINE_CLASS_RENDER);
+         intel_engines_count(pdevice->engine_info,
+                             INTEL_ENGINE_CLASS_RENDER);
       int g_count = 0;
       int c_count = 0;
-      if (env_var_as_boolean("INTEL_COMPUTE_CLASS", false))
-         c_count = intel_gem_count_engines(pdevice->engine_info,
-                                           I915_ENGINE_CLASS_COMPUTE);
-      enum drm_i915_gem_engine_class compute_class =
-         c_count < 1 ? I915_ENGINE_CLASS_RENDER : I915_ENGINE_CLASS_COMPUTE;
 
       anv_override_engine_counts(&gc_count, &g_count, &c_count);
 
@@ -689,7 +617,7 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
                           VK_QUEUE_COMPUTE_BIT |
                           VK_QUEUE_TRANSFER_BIT,
             .queueCount = gc_count,
-            .engine_class = I915_ENGINE_CLASS_RENDER,
+            .engine_class = INTEL_ENGINE_CLASS_RENDER,
          };
       }
       if (g_count > 0) {
@@ -697,7 +625,7 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
             .queueFlags = VK_QUEUE_GRAPHICS_BIT |
                           VK_QUEUE_TRANSFER_BIT,
             .queueCount = g_count,
-            .engine_class = I915_ENGINE_CLASS_RENDER,
+            .engine_class = INTEL_ENGINE_CLASS_RENDER,
          };
       }
       if (c_count > 0) {
@@ -705,7 +633,7 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
             .queueFlags = VK_QUEUE_COMPUTE_BIT |
                           VK_QUEUE_TRANSFER_BIT,
             .queueCount = c_count,
-            .engine_class = compute_class,
+            .engine_class = INTEL_ENGINE_CLASS_RENDER,
          };
       }
       /* Increase count below when other families are added as a reminder to
@@ -719,7 +647,7 @@ anv_physical_device_init_queue_families(struct anv_physical_device *pdevice)
                        VK_QUEUE_COMPUTE_BIT |
                        VK_QUEUE_TRANSFER_BIT,
          .queueCount = 1,
-         .engine_class = I915_ENGINE_CLASS_RENDER,
+         .engine_class = INTEL_ENGINE_CLASS_RENDER,
       };
       family_count = 1;
    }
@@ -894,7 +822,7 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
 
    device->has_exec_timeline =
       anv_gem_get_param(fd, I915_PARAM_HAS_EXEC_TIMELINE_FENCES);
-   if (env_var_as_boolean("ANV_QUEUE_THREAD_DISABLE", false))
+   if (debug_get_bool_option("ANV_QUEUE_THREAD_DISABLE", false))
       device->has_exec_timeline = false;
 
    unsigned st_idx = 0;
@@ -919,11 +847,11 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
    device->vk.pipeline_cache_import_ops = anv_cache_import_ops;
 
    device->always_use_bindless =
-      env_var_as_boolean("ANV_ALWAYS_BINDLESS", false);
+      debug_get_bool_option("ANV_ALWAYS_BINDLESS", false);
 
    device->use_call_secondary =
       device->use_softpin &&
-      !env_var_as_boolean("ANV_DISABLE_SECONDARY_CMD_BUFFER_CALLS", false);
+      !debug_get_bool_option("ANV_DISABLE_SECONDARY_CMD_BUFFER_CALLS", false);
 
    /* We first got the A64 messages on broadwell and we can only use them if
     * we can pass addresses directly into the shader which requires softpin.
@@ -947,8 +875,7 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
 
    /* Check if we can read the GPU timestamp register from the CPU */
    uint64_t u64_ignore;
-   device->has_reg_timestamp = anv_gem_reg_read(fd, TIMESTAMP | I915_REG_READ_8B_WA,
-                                                &u64_ignore) == 0;
+   device->has_reg_timestamp = intel_gem_read_render_timestamp(fd, &u64_ignore);
 
    device->always_flush_cache = INTEL_DEBUG(DEBUG_STALL) ||
       driQueryOptionb(&instance->dri_options, "always_flush_cache");
@@ -993,7 +920,7 @@ anv_physical_device_try_create(struct vk_instance *vk_instance,
    }
    device->master_fd = master_fd;
 
-   device->engine_info = anv_gem_get_engine_info(fd);
+   device->engine_info = intel_engine_get_info(fd);
    anv_physical_device_init_queue_families(device);
 
    device->local_fd = fd;
@@ -1102,6 +1029,8 @@ anv_init_dri_options(struct anv_instance *instance)
             driQueryOptionb(&instance->dri_options, "limit_trig_input_range");
     instance->sample_mask_out_opengl_behaviour =
             driQueryOptionb(&instance->dri_options, "anv_sample_mask_out_opengl_behaviour");
+    instance->lower_depth_range_rate =
+            driQueryOptionf(&instance->dri_options, "lower_depth_range_rate");
 }
 
 VkResult anv_CreateInstance(
@@ -1894,7 +1823,11 @@ void anv_GetPhysicalDeviceProperties(
    };
 
    *pProperties = (VkPhysicalDeviceProperties) {
+#ifdef ANDROID
+      .apiVersion = ANV_API_VERSION,
+#else
       .apiVersion = pdevice->use_softpin ? ANV_API_VERSION_1_3 : ANV_API_VERSION_1_2,
+#endif
       .driverVersion = vk_get_driver_version(),
       .vendorID = 0x8086,
       .deviceID = pdevice->info.pci_device_id,
@@ -2561,14 +2494,9 @@ anv_get_memory_budget(VkPhysicalDevice physicalDevice,
 
    anv_update_meminfo(device, device->local_fd);
 
-   VkDeviceSize total_sys_heaps_size = 0, total_vram_heaps_size = 0;
-   for (size_t i = 0; i < device->memory.heap_count; i++) {
-      if (device->memory.heaps[i].is_local_mem) {
-         total_vram_heaps_size += device->memory.heaps[i].size;
-      } else {
-         total_sys_heaps_size += device->memory.heaps[i].size;
-      }
-   }
+   VkDeviceSize total_sys_heaps_size = 0;
+   for (size_t i = 0; i < device->memory.heap_count; i++)
+      total_sys_heaps_size += device->memory.heaps[i].size;
 
    for (size_t i = 0; i < device->memory.heap_count; i++) {
       VkDeviceSize heap_size = device->memory.heaps[i].size;
@@ -2576,17 +2504,8 @@ anv_get_memory_budget(VkPhysicalDevice physicalDevice,
       VkDeviceSize heap_budget, total_heaps_size;
       uint64_t mem_available = 0;
 
-      if (device->memory.heaps[i].is_local_mem) {
-         total_heaps_size = total_vram_heaps_size;
-         if (device->vram_non_mappable.size > 0 && i == 0) {
-            mem_available = device->vram_non_mappable.available;
-         } else {
-            mem_available = device->vram_mappable.available;
-         }
-      } else {
-         total_heaps_size = total_sys_heaps_size;
-         mem_available = device->sys.available;
-      }
+      total_heaps_size = total_sys_heaps_size;
+      mem_available = device->sys.available;
 
       double heap_proportion = (double) heap_size / total_heaps_size;
       VkDeviceSize available_prop = mem_available * heap_proportion;
@@ -2879,7 +2798,7 @@ anv_device_setup_context(struct anv_device *device,
    if (device->physical->engine_info) {
       /* The kernel API supports at most 64 engines */
       assert(num_queues <= 64);
-      uint16_t engine_classes[64];
+      enum intel_engine_class engine_classes[64];
       int engine_count = 0;
       for (uint32_t i = 0; i < pCreateInfo->queueCreateInfoCount; i++) {
          const VkDeviceQueueCreateInfo *queueCreateInfo =
@@ -3647,16 +3566,6 @@ VkResult anv_AllocateMemory(
    /* By default, we want all VkDeviceMemory objects to support CCS */
    if (device->physical->has_implicit_ccs && device->info->has_aux_map)
       alloc_flags |= ANV_BO_ALLOC_IMPLICIT_CCS;
-
-   /* If i915 reported a mappable/non_mappable vram regions and the
-    * application want lmem mappable, then we need to use the
-    * I915_GEM_CREATE_EXT_FLAG_NEEDS_CPU_ACCESS flag to create our BO.
-    */
-   if (pdevice->vram_mappable.size > 0 &&
-       pdevice->vram_non_mappable.size > 0 &&
-       (mem_type->propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
-       (mem_type->propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
-      alloc_flags |= ANV_BO_ALLOC_LOCAL_MEM_CPU_VISIBLE;
 
    if (vk_flags & VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT)
       alloc_flags |= ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS;
@@ -4452,7 +4361,6 @@ VkResult anv_GetCalibratedTimestampsEXT(
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
    uint64_t timestamp_frequency = device->info->timestamp_frequency;
-   int  ret;
    int d;
    uint64_t begin, end;
    uint64_t max_clock_period = 0;
@@ -4466,10 +4374,7 @@ VkResult anv_GetCalibratedTimestampsEXT(
    for (d = 0; d < timestampCount; d++) {
       switch (pTimestampInfos[d].timeDomain) {
       case VK_TIME_DOMAIN_DEVICE_EXT:
-         ret = anv_gem_reg_read(device->fd, TIMESTAMP | I915_REG_READ_8B_WA,
-                                &pTimestamps[d]);
-
-         if (ret != 0) {
+         if (!intel_gem_read_render_timestamp(device->fd, &pTimestamps[d])) {
             return vk_device_set_lost(&device->vk, "Failed to read the "
                                       "TIMESTAMP register: %m");
          }

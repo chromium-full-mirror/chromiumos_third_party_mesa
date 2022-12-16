@@ -113,19 +113,6 @@
 #define PAGE_SIZE 4096
 #endif
 
-static inline uint32_t
-ilog2_round_up(uint32_t value)
-{
-   assert(value != 0);
-   return 32 - __builtin_clz(value - 1);
-}
-
-static inline uint32_t
-round_to_power_of_two(uint32_t value)
-{
-   return 1 << ilog2_round_up(value);
-}
-
 struct anv_state_table_cleanup {
    void *map;
    size_t size;
@@ -385,6 +372,13 @@ anv_block_pool_init(struct anv_block_pool *pool,
    pool->state.next = 0;
    pool->state.end = 0;
 
+   pool->bo_alloc_flags =
+      ANV_BO_ALLOC_FIXED_ADDRESS |
+      ANV_BO_ALLOC_MAPPED |
+      ANV_BO_ALLOC_SNOOPED |
+      ANV_BO_ALLOC_CAPTURE |
+      (device->info->has_local_mem ? ANV_BO_ALLOC_WRITE_COMBINE : 0);
+
    result = anv_block_pool_expand_range(pool, initial_size);
    if (result != VK_SUCCESS)
       return result;
@@ -438,17 +432,13 @@ anv_block_pool_expand_range(struct anv_block_pool *pool, uint32_t size)
     * hard work for us.  When using softpin, we're in control and the fixed
     * addresses we choose are fine for base addresses.
     */
-   enum anv_bo_alloc_flags bo_alloc_flags = ANV_BO_ALLOC_CAPTURE;
 
    uint32_t new_bo_size = size - pool->size;
    struct anv_bo *new_bo = NULL;
    VkResult result = anv_device_alloc_bo(pool->device,
                                          pool->name,
                                          new_bo_size,
-                                         bo_alloc_flags |
-                                         ANV_BO_ALLOC_FIXED_ADDRESS |
-                                         ANV_BO_ALLOC_MAPPED |
-                                         ANV_BO_ALLOC_SNOOPED,
+                                         pool->bo_alloc_flags,
                                          pool->start_address + pool->size,
                                          &new_bo);
    if (result != VK_SUCCESS)
@@ -731,7 +721,7 @@ anv_fixed_size_state_pool_alloc_new(struct anv_fixed_size_state_pool *pool,
 static uint32_t
 anv_state_pool_get_bucket(uint32_t size)
 {
-   unsigned size_log2 = ilog2_round_up(size);
+   unsigned size_log2 = util_logbase2_ceil(size);
    assert(size_log2 <= ANV_MAX_STATE_SIZE_LOG2);
    if (size_log2 < ANV_MIN_STATE_SIZE_LOG2)
       size_log2 = ANV_MIN_STATE_SIZE_LOG2;
@@ -1020,7 +1010,7 @@ anv_state_stream_alloc(struct anv_state_stream *stream,
    if (offset + size > stream->block.alloc_size) {
       uint32_t block_size = stream->block_size;
       if (block_size < size)
-         block_size = round_to_power_of_two(size);
+         block_size = util_next_power_of_two(size);
 
       stream->block = anv_state_pool_alloc_no_vg(stream->state_pool,
                                                  block_size, PAGE_SIZE);
@@ -1102,6 +1092,12 @@ anv_bo_pool_init(struct anv_bo_pool *pool, struct anv_device *device,
 {
    pool->name = name;
    pool->device = device;
+   pool->bo_alloc_flags =
+      ANV_BO_ALLOC_MAPPED |
+      ANV_BO_ALLOC_SNOOPED |
+      ANV_BO_ALLOC_CAPTURE |
+      (device->info->has_local_mem ? ANV_BO_ALLOC_WRITE_COMBINE : 0);
+
    for (unsigned i = 0; i < ARRAY_SIZE(pool->free_list); i++) {
       util_sparse_array_free_list_init(&pool->free_list[i],
                                        &device->bo_cache.bo_map, 0,
@@ -1134,7 +1130,7 @@ VkResult
 anv_bo_pool_alloc(struct anv_bo_pool *pool, uint32_t size,
                   struct anv_bo **bo_out)
 {
-   const unsigned size_log2 = size < 4096 ? 12 : ilog2_round_up(size);
+   const unsigned size_log2 = size < 4096 ? 12 : util_logbase2_ceil(size);
    const unsigned pow2_size = 1 << size_log2;
    const unsigned bucket = size_log2 - 12;
    assert(bucket < ARRAY_SIZE(pool->free_list));
@@ -1150,9 +1146,7 @@ anv_bo_pool_alloc(struct anv_bo_pool *pool, uint32_t size,
    VkResult result = anv_device_alloc_bo(pool->device,
                                          pool->name,
                                          pow2_size,
-                                         ANV_BO_ALLOC_MAPPED |
-                                         ANV_BO_ALLOC_SNOOPED |
-                                         ANV_BO_ALLOC_CAPTURE,
+                                         pool->bo_alloc_flags,
                                          0 /* explicit_address */,
                                          &bo);
    if (result != VK_SUCCESS)
@@ -1173,7 +1167,7 @@ anv_bo_pool_free(struct anv_bo_pool *pool, struct anv_bo *bo)
    VG(VALGRIND_MEMPOOL_FREE(pool, bo->map));
 
    assert(util_is_power_of_two_or_zero(bo->size));
-   const unsigned size_log2 = ilog2_round_up(bo->size);
+   const unsigned size_log2 = util_logbase2_ceil(bo->size);
    const unsigned bucket = size_log2 - 12;
    assert(bucket < ARRAY_SIZE(pool->free_list));
 
@@ -1203,7 +1197,7 @@ anv_scratch_pool_finish(struct anv_device *device, struct anv_scratch_pool *pool
 
    for (unsigned i = 0; i < 16; i++) {
       if (pool->surf_states[i].map != NULL) {
-         anv_state_pool_free(&device->surface_state_pool,
+         anv_state_pool_free(&device->scratch_surface_state_pool,
                              pool->surf_states[i]);
       }
    }
@@ -1280,6 +1274,8 @@ anv_scratch_pool_get_surf(struct anv_device *device,
                           struct anv_scratch_pool *pool,
                           unsigned per_thread_scratch)
 {
+   assert(device->info->verx10 >= 125);
+
    if (per_thread_scratch == 0)
       return 0;
 
@@ -1296,7 +1292,7 @@ anv_scratch_pool_get_surf(struct anv_device *device,
    struct anv_address addr = { .bo = bo };
 
    struct anv_state state =
-      anv_state_pool_alloc(&device->surface_state_pool,
+      anv_state_pool_alloc(&device->scratch_surface_state_pool,
                            device->isl_dev.ss.size, 64);
 
    isl_buffer_fill_state(&device->isl_dev, state.map,
@@ -1311,7 +1307,7 @@ anv_scratch_pool_get_surf(struct anv_device *device,
    uint32_t current = p_atomic_cmpxchg(&pool->surfs[scratch_size_log2],
                                        0, state.offset);
    if (current) {
-      anv_state_pool_free(&device->surface_state_pool, state);
+      anv_state_pool_free(&device->scratch_surface_state_pool, state);
       return current;
    } else {
       pool->surf_states[scratch_size_log2] = state;
@@ -1359,7 +1355,9 @@ anv_bo_alloc_flags_to_bo_flags(struct anv_device *device,
        pdevice->supports_48bit_addresses)
       bo_flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
 
-   if ((alloc_flags & ANV_BO_ALLOC_CAPTURE) && pdevice->has_exec_capture)
+   if (((alloc_flags & ANV_BO_ALLOC_CAPTURE) ||
+        INTEL_DEBUG(DEBUG_CAPTURE_ALL)) &&
+       pdevice->has_exec_capture)
       bo_flags |= EXEC_OBJECT_CAPTURE;
 
    if (alloc_flags & ANV_BO_ALLOC_IMPLICIT_WRITE) {
@@ -1503,6 +1501,7 @@ anv_device_alloc_bo(struct anv_device *device,
          (alloc_flags & ANV_BO_ALLOC_CLIENT_VISIBLE_ADDRESS) != 0,
       .has_implicit_ccs = ccs_size > 0 ||
                           (device->info->verx10 >= 125 && !(alloc_flags & ANV_BO_ALLOC_NO_LOCAL_MEM)),
+      .map_wc = alloc_flags & ANV_BO_ALLOC_WRITE_COMBINE,
    };
 
    if (alloc_flags & ANV_BO_ALLOC_MAPPED) {
@@ -1571,6 +1570,9 @@ anv_device_map_bo(struct anv_device *device,
 {
    assert(!bo->from_host_ptr);
    assert(size > 0);
+
+   if (bo->map_wc)
+      gem_flags |= I915_MMAP_WC;
 
    void *map = anv_gem_mmap(device, bo->gem_handle, offset, size, gem_flags);
    if (unlikely(map == MAP_FAILED))

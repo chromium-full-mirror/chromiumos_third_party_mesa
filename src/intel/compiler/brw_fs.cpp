@@ -1317,7 +1317,7 @@ fs_reg
 fs_visitor::emit_sampleid_setup()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
-   brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
+   ASSERTED brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
    assert(devinfo->ver >= 6);
 
    const fs_builder abld = bld.annotate("compute sample id");
@@ -1500,7 +1500,7 @@ fs_visitor::emit_shading_rate_setup()
 }
 
 fs_reg
-fs_visitor::resolve_source_modifiers(const fs_reg &src)
+fs_visitor::resolve_source_modifiers(const fs_builder &bld, const fs_reg &src)
 {
    if (!src.abs && !src.negate)
       return src;
@@ -1509,6 +1509,34 @@ fs_visitor::resolve_source_modifiers(const fs_reg &src)
    bld.MOV(temp, src);
 
    return temp;
+}
+
+/**
+ * Walk backwards from the end of the program looking for a URB write that
+ * isn't in control flow, and mark it with EOT.
+ *
+ * Return true if successful or false if a separate EOT write is needed.
+ */
+bool
+fs_visitor::mark_last_urb_write_with_eot()
+{
+   foreach_in_list_reverse(fs_inst, prev, &this->instructions) {
+      if (prev->opcode == SHADER_OPCODE_URB_WRITE_LOGICAL) {
+         prev->eot = true;
+
+         /* Delete now dead instructions. */
+         foreach_in_list_reverse_safe(exec_node, dead, &this->instructions) {
+            if (dead == prev)
+               break;
+            dead->remove();
+         }
+         return true;
+      } else if (prev->is_control_flow() || prev->has_side_effects()) {
+         break;
+      }
+   }
+
+   return false;
 }
 
 void
@@ -1526,21 +1554,12 @@ fs_visitor::emit_gs_thread_end()
    fs_inst *inst;
 
    if (gs_prog_data->static_vertex_count != -1) {
-      foreach_in_list_reverse(fs_inst, prev, &this->instructions) {
-         if (prev->opcode == SHADER_OPCODE_URB_WRITE_LOGICAL) {
-            prev->eot = true;
+      /* Try and tag the last URB write with EOT instead of emitting a whole
+       * separate write just to finish the thread.
+       */
+      if (mark_last_urb_write_with_eot())
+         return;
 
-            /* Delete now dead instructions. */
-            foreach_in_list_reverse_safe(exec_node, dead, &this->instructions) {
-               if (dead == prev)
-                  break;
-               dead->remove();
-            }
-            return;
-         } else if (prev->is_control_flow() || prev->has_side_effects()) {
-            break;
-         }
-      }
       fs_reg srcs[URB_LOGICAL_NUM_SRCS];
       srcs[URB_LOGICAL_SRC_HANDLE] = gs_payload().urb_handles;
       inst = abld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL, reg_undef,
@@ -2157,12 +2176,7 @@ fs_visitor::split_virtual_grfs()
    foreach_block_and_inst(block, fs_inst, inst, cfg) {
       /* We fix up undef instructions later */
       if (inst->opcode == SHADER_OPCODE_UNDEF) {
-         /* UNDEF instructions are currently only used to undef entire
-          * registers.  We need this invariant later when we split them.
-          */
          assert(inst->dst.file == VGRF);
-         assert(inst->dst.offset == 0);
-         assert(inst->size_written == alloc.sizes[inst->dst.nr] * REG_SIZE);
          continue;
       }
 
@@ -2237,11 +2251,18 @@ fs_visitor::split_virtual_grfs()
          if (vgrf_has_split[inst->dst.nr]) {
             const fs_builder ibld(this, block, inst);
             assert(inst->size_written % REG_SIZE == 0);
-            unsigned reg_offset = 0;
-            while (reg_offset < inst->size_written / REG_SIZE) {
-               reg = vgrf_to_reg[inst->dst.nr] + reg_offset;
-               ibld.UNDEF(fs_reg(VGRF, new_virtual_grf[reg], inst->dst.type));
-               reg_offset += alloc.sizes[new_virtual_grf[reg]];
+            unsigned reg_offset = inst->dst.offset / REG_SIZE;
+            unsigned size_written = 0;
+            while (size_written < inst->size_written) {
+               reg = vgrf_to_reg[inst->dst.nr] + reg_offset + size_written / REG_SIZE;
+               fs_inst *undef =
+                  ibld.UNDEF(
+                     byte_offset(fs_reg(VGRF, new_virtual_grf[reg], inst->dst.type),
+                                 new_reg_offset[reg] * REG_SIZE));
+               undef->size_written =
+                  MIN2(inst->size_written - size_written, undef->size_written);
+               assert(undef->size_written % REG_SIZE == 0);
+               size_written += undef->size_written;
             }
             inst->remove(block);
          } else {
@@ -2528,6 +2549,9 @@ fs_visitor::opt_algebraic()
             assert(!inst->src[0].negate);
             const brw::fs_builder ibld(this, block, inst);
 
+            if (!inst->is_partial_write())
+               ibld.emit_undef_for_dst(inst);
+
             ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_F, 1),
                      subscript(inst->src[0], BRW_REGISTER_TYPE_F, 1));
             ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_F, 0),
@@ -2545,6 +2569,9 @@ fs_visitor::opt_algebraic()
             assert(!inst->src[0].abs);
             assert(!inst->src[0].negate);
             const brw::fs_builder ibld(this, block, inst);
+
+            if (!inst->is_partial_write())
+               ibld.emit_undef_for_dst(inst);
 
             ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 1),
                      subscript(inst->src[0], BRW_REGISTER_TYPE_UD, 1));
@@ -2675,6 +2702,9 @@ fs_visitor::opt_algebraic()
             assert(!inst->src[0].abs && !inst->src[0].negate);
             assert(!inst->src[1].abs && !inst->src[1].negate);
             const brw::fs_builder ibld(this, block, inst);
+
+            if (!inst->is_partial_write())
+               ibld.emit_undef_for_dst(inst);
 
             set_predicate(inst->predicate,
                           ibld.SEL(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 0),
@@ -4086,6 +4116,7 @@ fs_visitor::lower_mul_qword_inst(fs_inst *inst, bblock_t *block)
                 subscript(inst->src[1], BRW_REGISTER_TYPE_UD, 0));
       ibld.MOV(bd_low, acc);
 
+      ibld.UNDEF(bd);
       ibld.MOV(subscript(bd, BRW_REGISTER_TYPE_UD, 0), bd_low);
       ibld.MOV(subscript(bd, BRW_REGISTER_TYPE_UD, 1), bd_high);
    }
@@ -4102,6 +4133,8 @@ fs_visitor::lower_mul_qword_inst(fs_inst *inst, bblock_t *block)
    if (devinfo->has_64bit_int) {
       ibld.MOV(inst->dst, bd);
    } else {
+      if (!inst->is_partial_write())
+         ibld.emit_undef_for_dst(inst);
       ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 0),
                subscript(bd, BRW_REGISTER_TYPE_UD, 0));
       ibld.MOV(subscript(inst->dst, BRW_REGISTER_TYPE_UD, 1),
@@ -5543,6 +5576,10 @@ fs_visitor::lower_find_live_channel()
        */
       fs_reg exec_mask(retype(brw_mask_reg(0), BRW_REGISTER_TYPE_UD));
 
+      const fs_builder ibld(this, block, inst);
+      if (!inst->is_partial_write())
+         ibld.emit_undef_for_dst(inst);
+
       const fs_builder ubld = bld.at(block, inst).exec_all().group(1, 0);
 
       /* ce0 doesn't consider the thread dispatch mask (DMask or VMask),
@@ -5911,7 +5948,7 @@ fs_visitor::optimize()
          snprintf(filename, 64, "%s%d-%s-%02d-%02d-" #pass,              \
                   stage_abbrev, dispatch_width, nir->info.name, iteration, pass_num); \
                                                                         \
-         backend_shader::dump_instructions(filename);                   \
+         dump_instructions(filename);                                   \
       }                                                                 \
                                                                         \
       validate();                                                       \
@@ -5925,7 +5962,7 @@ fs_visitor::optimize()
       snprintf(filename, 64, "%s%d-%s-00-00-start",
                stage_abbrev, dispatch_width, nir->info.name);
 
-      backend_shader::dump_instructions(filename);
+      dump_instructions(filename);
    }
 
    bool progress = false;
@@ -6011,7 +6048,7 @@ fs_visitor::optimize()
       OPT(split_virtual_grfs);
 
       /* Lower 64 bit MOVs generated by payload lowering. */
-      if (!devinfo->has_64bit_float && !devinfo->has_64bit_int)
+      if (!devinfo->has_64bit_float || !devinfo->has_64bit_int)
          OPT(opt_algebraic);
 
       OPT(register_coalesce);
@@ -6130,18 +6167,63 @@ needs_dummy_fence(const intel_device_info *devinfo, fs_inst *inst)
 {
    /* This workaround is about making sure that any instruction writing
     * through UGM has completed before we hit EOT.
-    *
-    * The workaround talks about UGM writes or atomic message but what is
-    * important is anything that hasn't completed. Usually any SEND
-    * instruction that has a destination register will be read by something
-    * else so we don't need to care about those as they will be synchronized
-    * by other parts of the shader or optimized away. What is left are
-    * instructions that don't have a destination register.
     */
    if (inst->sfid != GFX12_SFID_UGM)
       return false;
 
-   return inst->dst.file == BAD_FILE;
+   /* Any UGM, non-Scratch-surface Stores (not including Atomic) messages,
+    * where the L1-cache override is NOT among {WB, WS, WT}
+    */
+   enum lsc_opcode opcode = lsc_msg_desc_opcode(devinfo, inst->desc);
+   if (lsc_opcode_is_store(opcode)) {
+      switch (lsc_msg_desc_cache_ctrl(devinfo, inst->desc)) {
+      case LSC_CACHE_STORE_L1STATE_L3MOCS:
+      case LSC_CACHE_STORE_L1WB_L3WB:
+      case LSC_CACHE_STORE_L1S_L3UC:
+      case LSC_CACHE_STORE_L1S_L3WB:
+      case LSC_CACHE_STORE_L1WT_L3UC:
+      case LSC_CACHE_STORE_L1WT_L3WB:
+         return false;
+
+      default:
+         return true;
+      }
+   }
+
+   /* Any UGM Atomic message WITHOUT return value */
+   if (lsc_opcode_is_atomic(opcode) && inst->dst.file == BAD_FILE)
+      return true;
+
+   return false;
+}
+
+/* Wa_14017989577
+ *
+ * The first instruction of any kernel should have non-zero emask.
+ * Make sure this happens by introducing a dummy mov instruction.
+ */
+void
+fs_visitor::emit_dummy_mov_instruction()
+{
+   if (devinfo->verx10 < 120)
+      return;
+
+   struct backend_instruction *first_inst =
+      cfg->first_block()->start();
+
+   /* We can skip the WA if first instruction is marked with
+    * force_writemask_all or exec_size equals dispatch_width.
+    */
+   if (first_inst->force_writemask_all ||
+       first_inst->exec_size == dispatch_width)
+      return;
+
+   /* Insert dummy mov as first instruction. */
+   const fs_builder ubld =
+      bld.at(cfg->first_block(), first_inst).exec_all().group(8, 0);
+   ubld.MOV(bld.null_reg_ud(), brw_imm_ud(0u));
+
+   invalidate_analysis(DEPENDENCY_INSTRUCTIONS | DEPENDENCY_VARIABLES);
 }
 
 /* Wa_22013689345
@@ -6504,6 +6586,10 @@ fs_visitor::run_vs()
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -6555,6 +6641,31 @@ fs_visitor::set_tcs_invocation_id()
    }
 }
 
+void
+fs_visitor::emit_tcs_thread_end()
+{
+   /* Try and tag the last URB write with EOT instead of emitting a whole
+    * separate write just to finish the thread.  There isn't guaranteed to
+    * be one, so this may not succeed.
+    */
+   if (devinfo->ver != 8 && mark_last_urb_write_with_eot())
+      return;
+
+   /* Emit a URB write to end the thread.  On Broadwell, we use this to write
+    * zero to the "TR DS Cache Disable" bit (we haven't implemented a fancy
+    * algorithm to set it optimally).  On other platforms, we simply write
+    * zero to a reserved/MBZ patch header DWord which has no consequence.
+    */
+   fs_reg srcs[URB_LOGICAL_NUM_SRCS];
+   srcs[URB_LOGICAL_SRC_HANDLE] = tcs_payload().patch_urb_output;
+   srcs[URB_LOGICAL_SRC_CHANNEL_MASK] = brw_imm_ud(WRITEMASK_X << 16);
+   srcs[URB_LOGICAL_SRC_DATA] = brw_imm_ud(0);
+   fs_inst *inst = bld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL,
+                            reg_undef, srcs, ARRAY_SIZE(srcs));
+   inst->mlen = 3;
+   inst->eot = true;
+}
+
 bool
 fs_visitor::run_tcs()
 {
@@ -6587,15 +6698,7 @@ fs_visitor::run_tcs()
       bld.emit(BRW_OPCODE_ENDIF);
    }
 
-   /* Emit EOT write; set TR DS Cache bit */
-   fs_reg srcs[URB_LOGICAL_NUM_SRCS];
-   srcs[URB_LOGICAL_SRC_HANDLE] = tcs_payload().patch_urb_output;
-   srcs[URB_LOGICAL_SRC_CHANNEL_MASK] = brw_imm_ud(WRITEMASK_X << 16);
-   srcs[URB_LOGICAL_SRC_DATA] = brw_imm_ud(0);
-   fs_inst *inst = bld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL,
-                            reg_undef, srcs, ARRAY_SIZE(srcs));
-   inst->mlen = 3;
-   inst->eot = true;
+   emit_tcs_thread_end();
 
    if (failed)
       return false;
@@ -6609,6 +6712,10 @@ fs_visitor::run_tcs()
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -6637,6 +6744,10 @@ fs_visitor::run_tes()
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -6681,6 +6792,10 @@ fs_visitor::run_gs()
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(true /* allow_spilling */);
 
    return !failed;
@@ -6781,6 +6896,9 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
       fixup_3src_null_dest();
       emit_dummy_memory_fence_before_eot();
 
+      /* Wa_14017989577 */
+      emit_dummy_mov_instruction();
+
       allocate_registers(allow_spilling);
    }
 
@@ -6817,6 +6935,10 @@ fs_visitor::run_cs(bool allow_spilling)
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -6845,6 +6967,10 @@ fs_visitor::run_bs(bool allow_spilling)
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -6874,6 +7000,10 @@ fs_visitor::run_task(bool allow_spilling)
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -6903,6 +7033,10 @@ fs_visitor::run_mesh(bool allow_spilling)
 
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
+
+   /* Wa_14017989577 */
+   emit_dummy_mov_instruction();
+
    allocate_registers(allow_spilling);
 
    return !failed;
@@ -7375,26 +7509,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
       }
    }
 
-   if (prog_data->persample_dispatch) {
-      /* Starting with SandyBridge (where we first get MSAA), the different
-       * pixel dispatch combinations are grouped into classifications A
-       * through F (SNB PRM Vol. 2 Part 1 Section 7.7.1).  On most hardware
-       * generations, the only configurations supporting persample dispatch
-       * are those in which only one dispatch width is enabled.
-       *
-       * The Gfx12 hardware spec has a similar dispatch grouping table, but
-       * the following conflicting restriction applies (from the page on
-       * "Structure_3DSTATE_PS_BODY"), so we need to keep the SIMD16 shader:
-       *
-       *  "SIMD32 may only be enabled if SIMD16 or (dual)SIMD8 is also
-       *   enabled."
-       */
-      if (simd32_cfg || simd16_cfg)
-         simd8_cfg = NULL;
-      if (simd32_cfg && devinfo->ver < 12)
-         simd16_cfg = NULL;
-   }
-
    fs_generator g(compiler, params->log_data, mem_ctx, &prog_data->base,
                   v8->runtime_check_aads_emit, MESA_SHADER_FRAGMENT);
 
@@ -7747,7 +7861,9 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
    bool has_spilled = false;
 
    uint8_t simd_size = 0;
-   if (!INTEL_DEBUG(DEBUG_NO8)) {
+   if ((shader->info.subgroup_size == SUBGROUP_SIZE_VARYING ||
+        shader->info.subgroup_size == SUBGROUP_SIZE_REQUIRE_8) &&
+       !INTEL_DEBUG(DEBUG_NO8)) {
       v8 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                           &prog_data->base, shader,
                           8, debug_enabled);
@@ -7765,7 +7881,9 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
       }
    }
 
-   if (!has_spilled && !INTEL_DEBUG(DEBUG_NO16)) {
+   if ((shader->info.subgroup_size == SUBGROUP_SIZE_VARYING ||
+        shader->info.subgroup_size == SUBGROUP_SIZE_REQUIRE_16) &&
+       !has_spilled && !INTEL_DEBUG(DEBUG_NO16)) {
       v16 = new fs_visitor(compiler, log_data, mem_ctx, &key->base,
                            &prog_data->base, shader,
                            16, debug_enabled);

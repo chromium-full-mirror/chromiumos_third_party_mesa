@@ -29,7 +29,6 @@ libpanfrost_bifrost_files = files(
   'bi_liveness.c',
   'bi_lower_divergent_indirects.c',
   'bi_lower_swizzle.c',
-  'bi_lower_xfb.c',
   'bi_print.c',
   'bi_opt_constant_fold.c',
   'bi_opt_copy_prop.c',
@@ -164,6 +163,7 @@ if with_tests
       files(
         'test/test-constant-fold.cpp',
         'test/test-dual-texture.cpp',
+        'test/test-lower-swizzle.cpp',
         'test/test-message-preload.cpp',
 	'test/test-optimizer.cpp',
 	'test/test-pack-formats.cpp',

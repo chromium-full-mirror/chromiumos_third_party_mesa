@@ -299,6 +299,11 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
 
    spirv_options.clc_shader = load_clc_shader(compiler, disk_cache,
                                               nir_options, &spirv_options);
+   if (spirv_options.clc_shader == NULL) {
+      fprintf(stderr, "ERROR: libclc shader missing."
+              " Consider installing the libclc package\n");
+      abort();
+   }
 
    assert(spirv_size % 4 == 0);
    nir_shader *nir =
@@ -362,7 +367,8 @@ brw_kernel_from_spirv(struct brw_compiler *compiler,
               nir_var_mem_shared | nir_var_mem_global,
               glsl_get_cl_type_size_align);
 
-   brw_preprocess_nir(compiler, nir, NULL);
+   struct brw_nir_compiler_opts opts = {};
+   brw_preprocess_nir(compiler, nir, &opts);
 
    int max_arg_idx = -1;
    nir_foreach_uniform_variable(var, nir) {

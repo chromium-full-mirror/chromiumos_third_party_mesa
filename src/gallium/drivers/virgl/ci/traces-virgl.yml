@@ -1,7 +1,7 @@
 %YAML 1.2
 ---
 traces-db:
-  download-url: "https://minio-packet.freedesktop.org/mesa-tracie-public/"
+  download-url: "https://s3.freedesktop.org/mesa-tracie-public/"
 
 traces:
   glmark2/desktop:windows=4:effect=blur:blur-radius=5:passes=1:separable=true-v2.trace:
@@ -159,7 +159,7 @@ traces:
       checksum: 37780a6eaa38a55700e8207e89009f56
   neverball/neverball-v2.trace:
     gl-virgl:
-      checksum: cc11743f008ccd76adf72695a423436a
+      checksum: 0b8ae7dd4f7f26c3278ded8a5694b983
   pathfinder/canvas_moire-v2.trace:
     gl-virgl:
       checksum: 25ba8f18274126670311bd3ffe058f74
@@ -183,7 +183,7 @@ traces:
       checksum: f4af4067b37c00861fa5911e4c0a6629
   supertuxkart/supertuxkart-mansion-egl-gles-v2.trace:
     gl-virgl:
-      checksum: 092e8ca38e58aaa83df2a9f0b7b8aee5
+      checksum: cc7092975dd6c9064aa54cd7f18053b6
   xonotic/xonotic-keybench-high-v2.trace:
     gl-virgl:
       checksum: f3b184bf8858a6ebccd09e7ca032197e

@@ -810,7 +810,7 @@ zink_kopper_present_readback(struct zink_context *ctx, struct zink_resource *res
    if (res->obj->last_dt_idx == UINT32_MAX)
       return true;
    if (res->layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
-      zink_resource_image_barrier(ctx, res, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 0, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+      zink_screen(ctx->base.screen)->image_barrier(ctx, res, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 0, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
       ctx->base.flush(&ctx->base, NULL, 0);
    }
    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -935,7 +935,7 @@ zink_kopper_query_buffer_age(struct pipe_context *pctx, struct pipe_resource *pr
    assert(res->obj->dt);
    struct kopper_displaytarget *cdt = res->obj->dt;
 
-   ctx = zink_tc_context_unwrap(pctx);
+   ctx = zink_tc_context_unwrap(pctx, zink_screen(pctx->screen)->threaded);
 
    /* Returning 0 here isn't ideal (yes, the buffer is undefined, because you
     * lost it) but threading the error up is more hassle than it's worth.

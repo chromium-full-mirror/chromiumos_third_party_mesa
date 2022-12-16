@@ -40,7 +40,10 @@
 extern "C" {
 #endif
 
-#define PIPE_H265_MAX_REFERENCES 15
+#define PIPE_H265_MAX_REFERENCES      15
+#define PIPE_DEFAULT_FRAME_RATE_DEN   1
+#define PIPE_DEFAULT_FRAME_RATE_NUM   30
+#define PIPE_H2645_EXTENDED_SAR       255
 
 /*
  * see table 6-12 in the spec
@@ -428,12 +431,19 @@ struct pipe_h264_enc_pic_control
 {
    unsigned enc_cabac_enable;
    unsigned enc_cabac_init_idc;
-   unsigned enc_constraint_set_flags;
-   unsigned enc_frame_cropping_flag;
-   unsigned enc_frame_crop_left_offset;
-   unsigned enc_frame_crop_right_offset;
-   unsigned enc_frame_crop_top_offset;
-   unsigned enc_frame_crop_bottom_offset;
+   unsigned chroma_qp_index_offset;
+   unsigned second_chroma_qp_index_offset;
+   struct {
+      uint32_t deblocking_filter_control_present_flag : 1;
+      uint32_t redundant_pic_cnt_present_flag : 1;
+   };
+};
+
+struct pipe_h264_enc_dbk_param
+{
+   unsigned  disable_deblocking_filter_idc;
+   signed   alpha_c0_offset_div2;
+   signed   beta_offset_div2;
 };
 
 struct h264_slice_descriptor
@@ -456,14 +466,38 @@ struct h265_slice_descriptor
    enum pipe_h265_slice_type slice_type;
 };
 
+struct pipe_h264_enc_seq_param
+{
+   unsigned enc_constraint_set_flags;
+   unsigned enc_frame_cropping_flag;
+   unsigned enc_frame_crop_left_offset;
+   unsigned enc_frame_crop_right_offset;
+   unsigned enc_frame_crop_top_offset;
+   unsigned enc_frame_crop_bottom_offset;
+   unsigned pic_order_cnt_type;
+   unsigned num_temporal_layers;
+   uint32_t vui_parameters_present_flag;
+   struct {
+      uint32_t aspect_ratio_info_present_flag: 1;
+      uint32_t timing_info_present_flag: 1;
+   } vui_flags;
+   uint32_t aspect_ratio_idc;
+   uint32_t sar_width;
+   uint32_t sar_height;
+   uint32_t num_units_in_tick;
+   uint32_t time_scale;
+};
+
 struct pipe_h264_enc_picture_desc
 {
    struct pipe_picture_desc base;
 
+   struct pipe_h264_enc_seq_param seq;
    struct pipe_h264_enc_rate_control rate_ctrl[4];
 
    struct pipe_h264_enc_motion_estimation motion_est;
    struct pipe_h264_enc_pic_control pic_ctrl;
+   struct pipe_h264_enc_dbk_param dbk;
 
    unsigned quant_i_frames;
    unsigned quant_p_frames;
@@ -477,16 +511,18 @@ struct pipe_h264_enc_picture_desc
    unsigned idr_pic_id;
    unsigned gop_cnt;
    unsigned pic_order_cnt;
-   unsigned pic_order_cnt_type;
    unsigned num_ref_idx_l0_active_minus1;
    unsigned num_ref_idx_l1_active_minus1;
    unsigned ref_idx_l0_list[32];
+   bool l0_is_long_term[32];
    unsigned ref_idx_l1_list[32];
+   bool l1_is_long_term[32];
    unsigned gop_size;
-   unsigned num_temporal_layers;
    struct pipe_enc_quality_modes quality_modes;
 
    bool not_referenced;
+   bool is_ltr;
+   unsigned ltr_index;
    bool enable_vui;
    struct hash_table *frame_idx;
 
@@ -522,6 +558,16 @@ struct pipe_h265_enc_seq_param
    uint16_t conf_win_right_offset;
    uint16_t conf_win_top_offset;
    uint16_t conf_win_bottom_offset;
+   uint32_t vui_parameters_present_flag;
+   struct {
+      uint32_t aspect_ratio_info_present_flag: 1;
+      uint32_t timing_info_present_flag: 1;
+   } vui_flags;
+   uint32_t aspect_ratio_idc;
+   uint32_t sar_width;
+   uint32_t sar_height;
+   uint32_t num_units_in_tick;
+   uint32_t time_scale;
 };
 
 struct pipe_h265_enc_pic_param
@@ -867,14 +913,16 @@ struct pipe_vp9_picture_desc
       int8_t uv_ac_delta_q;
       int8_t uv_dc_delta_q;
       uint8_t abs_delta;
+      uint8_t ref_deltas[4];
+      uint8_t mode_deltas[2];
    } picture_parameter;
 
    struct {
-      uint32_t slice_data_size;
-      uint32_t slice_data_offset;
-
-      uint32_t slice_data_flag;
-
+      bool slice_info_present;
+      uint32_t slice_count;
+      uint32_t slice_data_size[128];
+      uint32_t slice_data_offset[128];
+      enum pipe_slice_buffer_placement_type slice_data_flag[128];
       struct vp9_segment_parameter seg_param[8];
    } slice_parameter;
 };
@@ -899,8 +947,10 @@ struct pipe_av1_picture_desc
          uint32_t enable_dual_filter:1;
          uint32_t enable_order_hint:1;
          uint32_t enable_jnt_comp:1;
+         uint32_t enable_cdef:1;
          uint32_t mono_chrome:1;
          uint32_t ref_frame_mvs:1;
+         uint32_t film_grain_params_present:1;
       } seq_info_fields;
 
       uint32_t current_frame_id;
@@ -918,6 +968,7 @@ struct pipe_av1_picture_desc
          struct {
             uint32_t enabled:1;
             uint32_t update_map:1;
+            uint32_t update_data:1;
             uint32_t temporal_update:1;
          } segment_info_fields;
 
@@ -962,11 +1013,14 @@ struct pipe_av1_picture_desc
       uint8_t tile_rows;
       uint32_t tile_col_start_sb[65];
       uint32_t tile_row_start_sb[65];
+      uint16_t width_in_sbs[64];
+      uint16_t height_in_sbs[64];
       uint16_t context_update_tile_id;
 
       struct {
          uint32_t frame_type:2;
          uint32_t show_frame:1;
+         uint32_t showable_frame:1;
          uint32_t error_resilient_mode:1;
          uint32_t disable_cdf_update:1;
          uint32_t allow_screen_content_tools:1;
@@ -977,6 +1031,7 @@ struct pipe_av1_picture_desc
          uint32_t is_motion_mode_switchable:1;
          uint32_t use_ref_frame_mvs:1;
          uint32_t disable_frame_end_update_cdf:1;
+         uint32_t uniform_tile_spacing_flag:1;
          uint32_t allow_warped_motion:1;
       } pic_info_fields;
 
@@ -1003,6 +1058,7 @@ struct pipe_av1_picture_desc
       int8_t v_ac_delta_q;
 
       struct {
+         uint16_t using_qmatrix:1;
          uint16_t qm_y:4;
          uint16_t qm_u:4;
          uint16_t qm_v:4;
@@ -1029,21 +1085,28 @@ struct pipe_av1_picture_desc
          uint16_t yframe_restoration_type:2;
          uint16_t cbframe_restoration_type:2;
          uint16_t crframe_restoration_type:2;
+         uint16_t lr_unit_shift:2;
+         uint16_t lr_uv_shift:1;
       } loop_restoration_fields;
 
       uint16_t lr_unit_size[3];
 
       struct {
          uint32_t wmtype;
+         uint8_t invalid;
          int32_t wmmat[8];
       } wm[7];
 
       uint32_t refresh_frame_flags;
+      uint8_t matrix_coefficients;
    } picture_parameter;
 
    struct {
       uint32_t slice_data_size[256];
       uint32_t slice_data_offset[256];
+      uint16_t slice_data_row[256];
+      uint16_t slice_data_col[256];
+      uint8_t slice_data_anchor_frame_idx[256];
    } slice_parameter;
 };
 
@@ -1077,7 +1140,7 @@ enum pipe_h265_enc_pred_direction
    PIPE_H265_PRED_DIRECTION_BI_NOT_EMPTY = 0x4,
 };
 
-/* To be used on each h265 feature bit field 
+/* To be used on each h265 feature bit field
    defined in pipe_h265_enc_cap_features
 */
 enum pipe_h265_enc_feature

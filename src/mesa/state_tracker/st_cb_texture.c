@@ -191,7 +191,7 @@ copy_to_staging_dest(struct gl_context * ctx, struct pipe_resource *dst,
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
    struct gl_texture_object *stObj = texImage->TexObject;
-   struct pipe_resource *src = stObj->pt;
+   ASSERTED struct pipe_resource *src = stObj->pt;
    enum pipe_format dst_format = dst->format;
    mesa_format mesa_format;
    GLenum gl_target = texImage->TexObject->Target;
@@ -445,6 +445,8 @@ st_compressed_format_fallback(struct st_context *st, mesa_format format)
       return !st->has_s3tc;
    case MESA_FORMAT_LAYOUT_RGTC:
       return !st->has_rgtc;
+   case MESA_FORMAT_LAYOUT_LATC:
+      return !st->has_latc;
    case MESA_FORMAT_LAYOUT_BPTC:
       return !st->has_bptc;
    case MESA_FORMAT_LAYOUT_ASTC:
@@ -647,7 +649,8 @@ st_UnmapTextureImage(struct gl_context *ctx,
                                  itransfer->temp_stride,
                                  transfer->box.width, transfer->box.height,
                                  texImage->TexFormat);
-            } else if (_mesa_is_format_rgtc(texImage->TexFormat)) {
+            } else if (_mesa_is_format_rgtc(texImage->TexFormat) ||
+                       _mesa_is_format_latc(texImage->TexFormat)) {
                _mesa_unpack_rgtc(map, transfer->stride,
                                  itransfer->temp_data,
                                  itransfer->temp_stride,

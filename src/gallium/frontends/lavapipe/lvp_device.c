@@ -153,6 +153,7 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .EXT_depth_range_unrestricted          = true,
    .EXT_extended_dynamic_state            = true,
    .EXT_extended_dynamic_state2           = true,
+   .EXT_extended_dynamic_state3           = true,
    .EXT_external_memory_host              = true,
    .EXT_graphics_pipeline_library         = true,
    .EXT_host_query_reset                  = true,
@@ -173,6 +174,8 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .EXT_sampler_filter_minmax             = true,
    .EXT_scalar_block_layout               = true,
    .EXT_separate_stencil_usage            = true,
+   .EXT_shader_atomic_float               = true,
+   .EXT_shader_atomic_float2              = true,
    .EXT_shader_demote_to_helper_invocation= true,
    .EXT_shader_stencil_export             = true,
    .EXT_shader_subgroup_ballot            = true,
@@ -237,6 +240,8 @@ lvp_physical_device_init(struct lvp_physical_device *device,
    device->pscreen = pipe_loader_create_screen_vk(device->pld, true);
    if (!device->pscreen)
       return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+   for (unsigned i = 0; i < ARRAY_SIZE(device->drv_options); i++)
+      device->drv_options[i] = device->pscreen->get_compiler_options(device->pscreen, PIPE_SHADER_IR_NIR, i);
 
    device->sync_timeline_type = vk_sync_timeline_get_type(&lvp_pipe_sync_type);
    device->sync_types[0] = &lvp_pipe_sync_type;
@@ -946,6 +951,41 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          features->extendedDynamicState2PatchControlPoints = true;
          break;
       }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT: {
+         VkPhysicalDeviceExtendedDynamicState3FeaturesEXT *features = (VkPhysicalDeviceExtendedDynamicState3FeaturesEXT *)ext;
+         features->extendedDynamicState3PolygonMode = VK_TRUE;
+         features->extendedDynamicState3TessellationDomainOrigin = VK_TRUE;
+         features->extendedDynamicState3DepthClampEnable = VK_TRUE;
+         features->extendedDynamicState3DepthClipEnable = VK_TRUE;
+         features->extendedDynamicState3LogicOpEnable = VK_TRUE;
+         features->extendedDynamicState3SampleMask = VK_TRUE;
+         features->extendedDynamicState3RasterizationSamples = VK_TRUE;
+         features->extendedDynamicState3AlphaToCoverageEnable = VK_TRUE;
+         features->extendedDynamicState3AlphaToOneEnable = VK_TRUE;
+         features->extendedDynamicState3DepthClipNegativeOneToOne = VK_TRUE;
+         features->extendedDynamicState3RasterizationStream = VK_FALSE;
+         features->extendedDynamicState3ConservativeRasterizationMode = VK_FALSE;
+         features->extendedDynamicState3ExtraPrimitiveOverestimationSize = VK_FALSE;
+         features->extendedDynamicState3LineRasterizationMode = VK_TRUE;
+         features->extendedDynamicState3LineStippleEnable = VK_TRUE;
+         features->extendedDynamicState3ProvokingVertexMode = VK_TRUE;
+         features->extendedDynamicState3SampleLocationsEnable = VK_FALSE;
+         features->extendedDynamicState3ColorBlendEnable = VK_TRUE;
+         features->extendedDynamicState3ColorBlendEquation = VK_TRUE;
+         features->extendedDynamicState3ColorWriteMask = VK_TRUE;
+         features->extendedDynamicState3ViewportWScalingEnable = VK_FALSE;
+         features->extendedDynamicState3ViewportSwizzle = VK_FALSE;
+         features->extendedDynamicState3ShadingRateImageEnable = VK_FALSE;
+         features->extendedDynamicState3CoverageToColorEnable = VK_FALSE;
+         features->extendedDynamicState3CoverageToColorLocation = VK_FALSE;
+         features->extendedDynamicState3CoverageModulationMode = VK_FALSE;
+         features->extendedDynamicState3CoverageModulationTableEnable = VK_FALSE;
+         features->extendedDynamicState3CoverageModulationTable = VK_FALSE;
+         features->extendedDynamicState3CoverageReductionMode = VK_FALSE;
+         features->extendedDynamicState3RepresentativeFragmentTestEnable = VK_FALSE;
+         features->extendedDynamicState3ColorBlendAdvanced = VK_FALSE;
+         break;
+      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES: {
          VkPhysicalDeviceImageRobustnessFeatures *features = (VkPhysicalDeviceImageRobustnessFeatures *)ext;
          features->robustImageAccess = true;
@@ -977,6 +1017,38 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT: {
          VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *features = (VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT *)ext;
          features->graphicsPipelineLibrary = VK_TRUE;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT: {
+         VkPhysicalDeviceShaderAtomicFloatFeaturesEXT *features = (VkPhysicalDeviceShaderAtomicFloatFeaturesEXT *)ext;
+         features->shaderBufferFloat32Atomics =    true;
+         features->shaderBufferFloat32AtomicAdd =  true;
+         features->shaderBufferFloat64Atomics = false;
+         features->shaderBufferFloat64AtomicAdd =  false;
+         features->shaderSharedFloat32Atomics =    true;
+         features->shaderSharedFloat32AtomicAdd =  true;
+         features->shaderSharedFloat64Atomics =    false;
+         features->shaderSharedFloat64AtomicAdd =  false;
+         features->shaderImageFloat32Atomics =     true;
+         features->shaderImageFloat32AtomicAdd =   true;
+         features->sparseImageFloat32Atomics =     false;
+         features->sparseImageFloat32AtomicAdd =   false;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_2_FEATURES_EXT: {
+         VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT *features = (VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT *)ext;
+         features->shaderBufferFloat16Atomics      = false;
+         features->shaderBufferFloat16AtomicAdd    = false;
+         features->shaderBufferFloat16AtomicMinMax = false;
+         features->shaderBufferFloat32AtomicMinMax = LLVM_VERSION_MAJOR >= 15;
+         features->shaderBufferFloat64AtomicMinMax = false;
+         features->shaderSharedFloat16Atomics      = false;
+         features->shaderSharedFloat16AtomicAdd    = false;
+         features->shaderSharedFloat16AtomicMinMax = false;
+         features->shaderSharedFloat32AtomicMinMax = LLVM_VERSION_MAJOR >= 15;
+         features->shaderSharedFloat64AtomicMinMax = false;
+         features->shaderImageFloat32AtomicMinMax  = LLVM_VERSION_MAJOR >= 15;
+         features->sparseImageFloat32AtomicMinMax  = false;
          break;
       }
       default:
@@ -1222,6 +1294,12 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
          VkPhysicalDeviceMaintenance4Properties *properties =
             (VkPhysicalDeviceMaintenance4Properties *)ext;
          properties->maxBufferSize = UINT32_MAX;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_PROPERTIES_EXT: {
+         VkPhysicalDeviceExtendedDynamicState3PropertiesEXT *properties =
+            (VkPhysicalDeviceExtendedDynamicState3PropertiesEXT *)ext;
+         properties->dynamicPrimitiveTopologyUnrestricted = VK_TRUE;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_PROPERTIES_EXT: {
@@ -1962,6 +2040,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_BindBufferMemory2(VkDevice _device,
       LVP_FROM_HANDLE(lvp_buffer, buffer, pBindInfos[i].buffer);
 
       buffer->pmem = mem->pmem;
+      buffer->offset = pBindInfos[i].memoryOffset;
       device->pscreen->resource_bind_backing(device->pscreen,
                                              buffer->bo,
                                              mem->pmem,
@@ -2147,8 +2226,8 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateSampler(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
 
-   sampler = vk_alloc2(&device->vk.alloc, pAllocator, sizeof(*sampler), 8,
-                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   sampler = vk_zalloc2(&device->vk.alloc, pAllocator, sizeof(*sampler), 8,
+                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!sampler)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -2172,7 +2251,7 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateSampler(
       sampler->state.max_anisotropy = pCreateInfo->maxAnisotropy;
    else
       sampler->state.max_anisotropy = 1;
-   sampler->state.normalized_coords = !pCreateInfo->unnormalizedCoordinates;
+   sampler->state.unnormalized_coords = pCreateInfo->unnormalizedCoordinates;
    sampler->state.compare_mode = pCreateInfo->compareEnable ? PIPE_TEX_COMPARE_R_TO_TEXTURE : PIPE_TEX_COMPARE_NONE;
    sampler->state.compare_func = pCreateInfo->compareOp;
    sampler->state.seamless_cube_map = !(pCreateInfo->flags & VK_SAMPLER_CREATE_NON_SEAMLESS_CUBE_MAP_BIT_EXT);

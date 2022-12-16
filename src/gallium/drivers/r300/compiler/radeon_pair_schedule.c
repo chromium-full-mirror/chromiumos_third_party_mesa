@@ -569,6 +569,15 @@ static int merge_presub_sources(
 		/* Shuffle the sources, so we can put the
 		 * presubtract source in the correct place. */
 		for(arg = 0; arg < info->NumSrcRegs; arg++) {
+			/* If the arg does read both from rgb and alpha, then we need to rewrite
+			 * both sources and the code currently doesn't handle this.
+			 * FIXME: This is definitelly solvable, however shader-db shows it is
+			 * not worth the effort.
+			 */
+			if (rc_source_type_swz(dst_full->RGB.Arg[arg].Swizzle) & RC_SOURCE_ALPHA &&
+				rc_source_type_swz(dst_full->RGB.Arg[arg].Swizzle) & RC_SOURCE_RGB)
+				return 0;
+
 			/*If this arg does not read from an rgb source,
 			 * do nothing. */
 			if (!(rc_source_type_swz(dst_full->RGB.Arg[arg].Swizzle)
@@ -918,8 +927,6 @@ static int convert_rgb_to_alpha(
 					rc_mask_to_swizzle(old_mask));
 			new_index = i;
 			*new_regvalp = *old_regvalp;
-			*old_regvalp = NULL;
-			new_regvalp = get_reg_valuep(s, RC_FILE_TEMPORARY, i, 3);
 			break;
 		}
 	}

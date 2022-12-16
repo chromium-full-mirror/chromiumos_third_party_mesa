@@ -859,12 +859,7 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
         bool emit_blend = writeout & (PAN_WRITEOUT_C);
         bool emit_zs = writeout & (PAN_WRITEOUT_Z | PAN_WRITEOUT_S);
 
-        const nir_variable *var =
-                nir_find_variable_with_driver_location(b->shader->nir,
-                                                       nir_var_shader_out, nir_intrinsic_base(instr));
-
-        unsigned loc = var ? var->data.location : 0;
-
+        unsigned loc = nir_intrinsic_io_semantics(instr).location;
         bi_index src0 = bi_src_index(&instr->src[0]);
 
         /* By ISA convention, the coverage mask is stored in R60. The store
@@ -924,10 +919,7 @@ bi_emit_fragment_out(bi_builder *b, nir_intrinsic_instr *instr)
                 /* Explicit copy since BLEND inputs are precoloured to R0-R3,
                  * TODO: maybe schedule around this or implement in RA as a
                  * spill */
-                bool has_mrt = false;
-
-                nir_foreach_shader_out_variable(var, b->shader->nir)
-                        has_mrt |= (var->data.location > FRAG_RESULT_DATA0);
+                bool has_mrt = (b->shader->nir->info.outputs_written >> FRAG_RESULT_DATA1);
 
                 if (has_mrt) {
                         bi_index srcs[4] = { color, color, color, color };
@@ -1107,12 +1099,11 @@ bi_emit_load_ubo(bi_builder *b, nir_intrinsic_instr *instr)
         bool offset_is_const = nir_src_is_const(*offset);
         bi_index dyn_offset = bi_src_index(offset);
         uint32_t const_offset = offset_is_const ? nir_src_as_uint(*offset) : 0;
-        bool kernel_input = (instr->intrinsic == nir_intrinsic_load_kernel_input);
 
         bi_load_ubo_to(b, instr->num_components * nir_dest_bit_size(instr->dest),
                         bi_dest_index(&instr->dest), offset_is_const ?
                         bi_imm_u32(const_offset) : dyn_offset,
-                        kernel_input ? bi_zero() : bi_src_index(&instr->src[0]));
+                        bi_src_index(&instr->src[0]));
 }
 
 static void
@@ -1384,6 +1375,9 @@ bi_emit_image_coord(bi_builder *b, bi_index coord, unsigned src_idx,
                 if (coord_comps == 3 && b->shader->arch >= 9)
                         return bi_mkvec_v2i16(b, bi_imm_u16(0),
                                               bi_half(bi_extract(b, coord, 2), false));
+                else if (coord_comps == 2 && is_array && b->shader->arch >= 9)
+                        return bi_mkvec_v2i16(b, bi_imm_u16(0),
+                                                 bi_half(bi_extract(b, coord, 1), false));
                 else if (coord_comps == 3)
                         return bi_extract(b, coord, 2);
                 else if (coord_comps == 2 && is_array)
@@ -1493,8 +1487,17 @@ bi_emit_image_store(bi_builder *b, nir_intrinsic_instr *instr)
         bi_index a[4] = { bi_null() };
         bi_emit_split_i32(b, a, bi_emit_lea_image(b, instr), 3);
 
+        /* Due to SPIR-V limitations, the source type is not fully reliable: it
+         * reports uint32 even for write_imagei. This causes an incorrect
+         * u32->s32->u32 roundtrip which incurs an unwanted clamping. Use auto32
+         * instead, which will match per the OpenCL spec. Of course this does
+         * not work for 16-bit stores, but those are not available in OpenCL.
+         */
+        nir_alu_type T = nir_intrinsic_src_type(instr);
+        assert(nir_alu_type_get_type_size(T) == 32);
+
         bi_st_cvt(b, bi_src_index(&instr->src[3]), a[0], a[1], a[2],
-                     bi_reg_fmt_for_nir(nir_intrinsic_src_type(instr)),
+                     BI_REGISTER_FORMAT_AUTO,
                      instr->num_components - 1);
 }
 
@@ -1567,10 +1570,8 @@ bi_emit_ld_tile(bi_builder *b, nir_intrinsic_instr *instr)
 
         /* Get the render target */
         if (!b->shader->inputs->is_blend) {
-                const nir_variable *var =
-                        nir_find_variable_with_driver_location(b->shader->nir,
-                                        nir_var_shader_out, nir_intrinsic_base(instr));
-                unsigned loc = var->data.location;
+                nir_io_semantics sem = nir_intrinsic_io_semantics(instr);
+                unsigned loc = sem.location;
                 assert(loc >= FRAG_RESULT_DATA0);
                 rt = (loc - FRAG_RESULT_DATA0);
         }
@@ -1628,7 +1629,6 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
                 break;
 
         case nir_intrinsic_load_ubo:
-        case nir_intrinsic_load_kernel_input:
                 bi_emit_load_ubo(b, instr);
                 break;
 
@@ -1672,6 +1672,14 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
 
         case nir_intrinsic_control_barrier:
                 assert(b->shader->stage != MESA_SHADER_FRAGMENT);
+                bi_barrier(b);
+                break;
+
+        case nir_intrinsic_scoped_barrier:
+                assert(b->shader->stage != MESA_SHADER_FRAGMENT);
+                assert(nir_intrinsic_memory_scope(instr) > NIR_SCOPE_SUBGROUP &&
+                       "todo: subgroup barriers (different divergence rules)");
+
                 bi_barrier(b);
                 break;
 
@@ -1804,10 +1812,8 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
 
         case nir_intrinsic_load_work_dim:
         case nir_intrinsic_load_num_vertices:
-                bi_load_sysval_nir(b, instr, 1, 0);
-                break;
-
         case nir_intrinsic_load_first_vertex:
+        case nir_intrinsic_load_draw_id:
                 bi_load_sysval_nir(b, instr, 1, 0);
                 break;
 
@@ -1816,13 +1822,6 @@ bi_emit_intrinsic(bi_builder *b, nir_intrinsic_instr *instr)
                 break;
 
         case nir_intrinsic_load_base_instance:
-                bi_load_sysval_nir(b, instr, 1, 8);
-                break;
-
-        case nir_intrinsic_load_draw_id:
-                bi_load_sysval_nir(b, instr, 1, 0);
-                break;
-
         case nir_intrinsic_get_ssbo_size:
                 bi_load_sysval_nir(b, instr, 1, 8);
                 break;
@@ -1992,8 +1991,7 @@ bi_alu_src_index(bi_builder *b, nir_alu_src src, unsigned comps)
         } else if (bitsize == 8) {
                 /* 8-bit vectors not yet supported */
                 assert(comps == 1 && "8-bit vectors not supported");
-                assert(src.swizzle[0] < 4 && "8-bit vectors not supported");
-                idx.swizzle = BI_SWIZZLE_B0000 + src.swizzle[0];
+                idx.swizzle = BI_SWIZZLE_B0000 + (src.swizzle[0] & 3);
         }
 
         return idx;
@@ -2333,12 +2331,18 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
         }
 
         case nir_op_unpack_64_2x32_split_x:
-                bi_mov_i32_to(b, dst, bi_extract(b, bi_src_index(&instr->src[0].src), 0));
+        {
+                unsigned chan = (instr->src[0].swizzle[0] * 2) + 0;
+                bi_mov_i32_to(b, dst, bi_extract(b, bi_src_index(&instr->src[0].src), chan));
                 return;
+        }
 
         case nir_op_unpack_64_2x32_split_y:
-                bi_mov_i32_to(b, dst, bi_extract(b, bi_src_index(&instr->src[0].src), 1));
+        {
+                unsigned chan = (instr->src[0].swizzle[0] * 2) + 1;
+                bi_mov_i32_to(b, dst, bi_extract(b, bi_src_index(&instr->src[0].src), chan));
                 return;
+        }
 
         case nir_op_pack_64_2x32_split:
                 bi_collect_v2i32_to(b, dst,
@@ -2388,7 +2392,6 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
         }
 
         case nir_op_pack_32_2x16: {
-                assert(nir_src_num_components(instr->src[0].src) == 2);
                 assert(comps == 1);
 
                 bi_index idx = bi_src_index(&instr->src[0].src);
@@ -2991,6 +2994,14 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 bi_hadd_to(b, nir_type_int, sz, dst, s0, s1, BI_ROUND_RTP);
                 break;
 
+        case nir_op_uhadd:
+                bi_hadd_to(b, nir_type_uint, sz, dst, s0, s1, BI_ROUND_RTN);
+                break;
+
+        case nir_op_urhadd:
+                bi_hadd_to(b, nir_type_uint, sz, dst, s0, s1, BI_ROUND_RTP);
+                break;
+
         case nir_op_ineg:
                 bi_isub_to(b, nir_type_int, sz, dst, bi_zero(), s0, false);
                 break;
@@ -3050,10 +3061,12 @@ bi_emit_alu(bi_builder *b, nir_alu_instr *instr)
                 break;
 
         case nir_op_bit_count:
+                assert(sz == 32 && src_sz == 32 && "should've been lowered");
                 bi_popcount_i32_to(b, dst, s0);
                 break;
 
         case nir_op_bitfield_reverse:
+                assert(sz == 32 && src_sz == 32 && "should've been lowered");
                 bi_bitrev_i32_to(b, dst, s0);
                 break;
 
@@ -3666,7 +3679,9 @@ bi_emit_tex_valhall(bi_builder *b, nir_tex_instr *instr)
         /* 32-bit indices to be allocated as consecutive staging registers */
         bi_index sregs[VALHALL_TEX_SREG_COUNT] = { };
 
-        bi_index sampler = bi_imm_u32(instr->sampler_index);
+
+        bool has_sampler = nir_tex_instr_need_sampler(instr);
+        bi_index sampler = bi_imm_u32(has_sampler ? instr->sampler_index : 0);
         bi_index texture = bi_imm_u32(instr->texture_index);
         uint32_t tables = (PAN_TABLE_SAMPLER << 11) | (PAN_TABLE_TEXTURE << 27);
 
@@ -4372,8 +4387,11 @@ should_split_wrmask(const nir_instr *instr, UNUSED const void *data)
         }
 }
 
-/* Bifrost wants transcendentals as FP32 */
-
+/*
+ * Some operations are only available as 32-bit instructions. 64-bit floats are
+ * unsupported and ints are lowered with nir_lower_int64.  Certain 8-bit and
+ * 16-bit instructions, however, are lowered here.
+ */
 static unsigned
 bi_lower_bit_size(const nir_instr *instr, UNUSED void *data)
 {
@@ -4388,7 +4406,9 @@ bi_lower_bit_size(const nir_instr *instr, UNUSED void *data)
         case nir_op_fpow:
         case nir_op_fsin:
         case nir_op_fcos:
-                return (nir_dest_bit_size(alu->dest.dest) == 32) ? 0 : 32;
+        case nir_op_bit_count:
+        case nir_op_bitfield_reverse:
+                return (nir_src_bit_size(alu->src[0].src) == 32) ? 0 : 32;
         default:
                 return 0;
         }
@@ -4537,6 +4557,7 @@ bi_optimize_nir(nir_shader *nir, unsigned gpu_id, bool is_blend)
         NIR_PASS(progress, nir, nir_lower_tex, &lower_tex_options);
         NIR_PASS(progress, nir, nir_lower_alu_to_scalar, bi_scalarize_filter, NULL);
         NIR_PASS(progress, nir, nir_lower_load_const_to_scalar);
+        NIR_PASS(progress, nir, nir_lower_phis_to_scalar, true);
 
         do {
                 progress = false;
@@ -4604,7 +4625,6 @@ bi_optimize_nir(nir_shader *nir, unsigned gpu_id, bool is_blend)
                 NIR_PASS(progress, nir, bifrost_nir_opt_boolean_bitwise);
 
         NIR_PASS(progress, nir, nir_lower_alu_to_scalar, bi_scalarize_filter, NULL);
-        NIR_PASS(progress, nir, nir_lower_phis_to_scalar, true);
         NIR_PASS(progress, nir, nir_opt_vectorize, bi_vectorize_filter, NULL);
         NIR_PASS(progress, nir, nir_lower_bool_to_bitsize);
 
@@ -4664,68 +4684,6 @@ bi_opt_post_ra(bi_context *ctx)
                 if (ins->op == BI_OPCODE_MOV_I32 && bi_is_equiv(ins->dest[0], ins->src[0]))
                         bi_remove_instruction(ins);
         }
-}
-
-/* If the shader packs multiple varyings into the same location with different
- * location_frac, we'll need to lower to a single varying store that collects
- * all of the channels together.
- */
-static bool
-bifrost_nir_lower_store_component(struct nir_builder *b,
-                nir_instr *instr, void *data)
-{
-        if (instr->type != nir_instr_type_intrinsic)
-                return false;
-
-        nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-
-        if (intr->intrinsic != nir_intrinsic_store_output)
-                return false;
-
-        struct hash_table_u64 *slots = data;
-        unsigned component = nir_intrinsic_component(intr);
-        nir_src *slot_src = nir_get_io_offset_src(intr);
-        uint64_t slot = nir_src_as_uint(*slot_src) + nir_intrinsic_base(intr);
-
-        nir_intrinsic_instr *prev = _mesa_hash_table_u64_search(slots, slot);
-        unsigned mask = (prev ? nir_intrinsic_write_mask(prev) : 0);
-
-        nir_ssa_def *value = intr->src[0].ssa;
-        b->cursor = nir_before_instr(&intr->instr);
-
-        nir_ssa_def *undef = nir_ssa_undef(b, 1, value->bit_size);
-        nir_ssa_def *channels[4] = { undef, undef, undef, undef };
-
-        /* Copy old */
-        u_foreach_bit(i, mask) {
-                assert(prev != NULL);
-                nir_ssa_def *prev_ssa = prev->src[0].ssa;
-                channels[i] = nir_channel(b, prev_ssa, i);
-        }
-
-        /* Copy new */
-        unsigned new_mask = nir_intrinsic_write_mask(intr);
-        mask |= (new_mask << component);
-
-        u_foreach_bit(i, new_mask) {
-                assert(component + i < 4);
-                channels[component + i] = nir_channel(b, value, i);
-        }
-
-        intr->num_components = util_last_bit(mask);
-        nir_instr_rewrite_src_ssa(instr, &intr->src[0],
-                        nir_vec(b, channels, intr->num_components));
-
-        nir_intrinsic_set_component(intr, 0);
-        nir_intrinsic_set_write_mask(intr, mask);
-
-        if (prev) {
-                _mesa_hash_table_u64_remove(slots, slot);
-                nir_instr_remove(&prev->instr);
-        }
-
-        _mesa_hash_table_u64_insert(slots, slot, intr);
-        return false;
 }
 
 /* Dead code elimination for branches at the end of a block - only one branch
@@ -4908,30 +4866,26 @@ bi_finalize_nir(nir_shader *nir, unsigned gpu_id, bool is_blend)
                 NIR_PASS_V(nir, nir_lower_mediump_io,
                            nir_var_shader_in | nir_var_shader_out,
                            ~bi_fp32_varying_mask(nir), false);
-        } else {
+        } else if (nir->info.stage == MESA_SHADER_VERTEX) {
                 if (gpu_id >= 0x9000) {
                         NIR_PASS_V(nir, nir_lower_mediump_io, nir_var_shader_out,
                                         BITFIELD64_BIT(VARYING_SLOT_PSIZ), false);
                 }
 
-                struct hash_table_u64 *stores = _mesa_hash_table_u64_create(NULL);
-                NIR_PASS_V(nir, nir_shader_instructions_pass,
-                                bifrost_nir_lower_store_component,
-                                nir_metadata_block_index |
-                                nir_metadata_dominance, stores);
-                _mesa_hash_table_u64_destroy(stores);
+                NIR_PASS_V(nir, pan_nir_lower_store_component);
         }
 
         NIR_PASS_V(nir, nir_lower_ssbo);
         NIR_PASS_V(nir, pan_nir_lower_zs_store);
         NIR_PASS_V(nir, pan_lower_sample_pos);
         NIR_PASS_V(nir, nir_lower_bit_size, bi_lower_bit_size, NULL);
+        NIR_PASS_V(nir, nir_lower_64bit_phis);
 
         if (nir->xfb_info != NULL && nir->info.has_transform_feedback_varyings) {
                 NIR_PASS_V(nir, nir_io_add_const_offset_to_base,
                            nir_var_shader_in | nir_var_shader_out);
                 NIR_PASS_V(nir, nir_io_add_intrinsic_xfb_info);
-                NIR_PASS_V(nir, bifrost_nir_lower_xfb);
+                NIR_PASS_V(nir, pan_lower_xfb);
         }
 
         bi_optimize_nir(nir, gpu_id, is_blend);
@@ -5340,6 +5294,8 @@ bifrost_compile_shader_nir(nir_shader *nir,
 
         info->tls_size = nir->scratch_size;
         info->vs.idvs = bi_should_idvs(nir, inputs);
+
+        pan_nir_collect_varyings(nir, info);
 
         if (info->vs.idvs) {
                 bi_compile_variant(nir, inputs, binary, sysval_to_id, info, BI_IDVS_POSITION);

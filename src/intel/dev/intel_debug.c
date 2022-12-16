@@ -36,7 +36,7 @@
 #include "dev/intel_debug.h"
 #include "git_sha1.h"
 #include "util/macros.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "c11/threads.h"
 
 uint64_t intel_debug = 0;
@@ -93,6 +93,7 @@ static const struct debug_control debug_control[] = {
    { "task",        DEBUG_TASK },
    { "mesh",        DEBUG_MESH },
    { "stall",       DEBUG_STALL },
+   { "capture-all", DEBUG_CAPTURE_ALL },
    { NULL,    0 }
 };
 

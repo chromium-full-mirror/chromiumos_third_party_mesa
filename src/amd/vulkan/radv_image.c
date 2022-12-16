@@ -26,7 +26,7 @@
  */
 
 #include "ac_drm_fourcc.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/u_atomic.h"
 #include "vulkan/util/vk_format.h"
 #include "radv_debug.h"
@@ -281,6 +281,10 @@ radv_use_dcc_for_image_early(struct radv_device *device, struct radv_image *imag
          return false;
    }
 
+   /* FIXME: Figure out how to use DCC for MSAA images without FMASK. */
+   if (pCreateInfo->samples > 1 && !device->physical_device->use_fmask)
+      return false;
+
    return radv_are_formats_dcc_compatible(device->physical_device, pCreateInfo->pNext, format,
                                           pCreateInfo->flags, sign_reinterpret);
 }
@@ -336,8 +340,9 @@ radv_image_use_dcc_predication(const struct radv_device *device, const struct ra
 static inline bool
 radv_use_fmask_for_image(const struct radv_device *device, const struct radv_image *image)
 {
-   return image->info.samples > 1 && ((image->vk.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
-                                      (device->instance->debug_flags & RADV_DEBUG_FORCE_COMPRESS));
+   return device->physical_device->use_fmask && image->info.samples > 1 &&
+          ((image->vk.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
+           (device->instance->debug_flags & RADV_DEBUG_FORCE_COMPRESS));
 }
 
 static inline bool
@@ -704,14 +709,12 @@ radv_compose_swizzle(const struct util_format_description *desc, const VkCompone
    }
 }
 
-static void
-radv_make_buffer_descriptor(struct radv_device *device, struct radv_buffer *buffer,
-                            VkFormat vk_format, unsigned offset, unsigned range, uint32_t *state)
+void
+radv_make_texel_buffer_descriptor(struct radv_device *device, uint64_t va, VkFormat vk_format,
+                                  unsigned offset, unsigned range, uint32_t *state)
 {
    const struct util_format_description *desc;
    unsigned stride;
-   uint64_t gpu_address = radv_buffer_get_va(buffer->bo);
-   uint64_t va = gpu_address + buffer->offset;
    unsigned num_format, data_format;
    int first_non_void;
    enum pipe_swizzle swizzle[4];
@@ -1002,8 +1005,7 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
       depth = image->info.array_size / 6;
 
    state[0] = 0;
-   state[1] = S_00A004_MIN_LOD(radv_float_to_ufixed(CLAMP(min_lod, 0, 15), 8)) |
-              S_00A004_FORMAT(img_format) |
+   state[1] = S_00A004_FORMAT(img_format) |
               S_00A004_WIDTH_LO(width - 1);
    state[2] = S_00A008_WIDTH_HI((width - 1) >> 2) | S_00A008_HEIGHT(height - 1) |
               S_00A008_RESOURCE_LEVEL(device->physical_device->rad_info.gfx_level < GFX11);
@@ -1042,9 +1044,13 @@ gfx10_make_texture_descriptor(struct radv_device *device, struct radv_image *ima
    if (nbc_view && nbc_view->valid)
       max_mip = nbc_view->max_mip;
 
+   unsigned min_lod_clamped = radv_float_to_ufixed(CLAMP(min_lod, 0, 15), 8);
    if (device->physical_device->rad_info.gfx_level >= GFX11) {
       state[1] |= S_00A004_MAX_MIP(max_mip);
+      state[5] |= S_00A014_MIN_LOD_LO(min_lod_clamped);
+      state[6] |= S_00A018_MIN_LOD_HI(min_lod_clamped >> 5);
    } else {
+      state[1] |= S_00A004_MIN_LOD(min_lod_clamped);
       state[5] |= S_00A014_MAX_MIP(max_mip);
    }
 
@@ -2143,8 +2149,8 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
       const struct util_format_description *desc = vk_format_description(iview->vk.format);
       if (desc->layout == UTIL_FORMAT_LAYOUT_ETC) {
          iview->plane_id = 1;
-         iview->vk.format = etc2_emulation_format(iview->vk.format);
          iview->vk.view_format = etc2_emulation_format(iview->vk.format);
+         iview->vk.format = etc2_emulation_format(iview->vk.format);
       }
 
       plane_count = 1;
@@ -2548,15 +2554,15 @@ radv_buffer_view_init(struct radv_buffer_view *view, struct radv_device *device,
                       const VkBufferViewCreateInfo *pCreateInfo)
 {
    RADV_FROM_HANDLE(radv_buffer, buffer, pCreateInfo->buffer);
+   uint64_t va = radv_buffer_get_va(buffer->bo) + buffer->offset;
 
    vk_object_base_init(&device->vk, &view->base, VK_OBJECT_TYPE_BUFFER_VIEW);
 
    view->bo = buffer->bo;
    view->range = vk_buffer_range(&buffer->vk, pCreateInfo->offset, pCreateInfo->range);
-   view->vk_format = pCreateInfo->format;
 
-   radv_make_buffer_descriptor(device, buffer, view->vk_format, pCreateInfo->offset, view->range,
-                               view->state);
+   radv_make_texel_buffer_descriptor(device, va, pCreateInfo->format, pCreateInfo->offset,
+                                     view->range, view->state);
 }
 
 void

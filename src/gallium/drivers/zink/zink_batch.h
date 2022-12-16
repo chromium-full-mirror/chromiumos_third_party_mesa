@@ -71,25 +71,13 @@ zink_batch_reference_resource_rw(struct zink_batch *batch,
 void
 zink_batch_reference_resource(struct zink_batch *batch, struct zink_resource *res);
 
-void
+bool
 zink_batch_reference_resource_move(struct zink_batch *batch, struct zink_resource *res);
-
-void
-zink_batch_reference_sampler_view(struct zink_batch *batch,
-                                  struct zink_sampler_view *sv);
 
 void
 zink_batch_reference_program(struct zink_batch *batch,
                              struct zink_program *pg);
 
-void
-zink_batch_reference_image_view(struct zink_batch *batch,
-                                struct zink_image_view *image_view);
-
-void
-zink_batch_reference_bufferview(struct zink_batch *batch, struct zink_buffer_view *buffer_view);
-void
-zink_batch_reference_surface(struct zink_batch *batch, struct zink_surface *surface);
 
 void
 debug_describe_zink_batch_state(char *buf, const struct zink_batch_state *ptr);
@@ -132,6 +120,9 @@ zink_batch_usage_check_completion(struct zink_context *ctx, const struct zink_ba
 
 void
 zink_batch_usage_wait(struct zink_context *ctx, struct zink_batch_usage *u);
+
+void
+zink_batch_usage_try_wait(struct zink_context *ctx, struct zink_batch_usage *u);
 
 #ifdef __cplusplus
 }

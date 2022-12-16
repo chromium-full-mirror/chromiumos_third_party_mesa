@@ -3473,7 +3473,18 @@ brw_broadcast(struct brw_codegen *p,
    assert(src.file == BRW_GENERAL_REGISTER_FILE &&
           src.address_mode == BRW_ADDRESS_DIRECT);
    assert(!src.abs && !src.negate);
+
+   /* Gen12.5 adds the following region restriction:
+    *
+    *    "Vx1 and VxH indirect addressing for Float, Half-Float, Double-Float
+    *    and Quad-Word data must not be used."
+    *
+    * We require the source and destination types to match so stomp to an
+    * unsigned integer type.
+    */
    assert(src.type == dst.type);
+   src.type = dst.type = brw_reg_type_from_bit_size(type_sz(src.type) * 8,
+                                                    BRW_REGISTER_TYPE_UD);
 
    if ((src.vstride == 0 && (src.hstride == 0 || !align1)) ||
        idx.file == BRW_IMMEDIATE_VALUE) {
@@ -3485,7 +3496,7 @@ brw_broadcast(struct brw_codegen *p,
       src = align1 ? stride(suboffset(src, i), 0, 1, 0) :
                      stride(suboffset(src, 4 * i), 0, 4, 1);
 
-      if (type_sz(src.type) > 4 && !devinfo->has_64bit_float) {
+      if (type_sz(src.type) > 4 && !devinfo->has_64bit_int) {
          brw_MOV(p, subscript(dst, BRW_REGISTER_TYPE_D, 0),
                     subscript(src, BRW_REGISTER_TYPE_D, 0));
          brw_set_default_swsb(p, tgl_swsb_null());
@@ -3543,7 +3554,7 @@ brw_broadcast(struct brw_codegen *p,
          /* Use indirect addressing to fetch the specified component. */
          if (type_sz(src.type) > 4 &&
              (devinfo->platform == INTEL_PLATFORM_CHV || intel_device_info_is_9lp(devinfo) ||
-              !devinfo->has_64bit_float)) {
+              !devinfo->has_64bit_int)) {
             /* From the Cherryview PRM Vol 7. "Register Region Restrictions":
              *
              *    "When source or destination datatype is 64b or operation is

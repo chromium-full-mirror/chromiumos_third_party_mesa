@@ -1019,20 +1019,21 @@ get_intersection_mask(int a_start, int a_size, int b_start, int b_size)
    return u_bit_consecutive(intersection_start, intersection_end - intersection_start) & mask;
 }
 
+/* src1 are bytes 0-3. dst/src0 are bytes 4-7. */
 void
-create_bperm(Builder& bld, uint8_t swiz[4], Definition dst, Operand src0,
-             Operand src1 = Operand(v1))
+create_bperm(Builder& bld, uint8_t swiz[4], Definition dst, Operand src1,
+             Operand src0 = Operand(v1))
 {
    uint32_t swiz_packed =
       swiz[0] | ((uint32_t)swiz[1] << 8) | ((uint32_t)swiz[2] << 16) | ((uint32_t)swiz[3] << 24);
 
    dst = Definition(PhysReg(dst.physReg().reg()), v1);
-   if (!src0.isConstant())
-      src0 = Operand(PhysReg(src0.physReg().reg()), v1);
-   if (src1.isUndefined())
-      src1 = Operand(dst.physReg(), v1);
-   else if (!src1.isConstant())
+   if (!src1.isConstant())
       src1 = Operand(PhysReg(src1.physReg().reg()), v1);
+   if (src0.isUndefined())
+      src0 = Operand(dst.physReg(), v1);
+   else if (!src0.isConstant())
+      src0 = Operand(PhysReg(src0.physReg().reg()), v1);
    bld.vop3(aco_opcode::v_perm_b32, dst, src0, src1, Operand::c32(swiz_packed));
 }
 
@@ -2004,6 +2005,8 @@ lower_to_hw_instr(Program* program)
 {
    Block* discard_block = NULL;
 
+   bool should_dealloc_vgprs = dealloc_vgprs(program);
+
    for (int block_idx = program->blocks.size() - 1; block_idx >= 0; block_idx--) {
       Block* block = &program->blocks[block_idx];
       lower_context ctx;
@@ -2129,6 +2132,8 @@ lower_to_hw_instr(Program* program)
                   bld.exp(aco_opcode::exp, Operand(v1), Operand(v1), Operand(v1), Operand(v1), 0,
                           program->gfx_level >= GFX11 ? V_008DFC_SQ_EXP_MRT : V_008DFC_SQ_EXP_NULL,
                           false, true, true);
+                  if (should_dealloc_vgprs)
+                     bld.sopp(aco_opcode::s_sendmsg, -1, sendmsg_dealloc_vgprs);
                   bld.sopp(aco_opcode::s_endpgm);
 
                   bld.reset(&ctx.instructions);
@@ -2219,6 +2224,8 @@ lower_to_hw_instr(Program* program)
                   } else if (offset == 0 && signext && (bits == 8 || bits == 16)) {
                      bld.sop1(bits == 8 ? aco_opcode::s_sext_i32_i8 : aco_opcode::s_sext_i32_i16,
                               dst, op);
+                  } else if (ctx.program->gfx_level >= GFX9 && offset == 0 && bits == 16) {
+                     bld.sop2(aco_opcode::s_pack_ll_b32_b16, dst, op, Operand::zero());
                   } else {
                      bld.sop2(signext ? aco_opcode::s_bfe_i32 : aco_opcode::s_bfe_u32, dst,
                               bld.def(s1, scc), op, Operand::c32((bits << 16) | offset));
@@ -2373,6 +2380,136 @@ lower_to_hw_instr(Program* program)
                bld.sop1(aco_opcode::s_setpc_b64, instr->operands[0]);
                break;
             }
+            case aco_opcode::p_interp_gfx11: {
+               assert(instr->definitions[0].regClass() == v1 ||
+                      instr->definitions[0].regClass() == v2b);
+               assert(instr->definitions[1].regClass() == bld.lm);
+               assert(instr->definitions[2].isFixed() && instr->definitions[2].physReg() == scc);
+               assert(instr->operands[0].regClass() == v1.as_linear());
+               assert(instr->operands[1].isConstant());
+               assert(instr->operands[2].isConstant());
+               assert(instr->operands.back().physReg() == m0);
+               Definition dst = instr->definitions[0];
+               PhysReg exec_tmp = instr->definitions[1].physReg();
+               Definition clobber_scc = instr->definitions[2];
+               PhysReg lin_vgpr = instr->operands[0].physReg();
+               unsigned attribute = instr->operands[1].constantValue();
+               unsigned component = instr->operands[2].constantValue();
+               uint16_t dpp_ctrl = 0;
+               Operand coord1, coord2;
+               if (instr->operands.size() == 6) {
+                  assert(instr->operands[3].regClass() == v1);
+                  assert(instr->operands[4].regClass() == v1);
+                  coord1 = instr->operands[3];
+                  coord2 = instr->operands[4];
+               } else {
+                  assert(instr->operands[3].isConstant());
+                  dpp_ctrl = instr->operands[3].constantValue();
+               }
+
+               bld.sop1(Builder::s_mov, Definition(exec_tmp, bld.lm), Operand(exec, bld.lm));
+               bld.sop1(Builder::s_wqm, Definition(exec, bld.lm), clobber_scc,
+                        Operand(exec, bld.lm));
+               bld.ldsdir(aco_opcode::lds_param_load, Definition(lin_vgpr, v1), Operand(m0, s1),
+                          attribute, component);
+               bld.sop1(Builder::s_mov, Definition(exec, bld.lm), Operand(exec_tmp, bld.lm));
+
+               Operand p(lin_vgpr, v1);
+               Operand dst_op(dst.physReg(), v1);
+               if (instr->operands.size() == 5) {
+                  bld.vop1_dpp(aco_opcode::v_mov_b32, Definition(dst), p, dpp_ctrl);
+               } else if (dst.regClass() == v2b) {
+                  bld.vinterp_inreg(aco_opcode::v_interp_p10_f16_f32_inreg, Definition(dst), p,
+                                    coord1, p);
+                  bld.vinterp_inreg(aco_opcode::v_interp_p2_f16_f32_inreg, Definition(dst), p,
+                                    coord2, dst_op);
+               } else {
+                  bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, Definition(dst), p, coord1,
+                                    p);
+                  bld.vinterp_inreg(aco_opcode::v_interp_p2_f32_inreg, Definition(dst), p, coord2,
+                                    dst_op);
+               }
+               break;
+            }
+            case aco_opcode::p_dual_src_export_gfx11: {
+               PhysReg dst0 = instr->definitions[0].physReg();
+               PhysReg dst1 = instr->definitions[1].physReg();
+               Definition tmp = instr->definitions[2];
+               Definition exec_tmp = instr->definitions[3];
+               Definition clobber_vcc = instr->definitions[4];
+               Definition clobber_scc = instr->definitions[5];
+
+               assert(tmp.regClass() == v1);
+               assert(exec_tmp.regClass() == bld.lm);
+               assert(clobber_vcc.regClass() == bld.lm && clobber_vcc.physReg() == vcc);
+               assert(clobber_scc.isFixed() && clobber_scc.physReg() == scc);
+
+               bld.sop1(Builder::s_mov, Definition(exec_tmp.physReg(), bld.lm),
+                        Operand(exec, bld.lm));
+               bld.sop1(Builder::s_wqm, Definition(exec, bld.lm), clobber_scc,
+                        Operand(exec, bld.lm));
+
+               uint8_t enabled_channels = 0;
+               Operand mrt0[4], mrt1[4];
+
+               bld.sop1(aco_opcode::s_mov_b32, Definition(clobber_vcc.physReg(), s1),
+                        Operand::c32(0x55555555));
+               if (ctx.program->wave_size == 64)
+                  bld.sop1(aco_opcode::s_mov_b32, Definition(clobber_vcc.physReg().advance(4), s1),
+                           Operand::c32(0x55555555));
+
+               for (unsigned i = 0; i < 4; i++) {
+                  if (instr->operands[i].isUndefined() && instr->operands[i + 4].isUndefined()) {
+                     mrt0[i] = instr->operands[i];
+                     mrt1[i] = instr->operands[i + 4];
+                     continue;
+                  }
+
+                  Operand src0 = instr->operands[i];
+                  Operand src1 = instr->operands[i + 4];
+
+                  /* Swap odd, even lanes of mrt0. */
+                  Builder::Result ret =
+                     bld.vop1_dpp8(aco_opcode::v_mov_b32, Definition(dst0, v1), src0);
+                  for (unsigned j = 0; j < 8; j++) {
+                     ret.instr->dpp8().lane_sel[j] = j ^ 1;
+                  }
+
+                  /* Swap even lanes between mrt0 and mrt1. */
+                  bld.vop2(aco_opcode::v_cndmask_b32, tmp, Operand(dst0, v1), src1,
+                           Operand(clobber_vcc.physReg(), bld.lm));
+                  bld.vop2(aco_opcode::v_cndmask_b32, Definition(dst1, v1), src1, Operand(dst0, v1),
+                           Operand(clobber_vcc.physReg(), bld.lm));
+
+                  /* Swap odd, even lanes of mrt0 again. */
+                  ret = bld.vop1_dpp8(aco_opcode::v_mov_b32, Definition(dst0, v1),
+                                      Operand(tmp.physReg(), v1));
+                  for (unsigned j = 0; j < 8; j++) {
+                     ret.instr->dpp8().lane_sel[j] = j ^ 1;
+                  }
+
+                  mrt0[i] = Operand(dst0, v1);
+                  mrt1[i] = Operand(dst1, v1);
+
+                  enabled_channels |= 1 << i;
+
+                  dst0 = dst0.advance(4);
+                  dst1 = dst1.advance(4);
+               }
+
+               bld.sop1(Builder::s_mov, Definition(exec, bld.lm),
+                        Operand(exec_tmp.physReg(), bld.lm));
+
+               /* Force export all channels when everything is undefined. */
+               if (!enabled_channels)
+                  enabled_channels = 0xf;
+
+               bld.exp(aco_opcode::exp, mrt0[0], mrt0[1], mrt0[2], mrt0[3], enabled_channels,
+                       V_008DFC_SQ_EXP_MRT + 21, false);
+               bld.exp(aco_opcode::exp, mrt1[0], mrt1[1], mrt1[2], mrt1[3], enabled_channels,
+                       V_008DFC_SQ_EXP_MRT + 22, false);
+               break;
+            }
             default: break;
             }
          } else if (instr->isBranch()) {
@@ -2384,7 +2521,15 @@ lower_to_hw_instr(Program* program)
             /* Check if the branch instruction can be removed.
              * This is beneficial when executing the next block with an empty exec mask
              * is faster than the branch instruction itself.
+             *
+             * Override this judgement when:
+             * - The application prefers to remove control flow
+             * - The compiler stack knows that it's a divergent branch always taken
              */
+            const bool prefer_remove =
+               (branch->selection_control == nir_selection_control_flatten ||
+                branch->selection_control == nir_selection_control_divergent_always_taken) &&
+               ctx.program->gfx_level >= GFX10;
             bool can_remove = block->index < target;
             unsigned num_scalar = 0;
             unsigned num_vector = 0;
@@ -2414,7 +2559,7 @@ lower_to_hw_instr(Program* program)
                         can_remove = false;
                   } else if (inst->isSALU()) {
                      num_scalar++;
-                  } else if (inst->isVALU() || inst->isVINTRP()) {
+                  } else if (inst->isVALU() || inst->isVINTRP() || inst->isVINTERP_INREG()) {
                      num_vector++;
                      /* VALU which writes SGPRs are always executed on GFX10+ */
                      if (ctx.program->gfx_level >= GFX10) {
@@ -2423,29 +2568,36 @@ lower_to_hw_instr(Program* program)
                               num_scalar++;
                         }
                      }
-                  } else if (inst->isVMEM() || inst->isFlatLike() || inst->isDS() ||
-                             inst->isEXP()) {
-                     // TODO: GFX6-9 can use vskip
+                  } else if (inst->isEXP()) {
+                     /* Export instructions with exec=0 can hang some GFX10+ (unclear on old GPUs). */
                      can_remove = false;
+                  } else if (inst->isVMEM() || inst->isFlatLike() || inst->isDS() ||
+                             inst->isLDSDIR()) {
+                     // TODO: GFX6-9 can use vskip
+                     can_remove = prefer_remove;
                   } else if (inst->isSMEM()) {
                      /* SMEM are at least as expensive as branches */
-                     can_remove = false;
+                     can_remove = prefer_remove;
                   } else if (inst->isBarrier()) {
-                     can_remove = false;
+                     can_remove = prefer_remove;
                   } else {
                      can_remove = false;
                      assert(false && "Pseudo instructions should be lowered by this point.");
                   }
 
-                  /* Under these conditions, we shouldn't remove the branch */
-                  unsigned est_cycles;
-                  if (ctx.program->gfx_level >= GFX10)
-                     est_cycles = num_scalar * 2 + num_vector;
-                  else
-                     est_cycles = num_scalar * 4 + num_vector * 4;
+                  if (!prefer_remove) {
+                     /* Under these conditions, we shouldn't remove the branch.
+                      * Don't care about the estimated cycles when the shader prefers flattening.
+                      */
+                     unsigned est_cycles;
+                     if (ctx.program->gfx_level >= GFX10)
+                        est_cycles = num_scalar * 2 + num_vector;
+                     else
+                        est_cycles = num_scalar * 4 + num_vector * 4;
 
-                  if (est_cycles > 16)
-                     can_remove = false;
+                     if (est_cycles > 16)
+                        can_remove = false;
+                  }
 
                   if (!can_remove)
                      break;

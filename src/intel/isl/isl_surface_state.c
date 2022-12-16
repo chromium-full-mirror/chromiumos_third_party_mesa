@@ -158,6 +158,25 @@ void
 isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
                             const struct isl_surf_fill_state_info *restrict info)
 {
+#ifndef NDEBUG
+   isl_surf_usage_flags_t _base_usage =
+      info->view->usage & (ISL_SURF_USAGE_RENDER_TARGET_BIT |
+                           ISL_SURF_USAGE_TEXTURE_BIT |
+                           ISL_SURF_USAGE_STORAGE_BIT);
+   /* They may only specify one of the above bits at a time */
+   assert(__builtin_popcount(_base_usage) == 1);
+   /* The only other allowed bit is ISL_SURF_USAGE_CUBE_BIT */
+   assert((info->view->usage & ~ISL_SURF_USAGE_CUBE_BIT) == _base_usage);
+#endif
+
+   if (info->surf->dim == ISL_SURF_DIM_3D) {
+      assert(info->view->base_array_layer + info->view->array_len <=
+             info->surf->logical_level0_px.depth);
+   } else {
+      assert(info->view->base_array_layer + info->view->array_len <=
+             info->surf->logical_level0_px.array_len);
+   }
+
    struct GENX(RENDER_SURFACE_STATE) s = { 0 };
 
    s.SurfaceType = get_surftype(info->surf->dim, info->view->usage);
@@ -343,9 +362,16 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    }
 
 #if GFX_VER >= 12
-   /* Wa_1806565034: Only set SurfaceArray if arrayed surface is > 1. */
+   /* Wa_1806565034:
+    *
+    *    "Only set SurfaceArray if arrayed surface is > 1."
+    *
+    * Since this is a performance workaround, we only enable it when robust
+    * image access is disabled. Otherwise layered robust access is not
+    * specification compliant.
+    */
    s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D &&
-      info->view->array_len > 1;
+      (info->robust_image_access || info->view->array_len > 1);
 #elif GFX_VER >= 7
    s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D;
 #endif
@@ -933,8 +959,8 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
 }
 
 void
-isl_genX(null_fill_state)(const struct isl_device *dev, void *state,
-                          const struct isl_null_fill_state_info *restrict info)
+isl_genX(null_fill_state_s)(const struct isl_device *dev, void *state,
+                            const struct isl_null_fill_state_info *restrict info)
 {
    struct GENX(RENDER_SURFACE_STATE) s = {
       .SurfaceType = SURFTYPE_NULL,

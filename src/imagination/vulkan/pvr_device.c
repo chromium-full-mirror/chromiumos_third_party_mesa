@@ -189,7 +189,7 @@ VkResult pvr_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
                              pAllocator);
    if (result != VK_SUCCESS) {
       vk_free(pAllocator, instance);
-      return vk_error(NULL, result);
+      return result;
    }
 
    pvr_process_debug_variable();
@@ -1124,16 +1124,66 @@ vk_icdGetPhysicalDeviceProcAddr(VkInstance _instance, const char *pName)
    return vk_instance_get_physical_device_proc_addr(&instance->vk, pName);
 }
 
-static VkResult pvr_device_init_compute_fence_program(struct pvr_device *device)
+static VkResult pvr_pds_compute_shader_create_and_upload(
+   struct pvr_device *device,
+   struct pvr_pds_compute_shader_program *program,
+   struct pvr_pds_upload *const pds_upload_out)
 {
    const struct pvr_device_info *dev_info = &device->pdevice->dev_info;
    const uint32_t cache_line_size = rogue_get_slc_cache_line_size(dev_info);
-   struct pvr_pds_compute_shader_program program = { 0U };
    size_t staging_buffer_size;
    uint32_t *staging_buffer;
    uint32_t *data_buffer;
    uint32_t *code_buffer;
    VkResult result;
+
+   /* Calculate how much space we'll need for the compute shader PDS program.
+    */
+   pvr_pds_compute_shader(program, NULL, PDS_GENERATE_SIZES, dev_info);
+
+   /* FIXME: Fix the below inconsistency of code size being in bytes whereas
+    * data size being in dwords.
+    */
+   /* Code size is in bytes, data size in dwords. */
+   staging_buffer_size =
+      program->data_size * sizeof(uint32_t) + program->code_size;
+
+   staging_buffer = vk_alloc(&device->vk.alloc,
+                             staging_buffer_size,
+                             8U,
+                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!staging_buffer)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   data_buffer = staging_buffer;
+   code_buffer = pvr_pds_compute_shader(program,
+                                        data_buffer,
+                                        PDS_GENERATE_DATA_SEGMENT,
+                                        dev_info);
+
+   pvr_pds_compute_shader(program,
+                          code_buffer,
+                          PDS_GENERATE_CODE_SEGMENT,
+                          dev_info);
+
+   result = pvr_gpu_upload_pds(device,
+                               data_buffer,
+                               program->data_size,
+                               PVRX(CDMCTRL_KERNEL1_DATA_ADDR_ALIGNMENT),
+                               code_buffer,
+                               program->code_size / sizeof(uint32_t),
+                               PVRX(CDMCTRL_KERNEL2_CODE_ADDR_ALIGNMENT),
+                               cache_line_size,
+                               pds_upload_out);
+
+   vk_free(&device->vk.alloc, staging_buffer);
+
+   return result;
+}
+
+static VkResult pvr_device_init_compute_fence_program(struct pvr_device *device)
+{
+   struct pvr_pds_compute_shader_program program = { 0U };
 
    STATIC_ASSERT(ARRAY_SIZE(program.local_input_regs) ==
                  ARRAY_SIZE(program.work_group_input_regs));
@@ -1153,44 +1203,10 @@ static VkResult pvr_device_init_compute_fence_program(struct pvr_device *device)
    program.fence = true;
    program.clear_pds_barrier = true;
 
-   /* Calculate how much space we'll need for the compute shader PDS program.
-    */
-   pvr_pds_set_sizes_compute_shader(&program, dev_info);
-
-   /* FIXME: Fix the below inconsistency of code size being in bytes whereas
-    * data size being in dwords.
-    */
-   /* Code size is in bytes, data size in dwords. */
-   staging_buffer_size =
-      program.data_size * sizeof(uint32_t) + program.code_size;
-
-   staging_buffer = vk_alloc(&device->vk.alloc,
-                             staging_buffer_size,
-                             8U,
-                             VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
-   if (!staging_buffer)
-      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-   data_buffer = staging_buffer;
-   code_buffer = pvr_pds_generate_compute_shader_data_segment(&program,
-                                                              data_buffer,
-                                                              dev_info);
-   pvr_pds_generate_compute_shader_code_segment(&program,
-                                                code_buffer,
-                                                dev_info);
-   result = pvr_gpu_upload_pds(device,
-                               data_buffer,
-                               program.data_size,
-                               PVRX(CDMCTRL_KERNEL1_DATA_ADDR_ALIGNMENT),
-                               code_buffer,
-                               program.code_size / sizeof(uint32_t),
-                               PVRX(CDMCTRL_KERNEL2_CODE_ADDR_ALIGNMENT),
-                               cache_line_size,
-                               &device->pds_compute_fence_program);
-
-   vk_free(&device->vk.alloc, staging_buffer);
-
-   return result;
+   return pvr_pds_compute_shader_create_and_upload(
+      device,
+      &program,
+      &device->pds_compute_fence_program);
 }
 
 static VkResult pvr_pds_idfwdf_programs_create_and_upload(
@@ -1620,29 +1636,12 @@ VkResult pvr_emit_ppp_from_template(
       return result;
    }
 
-#define CS_WRITE(_dst, cmd, val)                                      \
-   do {                                                               \
-      static_assert(sizeof(*(_dst)) == pvr_cmd_length(cmd) * 4,       \
-                    "Size mismatch");                                 \
-      static_assert(sizeof(*(_dst)) == sizeof(val), "Size mismatch"); \
-      *(_dst) = val;                                                  \
-      (_dst) += pvr_cmd_length(cmd);                                  \
-   } while (0)
-
-#define CS_PACK_WRITE(_dst, cmd, val)                           \
-   do {                                                         \
-      static_assert(sizeof(*(_dst)) == pvr_cmd_length(cmd) * 4, \
-                    "Size mismatch");                           \
-      pvr_cmd_pack(cmd)((_dst), val);                           \
-      (_dst) += pvr_cmd_length(cmd);                            \
-   } while (0)
-
    stream = (uint32_t *)pvr_bo->bo->map;
 
-   CS_WRITE(stream, TA_STATE_HEADER, template->header);
-   CS_PACK_WRITE(stream, TA_STATE_ISPCTL, &template->config.ispctl);
-   CS_PACK_WRITE(stream, TA_STATE_ISPA, &template->config.ispa);
-   CS_WRITE(stream, TA_STATE_ISPB, template->ispb);
+   pvr_csb_write_value(stream, TA_STATE_HEADER, template->header);
+   pvr_csb_write_struct(stream, TA_STATE_ISPCTL, &template->config.ispctl);
+   pvr_csb_write_struct(stream, TA_STATE_ISPA, &template->config.ispa);
+   pvr_csb_write_value(stream, TA_STATE_ISPB, template->ispb);
 
    if (template->requires_pds_state) {
       static_assert(sizeof(*stream) == sizeof((*template->config.pds_state)[0]),
@@ -1651,23 +1650,24 @@ VkResult pvr_emit_ppp_from_template(
          *stream++ = (*template->config.pds_state)[i];
    }
 
-   CS_PACK_WRITE(stream, TA_REGION_CLIP0, &template->config.region_clip0);
-   CS_PACK_WRITE(stream, TA_REGION_CLIP1, &template->config.region_clip1);
-   CS_WRITE(stream, TA_WCLAMP, base->wclamp);
-   CS_PACK_WRITE(stream, TA_OUTPUT_SEL, &template->config.output_sel);
-   CS_WRITE(stream, TA_STATE_VARYING0, base->varying_word[0]);
-   CS_WRITE(stream, TA_STATE_VARYING1, base->varying_word[1]);
-   CS_WRITE(stream, TA_STATE_VARYING2, base->varying_word[2]);
-   CS_WRITE(stream, TA_STATE_PPP_CTRL, base->ppp_ctrl);
-   CS_WRITE(stream, TA_STATE_STREAM_OUT0, base->stream_out0);
+   pvr_csb_write_struct(stream,
+                        TA_REGION_CLIP0,
+                        &template->config.region_clip0);
+   pvr_csb_write_struct(stream,
+                        TA_REGION_CLIP1,
+                        &template->config.region_clip1);
+   pvr_csb_write_value(stream, TA_WCLAMP, base->wclamp);
+   pvr_csb_write_struct(stream, TA_OUTPUT_SEL, &template->config.output_sel);
+   pvr_csb_write_value(stream, TA_STATE_VARYING0, base->varying_word[0]);
+   pvr_csb_write_value(stream, TA_STATE_VARYING1, base->varying_word[1]);
+   pvr_csb_write_value(stream, TA_STATE_VARYING2, base->varying_word[2]);
+   pvr_csb_write_value(stream, TA_STATE_PPP_CTRL, base->ppp_ctrl);
+   pvr_csb_write_value(stream, TA_STATE_STREAM_OUT0, base->stream_out0);
 
    assert((uint64_t)(stream - (uint32_t *)pvr_bo->bo->map) == dword_count);
 
    pvr_bo_cpu_unmap(device, pvr_bo);
    stream = NULL;
-
-#undef CS_PACK_WRITE
-#undef CS_WRITE
 
    pvr_csb_emit (csb, VDMCTRL_PPP_STATE0, state) {
       state.word_count = dword_count;
@@ -2576,19 +2576,75 @@ void pvr_DestroyEvent(VkDevice _device,
 
 VkResult pvr_GetEventStatus(VkDevice _device, VkEvent _event)
 {
-   assert(!"Unimplemented");
-   return VK_SUCCESS;
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   PVR_FROM_HANDLE(pvr_event, event, _event);
+   VkResult result;
+
+   switch (event->state) {
+   case PVR_EVENT_STATE_SET_BY_DEVICE:
+      if (!event->sync)
+         return VK_EVENT_RESET;
+
+      result =
+         vk_sync_wait(&device->vk, event->sync, 0U, VK_SYNC_WAIT_COMPLETE, 0);
+      result = (result == VK_SUCCESS) ? VK_EVENT_SET : VK_EVENT_RESET;
+      break;
+
+   case PVR_EVENT_STATE_RESET_BY_DEVICE:
+      if (!event->sync)
+         return VK_EVENT_RESET;
+
+      result =
+         vk_sync_wait(&device->vk, event->sync, 0U, VK_SYNC_WAIT_COMPLETE, 0);
+      result = (result == VK_SUCCESS) ? VK_EVENT_RESET : VK_EVENT_SET;
+      break;
+
+   case PVR_EVENT_STATE_SET_BY_HOST:
+      result = VK_EVENT_SET;
+      break;
+
+   case PVR_EVENT_STATE_RESET_BY_HOST:
+      result = VK_EVENT_RESET;
+      break;
+
+   default:
+      unreachable("Event object in unknown state");
+   }
+
+   return result;
 }
 
 VkResult pvr_SetEvent(VkDevice _device, VkEvent _event)
 {
-   assert(!"Unimplemented");
+   PVR_FROM_HANDLE(pvr_event, event, _event);
+
+   if (event->sync) {
+      PVR_FROM_HANDLE(pvr_device, device, _device);
+
+      const VkResult result = vk_sync_signal(&device->vk, event->sync, 0);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   event->state = PVR_EVENT_STATE_SET_BY_HOST;
+
    return VK_SUCCESS;
 }
 
 VkResult pvr_ResetEvent(VkDevice _device, VkEvent _event)
 {
-   assert(!"Unimplemented");
+   PVR_FROM_HANDLE(pvr_event, event, _event);
+
+   if (event->sync) {
+      PVR_FROM_HANDLE(pvr_device, device, _device);
+
+      const VkResult result = vk_sync_reset(&device->vk, event->sync);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   event->state = PVR_EVENT_STATE_RESET_BY_HOST;
+
    return VK_SUCCESS;
 }
 

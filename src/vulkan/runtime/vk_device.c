@@ -31,7 +31,7 @@
 #include "vk_sync.h"
 #include "vk_sync_timeline.h"
 #include "vk_util.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/hash_table.h"
 #include "util/ralloc.h"
 
@@ -90,6 +90,29 @@ collect_enabled_features(struct vk_device *device,
          const VkPhysicalDeviceFeatures2 *features = (const void *)ext;
          if (features->features.robustBufferAccess)
             device->enabled_features.robustBufferAccess = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_ROBUSTNESS_FEATURES: {
+         const VkPhysicalDeviceImageRobustnessFeatures *features = (void *)ext;
+         if (features->robustImageAccess)
+            device->enabled_features.robustImageAccess = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT: {
+         const VkPhysicalDeviceRobustness2FeaturesEXT *features = (void *)ext;
+         if (features->robustBufferAccess2)
+            device->enabled_features.robustBufferAccess2 = true;
+         if (features->robustImageAccess2)
+            device->enabled_features.robustImageAccess2 = true;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES: {
+         const VkPhysicalDeviceVulkan13Features *features = (void *)ext;
+         if (features->robustImageAccess)
+            device->enabled_features.robustImageAccess = true;
          break;
       }
 
@@ -177,7 +200,7 @@ vk_device_init(struct vk_device *device,
       break;
 
    case VK_DEVICE_TIMELINE_MODE_ASSISTED:
-      if (env_var_as_boolean("MESA_VK_ENABLE_SUBMIT_THREAD", false)) {
+      if (debug_get_bool_option("MESA_VK_ENABLE_SUBMIT_THREAD", false)) {
          device->submit_mode = VK_QUEUE_SUBMIT_MODE_THREADED;
       } else {
          device->submit_mode = VK_QUEUE_SUBMIT_MODE_THREADED_ON_DEMAND;
@@ -197,7 +220,7 @@ vk_device_init(struct vk_device *device,
 }
 
 void
-vk_device_finish(UNUSED struct vk_device *device)
+vk_device_finish(struct vk_device *device)
 {
    /* Drivers should tear down their own queues */
    assert(list_is_empty(&device->queues));
@@ -315,7 +338,7 @@ _vk_device_set_lost(struct vk_device *device,
    vk_logd(VK_LOG_OBJS(device), "Timeline mode is %s.",
            timeline_mode_str(device));
 
-   if (env_var_as_boolean("MESA_VK_ABORT_ON_DEVICE_LOSS", false))
+   if (debug_get_bool_option("MESA_VK_ABORT_ON_DEVICE_LOSS", false))
       abort();
 
    return VK_ERROR_DEVICE_LOST;

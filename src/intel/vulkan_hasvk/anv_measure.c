@@ -28,7 +28,7 @@
 #include <sys/types.h>
 
 #include "common/intel_measure.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 
 struct anv_measure_batch {
    struct anv_bo *bo;
@@ -226,7 +226,7 @@ state_changed(struct anv_cmd_buffer *cmd_buffer,
    /* else blorp, all programs NULL */
 
    return intel_measure_state_changed(&cmd_buffer->measure->base,
-                                      vs, tcs, tes, gs, fs, cs);
+                                      vs, tcs, tes, gs, fs, cs, 0, 0);
 }
 
 void

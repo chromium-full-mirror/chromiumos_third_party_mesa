@@ -782,7 +782,6 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_occlusion_query2),             PIPE_CAP_OCCLUSION_QUERY                  },
       { o(ARB_pipeline_statistics_query),    PIPE_CAP_QUERY_PIPELINE_STATISTICS        },
       { o(ARB_pipeline_statistics_query),    PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE },
-      { o(ARB_point_sprite),                 PIPE_CAP_POINT_SPRITE                     },
       { o(ARB_polygon_offset_clamp),         PIPE_CAP_POLYGON_OFFSET_CLAMP             },
       { o(ARB_post_depth_coverage),          PIPE_CAP_POST_DEPTH_COVERAGE              },
       { o(ARB_query_buffer_object),          PIPE_CAP_QUERY_BUFFER_OBJECT              },
@@ -961,6 +960,13 @@ void st_init_extensions(struct pipe_screen *screen,
           PIPE_FORMAT_LATC2_UNORM,
           PIPE_FORMAT_LATC2_SNORM } },
 
+      /* LATC software fallback support. */
+      { { o(EXT_texture_compression_latc) },
+        { PIPE_FORMAT_L8_UNORM,
+          PIPE_FORMAT_L8_SNORM,
+          PIPE_FORMAT_L8A8_UNORM,
+          PIPE_FORMAT_L8A8_SNORM } },
+
       { { o(EXT_texture_compression_s3tc),
           o(ANGLE_texture_compression_dxt) },
         { PIPE_FORMAT_DXT1_RGB,
@@ -1063,6 +1069,9 @@ void st_init_extensions(struct pipe_screen *screen,
 
       { { o(ATI_texture_compression_3dc) },
         { PIPE_FORMAT_LATC2_UNORM } },
+
+      { { o(ATI_texture_compression_3dc) },
+        { PIPE_FORMAT_L8A8_UNORM } },
 
       { { o(MESA_ycbcr_texture) },
         { PIPE_FORMAT_UYVY,
@@ -1836,7 +1845,4 @@ void st_init_extensions(struct pipe_screen *screen,
        screen->get_param(screen, PIPE_CAP_DOUBLES) &&
        !(nir_options->lower_doubles_options & nir_lower_fp64_full_software))
       extensions->NV_copy_depth_to_color = TRUE;
-
-   if (prefer_nir)
-         extensions->ARB_point_sprite = GL_TRUE;
 }

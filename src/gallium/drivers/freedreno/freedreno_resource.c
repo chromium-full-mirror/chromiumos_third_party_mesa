@@ -85,6 +85,18 @@ rebind_resource_in_ctx(struct fd_context *ctx,
       }
    }
 
+   /* xfb/so buffers: */
+   if (rsc->dirty & FD_DIRTY_STREAMOUT) {
+      struct fd_streamout_stateobj *so = &ctx->streamout;
+
+      for (unsigned i = 0;
+            i < so->num_targets && !(ctx->dirty & FD_DIRTY_STREAMOUT);
+            i++) {
+         if (so->targets[i]->buffer == prsc)
+            fd_context_dirty(ctx, FD_DIRTY_STREAMOUT);
+      }
+   }
+
    const enum fd_dirty_3d_state per_stage_dirty =
       FD_DIRTY_CONST | FD_DIRTY_TEX | FD_DIRTY_IMAGE | FD_DIRTY_SSBO;
 
@@ -889,14 +901,15 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
          /* try shadowing only if it avoids a flush, otherwise staging would
           * be better:
           */
-         if (needs_flush && fd_try_shadow_resource(ctx, rsc, level, box,
-                                                   DRM_FORMAT_MOD_LINEAR)) {
+         if (needs_flush && !(usage & TC_TRANSFER_MAP_NO_INVALIDATE) &&
+               fd_try_shadow_resource(ctx, rsc, level, box, DRM_FORMAT_MOD_LINEAR)) {
             needs_flush = busy = false;
             ctx->stats.shadow_uploads++;
          } else {
             struct fd_resource *staging_rsc = NULL;
 
             if (needs_flush) {
+               perf_debug_ctx(ctx, "flushing: %" PRSC_FMT, PRSC_ARGS(prsc));
                flush_resource(ctx, rsc, usage);
                needs_flush = false;
             }
@@ -1080,6 +1093,9 @@ fd_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
 
    rsc->b.is_shared = true;
 
+   if (prsc->target == PIPE_BUFFER)
+      tc_buffer_disable_cpu_storage(&rsc->b.b);
+
    handle->modifier = fd_resource_modifier(rsc);
 
    DBG("%" PRSC_FMT ", modifier=%" PRIx64, PRSC_ARGS(prsc), handle->modifier);
@@ -1147,7 +1163,9 @@ alloc_resource_struct(struct pipe_screen *pscreen,
 
    pipe_reference_init(&rsc->track->reference, 1);
 
-   threaded_resource_init(prsc, false);
+   bool allow_cpu_storage = (tmpl->target == PIPE_BUFFER) &&
+                            (tmpl->width0 < 0x1000);
+   threaded_resource_init(prsc, allow_cpu_storage);
 
    if (tmpl->target == PIPE_BUFFER)
       rsc->b.buffer_id_unique = util_idalloc_mt_alloc(&screen->buffer_ids);
@@ -1411,6 +1429,9 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
    if (!rsc)
       return NULL;
 
+   if (tmpl->target == PIPE_BUFFER)
+      tc_buffer_disable_cpu_storage(&rsc->b.b);
+
    struct fdl_slice *slice = fd_resource_slice(rsc, 0);
    struct pipe_resource *prsc = &rsc->b.b;
 
@@ -1660,7 +1681,6 @@ void
 fd_resource_screen_init(struct pipe_screen *pscreen)
 {
    struct fd_screen *screen = fd_screen(pscreen);
-   bool fake_rgtc = screen->gen < 4;
 
    pscreen->resource_create = u_transfer_helper_resource_create;
    /* NOTE: u_transfer_helper does not yet support the _with_modifiers()
@@ -1674,8 +1694,7 @@ fd_resource_screen_init(struct pipe_screen *pscreen)
    pscreen->transfer_helper =
       u_transfer_helper_create(&transfer_vtbl,
                                U_TRANSFER_HELPER_SEPARATE_Z32S8 |
-                               U_TRANSFER_HELPER_MSAA_MAP |
-                               (fake_rgtc ? U_TRANSFER_HELPER_FAKE_RGTC : 0));
+                               U_TRANSFER_HELPER_MSAA_MAP);
 
    if (!screen->layout_resource_for_modifier)
       screen->layout_resource_for_modifier = fd_layout_resource_for_modifier;

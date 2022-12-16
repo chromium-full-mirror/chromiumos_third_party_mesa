@@ -153,7 +153,6 @@ anv_shader_stage_to_nir(struct anv_device *device,
 
    const nir_opt_access_options opt_access_options = {
       .is_vulkan = true,
-      .infer_non_readable = true,
    };
    NIR_PASS(_, nir, nir_opt_access, &opt_access_options);
 
@@ -162,7 +161,9 @@ anv_shader_stage_to_nir(struct anv_device *device,
    /* Vulkan uses the separate-shader linking model */
    nir->info.separate_shader = true;
 
-   brw_preprocess_nir(compiler, nir, NULL);
+   struct brw_nir_compiler_opts opts = {};
+
+   brw_preprocess_nir(compiler, nir, &opts);
 
    return nir;
 }
@@ -1168,7 +1169,7 @@ anv_graphics_pipeline_init_keys(struct anv_graphics_pipeline *pipeline,
 
       int64_t stage_start = os_time_get_nano();
 
-      vk_pipeline_hash_shader_stage(stages[s].info, stages[s].shader_sha1);
+      vk_pipeline_hash_shader_stage(stages[s].info, NULL, stages[s].shader_sha1);
 
       const struct anv_device *device = pipeline->base.device;
       switch (stages[s].stage) {
@@ -1573,8 +1574,9 @@ done:
    if (create_feedback) {
       *create_feedback->pPipelineCreationFeedback = pipeline_feedback;
 
-      assert(info->stageCount == create_feedback->pipelineStageCreationFeedbackCount);
-      for (uint32_t i = 0; i < info->stageCount; i++) {
+      uint32_t stage_count = create_feedback->pipelineStageCreationFeedbackCount;
+      assert(stage_count == 0 || info->stageCount == stage_count);
+      for (uint32_t i = 0; i < stage_count; i++) {
          gl_shader_stage s = vk_to_mesa_shader_stage(info->pStages[i].stage);
          create_feedback->pPipelineStageCreationFeedbacks[i] = stages[s].feedback;
       }
@@ -1619,7 +1621,7 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
          .flags = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT,
       },
    };
-   vk_pipeline_hash_shader_stage(&info->stage, stage.shader_sha1);
+   vk_pipeline_hash_shader_stage(&info->stage, NULL, stage.shader_sha1);
 
    struct anv_shader_bin *bin = NULL;
 
@@ -1679,7 +1681,7 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
        * subgroup than we choose for the execution.
        */
       if (device->physical->instance->assume_full_subgroups &&
-          stage.nir->info.cs.uses_wide_subgroup_intrinsics &&
+          stage.nir->info.uses_wide_subgroup_intrinsics &&
           stage.nir->info.subgroup_size == SUBGROUP_SIZE_API_CONSTANT &&
           local_size &&
           local_size % BRW_SUBGROUP_SIZE == 0)
@@ -1752,8 +1754,10 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
    if (create_feedback) {
       *create_feedback->pPipelineCreationFeedback = pipeline_feedback;
 
-      assert(create_feedback->pipelineStageCreationFeedbackCount == 1);
-      create_feedback->pPipelineStageCreationFeedbacks[0] = stage.feedback;
+      if (create_feedback->pipelineStageCreationFeedbackCount) {
+         assert(create_feedback->pipelineStageCreationFeedbackCount == 1);
+         create_feedback->pPipelineStageCreationFeedbacks[0] = stage.feedback;
+      }
    }
 
    pipeline->cs = bin;
@@ -1892,7 +1896,8 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
    vk_dynamic_graphics_state_fill(&pipeline->dynamic_state, state);
 
    pipeline->depth_clamp_enable = state->rs->depth_clamp_enable;
-   pipeline->depth_clip_enable = state->rs->depth_clip_enable;
+   pipeline->depth_clip_enable =
+      vk_rasterization_state_depth_clip_enable(state->rs);
    pipeline->view_mask = state->rp->view_mask;
 
    result = anv_graphics_pipeline_compile(pipeline, cache, pCreateInfo, state);
@@ -1931,7 +1936,7 @@ anv_graphics_pipeline_init(struct anv_graphics_pipeline *pipeline,
       pipeline->instance_multiplier = util_bitcount(pipeline->view_mask);
 
    pipeline->negative_one_to_one =
-      state->vp != NULL && state->vp->negative_one_to_one;
+      state->vp != NULL && state->vp->depth_clip_negative_one_to_one;
 
    /* Store line mode, polygon mode and rasterization samples, these are used
     * for dynamic primitive topology.

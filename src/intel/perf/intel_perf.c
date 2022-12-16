@@ -368,13 +368,8 @@ compute_topology_builtins(struct intel_perf_config *perf)
       }
    }
 
-   for (int i = 0; i < sizeof(devinfo->subslice_masks[i]); i++) {
-      perf->sys_vars.n_eu_sub_slices +=
-         util_bitcount(devinfo->subslice_masks[i]);
-   }
-
-   for (int i = 0; i < sizeof(devinfo->eu_masks); i++)
-      perf->sys_vars.n_eus += util_bitcount(devinfo->eu_masks[i]);
+   perf->sys_vars.n_eu_sub_slices = intel_device_info_subslice_total(devinfo);
+   perf->sys_vars.n_eus = intel_device_info_eu_total(devinfo);
 
    /* The subslice mask builtin contains bits for all slices. Prior to Gfx11
     * it had groups of 3bits for each slice, on Gfx11 and above it's 8bits for
@@ -654,7 +649,7 @@ build_unique_counter_list(struct intel_perf_config *perf)
     * below contains pointers to this array.
     */
    struct intel_perf_query_counter_info *counter_infos =
-         ralloc_array_size(perf, sizeof(counter_infos[0]), max_counters);
+         rzalloc_array_size(perf, sizeof(counter_infos[0]), max_counters);
 
    perf->n_counters = 0;
 
@@ -1089,7 +1084,8 @@ intel_perf_query_result_accumulate(struct intel_perf_query_result *result,
                            result->accumulator + query->a_offset + 32 + i);
       }
 
-      if (can_use_mi_rpc_bc_counters(&query->perf->devinfo)) {
+      if (can_use_mi_rpc_bc_counters(&query->perf->devinfo) ||
+          !query->perf->sys_vars.query_mode) {
          /* 8x 32bit B counters */
          for (i = 0; i < 8; i++) {
             accumulate_uint32(start + 48 + i, end + 48 + i,

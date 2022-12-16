@@ -55,6 +55,8 @@ struct radv_meta_saved_state {
    struct radv_rendering_state render;
 
    unsigned active_pipeline_gds_queries;
+   unsigned active_prims_gen_gds_queries;
+   unsigned active_prims_xfb_gds_queries;
 
    bool predicating;
 };
@@ -265,8 +267,8 @@ nir_builder PRINTFLIKE(3, 4)
 nir_shader *radv_meta_build_nir_vs_generate_vertices(struct radv_device *dev);
 nir_shader *radv_meta_build_nir_fs_noop(struct radv_device *dev);
 
-void radv_meta_build_resolve_shader_core(nir_builder *b, bool is_integer, int samples,
-                                         nir_variable *input_img, nir_variable *color,
+void radv_meta_build_resolve_shader_core(struct radv_device *device, nir_builder *b, bool is_integer,
+                                         int samples, nir_variable *input_img, nir_variable *color,
                                          nir_ssa_def *img_coord);
 
 nir_ssa_def *radv_meta_load_descriptor(nir_builder *b, unsigned desc_set, unsigned binding);

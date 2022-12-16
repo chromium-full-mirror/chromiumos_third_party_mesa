@@ -83,7 +83,6 @@ if with_tools.contains('all')
     'lima',
     'nir',
     'nouveau',
-    'xvmc',
     'asahi',
     'imagination',
   ]
@@ -174,7 +173,12 @@ with_any_opengl = with_opengl or with_gles1 or with_gles2
 # Only build shared_glapi if at least one OpenGL API is enabled
 with_shared_glapi = with_shared_glapi and with_any_opengl
 
-system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos'].contains(host_machine.system())
+system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android'].contains(host_machine.system())
+
+with_freedreno_kgsl = get_option('freedreno-kgsl')
+if with_freedreno_kgsl
+  system_has_kms_drm = false
+endif
 
 dri_drivers = get_option('dri-drivers')
 if dri_drivers.length() != 0
@@ -235,7 +239,11 @@ foreach gallium_driver : gallium_drivers
 endforeach
 
 with_gallium = gallium_drivers.length() != 0
-with_gallium_kmsro = with_gallium_v3d or with_gallium_vc4 or with_gallium_etnaviv or with_gallium_panfrost or with_gallium_lima or with_gallium_freedreno
+with_gallium_kmsro = with_gallium_v3d or with_gallium_vc4 or with_gallium_etnaviv or with_gallium_panfrost or with_gallium_lima or with_gallium_freedreno or with_gallium_asahi
+
+if not system_has_kms_drm
+   with_gallium_kmsro = false
+endif
 
 with_dri = false
 if with_gallium and system_has_kms_drm
@@ -275,7 +283,6 @@ with_freedreno_vk = _vulkan_drivers.contains('freedreno')
 with_panfrost_vk = _vulkan_drivers.contains('panfrost')
 with_swrast_vk = _vulkan_drivers.contains('swrast')
 with_virtio_vk = _vulkan_drivers.contains('virtio-experimental')
-with_freedreno_kgsl = get_option('freedreno-kgsl')
 with_freedreno_virtio = get_option('freedreno-virtio')
 with_broadcom_vk = _vulkan_drivers.contains('broadcom')
 with_imagination_vk = _vulkan_drivers.contains('imagination-experimental')
@@ -297,7 +304,13 @@ if with_aco_tests and not with_amd_vk
 endif
 
 with_microsoft_clc = get_option('microsoft-clc').enabled()
-with_intel_clc = get_option('intel-clc').enabled()
+if ['x86_64'].contains(host_machine.cpu_family())
+  with_intel_clc = get_option('intel-clc').enabled()
+  with_intel_vk_rt = with_intel_vk and with_intel_clc
+else
+  with_intel_clc = false
+  with_intel_vk_rt = false
+endif
 with_clc = with_microsoft_clc or with_intel_clc
 with_libclc = with_clc
 with_spirv_to_dxil = get_option('spirv-to-dxil')
@@ -620,7 +633,7 @@ if with_gallium_d3d12 or with_microsoft_clc or with_microsoft_vk
   dep_dxheaders = dependency('directx-headers', required : false)
   if not dep_dxheaders.found()
     dep_dxheaders = dependency('DirectX-Headers',
-      version : '>= 1.602.0',
+      version : '>= 1.606.4',
       fallback : ['DirectX-Headers', 'dep_dxheaders'],
       required : with_gallium_d3d12 or with_microsoft_vk
     )
@@ -655,9 +668,9 @@ elif not with_platform_x11
     _vdpau = 'disabled'
   endif
 elif not (with_gallium_r300 or with_gallium_r600 or with_gallium_radeonsi or
-          with_gallium_nouveau or with_gallium_d3d12_video)
+          with_gallium_nouveau or with_gallium_d3d12_video or with_gallium_virgl)
   if _vdpau == 'enabled'
-    error('VDPAU state tracker requires at least one of the following gallium drivers: r300, r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video).')
+    error('VDPAU state tracker requires at least one of the following gallium drivers: r300, r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video, virgl).')
   else
     _vdpau = 'disabled'
   endif
@@ -689,47 +702,7 @@ if with_vulkan_overlay_layer or with_aco_tests or with_amd_vk
   endif
 endif
 
-_xvmc = get_option('gallium-xvmc')
-if _xvmc == 'true'
-  _xvmc = 'enabled'
-  warning('gallium-xvmc option "true" deprecated, please use "enabled" instead.')
-elif _xvmc == 'false'
-  _xvmc = 'disabled'
-  warning('gallium-xvmc option "false" deprecated, please use "disabled" instead.')
-endif
-if not system_has_kms_drm
-  if _xvmc == 'enabled'
-    error('XVMC state tracker can only be build on unix-like OSes.')
-  else
-    _xvmc = 'disabled'
-  endif
-elif not with_platform_x11
-  if _xvmc == 'enabled'
-    error('XVMC state tracker requires X11 support.')
-  else
-    _xvmc = 'disabled'
-  endif
-elif not (with_gallium_r600 or with_gallium_nouveau)
-  if _xvmc == 'enabled'
-    error('XVMC state tracker requires at least one of the following gallium drivers: r600, nouveau.')
-  else
-    _xvmc = 'disabled'
-  endif
-endif
-dep_xvmc = null_dep
 dep_xv = null_dep
-with_gallium_xvmc = false
-if _xvmc != 'disabled'
-  dep_xvmc = dependency('xvmc', version : '>= 1.0.6', required : _xvmc == 'enabled')
-  dep_xv = dependency('xv', required : _xvmc == 'enabled')
-  with_gallium_xvmc = dep_xvmc.found() and dep_xv.found()
-endif
-
-xvmc_drivers_path = get_option('xvmc-libs-path')
-if xvmc_drivers_path == ''
-  xvmc_drivers_path = get_option('libdir')
-endif
-
 _omx = get_option('gallium-omx')
 if not system_has_kms_drm
   if ['auto', 'disabled'].contains(_omx)
@@ -818,13 +791,7 @@ elif _va == 'false'
   _va = 'disabled'
   warning('gallium-va option "false" deprecated, please use "disabled" instead.')
 endif
-if not system_has_kms_drm
-  if _va == 'enabled'
-    error('VA state tracker can only be built on unix-like OSes.')
-  else
-    _va = 'disabled'
-  endif
-elif not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau or with_gallium_d3d12_video or with_gallium_virgl)
+if not (with_gallium_r600 or with_gallium_radeonsi or with_gallium_nouveau or with_gallium_d3d12_video or with_gallium_virgl)
   if _va == 'enabled'
     error('VA state tracker requires at least one of the following gallium drivers: r600, radeonsi, nouveau, d3d12 (with option gallium-d3d12-video), virgl.')
   else
@@ -834,7 +801,11 @@ endif
 with_gallium_va = false
 dep_va = null_dep
 if _va != 'disabled'
-  dep_va = dependency('libva', version : '>= 1.8.0', required : _va == 'enabled')
+  _dep_va_name = 'libva'
+  if host_machine.system() == 'windows'
+    _dep_va_name = 'libva-win32'
+  endif
+  dep_va = dependency(_dep_va_name, version : '>= 1.8.0', required : _va == 'enabled')
   if dep_va.found()
     dep_va_headers = dep_va.partial_dependency(compile_args : true)
     with_gallium_va = true
@@ -976,7 +947,7 @@ endif
 
 gl_pkgconfig_c_flags = []
 if with_platform_x11
-  if with_glx == 'xlib' or with_glx == 'gallium-xlib'
+  if with_glx == 'xlib'
     pre_args += '-DUSE_XSHM'
   else
     pre_args += '-DGLX_INDIRECT_RENDERING'
@@ -991,9 +962,6 @@ if with_platform_x11
       pre_args += '-DGLX_USE_WINDOWSGL'
     endif
   endif
-else
-  pre_args += '-DEGL_NO_X11'
-  gl_pkgconfig_c_flags += '-DEGL_NO_X11'
 endif
 
 with_android_stub = get_option('android-stub')
@@ -1453,7 +1421,6 @@ functions_to_detect = {
   'flock': '',
   'strtok_r': '',
   'getrandom': '',
-  'qsort_r': '',
   'qsort_s': '',
 }
 
@@ -1462,6 +1429,37 @@ foreach f, prefix: functions_to_detect
     pre_args += '-DHAVE_@0@'.format(f.to_upper())
   endif
 endforeach
+
+if cpp.links('''
+    #define _GNU_SOURCE
+    #include <stdlib.h>
+
+    static int dcomp(const void *l, const void *r, void *t) { return 0; }
+
+    int main(int ac, char **av) {
+      int arr[] = { 1 };
+      void *t = NULL;
+      qsort_r((void*)&arr[0], 1, 1, dcomp, t);
+      return (0);
+    }''',
+    args : pre_args,
+    name : 'GNU qsort_r')
+  pre_args += '-DHAVE_GNU_QSORT_R'
+elif cpp.links('''
+    #include <stdlib.h>
+
+    static int dcomp(void *t, const void *l, const void *r) { return 0; }
+
+    int main(int ac, char **av) {
+      int arr[] = { 1 };
+      void *t = NULL;
+      qsort_r((void*)&arr[0], 1, 1, t, dcomp);
+      return (0);
+    }''',
+    args : pre_args,
+    name : 'BSD qsort_r')
+  pre_args += '-DHAVE_BSD_QSORT_R'
+endif
 
 if cc.has_header_symbol('time.h', 'struct timespec')
    pre_args += '-DHAVE_STRUCT_TIMESPEC'
@@ -1608,8 +1606,15 @@ elif with_shader_cache
   error('Shader Cache requires compression')
 endif
 
-dep_thread = dependency('threads')
-if dep_thread.found() and host_machine.system() != 'windows'
+if host_machine.system() == 'windows'
+  # For MSVC and MinGW we aren't using pthreads, and dependency('threads') will add linkage
+  # to pthread for MinGW, so leave the dependency null_dep for Windows. For Windows linking to
+  # kernel32 is enough for c11/threads.h and it's already linked by meson by default
+  dep_thread = null_dep
+else
+  dep_thread = dependency('threads')
+endif
+if dep_thread.found()
   pre_args += '-DHAVE_PTHREAD'
   if host_machine.system() != 'netbsd' and cc.has_function(
       'pthread_setaffinity_np',
@@ -1626,6 +1631,10 @@ elif host_machine.system() != 'windows'
                          required: not with_platform_android)
 else
   dep_expat = null_dep
+endif
+# Predefined macros for windows
+if host_machine.system() == 'windows'
+  pre_args += '-DWIN32_LEAN_AND_MEAN' # http://msdn2.microsoft.com/en-us/library/6dwk3a1z.aspx
 endif
 # this only exists on linux so either this is linux and it will be found, or
 # it's not linux and wont
@@ -1647,7 +1656,7 @@ endif
 dep_futex = null_dep
 if host_machine.system() == 'windows'
   if (get_option('min-windows-version') < 8)
-    dep_futex = declare_dependency(compile_args : ['-DWINDOWS_NO_FUTEX'])
+    pre_args += '-DWINDOWS_NO_FUTEX'
   else
     dep_futex = cc.find_library('synchronization', required : true)
   endif
@@ -1741,7 +1750,9 @@ if draw_with_llvm
   llvm_modules += 'native'
 endif
 
-if with_amd_vk or with_gallium_radeonsi or with_gallium_opencl
+if with_intel_clc
+  _llvm_version = '>= 13.0.0'
+elif with_amd_vk or with_gallium_radeonsi or with_gallium_opencl
   _llvm_version = '>= 11.0.0'
 elif with_clc
   _llvm_version = '>= 10.0.0'
@@ -1858,12 +1869,18 @@ if with_opencl_spirv
 
   # Require an SPIRV-LLVM-Translator version compatible with the chosen LLVM
   # one.
+
+  # This first version check is still needed as maybe LLVM 8.0 was picked but
+  # we do not want to accept SPIRV-LLVM-Translator 8.0.0.1 as that version
+  # does not have the required API and those are only available starting from
+  # 8.0.1.3.
+  _llvmspirvlib_min_version = '>= 8.0.1.3'
+  if with_intel_clc
+    _llvmspirvlib_min_version = '>= 13.0.0.0'
+  endif
+
   _llvmspirvlib_version = [
-    # This first version check is still needed as maybe LLVM 8.0 was picked but
-    # we do not want to accept SPIRV-LLVM-Translator 8.0.0.1 as that version does
-    # not have the required API and those are only available starting from
-    # 8.0.1.3.
-    '>= 8.0.1.3',
+    _llvmspirvlib_min_version,
     '>= @0@.@1@'.format(chosen_llvm_version_major, chosen_llvm_version_minor),
     '< @0@.@1@'.format(chosen_llvm_version_major, chosen_llvm_version_minor + 1) ]
 
@@ -1881,7 +1898,7 @@ if with_clc
 
   dep_clang = cpp.find_library('clang-cpp', dirs : llvm_libdir, required : false)
 
-  if not dep_clang.found()
+  if not dep_clang.found() or not _shared_llvm
     clang_modules = [
       'clangBasic', 'clangAST', 'clangCodeGen', 'clangLex',
       'clangDriver', 'clangFrontend', 'clangFrontendTool',
@@ -1903,21 +1920,12 @@ if host_machine.system() == 'windows'
   dep_version = cpp.find_library('version')
 endif
 
-with_opencl_native = _opencl != 'disabled' and get_option('opencl-native')
-
-if (with_amd_vk or with_gallium_radeonsi or
-    (with_gallium_opencl and with_opencl_native) or
-    (with_gallium_r600 and with_llvm))
-  if with_platform_windows
-    dep_elf = dependency('libelf', required : false, fallback : ['libelf', 'libelf_dep'])
-  else
-    dep_elf = dependency('libelf', required : false)
-  endif
-  if not dep_elf.found()
-    dep_elf = cc.find_library('elf')
-  endif
-else
-  dep_elf = null_dep
+dep_elf = dependency('libelf', required : false)
+if not with_platform_windows and not dep_elf.found()
+  dep_elf = cc.find_library('elf', required : false)
+endif
+if dep_elf.found()
+  pre_args += '-DUSE_LIBELF'
 endif
 
 dep_glvnd = null_dep
@@ -2104,7 +2112,7 @@ endif
 
 with_dri3_modifiers = false
 if with_platform_x11
-  if with_glx == 'xlib' or with_glx == 'gallium-xlib'
+  if with_glx == 'xlib'
     dep_x11 = dependency('x11')
     dep_xext = dependency('xext')
     dep_xcb = dependency('xcb')
@@ -2117,7 +2125,7 @@ if with_platform_x11
     dep_xcb_shm = dependency('xcb-shm')
   endif
   if (with_any_vk or with_glx == 'dri' or with_egl or
-       (with_gallium_vdpau or with_gallium_xvmc or with_gallium_va or
+       (with_gallium_vdpau or with_gallium_va or
         with_gallium_omx != 'disabled'))
     dep_xcb = dependency('xcb')
     dep_x11_xcb = dependency('x11-xcb')
@@ -2141,7 +2149,7 @@ if with_platform_x11
       dep_xshmfence = dependency('xshmfence', version : '>= 1.1')
     endif
   endif
-  if with_glx == 'dri' or with_glx == 'gallium-xlib'
+  if with_glx == 'dri' or with_glx == 'xlib'
     dep_glproto = dependency('glproto', version : '>= 1.4.14')
   endif
   if with_glx == 'dri'
@@ -2154,7 +2162,7 @@ if with_platform_x11
   endif
   if (with_egl or
       with_dri3 or (
-      with_gallium_vdpau or with_gallium_xvmc or with_gallium_xa or
+      with_gallium_vdpau or with_gallium_xa or
       with_gallium_omx != 'disabled'))
     dep_xcb_xfixes = dependency('xcb-xfixes')
   endif
@@ -2223,7 +2231,7 @@ add_project_arguments(cpp_args, language : ['cpp'])
 
 gl_priv_reqs = []
 
-if with_glx == 'xlib' or with_glx == 'gallium-xlib'
+if with_glx == 'xlib'
   gl_priv_reqs += ['x11', 'xext', 'xcb']
 elif with_glx == 'dri'
   gl_priv_reqs += [
@@ -2354,6 +2362,7 @@ if with_any_vk
   if with_any_vulkan_layers
     lines += 'Vulkan layers:   ' + ' '.join(get_option('vulkan-layers'))
   endif
+  lines += 'Vulkan Intel Ray Tracing:  ' + (with_intel_vk_rt ? 'yes' : 'no')
 else
   lines += 'Vulkan drivers:  no'
 endif
@@ -2372,9 +2381,6 @@ if with_gallium
   gallium_st = ['mesa']
   if with_gallium_xa
     gallium_st += 'xa'
-  endif
-  if with_gallium_xvmc
-    gallium_st += 'xvmc'
   endif
   if with_gallium_vdpau
     gallium_st += 'vdpau'

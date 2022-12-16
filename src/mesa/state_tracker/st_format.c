@@ -124,7 +124,8 @@ st_mesa_format_to_pipe_format(const struct st_context *st,
                                                 PIPE_FORMAT_R8G8B8A8_UNORM;
    }
 
-   if ((_mesa_is_format_rgtc(mesaFormat) && !st->has_rgtc)) {
+   if ((_mesa_is_format_rgtc(mesaFormat) && !st->has_rgtc) ||
+       (_mesa_is_format_latc(mesaFormat) && !st->has_latc)) {
       switch (mesaFormat) {
       case MESA_FORMAT_R_RGTC1_UNORM:
          return PIPE_FORMAT_R8_UNORM;
@@ -134,6 +135,14 @@ st_mesa_format_to_pipe_format(const struct st_context *st,
          return PIPE_FORMAT_R8G8_UNORM;
       case MESA_FORMAT_RG_RGTC2_SNORM:
          return PIPE_FORMAT_R8G8_SNORM;
+      case MESA_FORMAT_L_LATC1_UNORM:
+         return PIPE_FORMAT_L8_UNORM;
+      case MESA_FORMAT_L_LATC1_SNORM:
+         return PIPE_FORMAT_L8_SNORM;
+      case MESA_FORMAT_LA_LATC2_UNORM:
+         return PIPE_FORMAT_L8A8_UNORM;
+      case MESA_FORMAT_LA_LATC2_SNORM:
+         return PIPE_FORMAT_L8A8_SNORM;
       default:
          unreachable("Unknown RGTC format");
       }
@@ -606,21 +615,28 @@ static const struct format_mapping format_map[] = {
       { PIPE_FORMAT_RGTC2_SNORM, 0 }
    },
    {
-      { GL_COMPRESSED_LUMINANCE, GL_COMPRESSED_LUMINANCE_LATC1_EXT, 0 },
+      { GL_COMPRESSED_LUMINANCE, 0 },
       { PIPE_FORMAT_LATC1_UNORM, PIPE_FORMAT_L8_UNORM, DEFAULT_RGBA_FORMATS }
    },
    {
-      { GL_COMPRESSED_SIGNED_LUMINANCE_LATC1_EXT, 0 },
-      { PIPE_FORMAT_LATC1_SNORM, DEFAULT_SNORM8_RGBA_FORMATS }
+      { GL_COMPRESSED_LUMINANCE_LATC1_EXT, 0 },
+      { PIPE_FORMAT_LATC1_UNORM, 0 }
    },
    {
-      { GL_COMPRESSED_LUMINANCE_ALPHA, GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT,
-        GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, 0 },
+      { GL_COMPRESSED_SIGNED_LUMINANCE_LATC1_EXT, 0 },
+      { PIPE_FORMAT_LATC1_SNORM, 0 }
+   },
+   {
+      { GL_COMPRESSED_LUMINANCE_ALPHA, GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI, 0 },
       { PIPE_FORMAT_LATC2_UNORM, PIPE_FORMAT_L8A8_UNORM, DEFAULT_RGBA_FORMATS }
    },
    {
+      { GL_COMPRESSED_LUMINANCE_ALPHA_LATC2_EXT, 0 },
+      { PIPE_FORMAT_LATC2_UNORM, 0 }
+   },
+   {
       { GL_COMPRESSED_SIGNED_LUMINANCE_ALPHA_LATC2_EXT, 0 },
-      { PIPE_FORMAT_LATC2_SNORM, DEFAULT_SNORM8_RGBA_FORMATS }
+      { PIPE_FORMAT_LATC2_SNORM, 0 }
    },
 
    /* ETC1 */

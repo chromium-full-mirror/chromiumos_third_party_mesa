@@ -57,12 +57,10 @@ static void
 anv_cmd_pipeline_state_finish(struct anv_cmd_buffer *cmd_buffer,
                               struct anv_cmd_pipeline_state *pipe_state)
 {
-   for (uint32_t i = 0; i < ARRAY_SIZE(pipe_state->push_descriptors); i++) {
-      if (pipe_state->push_descriptors[i]) {
-         anv_descriptor_set_layout_unref(cmd_buffer->device,
-             pipe_state->push_descriptors[i]->set.layout);
-         vk_free(&cmd_buffer->vk.pool->alloc, pipe_state->push_descriptors[i]);
-      }
+   if (pipe_state->push_descriptor) {
+      anv_descriptor_set_layout_unref(cmd_buffer->device,
+                                      pipe_state->push_descriptor->set.layout);
+      vk_free(&cmd_buffer->vk.pool->alloc, pipe_state->push_descriptor);
    }
 }
 
@@ -123,11 +121,16 @@ static VkResult anv_create_cmd_buffer(
       goto fail_vk;
 
    anv_state_stream_init(&cmd_buffer->surface_state_stream,
-                         &device->surface_state_pool, 4096);
+                         &device->internal_surface_state_pool, 4096);
    anv_state_stream_init(&cmd_buffer->dynamic_state_stream,
                          &device->dynamic_state_pool, 16384);
    anv_state_stream_init(&cmd_buffer->general_state_stream,
                          &device->general_state_pool, 16384);
+
+   int success = u_vector_init_pow2(&cmd_buffer->dynamic_bos, 8,
+                                    sizeof(struct anv_bo *));
+   if (!success)
+      goto fail_batch_bo;
 
    cmd_buffer->self_mod_locations = NULL;
 
@@ -141,6 +144,8 @@ static VkResult anv_create_cmd_buffer(
 
    return VK_SUCCESS;
 
+ fail_batch_bo:
+   anv_cmd_buffer_fini_batch_bo_chain(cmd_buffer);
  fail_vk:
    vk_command_buffer_finish(&cmd_buffer->vk);
  fail_alloc:
@@ -195,6 +200,12 @@ anv_cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
    anv_state_stream_finish(&cmd_buffer->dynamic_state_stream);
    anv_state_stream_finish(&cmd_buffer->general_state_stream);
 
+   while (u_vector_length(&cmd_buffer->dynamic_bos) > 0) {
+      struct anv_bo **bo = u_vector_remove(&cmd_buffer->dynamic_bos);
+      anv_device_release_bo(cmd_buffer->device, *bo);
+   }
+   u_vector_finish(&cmd_buffer->dynamic_bos);
+
    anv_cmd_state_finish(cmd_buffer);
 
    vk_free(&cmd_buffer->vk.pool->alloc, cmd_buffer->self_mod_locations);
@@ -215,7 +226,7 @@ anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer)
 
    anv_state_stream_finish(&cmd_buffer->surface_state_stream);
    anv_state_stream_init(&cmd_buffer->surface_state_stream,
-                         &cmd_buffer->device->surface_state_pool, 4096);
+                         &cmd_buffer->device->internal_surface_state_pool, 4096);
 
    anv_state_stream_finish(&cmd_buffer->dynamic_state_stream);
    anv_state_stream_init(&cmd_buffer->dynamic_state_stream,
@@ -224,6 +235,11 @@ anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer)
    anv_state_stream_finish(&cmd_buffer->general_state_stream);
    anv_state_stream_init(&cmd_buffer->general_state_stream,
                          &cmd_buffer->device->general_state_pool, 16384);
+
+   while (u_vector_length(&cmd_buffer->dynamic_bos) > 0) {
+      struct anv_bo **bo = u_vector_remove(&cmd_buffer->dynamic_bos);
+      anv_device_release_bo(cmd_buffer->device, *bo);
+   }
 
    anv_measure_reset(cmd_buffer);
 
@@ -302,13 +318,6 @@ set_dirty_for_bind_map(struct anv_cmd_buffer *cmd_buffer,
       cmd_buffer->state.push_constants_dirty |= mesa_to_vk_shader_stage(stage);
 }
 
-static inline uint32_t
-ilog2_round_up(uint32_t value)
-{
-   assert(value != 0);
-   return 32 - __builtin_clz(value - 1);
-}
-
 static void
 anv_cmd_buffer_set_ray_query_buffer(struct anv_cmd_buffer *cmd_buffer,
                                     struct anv_cmd_pipeline_state *pipeline_state,
@@ -324,7 +333,7 @@ anv_cmd_buffer_set_ray_query_buffer(struct anv_cmd_buffer *cmd_buffer,
    if (ray_shadow_size > 0 &&
        (!cmd_buffer->state.ray_query_shadow_bo ||
         cmd_buffer->state.ray_query_shadow_bo->size < ray_shadow_size)) {
-      unsigned shadow_size_log2 = MAX2(ilog2_round_up(ray_shadow_size), 16);
+      unsigned shadow_size_log2 = MAX2(util_logbase2_ceil(ray_shadow_size), 16);
       unsigned bucket = shadow_size_log2 - 16;
       assert(bucket < ARRAY_SIZE(device->ray_query_shadow_bos));
 
@@ -468,7 +477,7 @@ anv_cmd_buffer_bind_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
     *
     *    "Each element of pDescriptorSets must not have been allocated from a
     *     VkDescriptorPool with the
-    *     VK_DESCRIPTOR_POOL_CREATE_HOST_ONLY_BIT_VALVE flag set"
+    *     VK_DESCRIPTOR_POOL_CREATE_HOST_ONLY_BIT_EXT flag set"
     */
    assert(!set->pool || !set->pool->host_only);
 
@@ -574,7 +583,10 @@ anv_cmd_buffer_bind_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
       }
    }
 
-   cmd_buffer->state.descriptors_dirty |= dirty_stages;
+   if (set->is_push)
+      cmd_buffer->state.push_descriptors_dirty |= dirty_stages;
+   else
+      cmd_buffer->state.descriptors_dirty |= dirty_stages;
    cmd_buffer->state.push_constants_dirty |= dirty_stages;
 }
 
@@ -859,7 +871,7 @@ anv_cmd_buffer_push_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
    }
 
    struct anv_push_descriptor_set **push_set =
-      &pipe_state->push_descriptors[_set];
+      &pipe_state->push_descriptor;
 
    if (*push_set == NULL) {
       *push_set = vk_zalloc(&cmd_buffer->vk.pool->alloc,
@@ -879,7 +891,8 @@ anv_cmd_buffer_push_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
       anv_descriptor_set_layout_ref(layout);
       set->layout = layout;
    }
-   set->size = anv_descriptor_set_layout_size(layout, 0);
+   set->is_push = true;
+   set->size = anv_descriptor_set_layout_size(layout, false /* host_only */, 0);
    set->buffer_view_count = layout->buffer_view_count;
    set->descriptor_count = layout->descriptor_count;
    set->buffer_views = (*push_set)->buffer_views;
@@ -905,21 +918,6 @@ anv_cmd_buffer_push_descriptor_set(struct anv_cmd_buffer *cmd_buffer,
          .bo = cmd_buffer->dynamic_state_stream.state_pool->block_pool.bo,
          .offset = set->desc_mem.offset,
       };
-
-      enum isl_format format =
-         anv_isl_format_for_descriptor_type(cmd_buffer->device,
-                                            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
-
-      const struct isl_device *isl_dev = &cmd_buffer->device->isl_dev;
-      set->desc_surface_state =
-         anv_state_stream_alloc(&cmd_buffer->surface_state_stream,
-                                isl_dev->ss.size, isl_dev->ss.align);
-      anv_fill_buffer_surface_state(cmd_buffer->device,
-                                    set->desc_surface_state,
-                                    format, ISL_SWIZZLE_IDENTITY,
-                                    ISL_SURF_USAGE_CONSTANT_BUFFER_BIT,
-                                    set->desc_addr,
-                                    layout->descriptor_buffer_size, 1);
    }
 
    return set;
@@ -987,7 +985,6 @@ void anv_CmdPushDescriptorSetKHR(
             ANV_FROM_HANDLE(anv_buffer, buffer, write->pBufferInfo[j].buffer);
 
             anv_descriptor_set_write_buffer(cmd_buffer->device, set,
-                                            &cmd_buffer->surface_state_stream,
                                             write->descriptorType,
                                             buffer,
                                             write->dstBinding,
@@ -1030,8 +1027,8 @@ void anv_CmdPushDescriptorSetWithTemplateKHR(
     const void*                                 pData)
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
-   ANV_FROM_HANDLE(anv_descriptor_update_template, template,
-                   descriptorUpdateTemplate);
+   VK_FROM_HANDLE(vk_descriptor_update_template, template,
+                  descriptorUpdateTemplate);
    ANV_FROM_HANDLE(anv_pipeline_layout, layout, _layout);
 
    assert(_set < MAX_PUSH_DESCRIPTORS);
@@ -1045,7 +1042,6 @@ void anv_CmdPushDescriptorSetWithTemplateKHR(
       return;
 
    anv_descriptor_set_write_template(cmd_buffer->device, set,
-                                     &cmd_buffer->surface_state_stream,
                                      template,
                                      pData);
 
@@ -1073,7 +1069,7 @@ void anv_CmdSetRayTracingPipelineStackSizeKHR(
 
    uint32_t stack_ids_per_dss = 2048; /* TODO */
 
-   unsigned stack_size_log2 = ilog2_round_up(pipelineStackSize);
+   unsigned stack_size_log2 = util_logbase2_ceil(pipelineStackSize);
    if (stack_size_log2 < 10)
       stack_size_log2 = 10;
 

@@ -65,6 +65,7 @@
 #include "util/libsync.h"
 #include "util/os_file.h"
 #include "util/u_atomic.h"
+#include "util/u_call_once.h"
 #include "util/u_vector.h"
 #include "mapi/glapi/glapi.h"
 #include "util/bitscan.h"
@@ -133,15 +134,19 @@ dri_set_background_context(void *loaderPrivate)
 }
 
 static void
+dri2_gl_flush_get(_glapi_proc *glFlush)
+{
+   *glFlush = _glapi_get_proc_address("glFlush");
+}
+
+static void
 dri2_gl_flush()
 {
    static void (*glFlush)(void);
-   static mtx_t glFlushMutex = _MTX_INITIALIZER_NP;
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
 
-   mtx_lock(&glFlushMutex);
-   if (!glFlush)
-      glFlush = _glapi_get_proc_address("glFlush");
-   mtx_unlock(&glFlushMutex);
+   util_call_once_data(&once,
+      (util_call_once_data_func)dri2_gl_flush_get, &glFlush);
 
    /* if glFlush is not available things are horribly broken */
    if (!glFlush) {
@@ -653,12 +658,9 @@ dri2_add_pbuffer_configs_for_visuals(_EGLDisplay *disp)
 GLboolean
 dri2_validate_egl_image(void *image, void *data)
 {
-   _EGLDisplay *disp = data;
-   _EGLImage *img;
-
-   egl_lock(disp);
-   img = _eglLookupImage(image, disp);
-   egl_unlock(disp);
+   _EGLDisplay *disp = _eglLockDisplay(data);
+   _EGLImage *img = _eglLookupImage(image, disp);
+   _eglUnlockDisplay(disp);
 
    if (img == NULL) {
       _eglError(EGL_BAD_PARAMETER, "dri2_validate_egl_image");
@@ -1024,7 +1026,10 @@ dri2_setup_screen(_EGLDisplay *disp)
 
    disp->Extensions.EXT_protected_surface =
       dri2_renderer_query_integer(dri2_dpy,
-                                  __DRI2_RENDERER_HAS_PROTECTED_CONTENT);
+                                  __DRI2_RENDERER_HAS_PROTECTED_SURFACE);
+   disp->Extensions.EXT_protected_content =
+      dri2_renderer_query_integer(dri2_dpy,
+                                  __DRI2_RENDERER_HAS_PROTECTED_CONTEXT);
 }
 
 void
@@ -1478,6 +1483,11 @@ dri2_fill_context_attribs(struct dri2_egl_context *dri2_ctx,
       ctx_attribs[pos++] = true;
    }
 
+   if (dri2_ctx->base.Protected) {
+      ctx_attribs[pos++] = __DRI_CTX_ATTRIB_PROTECTED;
+      ctx_attribs[pos++] = true;
+   }
+
    *num_attribs = pos;
 
    return true;
@@ -1832,7 +1842,7 @@ dri2_make_current(_EGLDisplay *disp, _EGLSurface *dsurf,
    rdraw = (rsurf) ? dri2_dpy->vtbl->get_dri_drawable(rsurf) : NULL;
    cctx = (dri2_ctx) ? dri2_ctx->dri_context : NULL;
 
-   if (cctx || ddraw || rdraw) {
+   if (cctx) {
       if (!dri2_dpy->core->bindContext(cctx, ddraw, rdraw)) {
          _EGLContext *tmp_ctx;
 
@@ -2900,7 +2910,7 @@ dri2_query_dma_buf_modifiers(_EGLDisplay *disp, EGLint format,
       return dri2_egl_error_unlock(dri2_dpy, EGL_BAD_PARAMETER, "invalid value for max count of formats");
 
    if (max > 0 && modifiers == NULL)
-      dri2_egl_error_unlock(dri2_dpy, EGL_BAD_PARAMETER, "invalid modifiers array");
+      return dri2_egl_error_unlock(dri2_dpy, EGL_BAD_PARAMETER, "invalid modifiers array");
 
    if (dri2_dpy->image->base.version < 15 ||
        dri2_dpy->image->queryDmaBufModifiers == NULL) {
@@ -2944,6 +2954,7 @@ dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
    uint64_t modifier;
    bool has_modifier = false;
    unsigned error;
+   EGLint egl_error;
 
    /**
     * The spec says:
@@ -3031,7 +3042,10 @@ dri2_create_image_dma_buf(_EGLDisplay *disp, _EGLContext *ctx,
             &error,
             NULL);
    }
-   dri2_create_image_khr_texture_error(error);
+
+   egl_error = egl_error_from_dri_image_error(error);
+   if (egl_error != EGL_SUCCESS)
+      _eglError(egl_error, "createImageFromDmaBufs failed");
 
    if (!dri_image)
       return EGL_NO_IMAGE_KHR;
@@ -3810,6 +3824,20 @@ dri2_interop_export_object(_EGLDisplay *disp, _EGLContext *ctx,
    return dri2_dpy->interop->export_object(dri2_ctx->dri_context, in, out);
 }
 
+static int
+dri2_interop_flush_objects(_EGLDisplay *disp, _EGLContext *ctx,
+                           unsigned count, struct mesa_glinterop_export_in *objects,
+                           GLsync *sync)
+{
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   struct dri2_egl_context *dri2_ctx = dri2_egl_context(ctx);
+
+   if (!dri2_dpy->interop || dri2_dpy->interop->base.version < 2)
+      return MESA_GLINTEROP_UNSUPPORTED;
+
+   return dri2_dpy->interop->flush_objects(dri2_ctx->dri_context, count, objects, sync);
+}
+
 const _EGLDriver _eglDriver = {
    .Initialize = dri2_initialize,
    .Terminate = dri2_terminate,
@@ -3861,6 +3889,7 @@ const _EGLDriver _eglDriver = {
    .DestroySyncKHR = dri2_destroy_sync,
    .GLInteropQueryDeviceInfo = dri2_interop_query_device_info,
    .GLInteropExportObject = dri2_interop_export_object,
+   .GLInteropFlushObjects = dri2_interop_flush_objects,
    .DupNativeFenceFDANDROID = dri2_dup_native_fence_fd,
    .SetBlobCacheFuncsANDROID = dri2_set_blob_cache_funcs,
 };

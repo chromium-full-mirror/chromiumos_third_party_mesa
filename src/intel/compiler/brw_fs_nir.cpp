@@ -757,7 +757,7 @@ fs_visitor::resolve_inot_sources(const fs_builder &bld, nir_alu_instr *instr,
          assert(!op[i].negate);
          op[i].negate = true;
       } else {
-         op[i] = resolve_source_modifiers(op[i]);
+         op[i] = resolve_source_modifiers(bld, op[i]);
       }
    }
 }
@@ -1273,8 +1273,8 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
       fs_reg tmp = bld.vgrf(result.type);
 
       if (devinfo->ver >= 8) {
-         op[0] = resolve_source_modifiers(op[0]);
-         op[1] = resolve_source_modifiers(op[1]);
+         op[0] = resolve_source_modifiers(bld, op[0]);
+         op[1] = resolve_source_modifiers(bld, op[1]);
       }
 
       /* AVG(x, y) - ((x ^ y) & 1) */
@@ -1522,7 +1522,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr,
                unreachable("impossible opcode");
             }
          }
-         op[0] = resolve_source_modifiers(op[0]);
+         op[0] = resolve_source_modifiers(bld, op[0]);
       }
       bld.NOT(result, op[0]);
       break;
@@ -5113,6 +5113,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
          fs_reg handle = component(ubld.vgrf(BRW_REGISTER_TYPE_UD), 0);
          ubld.AND(handle, retype(brw_vec1_grf(0, 5), BRW_REGISTER_TYPE_UD),
                           brw_imm_ud(~0x3ffu));
+         srcs[SURFACE_LOGICAL_SRC_SURFACE] = brw_imm_ud(GFX125_NON_BINDLESS);
          srcs[SURFACE_LOGICAL_SRC_SURFACE_HANDLE] = handle;
       } else if (devinfo->ver >= 8) {
          srcs[SURFACE_LOGICAL_SRC_SURFACE] =
@@ -5179,6 +5180,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
          fs_reg handle = component(ubld.vgrf(BRW_REGISTER_TYPE_UD), 0);
          ubld.AND(handle, retype(brw_vec1_grf(0, 5), BRW_REGISTER_TYPE_UD),
                           brw_imm_ud(~0x3ffu));
+         srcs[SURFACE_LOGICAL_SRC_SURFACE] = brw_imm_ud(GFX125_NON_BINDLESS);
          srcs[SURFACE_LOGICAL_SRC_SURFACE_HANDLE] = handle;
       } else if (devinfo->ver >= 8) {
          srcs[SURFACE_LOGICAL_SRC_SURFACE] =
@@ -5920,6 +5922,18 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
    }
 }
 
+static fs_reg
+expand_to_32bit(const fs_builder &bld, const fs_reg &src)
+{
+   if (type_sz(src.type) == 2) {
+      fs_reg src32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+      bld.MOV(src32, retype(src, BRW_REGISTER_TYPE_UW));
+      return src32;
+   } else {
+      return src;
+   }
+}
+
 void
 fs_visitor::nir_emit_ssbo_atomic(const fs_builder &bld,
                                  int op, nir_intrinsic_instr *instr)
@@ -5930,7 +5944,8 @@ fs_visitor::nir_emit_ssbo_atomic(const fs_builder &bld,
     * descriptors provided for Qword atomic ops except for A64 messages.
     */
    assert(nir_dest_bit_size(instr->dest) == 32 ||
-          (nir_dest_bit_size(instr->dest) == 64 && devinfo->has_lsc));
+          (nir_dest_bit_size(instr->dest) == 64 && devinfo->has_lsc) ||
+          (nir_dest_bit_size(instr->dest) == 16 && devinfo->has_lsc));
 
    fs_reg dest;
    if (nir_intrinsic_infos[instr->intrinsic].has_dest)
@@ -5945,11 +5960,14 @@ fs_visitor::nir_emit_ssbo_atomic(const fs_builder &bld,
 
    fs_reg data;
    if (op != BRW_AOP_INC && op != BRW_AOP_DEC && op != BRW_AOP_PREDEC)
-      data = get_nir_src(instr->src[2]);
+      data = expand_to_32bit(bld, get_nir_src(instr->src[2]));
 
    if (op == BRW_AOP_CMPWR) {
       fs_reg tmp = bld.vgrf(data.type, 2);
-      fs_reg sources[2] = { data, get_nir_src(instr->src[3]) };
+      fs_reg sources[2] = {
+         data,
+         expand_to_32bit(bld, get_nir_src(instr->src[3]))
+      };
       bld.LOAD_PAYLOAD(tmp, sources, 2, 0);
       data = tmp;
    }
@@ -5957,8 +5975,25 @@ fs_visitor::nir_emit_ssbo_atomic(const fs_builder &bld,
 
    /* Emit the actual atomic operation */
 
-   bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL,
-            dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+   switch (nir_dest_bit_size(instr->dest)) {
+      case 16: {
+         fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL,
+                  retype(dest32, dest.type),
+                  srcs, SURFACE_LOGICAL_NUM_SRCS);
+         bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW),
+                 retype(dest32, BRW_REGISTER_TYPE_UD));
+         break;
+      }
+
+      case 32:
+      case 64:
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL,
+                  dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+         break;
+      default:
+         unreachable("Unsupported bit size");
+   }
 }
 
 void
@@ -5976,19 +6011,38 @@ fs_visitor::nir_emit_ssbo_atomic_float(const fs_builder &bld,
    srcs[SURFACE_LOGICAL_SRC_IMM_ARG] = brw_imm_ud(op);
    srcs[SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK] = brw_imm_ud(1);
 
-   fs_reg data = get_nir_src(instr->src[2]);
+   fs_reg data = expand_to_32bit(bld, get_nir_src(instr->src[2]));
    if (op == BRW_AOP_FCMPWR) {
       fs_reg tmp = bld.vgrf(data.type, 2);
-      fs_reg sources[2] = { data, get_nir_src(instr->src[3]) };
+      fs_reg sources[2] = {
+         data,
+         expand_to_32bit(bld, get_nir_src(instr->src[3]))
+      };
       bld.LOAD_PAYLOAD(tmp, sources, 2, 0);
       data = tmp;
    }
    srcs[SURFACE_LOGICAL_SRC_DATA] = data;
 
    /* Emit the actual atomic operation */
+   switch (nir_dest_bit_size(instr->dest)) {
+      case 16: {
+         fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL,
+                  retype(dest32, dest.type),
+                  srcs, SURFACE_LOGICAL_NUM_SRCS);
+         bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW),
+                 retype(dest32, BRW_REGISTER_TYPE_UD));
+         break;
+      }
 
-   bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL,
-            dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+      case 32:
+      case 64:
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL,
+                  dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+         break;
+      default:
+         unreachable("Unsupported bit size");
+   }
 }
 
 void
@@ -6007,10 +6061,13 @@ fs_visitor::nir_emit_shared_atomic(const fs_builder &bld,
 
    fs_reg data;
    if (op != BRW_AOP_INC && op != BRW_AOP_DEC && op != BRW_AOP_PREDEC)
-      data = get_nir_src(instr->src[1]);
+      data = expand_to_32bit(bld, get_nir_src(instr->src[1]));
    if (op == BRW_AOP_CMPWR) {
       fs_reg tmp = bld.vgrf(data.type, 2);
-      fs_reg sources[2] = { data, get_nir_src(instr->src[2]) };
+      fs_reg sources[2] = {
+         expand_to_32bit(bld, data),
+         expand_to_32bit(bld, get_nir_src(instr->src[2]))
+      };
       bld.LOAD_PAYLOAD(tmp, sources, 2, 0);
       data = tmp;
    }
@@ -6030,8 +6087,25 @@ fs_visitor::nir_emit_shared_atomic(const fs_builder &bld,
 
    /* Emit the actual atomic operation operation */
 
-   bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL,
-            dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+   switch (nir_dest_bit_size(instr->dest)) {
+      case 16: {
+         fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL,
+                  retype(dest32, dest.type),
+                  srcs, SURFACE_LOGICAL_NUM_SRCS);
+         bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW),
+                 retype(dest32, BRW_REGISTER_TYPE_UD));
+         break;
+      }
+
+      case 32:
+      case 64:
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL,
+                  dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+         break;
+      default:
+         unreachable("Unsupported bit size");
+   }
 }
 
 void
@@ -6048,10 +6122,13 @@ fs_visitor::nir_emit_shared_atomic_float(const fs_builder &bld,
    srcs[SURFACE_LOGICAL_SRC_IMM_ARG] = brw_imm_ud(op);
    srcs[SURFACE_LOGICAL_SRC_ALLOW_SAMPLE_MASK] = brw_imm_ud(1);
 
-   fs_reg data = get_nir_src(instr->src[1]);
+   fs_reg data = expand_to_32bit(bld, get_nir_src(instr->src[1]));
    if (op == BRW_AOP_FCMPWR) {
       fs_reg tmp = bld.vgrf(data.type, 2);
-      fs_reg sources[2] = { data, get_nir_src(instr->src[2]) };
+      fs_reg sources[2] = {
+         data,
+         expand_to_32bit(bld, get_nir_src(instr->src[2]))
+      };
       bld.LOAD_PAYLOAD(tmp, sources, 2, 0);
       data = tmp;
    }
@@ -6071,20 +6148,26 @@ fs_visitor::nir_emit_shared_atomic_float(const fs_builder &bld,
 
    /* Emit the actual atomic operation operation */
 
-   bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL,
-            dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
-}
+   switch (nir_dest_bit_size(instr->dest)) {
+      case 16: {
+         fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL,
+                  retype(dest32, dest.type),
+                  srcs, SURFACE_LOGICAL_NUM_SRCS);
+         bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW),
+                 retype(dest32, BRW_REGISTER_TYPE_UD));
+         break;
+      }
 
-static fs_reg
-expand_to_32bit(const fs_builder &bld, const fs_reg &src)
-{
-   if (type_sz(src.type) == 2) {
-      fs_reg src32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
-      bld.MOV(src32, retype(src, BRW_REGISTER_TYPE_UW));
-      return src32;
-   } else {
-      return src;
+      case 32:
+      case 64:
+         bld.emit(SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL,
+                  dest, srcs, SURFACE_LOGICAL_NUM_SRCS);
+         break;
+      default:
+         unreachable("Unsupported bit size");
    }
+
 }
 
 void
@@ -6120,7 +6203,8 @@ fs_visitor::nir_emit_global_atomic(const fs_builder &bld,
    switch (nir_dest_bit_size(instr->dest)) {
    case 16: {
       fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
-      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL, dest32,
+      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL,
+               retype(dest32, dest.type),
                srcs, A64_LOGICAL_NUM_SRCS);
       bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW), dest32);
       break;
@@ -6169,7 +6253,8 @@ fs_visitor::nir_emit_global_atomic_float(const fs_builder &bld,
    switch (nir_dest_bit_size(instr->dest)) {
    case 16: {
       fs_reg dest32 = bld.vgrf(BRW_REGISTER_TYPE_UD);
-      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL, dest32,
+      bld.emit(SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL,
+               retype(dest32, dest.type),
                srcs, A64_LOGICAL_NUM_SRCS);
       bld.MOV(retype(dest, BRW_REGISTER_TYPE_UW), dest32);
       break;

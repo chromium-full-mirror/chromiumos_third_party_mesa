@@ -50,7 +50,8 @@ etna_render_handle_incompatible(struct pipe_context *pctx,
    struct etna_resource *res = etna_resource(prsc);
    bool need_multitiled = screen->specs.pixel_pipes > 1 && !screen->specs.single_buffer;
    bool want_supertiled = screen->specs.can_supertile;
-   unsigned int min_tilesize = etna_screen_get_tile_size(screen, TS_MODE_128B);
+   unsigned int min_tilesize = etna_screen_get_tile_size(screen, TS_MODE_128B,
+                                                         prsc->nr_samples > 1);
 
    /* Resource is compatible if it is tiled or PE is able to render to linear
     * and has multi tiling when required.
@@ -157,7 +158,6 @@ etna_create_surface(struct pipe_context *pctx, struct pipe_resource *prsc,
       assert(layer_offset < surf->surf.ts_size);
 
       surf->surf.ts_offset += layer_offset;
-      surf->surf.ts_size -= layer_offset;
       surf->surf.ts_valid = false;
 
       surf->ts_reloc.bo = rsc->ts_bo;
@@ -178,7 +178,7 @@ etna_create_surface(struct pipe_context *pctx, struct pipe_resource *prsc,
             .dest_tiling = ETNA_LAYOUT_TILED,
             .dither = {0xffffffff, 0xffffffff},
             .width = 16,
-            .height = align(surf->surf.ts_size / 0x40, 4),
+            .height = align(lev->ts_layer_stride / 0x40, 4),
             .clear_value = {screen->specs.ts_clear_value},
             .clear_mode = VIVS_RS_CLEAR_CONTROL_MODE_ENABLED1,
             .clear_bits = 0xffff

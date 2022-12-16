@@ -23,7 +23,7 @@
 
 #include "vk_queue.h"
 
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include <inttypes.h>
 
 #include "vk_alloc.h"
@@ -129,7 +129,7 @@ _vk_queue_set_lost(struct vk_queue *queue,
 
    p_atomic_inc(&queue->base.device->_lost.lost);
 
-   if (env_var_as_boolean("MESA_VK_ABORT_ON_DEVICE_LOSS", false)) {
+   if (debug_get_bool_option("MESA_VK_ABORT_ON_DEVICE_LOSS", false)) {
       _vk_device_report_lost(queue->base.device);
       abort();
    }
@@ -679,7 +679,7 @@ vk_queue_submit(struct vk_queue *queue,
          sync = &semaphore->permanent;
       }
 
-      uint32_t wait_value = semaphore->type == VK_SEMAPHORE_TYPE_TIMELINE ?
+      uint64_t wait_value = semaphore->type == VK_SEMAPHORE_TYPE_TIMELINE ?
                             info->waits[i].value : 0;
 
       submit->waits[i] = (struct vk_sync_wait) {
@@ -746,7 +746,7 @@ vk_queue_submit(struct vk_queue *queue,
                      info->signals[i].semaphore);
 
       struct vk_sync *sync = vk_semaphore_get_active_sync(semaphore);
-      uint32_t signal_value = info->signals[i].value;
+      uint64_t signal_value = info->signals[i].value;
       if (semaphore->type == VK_SEMAPHORE_TYPE_TIMELINE) {
          if (signal_value == 0) {
             result = vk_queue_set_lost(queue,

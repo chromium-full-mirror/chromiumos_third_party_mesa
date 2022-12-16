@@ -498,8 +498,14 @@ emit_alu(struct etna_compile *c, nir_alu_instr * alu)
          src.neg = asrc->negate || (alu->op == nir_op_fneg);
          src.abs = asrc->abs || (alu->op == nir_op_fabs);
       } else {
-         assert(!asrc->negate && alu->op != nir_op_fneg);
+         assert(alu->op != nir_op_fneg);
          assert(!asrc->abs && alu->op != nir_op_fabs);
+
+         if (src.imm_type > 0)
+            assert(!asrc->negate);
+
+         if (asrc->negate && src.imm_type == 0)
+            src.imm_val ^= 0x80000;
       }
 
       srcs[i] = src;
@@ -1129,10 +1135,10 @@ etna_compile_shader(struct etna_shader_variant *v)
 
    NIR_PASS_V(s, nir_lower_alu_to_scalar, etna_alu_to_scalar_filter_cb, specs);
    nir_lower_idiv_options idiv_options = {
-      .imprecise_32bit_lowering = true,
       .allow_fp16 = true,
    };
    NIR_PASS_V(s, nir_lower_idiv, &idiv_options);
+   NIR_PASS_V(s, nir_lower_alu);
 
    etna_optimize_loop(s);
 

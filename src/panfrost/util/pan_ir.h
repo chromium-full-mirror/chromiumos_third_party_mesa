@@ -353,6 +353,9 @@ struct pan_shader_info {
         bool writes_global;
         uint64_t outputs_written;
 
+        /* Floating point controls that the driver should try to honour */
+        bool ftz_fp16, ftz_fp32;
+
         unsigned sampler_count;
         unsigned texture_count;
         unsigned ubo_count;
@@ -499,11 +502,15 @@ bool pan_has_dest_mod(nir_dest **dest, nir_op op);
 #define PAN_WRITEOUT_2 8
 
 bool pan_nir_lower_zs_store(nir_shader *nir);
+bool pan_nir_lower_store_component(nir_shader *shader);
 
 bool pan_nir_lower_64bit_intrin(nir_shader *shader);
 
 bool pan_lower_helper_invocation(nir_shader *shader);
 bool pan_lower_sample_pos(nir_shader *shader);
+bool pan_lower_xfb(nir_shader *nir);
+
+void pan_nir_collect_varyings(nir_shader *s, struct pan_shader_info *info);
 
 /*
  * Helper returning the subgroup size. Generally, this is equal to the number of

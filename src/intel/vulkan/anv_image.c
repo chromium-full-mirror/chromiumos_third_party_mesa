@@ -30,7 +30,7 @@
 #include "drm-uapi/drm_fourcc.h"
 
 #include "anv_private.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "vk_util.h"
 #include "util/u_math.h"
 
@@ -59,21 +59,28 @@ memory_range_end(struct anv_image_memory_range memory_range)
 static struct anv_image_binding *
 image_aspect_to_binding(struct anv_image *image, VkImageAspectFlags aspect)
 {
-   uint32_t plane;
+   uint32_t plane = 0;
 
    assert(image->disjoint);
 
    if (image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
       /* Spec requires special aspects for modifier images. */
-      assert(aspect >= VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT &&
-             aspect <= VK_IMAGE_ASPECT_MEMORY_PLANE_3_BIT_EXT);
+      assert(aspect == VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT ||
+             aspect == VK_IMAGE_ASPECT_MEMORY_PLANE_1_BIT_EXT ||
+             aspect == VK_IMAGE_ASPECT_MEMORY_PLANE_2_BIT_EXT ||
+             aspect == VK_IMAGE_ASPECT_MEMORY_PLANE_3_BIT_EXT);
 
       /* We don't advertise DISJOINT for modifiers with aux, and therefore we
        * don't handle queries of the modifier's "aux plane" here.
        */
       assert(!isl_drm_modifier_has_aux(image->vk.drm_format_mod));
 
-      plane = aspect - VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT;
+      switch(aspect) {
+         case VK_IMAGE_ASPECT_MEMORY_PLANE_0_BIT_EXT: plane = 0; break;
+         case VK_IMAGE_ASPECT_MEMORY_PLANE_1_BIT_EXT: plane = 1; break;
+         case VK_IMAGE_ASPECT_MEMORY_PLANE_2_BIT_EXT: plane = 2; break;
+         case VK_IMAGE_ASPECT_MEMORY_PLANE_3_BIT_EXT: plane = 3; break;
+      }
    } else {
       plane = anv_image_aspect_to_plane(image, aspect);
    }
@@ -2371,6 +2378,9 @@ anv_layout_to_fast_clear_type(const struct intel_device_info * const devinfo,
    enum isl_aux_state aux_state =
       anv_layout_to_aux_state(devinfo, image, aspect, layout);
 
+   const VkImageUsageFlags layout_usage =
+      vk_image_layout_to_usage_flags(layout, aspect);
+
    switch (aux_state) {
    case ISL_AUX_STATE_CLEAR:
       unreachable("We never use this state");
@@ -2389,6 +2399,12 @@ anv_layout_to_fast_clear_type(const struct intel_device_info * const devinfo,
           * must get partially resolved before we leave the render pass.
           */
          return ANV_FAST_CLEAR_ANY;
+      } else if (layout_usage & (VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
+         /* Fast clear with non zero color is not supported during transfer
+          * operations since transfer may do format reinterpretation.
+          */
+         return ANV_FAST_CLEAR_DEFAULT_VALUE;
       } else if (image->planes[plane].aux_usage == ISL_AUX_USAGE_MCS ||
                  image->planes[plane].aux_usage == ISL_AUX_USAGE_CCS_E) {
          if (devinfo->ver >= 11) {
@@ -2425,9 +2441,9 @@ anv_layout_to_fast_clear_type(const struct intel_device_info * const devinfo,
 
 
 static struct anv_state
-alloc_surface_state(struct anv_device *device)
+alloc_bindless_surface_state(struct anv_device *device)
 {
-   return anv_state_pool_alloc(&device->surface_state_pool, 64, 64);
+   return anv_state_pool_alloc(&device->bindless_surface_state_pool, 64, 64);
 }
 
 static enum isl_channel_select
@@ -2595,7 +2611,10 @@ anv_image_fill_surface_state(struct anv_device *device,
                           .mocs = anv_mocs(device, state_inout->address.bo,
                                            view_usage),
                           .x_offset_sa = tile_x_sa,
-                          .y_offset_sa = tile_y_sa);
+                          .y_offset_sa = tile_y_sa,
+                          .robust_image_access =
+                             device->vk.enabled_features.robustImageAccess ||
+                             device->vk.enabled_features.robustImageAccess2);
 
       /* With the exception of gfx8, the bottom 12 bits of the MCS base address
        * are used to store other information.  This should be ok, however,
@@ -2715,8 +2734,10 @@ anv_CreateImageView(VkDevice _device,
 
       if (iview->vk.usage & (VK_IMAGE_USAGE_SAMPLED_BIT |
                              VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)) {
-         iview->planes[vplane].optimal_sampler_surface_state.state = alloc_surface_state(device);
-         iview->planes[vplane].general_sampler_surface_state.state = alloc_surface_state(device);
+         iview->planes[vplane].optimal_sampler_surface_state.state =
+            alloc_bindless_surface_state(device);
+         iview->planes[vplane].general_sampler_surface_state.state =
+            alloc_bindless_surface_state(device);
 
          enum isl_aux_usage general_aux_usage =
             anv_layout_to_aux_usage(device->info, image, 1UL << iaspect_bit,
@@ -2748,7 +2769,8 @@ anv_CreateImageView(VkDevice _device,
             anv_layout_to_aux_usage(device->info, image, 1UL << iaspect_bit,
                                     VK_IMAGE_USAGE_STORAGE_BIT,
                                     VK_IMAGE_LAYOUT_GENERAL);
-         iview->planes[vplane].storage_surface_state.state = alloc_surface_state(device);
+         iview->planes[vplane].storage_surface_state.state =
+            alloc_bindless_surface_state(device);
          anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
                                       &iview->planes[vplane].isl,
                                       ISL_SURF_USAGE_STORAGE_BIT,
@@ -2756,10 +2778,9 @@ anv_CreateImageView(VkDevice _device,
                                       0,
                                       &iview->planes[vplane].storage_surface_state);
 
+         iview->planes[vplane].lowered_storage_surface_state.state =
+            alloc_bindless_surface_state(device);
          if (isl_is_storage_image_format(format.isl_format)) {
-            iview->planes[vplane].lowered_storage_surface_state.state =
-               alloc_surface_state(device);
-
             anv_image_fill_surface_state(device, image, 1ULL << iaspect_bit,
                                          &iview->planes[vplane].isl,
                                          ISL_SURF_USAGE_STORAGE_BIT,
@@ -2775,8 +2796,15 @@ anv_CreateImageView(VkDevice _device,
              */
             assert(isl_format_supports_typed_writes(device->info,
                                                     format.isl_format));
-            iview->planes[vplane].lowered_storage_surface_state.state =
-               device->null_surface_state;
+            isl_null_fill_state(&device->isl_dev,
+                                iview->planes[vplane].lowered_storage_surface_state.state.map,
+                                .size = {
+                                   .w = image->vk.extent.width,
+                                   .h = image->vk.extent.height,
+                                   .d = image->vk.extent.depth,
+                                });
+
+            iview->planes[vplane].lowered_surface_state_is_null = true;
          }
       }
    }
@@ -2797,27 +2825,23 @@ anv_DestroyImageView(VkDevice _device, VkImageView _iview,
       return;
 
    for (uint32_t plane = 0; plane < iview->n_planes; plane++) {
-      /* Check offset instead of alloc_size because this they might be
-       * device->null_surface_state which always has offset == 0.  We don't
-       * own that one so we don't want to accidentally free it.
-       */
-      if (iview->planes[plane].optimal_sampler_surface_state.state.offset) {
-         anv_state_pool_free(&device->surface_state_pool,
+      if (iview->planes[plane].optimal_sampler_surface_state.state.alloc_size) {
+         anv_state_pool_free(&device->bindless_surface_state_pool,
                              iview->planes[plane].optimal_sampler_surface_state.state);
       }
 
-      if (iview->planes[plane].general_sampler_surface_state.state.offset) {
-         anv_state_pool_free(&device->surface_state_pool,
+      if (iview->planes[plane].general_sampler_surface_state.state.alloc_size) {
+         anv_state_pool_free(&device->bindless_surface_state_pool,
                              iview->planes[plane].general_sampler_surface_state.state);
       }
 
-      if (iview->planes[plane].storage_surface_state.state.offset) {
-         anv_state_pool_free(&device->surface_state_pool,
+      if (iview->planes[plane].storage_surface_state.state.alloc_size) {
+         anv_state_pool_free(&device->bindless_surface_state_pool,
                              iview->planes[plane].storage_surface_state.state);
       }
 
-      if (iview->planes[plane].lowered_storage_surface_state.state.offset) {
-         anv_state_pool_free(&device->surface_state_pool,
+      if (iview->planes[plane].lowered_storage_surface_state.state.alloc_size) {
+         anv_state_pool_free(&device->bindless_surface_state_pool,
                              iview->planes[plane].lowered_storage_surface_state.state);
       }
    }
@@ -2853,7 +2877,7 @@ anv_CreateBufferView(VkDevice _device,
    view->address = anv_address_add(buffer->address, pCreateInfo->offset);
 
    if (buffer->vk.usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) {
-      view->surface_state = alloc_surface_state(device);
+      view->surface_state = alloc_bindless_surface_state(device);
 
       anv_fill_buffer_surface_state(device, view->surface_state,
                                     format.isl_format, format.swizzle,
@@ -2864,8 +2888,8 @@ anv_CreateBufferView(VkDevice _device,
    }
 
    if (buffer->vk.usage & VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT) {
-      view->storage_surface_state = alloc_surface_state(device);
-      view->lowered_storage_surface_state = alloc_surface_state(device);
+      view->storage_surface_state = alloc_bindless_surface_state(device);
+      view->lowered_storage_surface_state = alloc_bindless_surface_state(device);
 
       anv_fill_buffer_surface_state(device, view->storage_surface_state,
                                     format.isl_format, format.swizzle,
@@ -2913,15 +2937,15 @@ anv_DestroyBufferView(VkDevice _device, VkBufferView bufferView,
       return;
 
    if (view->surface_state.alloc_size > 0)
-      anv_state_pool_free(&device->surface_state_pool,
+      anv_state_pool_free(&device->bindless_surface_state_pool,
                           view->surface_state);
 
    if (view->storage_surface_state.alloc_size > 0)
-      anv_state_pool_free(&device->surface_state_pool,
+      anv_state_pool_free(&device->bindless_surface_state_pool,
                           view->storage_surface_state);
 
    if (view->lowered_storage_surface_state.alloc_size > 0)
-      anv_state_pool_free(&device->surface_state_pool,
+      anv_state_pool_free(&device->bindless_surface_state_pool,
                           view->lowered_storage_surface_state);
 
    vk_object_free(&device->vk, pAllocator, view);

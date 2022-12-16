@@ -45,7 +45,7 @@
 
 #include "drm-uapi/panfrost_drm.h"
 
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/disk_cache.h"
 #include "util/strtod.h"
 #include "vk_format.h"
@@ -76,7 +76,7 @@ _panvk_device_set_lost(struct panvk_device *device,
    vfprintf(stderr, msg, ap);
    va_end(ap);
 
-   if (env_var_as_boolean("PANVK_ABORT_ON_DEVICE_LOSS", false))
+   if (debug_get_bool_option("PANVK_ABORT_ON_DEVICE_LOSS", false))
       abort();
 
    return VK_ERROR_DEVICE_LOST;
@@ -156,6 +156,7 @@ panvk_get_device_extensions(const struct panvk_physical_device *device,
    *ext = (struct vk_device_extension_table) {
       .KHR_copy_commands2 = true,
       .KHR_storage_buffer_storage_class = true,
+      .KHR_descriptor_update_template = true,
 #ifdef PANVK_USE_WSI_PLATFORM
       .KHR_swapchain = true,
 #endif

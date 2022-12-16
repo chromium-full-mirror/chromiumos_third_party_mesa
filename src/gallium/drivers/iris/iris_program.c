@@ -37,7 +37,7 @@
 #include "pipe/p_screen.h"
 #include "util/u_atomic.h"
 #include "util/u_upload_mgr.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/u_async_debug.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
@@ -386,8 +386,6 @@ iris_fix_edge_flags(nir_shader *nir)
                                         nir_metadata_dominance |
                                         nir_metadata_live_ssa_defs |
                                         nir_metadata_loop_analysis);
-      } else {
-         nir_metadata_preserve(f->impl, nir_metadata_all);
       }
    }
 
@@ -536,11 +534,11 @@ iris_setup_uniforms(const struct brw_compiler *compiler,
                nir_load_reloc_const_intel(&b, BRW_SHADER_RELOC_CONST_DATA_ADDR_HIGH));
 
             nir_ssa_def *data =
-               nir_load_global(&b, nir_iadd(&b, const_data_base_addr,
-                                                nir_u2u64(&b, offset)),
-                               load_align,
-                               intrin->dest.ssa.num_components,
-                               intrin->dest.ssa.bit_size);
+               nir_load_global_constant(&b, nir_iadd(&b, const_data_base_addr,
+                                                     nir_u2u64(&b, offset)),
+                                        load_align,
+                                        intrin->dest.ssa.num_components,
+                                        intrin->dest.ssa.bit_size);
 
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
                                      data);
@@ -737,7 +735,8 @@ static const char *surface_group_names[] = {
    [IRIS_SURFACE_GROUP_RENDER_TARGET]      = "render target",
    [IRIS_SURFACE_GROUP_RENDER_TARGET_READ] = "non-coherent render target read",
    [IRIS_SURFACE_GROUP_CS_WORK_GROUPS]     = "CS work groups",
-   [IRIS_SURFACE_GROUP_TEXTURE]            = "texture",
+   [IRIS_SURFACE_GROUP_TEXTURE_LOW64]      = "texture",
+   [IRIS_SURFACE_GROUP_TEXTURE_HIGH64]     = "texture",
    [IRIS_SURFACE_GROUP_UBO]                = "ubo",
    [IRIS_SURFACE_GROUP_SSBO]               = "ssbo",
    [IRIS_SURFACE_GROUP_IMAGE]              = "image",
@@ -874,7 +873,7 @@ skip_compacting_binding_tables(void)
 {
    static int skip = -1;
    if (skip < 0)
-      skip = env_var_as_boolean("INTEL_DISABLE_COMPACT_BINDING_TABLE", false);
+      skip = debug_get_bool_option("INTEL_DISABLE_COMPACT_BINDING_TABLE", false);
    return skip;
 }
 
@@ -914,10 +913,18 @@ iris_setup_binding_table(const struct intel_device_info *devinfo,
       bt->sizes[IRIS_SURFACE_GROUP_CS_WORK_GROUPS] = 1;
    }
 
-   bt->sizes[IRIS_SURFACE_GROUP_TEXTURE] = BITSET_LAST_BIT(info->textures_used);
-   bt->used_mask[IRIS_SURFACE_GROUP_TEXTURE] = info->textures_used[0];
+   assert(ARRAY_SIZE(info->textures_used) >= 4);
+   int max_tex = BITSET_LAST_BIT(info->textures_used);
+   assert(max_tex <= 128);
+   bt->sizes[IRIS_SURFACE_GROUP_TEXTURE_LOW64] = MIN2(64, max_tex);
+   bt->sizes[IRIS_SURFACE_GROUP_TEXTURE_HIGH64] = MAX2(0, max_tex - 64);
+   bt->used_mask[IRIS_SURFACE_GROUP_TEXTURE_LOW64] =
+      info->textures_used[0] | ((uint64_t)info->textures_used[1]) << 32;
+   bt->used_mask[IRIS_SURFACE_GROUP_TEXTURE_HIGH64] =
+      info->textures_used[2] | ((uint64_t)info->textures_used[3]) << 32;
+   bt->samplers_used_mask = info->samplers_used[0];
 
-   bt->sizes[IRIS_SURFACE_GROUP_IMAGE] = info->num_images;
+   bt->sizes[IRIS_SURFACE_GROUP_IMAGE] = BITSET_LAST_BIT(info->images_used);
 
    /* Allocate an extra slot in the UBO section for NIR constants.
     * Binding table compaction will remove it if unnecessary.
@@ -1039,9 +1046,15 @@ iris_setup_binding_table(const struct intel_device_info *devinfo,
       nir_foreach_instr (instr, block) {
          if (instr->type == nir_instr_type_tex) {
             nir_tex_instr *tex = nir_instr_as_tex(instr);
-            tex->texture_index =
-               iris_group_index_to_bti(bt, IRIS_SURFACE_GROUP_TEXTURE,
-                                       tex->texture_index);
+            if (tex->texture_index < 64) {
+               tex->texture_index =
+                  iris_group_index_to_bti(bt, IRIS_SURFACE_GROUP_TEXTURE_LOW64,
+                                          tex->texture_index);
+            } else {
+               tex->texture_index =
+                  iris_group_index_to_bti(bt, IRIS_SURFACE_GROUP_TEXTURE_HIGH64,
+                                          tex->texture_index - 64);
+            }
             continue;
          }
 
@@ -2389,7 +2402,8 @@ iris_get_scratch_space(struct iris_context *ice,
    if (!*bop) {
       assert(stage < ARRAY_SIZE(devinfo->max_scratch_ids));
       uint32_t size = per_thread_scratch * devinfo->max_scratch_ids[stage];
-      *bop = iris_bo_alloc(bufmgr, "scratch", size, 1, IRIS_MEMZONE_SHADER, 0);
+      *bop = iris_bo_alloc(bufmgr, "scratch", size, 1024,
+                           IRIS_MEMZONE_SHADER, 0);
    }
 
    return *bop;
@@ -2416,7 +2430,7 @@ iris_get_scratch_surf(struct iris_context *ice,
    struct iris_bo *scratch_bo =
       iris_get_scratch_space(ice, per_thread_scratch, MESA_SHADER_COMPUTE);
 
-   void *map = upload_state(ice->state.bindless_uploader, ref,
+   void *map = upload_state(ice->state.scratch_surface_uploader, ref,
                             screen->isl_dev.ss.size, 64);
 
    isl_buffer_fill_state(&screen->isl_dev, map,
@@ -2788,8 +2802,8 @@ bind_shader_state(struct iris_context *ice,
    const struct shader_info *old_info = iris_get_shader_info(ice, stage);
    const struct shader_info *new_info = ish ? &ish->nir->info : NULL;
 
-   if ((old_info ? BITSET_LAST_BIT(old_info->textures_used) : 0) !=
-       (new_info ? BITSET_LAST_BIT(new_info->textures_used) : 0)) {
+   if ((old_info ? BITSET_LAST_BIT(old_info->samplers_used) : 0) !=
+       (new_info ? BITSET_LAST_BIT(new_info->samplers_used) : 0)) {
       ice->state.stage_dirty |= IRIS_STAGE_DIRTY_SAMPLER_STATES_VS << stage;
    }
 
@@ -2925,7 +2939,8 @@ iris_finalize_nir(struct pipe_screen *_screen, void *nirptr)
 
    NIR_PASS_V(nir, iris_fix_edge_flags);
 
-   brw_preprocess_nir(screen->compiler, nir, NULL);
+   struct brw_nir_compiler_opts opts = {};
+   brw_preprocess_nir(screen->compiler, nir, &opts);
 
    NIR_PASS_V(nir, brw_nir_lower_storage_image, devinfo);
    NIR_PASS_V(nir, iris_lower_storage_image_derefs);

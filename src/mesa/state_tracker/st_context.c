@@ -156,9 +156,6 @@ st_invalidate_state(struct gl_context *ctx)
        st_user_clip_planes_enabled(ctx))
       st->dirty |= ST_NEW_CLIP_STATE;
 
-   if (new_state & _NEW_POINT && st->lower_texcoord_replace)
-      st->dirty |= ST_NEW_FS_STATE;
-
    if (new_state & _NEW_PIXEL)
       st->dirty |= ST_NEW_PIXEL_TRANSFER;
 
@@ -593,6 +590,9 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st->has_rgtc = screen->is_format_supported(screen, PIPE_FORMAT_RGTC2_UNORM,
                                               PIPE_TEXTURE_2D, 0, 0,
                                               PIPE_BIND_SAMPLER_VIEW);
+   st->has_latc = screen->is_format_supported(screen, PIPE_FORMAT_LATC2_UNORM,
+                                              PIPE_TEXTURE_2D, 0, 0,
+                                              PIPE_BIND_SAMPLER_VIEW);
    st->has_bptc = screen->is_format_supported(screen, PIPE_FORMAT_BPTC_SRGBA,
                                               PIPE_TEXTURE_2D, 0, 0,
                                               PIPE_BIND_SAMPLER_VIEW);
@@ -625,6 +625,8 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       screen->get_param(screen, PIPE_CAP_MULTI_DRAW_INDIRECT);
    st->has_indirect_partial_stride =
       screen->get_param(screen, PIPE_CAP_MULTI_DRAW_INDIRECT_PARTIAL_STRIDE);
+   st->has_occlusion_query =
+      screen->get_param(screen, PIPE_CAP_OCCLUSION_QUERY);
    st->has_single_pipe_stat =
       screen->get_param(screen, PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE);
    st->has_indep_blend_func =
@@ -647,8 +649,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       screen->get_param(screen, PIPE_CAP_PREFER_REAL_BUFFER_IN_CONSTBUF0);
    st->has_conditional_render =
       screen->get_param(screen, PIPE_CAP_CONDITIONAL_RENDER);
-   st->lower_texcoord_replace =
-      !screen->get_param(screen, PIPE_CAP_POINT_SPRITE);
    st->lower_rect_tex =
       !screen->get_param(screen, PIPE_CAP_TEXRECT);
    st->allow_st_finalize_nir_twice = screen->finalize_nir != NULL;
@@ -702,9 +702,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    ctx->Point.MaxSize = MAX2(ctx->Const.MaxPointSize,
                              ctx->Const.MaxPointSizeAA);
 
-   ctx->Const.PointCoordOriginUpperLeft =
-      screen->get_param(screen, PIPE_CAP_POINT_COORD_ORIGIN_UPPER_LEFT);
-
    ctx->Const.NoClippingOnCopyTex = screen->get_param(screen,
                                                       PIPE_CAP_NO_CLIP_ON_COPY_TEX);
 
@@ -736,8 +733,7 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
          !st->lower_alpha_test &&
          !st->clamp_frag_color_in_shader &&
          !st->force_persample_in_shader &&
-         !st->lower_two_sided_color &&
-         !st->lower_texcoord_replace;
+         !st->lower_two_sided_color;
 
    st->shader_has_one_variant[MESA_SHADER_TESS_CTRL] = st->has_shareable_shaders;
    st->shader_has_one_variant[MESA_SHADER_TESS_EVAL] =
@@ -886,6 +882,9 @@ st_create_context(gl_api api, struct pipe_context *pipe,
 
    if (pipe->screen->get_param(pipe->screen, PIPE_CAP_INVALIDATE_BUFFER))
       ctx->has_invalidate_buffer = true;
+
+   if (pipe->screen->get_param(pipe->screen, PIPE_CAP_STRING_MARKER))
+      ctx->has_string_marker = true;
 
    st = st_create_context_priv(ctx, pipe, options);
    if (!st) {

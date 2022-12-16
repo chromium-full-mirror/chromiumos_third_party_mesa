@@ -290,60 +290,6 @@ handle_copy_query_results_cpu_job(struct v3dv_job *job)
 }
 
 static VkResult
-handle_set_event_cpu_job(struct v3dv_queue *queue, struct v3dv_job *job,
-                         struct v3dv_submit_sync_info *sync_info)
-{
-   /* From the Vulkan 1.0 spec:
-    *
-    *    "When vkCmdSetEvent is submitted to a queue, it defines an execution
-    *     dependency on commands that were submitted before it, and defines an
-    *     event signal operation which sets the event to the signaled state.
-    *     The first synchronization scope includes every command previously
-    *     submitted to the same queue, including those in the same command
-    *     buffer and batch".
-    *
-    * So we should wait for all prior work to be completed before signaling
-    * the event, this includes all active CPU wait threads spawned for any
-    * command buffer submitted *before* this.
-    */
-
-   VkResult result = queue_wait_idle(queue, sync_info);
-   if (result != VK_SUCCESS)
-      return result;
-
-   struct v3dv_event_set_cpu_job_info *info = &job->cpu.event_set;
-   p_atomic_set(&info->event->state, info->state);
-
-   return VK_SUCCESS;
-}
-
-static bool
-check_wait_events_complete(struct v3dv_job *job)
-{
-   assert(job->type == V3DV_JOB_TYPE_CPU_WAIT_EVENTS);
-
-   struct v3dv_event_wait_cpu_job_info *info = &job->cpu.event_wait;
-   for (uint32_t i = 0; i < info->event_count; i++) {
-      if (!p_atomic_read(&info->events[i]->state))
-         return false;
-   }
-   return true;
-}
-
-static VkResult
-handle_wait_events_cpu_job(struct v3dv_job *job)
-{
-   assert(job->type == V3DV_JOB_TYPE_CPU_WAIT_EVENTS);
-
-   /* Wait for events to be signaled */
-   const useconds_t wait_interval_ms = 1;
-   while (!check_wait_events_complete(job))
-      usleep(wait_interval_ms * 1000);
-
-   return VK_SUCCESS;
-}
-
-static VkResult
 handle_copy_buffer_to_image_cpu_job(struct v3dv_queue *queue,
                                     struct v3dv_job *job,
                                     struct v3dv_submit_sync_info *sync_info)
@@ -461,24 +407,25 @@ handle_csd_indirect_cpu_job(struct v3dv_queue *queue,
    return VK_SUCCESS;
 }
 
+/**
+ * This handles semaphore waits for the single sync path by accumulating
+ * wait semaphores into the QUEUE_ANY syncobj. Notice this is only required
+ * to ensure we accumulate any *external* semaphores (since for anything else
+ * we are already accumulating out syncs with each submission to the kernel).
+ */
 static VkResult
-process_waits(struct v3dv_queue *queue,
-              uint32_t count, struct vk_sync_wait *waits)
+process_singlesync_waits(struct v3dv_queue *queue,
+                         uint32_t count, struct vk_sync_wait *waits)
 {
    struct v3dv_device *device = queue->device;
-   VkResult result = VK_SUCCESS;
-   int err = 0;
+   assert(!device->pdevice->caps.multisync);
 
    if (count == 0)
       return VK_SUCCESS;
 
-   /* If multisync is supported, we wait on semaphores in the first job
-    * submitted to each of the individual queues.  We don't need to
-    * pre-populate the syncobjs.
-    */
-   if (queue->device->pdevice->caps.multisync)
-      return VK_SUCCESS;
+   VkResult result = VK_SUCCESS;
 
+   int err = 0;
    int fd = -1;
    err = drmSyncobjExportSyncFile(device->pdevice->render_fd,
                                   queue->last_job_syncs.syncs[V3DV_QUEUE_ANY],
@@ -523,19 +470,17 @@ fail:
    return result;
 }
 
+/**
+ * This handles signaling for the single-sync path by importing the QUEUE_ANY
+ * syncobj into all syncs to be signaled.
+ */
 static VkResult
-process_signals(struct v3dv_queue *queue,
-                uint32_t count, struct vk_sync_signal *signals)
+process_singlesync_signals(struct v3dv_queue *queue,
+                           uint32_t count, struct vk_sync_signal *signals)
 {
    struct v3dv_device *device = queue->device;
+   assert(!device->pdevice->caps.multisync && count > 0);
 
-   if (count == 0)
-      return VK_SUCCESS;
-
-   /* If multisync is supported, we are signalling semaphores in the last job
-    * of the last command buffer and, therefore, we do not need to process any
-    * semaphores here.
-    */
    if (device->pdevice->caps.multisync)
       return VK_SUCCESS;
 
@@ -732,6 +677,43 @@ fail:
    return;
 }
 
+/* This must be called after every submission in the single-sync path to
+ * accumulate the out_sync into the QUEUE_ANY sync so we can serialize
+ * jobs by waiting on the QUEUE_ANY sync.
+ */
+static int
+update_any_queue_sync(struct v3dv_queue *queue, uint32_t out_sync)
+{
+   struct v3dv_device *device = queue->device;
+   assert(!device->pdevice->caps.multisync);
+
+   int render_fd = device->pdevice->render_fd;
+   int fd_any = -1, fd_out_sync = -1;
+   int err;
+   err  = drmSyncobjExportSyncFile(render_fd,
+                                   queue->last_job_syncs.syncs[V3DV_QUEUE_ANY],
+                                   &fd_any);
+   if (err)
+      goto fail;
+
+   err = drmSyncobjExportSyncFile(render_fd, out_sync, &fd_out_sync);
+   if (err)
+      goto fail;
+
+   err = sync_accumulate("v3dv", &fd_any, fd_out_sync);
+   if (err)
+      goto fail;
+
+   err = drmSyncobjImportSyncFile(render_fd,
+                                  queue->last_job_syncs.syncs[V3DV_QUEUE_ANY],
+                                  fd_any);
+
+fail:
+   close(fd_any);
+   close(fd_out_sync);
+   return err;
+}
+
 static VkResult
 handle_cl_job(struct v3dv_queue *queue,
               struct v3dv_job *job,
@@ -848,7 +830,7 @@ handle_cl_job(struct v3dv_queue *queue,
       uint32_t last_job_sync = queue->last_job_syncs.syncs[V3DV_QUEUE_ANY];
       submit.in_sync_bcl = needs_bcl_sync ? last_job_sync : 0;
       submit.in_sync_rcl = needs_rcl_sync ? last_job_sync : 0;
-      submit.out_sync = last_job_sync;
+      submit.out_sync = queue->last_job_syncs.syncs[V3DV_QUEUE_CL];
    }
 
    v3dv_clif_dump(device, job, &submit);
@@ -861,6 +843,9 @@ handle_cl_job(struct v3dv_queue *queue,
               strerror(errno));
       warned = true;
    }
+
+   if (!device->pdevice->caps.multisync && ret == 0)
+      ret = update_any_queue_sync(queue, submit.out_sync);
 
    free(bo_handles);
    multisync_free(device, &ms);
@@ -901,10 +886,13 @@ handle_tfu_job(struct v3dv_queue *queue,
    } else {
       uint32_t last_job_sync = queue->last_job_syncs.syncs[V3DV_QUEUE_ANY];
       job->tfu.in_sync = needs_sync ? last_job_sync : 0;
-      job->tfu.out_sync = last_job_sync;
+      job->tfu.out_sync = queue->last_job_syncs.syncs[V3DV_QUEUE_TFU];
    }
    int ret = v3dv_ioctl(device->pdevice->render_fd,
                         DRM_IOCTL_V3D_SUBMIT_TFU, &job->tfu);
+
+   if (!device->pdevice->caps.multisync && ret == 0)
+      ret = update_any_queue_sync(queue, job->tfu.out_sync);
 
    multisync_free(device, &ms);
    queue->last_job_syncs.first[V3DV_QUEUE_TFU] = false;
@@ -968,7 +956,7 @@ handle_csd_job(struct v3dv_queue *queue,
    } else {
       uint32_t last_job_sync = queue->last_job_syncs.syncs[V3DV_QUEUE_ANY];
       submit->in_sync = needs_sync ? last_job_sync : 0;
-      submit->out_sync = last_job_sync;
+      submit->out_sync = queue->last_job_syncs.syncs[V3DV_QUEUE_CSD];
    }
    submit->perfmon_id = job->perf ?
       job->perf->kperfmon_ids[counter_pass_idx] : 0;
@@ -982,6 +970,9 @@ handle_csd_job(struct v3dv_queue *queue,
               strerror(errno));
       warned = true;
    }
+
+   if (!device->pdevice->caps.multisync && ret == 0)
+      ret = update_any_queue_sync(queue, submit->out_sync);
 
    free(bo_handles);
 
@@ -1014,10 +1005,6 @@ queue_handle_job(struct v3dv_queue *queue,
       return handle_end_query_cpu_job(job, counter_pass_idx);
    case V3DV_JOB_TYPE_CPU_COPY_QUERY_RESULTS:
       return handle_copy_query_results_cpu_job(job);
-   case V3DV_JOB_TYPE_CPU_SET_EVENT:
-      return handle_set_event_cpu_job(queue, job, sync_info);
-   case V3DV_JOB_TYPE_CPU_WAIT_EVENTS:
-      return handle_wait_events_cpu_job(job);
    case V3DV_JOB_TYPE_CPU_COPY_BUFFER_TO_IMAGE:
       return handle_copy_buffer_to_image_cpu_job(queue, job, sync_info);
    case V3DV_JOB_TYPE_CPU_CSD_INDIRECT:
@@ -1085,9 +1072,16 @@ v3dv_queue_driver_submit(struct vk_queue *vk_queue,
    for (int i = 0; i < V3DV_QUEUE_COUNT; i++)
       queue->last_job_syncs.first[i] = true;
 
-   result = process_waits(queue, sync_info.wait_count, sync_info.waits);
-   if (result != VK_SUCCESS)
-      return result;
+   /* If we do not have multisync we need to ensure we accumulate any wait
+    * semaphores into our QUEUE_ANY syncobj so we can handle waiting on
+    * external semaphores.
+    */
+   if (!queue->device->pdevice->caps.multisync) {
+      result =
+         process_singlesync_waits(queue, sync_info.wait_count, sync_info.waits);
+      if (result != VK_SUCCESS)
+         return result;
+   }
 
    for (uint32_t i = 0; i < submit->command_buffer_count; i++) {
       struct v3dv_cmd_buffer *cmd_buffer =
@@ -1114,19 +1108,21 @@ v3dv_queue_driver_submit(struct vk_queue *vk_queue,
       }
    }
 
-   /* Finish by submitting a no-op job that synchronizes across all queues.
-    * This will ensure that the signal semaphores don't get triggered until
-    * all work on any queue completes. See Vulkan's signal operation order
-    * requirements.
-    */
+   /* Handle signaling now */
    if (submit->signal_count > 0) {
-      result = queue_submit_noop_job(queue, submit->perf_pass_index,
-                                     &sync_info, true);
-      if (result != VK_SUCCESS)
-         return result;
+      if (queue->device->pdevice->caps.multisync) {
+         /* Finish by submitting a no-op job that synchronizes across all queues.
+          * This will ensure that the signal semaphores don't get triggered until
+          * all work on any queue completes. See Vulkan's signal operation order
+          * requirements.
+          */
+         return queue_submit_noop_job(queue, submit->perf_pass_index,
+                                      &sync_info, true);
+      } else {
+         return process_singlesync_signals(queue, sync_info.signal_count,
+                                           sync_info.signals);
+      }
    }
-
-   process_signals(queue, sync_info.signal_count, sync_info.signals);
 
    return VK_SUCCESS;
 }

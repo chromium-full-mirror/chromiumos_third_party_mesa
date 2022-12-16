@@ -35,6 +35,7 @@
 #include <stw_framebuffer.h>
 #include <stw_image.h>
 #include <stw_winsys.h>
+#include <stw_ext_interop.h>
 
 #include <GL/wglext.h>
 
@@ -43,6 +44,9 @@
 #include <pipe/p_context.h>
 
 #include <mapi/glapi/glapi.h>
+#include "util/u_call_once.h"
+
+#include <GL/mesa_glinterop.h>
 
 static EGLBoolean
 wgl_match_config(const _EGLConfig *conf, const _EGLConfig *criteria)
@@ -212,12 +216,9 @@ static bool
 wgl_validate_egl_image(struct st_manager *smapi, void *image)
 {
    struct wgl_egl_display *wgl_dpy = (struct wgl_egl_display *)smapi;
-   _EGLDisplay *disp = wgl_dpy->parent;
-   _EGLImage *img;
-
-   egl_lock(disp);
-   img = _eglLookupImage(image, disp);
-   egl_unlock(disp);
+   _EGLDisplay *disp = _eglLockDisplay(wgl_dpy->parent);
+   _EGLImage *img = _eglLookupImage(image, disp);
+   _eglUnlockDisplay(disp);
 
    if (img == NULL) {
       _eglError(EGL_BAD_PARAMETER, "wgl_validate_egl_image");
@@ -531,15 +532,19 @@ wgl_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
 }
 
 static void
+wgl_gl_flush_get(_glapi_proc *glFlush)
+{
+   *glFlush = _glapi_get_proc_address("glFlush");
+}
+
+static void
 wgl_gl_flush()
 {
    static void (*glFlush)(void);
-   static mtx_t glFlushMutex = _MTX_INITIALIZER_NP;
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
 
-   mtx_lock(&glFlushMutex);
-   if (!glFlush)
-      glFlush = _glapi_get_proc_address("glFlush");
-   mtx_unlock(&glFlushMutex);
+   util_call_once_data(&once,
+      (util_call_once_data_func)wgl_gl_flush_get, &glFlush);
 
    /* if glFlush is not available things are horribly broken */
    if (!glFlush) {
@@ -1159,6 +1164,32 @@ wgl_query_driver_config(_EGLDisplay *disp)
    return stw_get_config_xml();
 }
 
+static int
+wgl_interop_query_device_info(_EGLDisplay *disp, _EGLContext *ctx,
+                              struct mesa_glinterop_device_info *out)
+{
+   struct wgl_egl_context *wgl_ctx = wgl_egl_context(ctx);
+   return stw_interop_query_device_info(wgl_ctx->ctx, out);
+}
+
+static int
+wgl_interop_export_object(_EGLDisplay *disp, _EGLContext *ctx,
+                          struct mesa_glinterop_export_in *in,
+                          struct mesa_glinterop_export_out *out)
+{
+   struct wgl_egl_context *wgl_ctx = wgl_egl_context(ctx);
+   return stw_interop_export_object(wgl_ctx->ctx, in, out);
+}
+
+static int
+wgl_interop_flush_objects(_EGLDisplay *disp, _EGLContext *ctx,
+                          unsigned count, struct mesa_glinterop_export_in *objects,
+                          GLsync *sync)
+{
+   struct wgl_egl_context *wgl_ctx = wgl_egl_context(ctx);
+   return stw_interop_flush_objects(wgl_ctx->ctx, count, objects, sync);
+}
+
 struct _egl_driver _eglDriver = {
    .Initialize = wgl_initialize,
    .Terminate = wgl_terminate,
@@ -1185,5 +1216,8 @@ struct _egl_driver _eglDriver = {
    .SignalSyncKHR = wgl_signal_sync_khr,
    .QueryDriverName = wgl_query_driver_name,
    .QueryDriverConfig = wgl_query_driver_config,
+   .GLInteropQueryDeviceInfo = wgl_interop_query_device_info,
+   .GLInteropExportObject = wgl_interop_export_object,
+   .GLInteropFlushObjects = wgl_interop_flush_objects,
 };
 

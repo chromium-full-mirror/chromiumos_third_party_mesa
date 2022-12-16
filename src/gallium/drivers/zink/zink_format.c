@@ -1,5 +1,6 @@
 #include "util/format/u_format.h"
 #include "zink_format.h"
+#include "util/u_math.h"
 
 static const VkFormat formats[PIPE_FORMAT_COUNT] = {
 #define MAP_FORMAT_NORM(FMT) \
@@ -146,6 +147,47 @@ static const VkFormat formats[PIPE_FORMAT_COUNT] = {
    [PIPE_FORMAT_BPTC_SRGBA] = VK_FORMAT_BC7_SRGB_BLOCK,
    [PIPE_FORMAT_BPTC_RGB_FLOAT] = VK_FORMAT_BC6H_SFLOAT_BLOCK,
    [PIPE_FORMAT_BPTC_RGB_UFLOAT] = VK_FORMAT_BC6H_UFLOAT_BLOCK,
+
+   [PIPE_FORMAT_ETC1_RGB8] = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK,
+   [PIPE_FORMAT_ETC2_RGB8] = VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK,
+   [PIPE_FORMAT_ETC2_SRGB8] = VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK,
+   [PIPE_FORMAT_ETC2_RGB8A1] = VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK,
+   [PIPE_FORMAT_ETC2_SRGB8A1] = VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK,
+   [PIPE_FORMAT_ETC2_RGBA8] = VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK,
+   [PIPE_FORMAT_ETC2_SRGBA8] = VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK,
+   [PIPE_FORMAT_ETC2_R11_UNORM] = VK_FORMAT_EAC_R11_UNORM_BLOCK,
+   [PIPE_FORMAT_ETC2_R11_SNORM] = VK_FORMAT_EAC_R11_SNORM_BLOCK,
+   [PIPE_FORMAT_ETC2_RG11_UNORM] = VK_FORMAT_EAC_R11G11_UNORM_BLOCK,
+   [PIPE_FORMAT_ETC2_RG11_SNORM] = VK_FORMAT_EAC_R11G11_SNORM_BLOCK,
+
+   [PIPE_FORMAT_ASTC_4x4] = VK_FORMAT_ASTC_4x4_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_4x4_SRGB] = VK_FORMAT_ASTC_4x4_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_5x4] = VK_FORMAT_ASTC_5x4_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_5x4_SRGB] = VK_FORMAT_ASTC_5x4_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_5x5] = VK_FORMAT_ASTC_5x5_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_5x5_SRGB] = VK_FORMAT_ASTC_5x5_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_6x5] = VK_FORMAT_ASTC_6x5_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_6x5_SRGB] = VK_FORMAT_ASTC_6x5_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_6x6] = VK_FORMAT_ASTC_6x6_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_6x6_SRGB] = VK_FORMAT_ASTC_6x6_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_8x5] = VK_FORMAT_ASTC_8x5_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_8x5_SRGB] = VK_FORMAT_ASTC_8x5_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_8x6] = VK_FORMAT_ASTC_8x6_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_8x6_SRGB] = VK_FORMAT_ASTC_8x6_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_8x8] = VK_FORMAT_ASTC_8x8_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_8x8_SRGB] = VK_FORMAT_ASTC_8x8_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_10x5] = VK_FORMAT_ASTC_10x5_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_10x5_SRGB] = VK_FORMAT_ASTC_10x5_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_10x6] = VK_FORMAT_ASTC_10x6_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_10x6_SRGB] = VK_FORMAT_ASTC_10x6_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_10x8] = VK_FORMAT_ASTC_10x8_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_10x8_SRGB] = VK_FORMAT_ASTC_10x8_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_10x10] = VK_FORMAT_ASTC_10x10_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_10x10_SRGB] = VK_FORMAT_ASTC_10x10_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_12x10] = VK_FORMAT_ASTC_12x10_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_12x10_SRGB] = VK_FORMAT_ASTC_12x10_SRGB_BLOCK,
+   [PIPE_FORMAT_ASTC_12x12] = VK_FORMAT_ASTC_12x12_UNORM_BLOCK,
+   [PIPE_FORMAT_ASTC_12x12_SRGB] = VK_FORMAT_ASTC_12x12_SRGB_BLOCK,
 };
 
 enum pipe_format
@@ -301,8 +343,16 @@ zink_format_get_emulated_alpha(enum pipe_format format)
 {
    if (util_format_is_alpha(format))
       return emulate_alpha(format);
-   if (util_format_is_luminance(format) || util_format_is_luminance_alpha(format))
+   if (util_format_is_luminance(format))
       return util_format_luminance_to_red(format);
+   if (util_format_is_luminance_alpha(format)) {
+      if (format == PIPE_FORMAT_LATC2_UNORM)
+         return PIPE_FORMAT_RGTC2_UNORM;
+      if (format == PIPE_FORMAT_LATC2_SNORM)
+         return PIPE_FORMAT_RGTC2_SNORM;
+
+      format = util_format_luminance_to_red(format);
+   }
 
    return emulate_red_alpha(format);
 }
@@ -329,4 +379,62 @@ zink_format_is_voidable_rgba_variant(enum pipe_format format)
    }
 
    return true;
+}
+
+
+void
+zink_format_clamp_channel_color(const struct util_format_description *desc, union pipe_color_union *dst, const union pipe_color_union *src, unsigned i)
+{
+   int non_void = util_format_get_first_non_void_channel(desc->format);
+   switch (desc->channel[i].type) {
+   case UTIL_FORMAT_TYPE_VOID:
+      if (non_void != -1) {
+         if (desc->channel[non_void].type == UTIL_FORMAT_TYPE_FLOAT) {
+            dst->f[i] = uif(UINT32_MAX);
+         } else {
+            if (desc->channel[non_void].normalized)
+               dst->f[i] = 1.0;
+            else if (desc->channel[non_void].type == UTIL_FORMAT_TYPE_SIGNED)
+               dst->i[i] = INT32_MAX;
+            else
+               dst->ui[i] = UINT32_MAX;
+         }
+      } else {
+         dst->ui[i] = src->ui[i];
+      }
+      break;
+   case UTIL_FORMAT_TYPE_SIGNED:
+      if (desc->channel[i].normalized)
+         dst->i[i] = src->i[i];
+      else {
+         dst->i[i] = MAX2(src->i[i], -(1<<(desc->channel[i].size - 1)));
+         dst->i[i] = MIN2(dst->i[i], (1 << (desc->channel[i].size - 1)) - 1);
+      }
+      break;
+   case UTIL_FORMAT_TYPE_UNSIGNED:
+      if (desc->channel[i].normalized)
+         dst->ui[i] = src->ui[i];
+      else
+         dst->ui[i] = MIN2(src->ui[i], BITFIELD_MASK(desc->channel[i].size));
+      break;
+   case UTIL_FORMAT_TYPE_FIXED:
+   case UTIL_FORMAT_TYPE_FLOAT:
+      dst->ui[i] = src->ui[i];
+      break;
+   }
+}
+
+void
+zink_format_clamp_channel_srgb(const struct util_format_description *desc, union pipe_color_union *dst, const union pipe_color_union *src, unsigned i)
+{
+   if (desc->colorspace != UTIL_FORMAT_COLORSPACE_SRGB)
+      return;
+   switch (desc->channel[i].type) {
+   case UTIL_FORMAT_TYPE_SIGNED:
+   case UTIL_FORMAT_TYPE_UNSIGNED:
+      dst->f[i] = CLAMP(src->f[i], 0.0, 1.0);
+      break;
+   default:
+      break;
+   }
 }
