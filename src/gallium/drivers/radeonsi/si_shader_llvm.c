@@ -346,8 +346,7 @@ static void si_init_exec_from_input(struct si_shader_context *ctx, struct ac_arg
       ac_get_arg(&ctx->ac, param),
       LLVMConstInt(ctx->ac.i32, bitoffset, 0),
    };
-   ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.init.exec.from.input", ctx->ac.voidt, args, 2,
-                      AC_FUNC_ATTR_CONVERGENT);
+   ac_build_intrinsic(&ctx->ac, "llvm.amdgcn.init.exec.from.input", ctx->ac.voidt, args, 2, 0);
 }
 
 /**
@@ -446,7 +445,7 @@ void si_build_wrapper_function(struct si_shader_context *ctx, struct ac_llvm_poi
    memset(ctx->args, 0, sizeof(*ctx->args));
 
    for (unsigned i = 0; i < num_parts; ++i) {
-      ac_add_function_attr(ctx->ac.context, parts[i].value, -1, AC_FUNC_ATTR_ALWAYSINLINE);
+      ac_add_function_attr(ctx->ac.context, parts[i].value, -1, "alwaysinline");
       LLVMSetLinkage(parts[i].value, LLVMPrivateLinkage);
    }
 
@@ -601,7 +600,7 @@ void si_build_wrapper_function(struct si_shader_context *ctx, struct ac_llvm_poi
          is_sgpr = ac_is_sgpr_param(param);
 
          if (is_sgpr) {
-            ac_add_function_attr(ctx->ac.context, parts[part].value, param_idx + 1, AC_FUNC_ATTR_INREG);
+            ac_add_function_attr(ctx->ac.context, parts[part].value, param_idx + 1, "inreg");
          } else if (out_idx < num_out_sgpr) {
             /* Skip returned SGPRs the current part doesn't
              * declare on the input. */
@@ -700,11 +699,11 @@ void si_build_wrapper_function(struct si_shader_context *ctx, struct ac_llvm_poi
       LLVMBuildRet(builder, ret);
 }
 
-static LLVMValueRef si_llvm_load_intrinsic(struct ac_shader_abi *abi, nir_intrinsic_op op)
+static LLVMValueRef si_llvm_load_intrinsic(struct ac_shader_abi *abi, nir_intrinsic_instr *intrin)
 {
    struct si_shader_context *ctx = si_shader_context_from_abi(abi);
 
-   switch (op) {
+   switch (intrin->intrinsic) {
    case nir_intrinsic_load_ring_tess_offchip_amd:
       return ctx->tess_offchip_ring;
 
@@ -902,10 +901,6 @@ bool si_llvm_translate_nir(struct si_shader_context *ctx, struct si_shader *shad
           (ctx->stage == MESA_SHADER_VERTEX || ctx->stage == MESA_SHADER_TESS_EVAL) &&
           shader->key.ge.as_ngg && !shader->key.ge.as_es && !shader->key.ge.opt.ngg_culling)
          ac_build_s_barrier(&ctx->ac, ctx->stage);
-
-      /* NGG GS: handle GS_STATE_PIPELINE_STATS_EMU */
-      if (ctx->stage == MESA_SHADER_GEOMETRY && shader->key.ge.as_ngg)
-         gfx10_ngg_gs_emit_begin(ctx);
 
       LLVMValueRef thread_enabled = NULL;
 

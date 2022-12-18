@@ -741,7 +741,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return false;
          return true;
       case PIPE_VIDEO_FORMAT_AV1:
-         if (sscreen->info.family < CHIP_NAVI21)
+         if (sscreen->info.family < CHIP_NAVI21 || sscreen->info.family == CHIP_NAVI24)
             return false;
          return true;
       default:
@@ -854,13 +854,27 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen, enum pipe_for
 
    /* JPEG supports YUV400 and YUV444 */
    if (profile == PIPE_VIDEO_PROFILE_JPEG_BASELINE) {
-      if (sscreen->info.family >= CHIP_NAVI21 || sscreen->info.family == CHIP_MI100 ||
-          sscreen->info.family == CHIP_MI200)
-         return (format == PIPE_FORMAT_NV12 || format == PIPE_FORMAT_Y8_400_UNORM ||
-                 format == PIPE_FORMAT_Y8_U8_V8_444_UNORM || format == PIPE_FORMAT_YUYV);
-      else
-         return (format == PIPE_FORMAT_NV12);
+      switch (format) {
+      case PIPE_FORMAT_NV12:
+      case PIPE_FORMAT_YUYV:
+      case PIPE_FORMAT_L8_UNORM:
+      case PIPE_FORMAT_Y8_400_UNORM:
+         return true;
+      case PIPE_FORMAT_Y8_U8_V8_444_UNORM:
+         if (sscreen->info.family >= CHIP_RENOIR)
+            return true;
+         else
+            return false;
+      default:
+         return false;
+      }
+   }
 
+   /* support 10 bit input for encoding on some of the chips with vcn 2.0 and up */
+   if (profile == PIPE_VIDEO_PROFILE_MPEG4_AVC_HIGH &&
+       entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE &&
+       sscreen->info.family >= CHIP_RENOIR) {
+      return (format == PIPE_FORMAT_P010 || format == PIPE_FORMAT_NV12);
    }
 
    /* we can only handle this one with UVD */

@@ -52,6 +52,17 @@ struct radv_shader_args;
 struct radv_vs_input_state;
 struct radv_shader_args;
 
+struct radv_ps_epilog_key {
+   uint32_t spi_shader_col_format;
+
+   /* Bitmasks, each bit represents one of the 8 MRTs. */
+   uint8_t color_is_int8;
+   uint8_t color_is_int10;
+   uint8_t enable_mrt_output_nan_fixup;
+
+   bool mrt0_is_dual_src;
+};
+
 struct radv_pipeline_key {
    uint32_t has_multiview_view_index : 1;
    uint32_t optimisations_disabled : 1;
@@ -66,6 +77,8 @@ struct radv_pipeline_key {
    uint32_t dynamic_rasterization_samples : 1;
    uint32_t dynamic_color_write_mask : 1;
    uint32_t dynamic_provoking_vtx_mode : 1;
+   uint32_t tex_non_uniform : 1;
+   uint32_t enable_remove_point_size : 1;
 
    struct {
       uint32_t instance_rate_inputs;
@@ -85,16 +98,13 @@ struct radv_pipeline_key {
    } tcs;
 
    struct {
-      uint32_t col_format;
-      uint32_t is_int8;
-      uint32_t is_int10;
+      struct radv_ps_epilog_key epilog;
+
       uint32_t cb_target_mask;
       uint8_t num_samples;
       bool sample_shading_enable;
-      bool mrt0_is_dual_src;
 
       bool lower_discard_to_demote;
-      uint8_t enable_mrt_output_nan_fixup;
       bool force_vrs_enabled;
 
       /* Used to export alpha through MRTZ for alpha-to-coverage (GFX11+). */
@@ -404,18 +414,6 @@ struct radv_vs_prolog_key {
    bool is_ngg;
    bool wave32;
    gl_shader_stage next_stage;
-};
-
-struct radv_ps_epilog_key {
-   uint32_t spi_shader_col_format;
-
-   /* Bitmasks, each bit represents one of the 8 MRTs. */
-   uint8_t color_is_int8;
-   uint8_t color_is_int10;
-   uint8_t enable_mrt_output_nan_fixup;
-
-   bool mrt0_is_dual_src;
-   bool wave32;
 };
 
 enum radv_shader_binary_type { RADV_BINARY_TYPE_LEGACY, RADV_BINARY_TYPE_RTLD };
@@ -758,6 +756,7 @@ bool radv_lower_fs_intrinsics(nir_shader *nir, const struct radv_pipeline_stage 
 
 nir_shader *create_rt_shader(struct radv_device *device,
                              const VkRayTracingPipelineCreateInfoKHR *pCreateInfo,
-                             struct radv_pipeline_shader_stack_size *stack_sizes);
+                             struct radv_pipeline_shader_stack_size *stack_sizes,
+                             const struct radv_pipeline_key *key);
 
 #endif

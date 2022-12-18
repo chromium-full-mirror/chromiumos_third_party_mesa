@@ -413,7 +413,7 @@ radv_vrs_attachment_enabled(const struct radv_physical_device *pdevice)
 static bool
 radv_taskmesh_enabled(const struct radv_physical_device *pdevice)
 {
-   return pdevice->use_ngg && !pdevice->use_llvm && pdevice->rad_info.gfx_level >= GFX10_3 &&
+   return pdevice->use_ngg && !pdevice->use_llvm && pdevice->rad_info.gfx_level == GFX10_3 &&
           !(pdevice->instance->debug_flags & RADV_DEBUG_NO_COMPUTE_QUEUE) &&
           pdevice->rad_info.has_scheduled_fence_dependency;
 }
@@ -656,8 +656,8 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .AMD_shader_ballot = true,
       .AMD_shader_core_properties = true,
       .AMD_shader_core_properties2 = true,
-      /* TODO: Figure out if it's possible to implement it on gfx11. */
-      .AMD_shader_explicit_vertex_parameter = device->rad_info.gfx_level < GFX11,
+      .AMD_shader_early_and_late_fragment_tests = true,
+      .AMD_shader_explicit_vertex_parameter = true,
       .AMD_shader_fragment_mask = device->use_fmask,
       .AMD_shader_image_load_store_lod = true,
       .AMD_shader_trinary_minmax = true,
@@ -1144,6 +1144,7 @@ static const driOptionDescription radv_dri_options[] = {
       DRI_CONF_RADV_DGC(false)
       DRI_CONF_RADV_FLUSH_BEFORE_QUERY_COPY(false)
       DRI_CONF_RADV_ENABLE_UNIFIED_HEAP_ON_APU(false)
+      DRI_CONF_RADV_TEX_NON_UNIFORM(false)
    DRI_CONF_SECTION_END
 };
 // clang-format on
@@ -1198,6 +1199,8 @@ radv_init_dri_options(struct radv_instance *instance)
 
    instance->enable_unified_heap_on_apu =
       driQueryOptionb(&instance->dri_options, "radv_enable_unified_heap_on_apu");
+
+   instance->tex_non_uniform = driQueryOptionb(&instance->dri_options, "radv_tex_non_uniform");
 }
 
 static VkResult create_null_physical_device(struct vk_instance *vk_instance);
@@ -1944,10 +1947,10 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->extendedDynamicState3ProvokingVertexMode = true;
          features->extendedDynamicState3DepthClampEnable = true;
          features->extendedDynamicState3ColorWriteMask = true;
-         features->extendedDynamicState3RasterizationSamples = false; /* TODO: Zink */
+         features->extendedDynamicState3RasterizationSamples = true;
          features->extendedDynamicState3ColorBlendEquation = false; /* TODO: Zink */
-         features->extendedDynamicState3SampleLocationsEnable = false; /* TODO: Zink */
-         features->extendedDynamicState3LineRasterizationMode = false; /* TODO: Zink */
+         features->extendedDynamicState3SampleLocationsEnable = false; /* TODO */
+         features->extendedDynamicState3LineRasterizationMode = true;
          features->extendedDynamicState3ExtraPrimitiveOverestimationSize = false;
          features->extendedDynamicState3AlphaToOneEnable = false;
          features->extendedDynamicState3RasterizationStream = false;
@@ -1971,6 +1974,12 @@ radv_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
          features->descriptorBufferCaptureReplay = false;
          features->descriptorBufferImageLayoutIgnored = true;
          features->descriptorBufferPushDescriptors = true;
+         break;
+      }
+      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_EARLY_AND_LATE_FRAGMENT_TESTS_FEATURES_AMD: {
+         VkPhysicalDeviceShaderEarlyAndLateFragmentTestsFeaturesAMD *features =
+            (VkPhysicalDeviceShaderEarlyAndLateFragmentTestsFeaturesAMD *)ext;
+         features->shaderEarlyAndLateFragmentTests = true;
          break;
       }
       default:
@@ -2620,7 +2629,9 @@ radv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
          props->shaderGroupHandleSize = RADV_RT_HANDLE_SIZE;
          props->maxRayRecursionDepth = 31;    /* Minimum allowed for DXR. */
          props->maxShaderGroupStride = 16384; /* dummy */
-         props->shaderGroupBaseAlignment = 16;
+         /* This isn't strictly necessary, but Doom Eternal breaks if the
+          * alignment is any lower. */
+         props->shaderGroupBaseAlignment = RADV_RT_HANDLE_SIZE;
          props->shaderGroupHandleCaptureReplaySize = RADV_RT_HANDLE_SIZE;
          props->maxRayDispatchInvocationCount = 1024 * 1024 * 64;
          props->shaderGroupHandleAlignment = 16;
@@ -2701,8 +2712,8 @@ radv_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_PROPERTIES_EXT: {
          VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *props =
             (VkPhysicalDeviceGraphicsPipelineLibraryPropertiesEXT *)ext;
-         props->graphicsPipelineLibraryFastLinking = false;
-         props->graphicsPipelineLibraryIndependentInterpolationDecoration = false;
+         props->graphicsPipelineLibraryFastLinking = true;
+         props->graphicsPipelineLibraryIndependentInterpolationDecoration = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT: {
@@ -7539,18 +7550,6 @@ radv_GetMemoryFdPropertiesKHR(VkDevice _device, VkExternalMemoryHandleTypeFlagBi
        */
       return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
    }
-}
-
-VKAPI_ATTR void VKAPI_CALL
-radv_GetDeviceGroupPeerMemoryFeatures(VkDevice device, uint32_t heapIndex,
-                                      uint32_t localDeviceIndex, uint32_t remoteDeviceIndex,
-                                      VkPeerMemoryFeatureFlags *pPeerMemoryFeatures)
-{
-   assert(localDeviceIndex == remoteDeviceIndex);
-
-   *pPeerMemoryFeatures =
-      VK_PEER_MEMORY_FEATURE_COPY_SRC_BIT | VK_PEER_MEMORY_FEATURE_COPY_DST_BIT |
-      VK_PEER_MEMORY_FEATURE_GENERIC_SRC_BIT | VK_PEER_MEMORY_FEATURE_GENERIC_DST_BIT;
 }
 
 static const VkTimeDomainEXT radv_time_domains[] = {

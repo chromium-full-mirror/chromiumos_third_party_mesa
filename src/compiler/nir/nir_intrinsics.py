@@ -220,12 +220,6 @@ index("nir_alu_type", "dest_type")
 # The swizzle mask for quad_swizzle_amd & masked_swizzle_amd
 index("unsigned", "swizzle_mask")
 
-# Whether the load_buffer_amd/store_buffer_amd is swizzled
-index("bool", "is_swizzled")
-
-# The SLC ("system level coherent") bit of load_buffer_amd/store_buffer_amd
-index("bool", "slc_amd")
-
 # Offsets for load_shared2_amd/store_shared2_amd
 index("uint8_t", "offset0")
 index("uint8_t", "offset1")
@@ -1320,9 +1314,9 @@ intrinsic("optimization_barrier_vgpr_amd", dest_comp=0, src_comp=[0],
 # src[] = { descriptor, vector byte offset, scalar byte offset, index offset }
 # The index offset is multiplied by the stride in the descriptor. The vertex/scalar byte offsets
 # are in bytes.
-intrinsic("load_buffer_amd", src_comp=[4, 1, 1, 1], dest_comp=0, indices=[BASE, IS_SWIZZLED, SLC_AMD, MEMORY_MODES, ACCESS], flags=[CAN_ELIMINATE])
+intrinsic("load_buffer_amd", src_comp=[4, 1, 1, 1], dest_comp=0, indices=[BASE, MEMORY_MODES, ACCESS], flags=[CAN_ELIMINATE])
 # src[] = { store value, descriptor, vector byte offset, scalar byte offset, index offset }
-intrinsic("store_buffer_amd", src_comp=[0, 4, 1, 1, 1], indices=[BASE, WRITE_MASK, IS_SWIZZLED, SLC_AMD, MEMORY_MODES, ACCESS])
+intrinsic("store_buffer_amd", src_comp=[0, 4, 1, 1, 1], indices=[BASE, WRITE_MASK, MEMORY_MODES, ACCESS])
 
 # src[] = { address, unsigned 32-bit offset }.
 load("global_amd", [1, 1], indices=[BASE, ACCESS, ALIGN_MUL, ALIGN_OFFSET], flags=[CAN_ELIMINATE])
@@ -1373,7 +1367,9 @@ system_value("gs_vertex_offset_amd", 1, [BASE])
 system_value("rasterization_samples_amd", 1)
 
 # Descriptor where GS outputs are stored for GS copy shader to read on GFX6-9
-system_value("ring_gsvs_amd", 4)
+system_value("ring_gsvs_amd", 4, indices=[STREAM_ID])
+# Write offset in gsvs ring for legacy GS shader
+system_value("ring_gs2vs_offset_amd", 1)
 
 # Streamout configuration
 system_value("streamout_config_amd", 1)
@@ -1474,6 +1470,11 @@ intrinsic("execute_closest_hit_amd", src_comp=[1, 1, 1, 1, 1, 1])
 #   0. Ray Tmax
 intrinsic("execute_miss_amd", src_comp=[1])
 
+# Used for saving and restoring hit attribute variables.
+# BASE=dword index
+intrinsic("load_hit_attrib_amd", dest_comp=1, bit_sizes=[32], indices=[BASE])
+intrinsic("store_hit_attrib_amd", src_comp=[1], indices=[BASE])
+
 # Load forced VRS rates.
 intrinsic("load_force_vrs_rates_amd", dest_comp=1, bit_sizes=[32], flags=[CAN_ELIMINATE, CAN_REORDER])
 
@@ -1533,6 +1534,10 @@ intrinsic("atomic_add_gs_emit_prim_count_amd", [1])
 intrinsic("atomic_add_gen_prim_count_amd", [1], indices=[STREAM_ID])
 intrinsic("atomic_add_xfb_prim_count_amd", [1], indices=[STREAM_ID])
 
+# Atomically add current wave's invocation count to query result
+# src[] = { invocation_count }.
+intrinsic("atomic_add_gs_invocation_count_amd", [1])
+
 # LDS offset for scratch section in NGG shader
 system_value("lds_ngg_scratch_base_amd", 1)
 # LDS offset for NGG GS shader vertex emit
@@ -1586,6 +1591,12 @@ load("local_pixel_agx", [1], [BASE, FORMAT], [CAN_REORDER, CAN_ELIMINATE])
 # src[] = { value, sample mask }
 # base = offset
 store("local_pixel_agx", [1], [BASE, WRITE_MASK, FORMAT], [CAN_REORDER])
+
+# Combined depth/stencil emit, applying to a mask of samples. base indicates
+# which to write (1 = depth, 2 = stencil, 3 = both).
+#
+# src[] = { sample mask, depth, stencil }
+intrinsic("store_zs_agx", [1, 1, 1], indices=[BASE], flags=[])
 
 # Store a block from local memory into a bound image. Used to write out render
 # targets within the end-of-tile shader, although it is valid in general compute

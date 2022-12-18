@@ -1394,9 +1394,6 @@ void anv_vma_free(struct anv_device *device,
                   uint64_t address, uint64_t size);
 
 struct anv_reloc_list {
-   uint32_t                                     num_relocs;
-   uint32_t                                     array_length;
-   struct anv_bo **                             reloc_bos;
    uint32_t                                     dep_words;
    BITSET_WORD *                                deps;
 };
@@ -1433,6 +1430,12 @@ struct anv_batch_bo {
 struct anv_batch {
    const VkAllocationCallbacks *                alloc;
 
+   /**
+    * Sum of all the anv_batch_bo sizes allocated for this command buffer.
+    * Used to increase allocation size for long command buffers.
+    */
+   size_t                                       total_batch_size;
+
    struct anv_address                           start_addr;
 
    void *                                       start;
@@ -1444,7 +1447,7 @@ struct anv_batch {
    /* This callback is called (with the associated user data) in the event
     * that the batch runs out of space.
     */
-   VkResult (*extend_cb)(struct anv_batch *, void *);
+   VkResult (*extend_cb)(struct anv_batch *, uint32_t, void *);
    void *                                       user_data;
 
    /**
@@ -1458,8 +1461,15 @@ struct anv_batch {
 };
 
 void *anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords);
+VkResult anv_batch_emit_ensure_space(struct anv_batch *batch, uint32_t size);
 void anv_batch_emit_batch(struct anv_batch *batch, struct anv_batch *other);
 struct anv_address anv_batch_address(struct anv_batch *batch, void *batch_location);
+
+static inline struct anv_address
+anv_batch_current_address(struct anv_batch *batch)
+{
+   return anv_batch_address(batch, batch->next);
+}
 
 static inline void
 anv_batch_set_storage(struct anv_batch *batch, struct anv_address addr,
@@ -1881,26 +1891,33 @@ anv_descriptor_set_address(struct anv_descriptor_set *set)
 struct anv_descriptor_pool {
    struct vk_object_base base;
 
-   uint32_t size;
-   uint32_t next;
-   uint32_t free_list;
-
    struct anv_bo *bo;
    struct util_vma_heap bo_heap;
 
    struct anv_state_stream surface_state_stream;
    void *surface_state_free_list;
 
+   /** List of anv_descriptor_set. */
    struct list_head desc_sets;
 
+   /** Heap over host_mem */
+   struct util_vma_heap host_heap;
+
+   /** Allocated size of host_mem */
+   uint32_t host_mem_size;
+
+   /**
+    * VK_DESCRIPTOR_POOL_CREATE_HOST_ONLY_BIT_EXT. If set, then
+    * surface_state_stream is unused.
+    */
    bool host_only;
 
-   char data[0];
+   char host_mem[0];
 };
 
 size_t
 anv_descriptor_set_layout_size(const struct anv_descriptor_set_layout *layout,
-                               uint32_t var_desc_count);
+                               bool host_only, uint32_t var_desc_count);
 
 uint32_t
 anv_descriptor_set_layout_descriptor_buffer_size(const struct anv_descriptor_set_layout *set_layout,
@@ -2745,7 +2762,7 @@ struct anv_cmd_buffer {
    struct u_vector                              dynamic_bos;
 
    /**
-    *
+    * Structure holding tracepoints recorded in the command buffer.
     */
    struct u_trace                               trace;
 };
@@ -3669,13 +3686,7 @@ anv_can_sample_with_hiz(const struct intel_device_info * const devinfo,
    if (image->vk.image_type == VK_IMAGE_TYPE_3D)
       return false;
 
-   /* Allow this feature on BDW even though it is disabled in the BDW devinfo
-    * struct. There's documentation which suggests that this feature actually
-    * reduces performance on BDW, but it has only been observed to help so
-    * far. Sampling fast-cleared blocks on BDW must also be handled with care
-    * (see depth_stencil_attachment_compute_aux_usage() for more info).
-    */
-   if (devinfo->ver != 8 && !devinfo->has_sample_with_hiz)
+   if (!devinfo->has_sample_with_hiz)
       return false;
 
    return image->vk.samples == 1;

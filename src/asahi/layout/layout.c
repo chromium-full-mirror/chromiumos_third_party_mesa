@@ -156,7 +156,8 @@ ail_initialize_twiddled(struct ail_layout *layout)
       layout->level_offsets_B[l] = offset_B;
       offset_B = ALIGN_POT(offset_B + (blocksize_B * size_el), AIL_CACHELINE);
 
-      unsigned tilesize_el = MIN2(potw_el, poth_el);
+      /* The tilesize is based on the true mipmap level size, not the POT rounded size */
+      unsigned tilesize_el = util_next_power_of_two(u_minify(MIN2(w_el, h_el), l));
       layout->tilesize_el[l] = (struct ail_tile) { tilesize_el, tilesize_el };
 
       potw_el = u_minify(potw_el, 1);
@@ -198,6 +199,8 @@ ail_initialize_compression(struct ail_layout *layout)
       if (width_px < 16 && height_px < 16)
          break;
 
+      layout->level_offsets_compressed_B[l] = compbuf_B;
+
       /* The compression buffer seems to have 8 bytes per 16 x 16 pixel block. */
       unsigned cmpw_el = DIV_ROUND_UP(util_next_power_of_two(width_px), 16);
       unsigned cmph_el = DIV_ROUND_UP(util_next_power_of_two(height_px), 16);
@@ -229,7 +232,15 @@ ail_make_miptree(struct ail_layout *layout)
       assert(layout->linear_stride_B == 0 && "Invalid nonlinear layout");
       assert(layout->depth_px >= 1 && "Invalid dimensions");
       assert(layout->levels >= 1 && "Invalid dimensions");
-      assert(layout->sample_count_sa >= 1 && "Invalid samplt count");
+      assert(layout->sample_count_sa >= 1 && "Invalid sample count");
+   }
+
+   /* Hardware strides are based on the maximum number of levels, so always
+    * allocate them all.
+    */
+   if (layout->levels > 1) {
+      layout->levels = util_logbase2(MAX2(layout->width_px,
+                                          layout->height_px)) + 1;
    }
 
    assert(util_format_get_blockdepth(layout->format) == 1 &&

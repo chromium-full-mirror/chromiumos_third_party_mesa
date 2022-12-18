@@ -202,6 +202,23 @@ agx_vec2(agx_builder *b, agx_index s0, agx_index s1)
    return dst;
 }
 
+/*
+ * Extract the lower or upper N-bits from a (2*N)-bit quantity. We use a split
+ * without null destinations to let us CSE (and coalesce) the splits when both x
+ * and y are split.
+ */
+static agx_instr *
+agx_subdivide_to(agx_builder *b, agx_index dst, agx_index s0, unsigned comp)
+{
+   assert((s0.size == (dst.size + 1)) && "only 2x subdivide handled");
+   assert((comp == 0 || comp == 1) && "too many components");
+
+   agx_instr *split = agx_split(b, 2, s0);
+   split->dest[comp] = dst;
+   split->dest[1 - comp] = agx_temp(b->shader, dst.size);
+   return split;
+}
+
 static void
 agx_block_add_successor(agx_block *block, agx_block *successor)
 {
@@ -477,6 +494,32 @@ agx_emit_local_store_pixel(agx_builder *b, nir_intrinsic_instr *instr)
                          nir_intrinsic_base(instr));
 }
 
+static agx_instr *
+agx_emit_store_zs(agx_builder *b, nir_intrinsic_instr *instr)
+{
+   unsigned base = nir_intrinsic_base(instr);
+   bool write_z = base & 1;
+   bool write_s = base & 2;
+
+   /* TODO: Handle better */
+   assert(!b->shader->key->fs.ignore_tib_dependencies && "not used");
+   agx_writeout(b, 0x0001);
+
+   agx_index z = agx_src_index(&instr->src[1]);
+   agx_index s = agx_src_index(&instr->src[2]);
+
+   agx_index zs = (write_z && write_s) ? agx_vec2(b, z, s) :
+                   write_z             ? z :
+                                         s;
+
+   /* Not necessarily a sample mask but overlapping hw mechanism... Should
+    * maybe rename this flag to something more general.
+    */
+   b->shader->out->writes_sample_mask = true;
+
+   return agx_zs_emit(b, agx_src_index(&instr->src[0]), zs, base);
+}
+
 static void
 agx_emit_local_load_pixel(agx_builder *b, agx_index dest, nir_intrinsic_instr *instr)
 {
@@ -696,6 +739,10 @@ agx_emit_intrinsic(agx_builder *b, nir_intrinsic_instr *instr)
      assert(stage == MESA_SHADER_VERTEX);
      return agx_emit_store_vary(b, instr);
 
+  case nir_intrinsic_store_zs_agx:
+     assert(stage == MESA_SHADER_FRAGMENT);
+     return agx_emit_store_zs(b, instr);
+
   case nir_intrinsic_store_local_pixel_agx:
      assert(stage == MESA_SHADER_FRAGMENT);
      return agx_emit_local_store_pixel(b, instr);
@@ -805,7 +852,6 @@ agx_emit_alu_bool(agx_builder *b, nir_op op,
    case nir_op_inot: return agx_xor_to(b, dst, s0, t);
 
    case nir_op_f2b1: return agx_fcmpsel_to(b, dst, s0, f, f, t, AGX_FCOND_EQ);
-   case nir_op_i2b1: return agx_icmpsel_to(b, dst, s0, f, f, t, AGX_ICOND_UEQ);
    case nir_op_b2b1: return agx_icmpsel_to(b, dst, s0, f, f, t, AGX_ICOND_UEQ);
 
    case nir_op_bcsel:
@@ -870,7 +916,6 @@ agx_emit_alu(agx_builder *b, nir_alu_instr *instr)
    UNOP(fddy_fine, dfdy);
 
    UNOP(mov, mov);
-   UNOP(u2u16, mov);
    UNOP(u2u32, mov);
    UNOP(bitfield_reverse, bitrev);
    UNOP(bit_count, popcount);
@@ -944,8 +989,16 @@ agx_emit_alu(agx_builder *b, nir_alu_instr *instr)
          return agx_asr_to(b, dst, ishl16, agx_immediate(8));
       } else {
          assert (s0.size == AGX_SIZE_32 && "other conversions lowered");
-         return agx_iadd_to(b, dst, s0, agx_zero(), 0);
+         return agx_subdivide_to(b, dst, s0, 0);
       }
+   }
+
+   case nir_op_u2u16:
+   {
+      if (s0.size == AGX_SIZE_32)
+         return agx_subdivide_to(b, dst, s0, 0);
+      else
+         return agx_mov_to(b, dst, s0);
    }
 
    case nir_op_iadd_sat:
@@ -1040,18 +1093,11 @@ agx_emit_alu(agx_builder *b, nir_alu_instr *instr)
       return agx_emit_collect_to(b, dst, 2, idx);
    }
 
-   /* Split a 64-bit word into 32-bit parts. Do not use null destinations to
-    * let us CSE (and coalesce) the splits when both x and y are split.
-    */
    case nir_op_unpack_64_2x32_split_x:
+      return agx_subdivide_to(b, dst, s0, 0);
+
    case nir_op_unpack_64_2x32_split_y:
-   {
-      agx_instr *split = agx_split(b, 2, s0);
-      unsigned comp = instr->op == nir_op_unpack_64_2x32_split_y ? 1 : 0;
-      split->dest[comp] = dst;
-      split->dest[1 - comp] = agx_temp(b->shader, dst.size);
-      return split;
-   }
+      return agx_subdivide_to(b, dst, s0, 1);
 
    case nir_op_vec2:
    case nir_op_vec3:
@@ -1864,6 +1910,8 @@ agx_preprocess_nir(nir_shader *nir)
    NIR_PASS_V(nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
          glsl_type_size, 0);
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      NIR_PASS_V(nir, agx_nir_lower_zs_emit);
+
       /* Interpolate varyings at fp16 and write to the tilebuffer at fp16. As an
        * exception, interpolate flat shaded at fp32. This works around a
        * hardware limitation. The resulting code (with an extra f2f16 at the end
@@ -1934,6 +1982,18 @@ agx_compile_shader_nir(nir_shader *nir,
          BITFIELD_BIT(VARYING_SLOT_PSIZ);
    } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       out->no_colour_output = !(nir->info.outputs_written >> FRAG_RESULT_DATA0);
+      out->disable_tri_merging = nir->info.fs.needs_all_helper_invocations ||
+                                 nir->info.fs.needs_quad_helper_invocations;
+
+      /* Report a canonical depth layout */
+      enum gl_frag_depth_layout layout = nir->info.fs.depth_layout;
+
+      if (!(nir->info.outputs_written & BITFIELD_BIT(FRAG_RESULT_DEPTH)))
+         out->depth_layout = FRAG_DEPTH_LAYOUT_UNCHANGED;
+      else if (layout == FRAG_DEPTH_LAYOUT_NONE)
+         out->depth_layout = FRAG_DEPTH_LAYOUT_ANY;
+      else
+         out->depth_layout = layout;
    }
 
    agx_optimize_nir(nir, &out->push_count);

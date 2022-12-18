@@ -804,6 +804,7 @@ struct zink_gfx_push_constant {
    float default_outer_level[4];
    uint32_t line_stipple_pattern;
    float viewport_scale[2];
+   float line_width;
 };
 
 /* The order of the enums MUST match the order of the zink_gfx_push_constant
@@ -817,6 +818,7 @@ enum zink_gfx_push_constant_member {
    ZINK_GFX_PUSHCONST_DEFAULT_OUTER_LEVEL,
    ZINK_GFX_PUSHCONST_LINE_STIPPLE_PATTERN,
    ZINK_GFX_PUSHCONST_VIEWPORT_SCALE,
+   ZINK_GFX_PUSHCONST_LINE_WIDTH,
    ZINK_GFX_PUSHCONST_MAX
 };
 
@@ -1282,6 +1284,8 @@ struct zink_screen {
       bool needs_sanitised_layer;
       bool track_renderpasses;
       bool no_linestipple;
+      bool no_linesmooth;
+      bool no_hw_gl_point;
       unsigned z16_unscaled_bias;
       unsigned z24_unscaled_bias;
    } driver_workarounds;

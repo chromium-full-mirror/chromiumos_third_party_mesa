@@ -44,6 +44,9 @@
 #include "main/dispatch.h"
 #include "api_exec_decl.h"
 
+#include "state_tracker/st_atom.h"
+#include "state_tracker/st_util.h"
+
 
 /** Used to do error checking for GL_EXT_vertex_array_bgra */
 #define BGRA_OR_4  5
@@ -186,8 +189,8 @@ _mesa_vertex_attrib_binding(struct gl_context *ctx,
       array->BufferBindingIndex = bindingIndex;
 
       if (vao->Enabled & array_bit) {
-         vao->NewVertexBuffers = true;
-         vao->NewVertexElements = true;
+         ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
+         ctx->Array.NewVertexElements = true;
       }
 
       vao->NonDefaultStateMask |= array_bit | BITFIELD_BIT(bindingIndex);
@@ -247,10 +250,10 @@ _mesa_bind_vertex_buffer(struct gl_context *ctx,
       }
 
       if (vao->Enabled & binding->_BoundArrays) {
-         vao->NewVertexBuffers = true;
+         ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
          /* Non-dynamic VAOs merge vertex buffers, which affects vertex elements. */
          if (!vao->IsDynamic)
-            vao->NewVertexElements = true;
+            ctx->Array.NewVertexElements = true;
       }
 
       vao->NonDefaultStateMask |= BITFIELD_BIT(index);
@@ -281,16 +284,16 @@ vertex_binding_divisor(struct gl_context *ctx,
          vao->NonZeroDivisorMask &= ~binding->_BoundArrays;
 
       if (vao->Enabled & binding->_BoundArrays) {
-         vao->NewVertexBuffers = true;
-         vao->NewVertexElements = true;
+         ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
+         ctx->Array.NewVertexElements = true;
       }
 
       vao->NonDefaultStateMask |= BITFIELD_BIT(bindingIndex);
    }
 }
 
-/* vertex_formats[gltype - GL_BYTE][integer*2 + normalized][size - 1] */
-static const uint16_t vertex_formats[][4][4] = {
+/* vertex_formats[(gltype & 0x3f) | (double << 5)][integer*2 + normalized][size - 1] */
+static const uint8_t vertex_formats[][4][4] = {
    { /* GL_BYTE */
       {
          PIPE_FORMAT_R8_SSCALED,
@@ -470,6 +473,138 @@ static const uint16_t vertex_formats[][4][4] = {
          PIPE_FORMAT_R32G32B32A32_FIXED
       },
    },
+   {{0}}, /* unused (13) */
+   {{0}}, /* unused (14) */
+   {{0}}, /* unused (15) */
+   {{0}}, /* unused (16) */
+   {{0}}, /* unused (17) */
+   {{0}}, /* unused (18) */
+   {{0}}, /* unused (19) */
+   {{0}}, /* unused (20) */
+   {{0}}, /* unused (21) */
+   {{0}}, /* unused (22) */
+   {{0}}, /* unused (23) */
+   {{0}}, /* unused (24) */
+   {{0}}, /* unused (25) */
+   {{0}}, /* unused (26) */
+   {{0}}, /* unused (27) */
+   {{0}}, /* unused (28) */
+   {{0}}, /* unused (29) */
+   {{0}}, /* unused (30) */
+   { /* GL_INT_2_10_10_10_REV */
+      {
+         0,
+         0,
+         0,
+         PIPE_FORMAT_R10G10B10A2_SSCALED
+      },
+      {
+         0,
+         0,
+         0,
+         PIPE_FORMAT_R10G10B10A2_SNORM
+      },
+   },
+   {{0}}, /* unused (32) */
+   { /* GL_HALF_FLOAT_OES */
+      {
+         PIPE_FORMAT_R16_FLOAT,
+         PIPE_FORMAT_R16G16_FLOAT,
+         PIPE_FORMAT_R16G16B16_FLOAT,
+         PIPE_FORMAT_R16G16B16A16_FLOAT
+      },
+      {
+         PIPE_FORMAT_R16_FLOAT,
+         PIPE_FORMAT_R16G16_FLOAT,
+         PIPE_FORMAT_R16G16B16_FLOAT,
+         PIPE_FORMAT_R16G16B16A16_FLOAT
+      },
+   },
+   {{0}}, /* unused (34) */
+   {{0}}, /* unused (35) */
+   {{0}}, /* unused (36) */
+   {{0}}, /* unused (37) */
+   {{0}}, /* unused (38) */
+   {{0}}, /* unused (39) */
+   { /* GL_UNSIGNED_INT_2_10_10_10_REV */
+      {
+         0,
+         0,
+         0,
+         PIPE_FORMAT_R10G10B10A2_USCALED
+      },
+      {
+         0,
+         0,
+         0,
+         PIPE_FORMAT_R10G10B10A2_UNORM
+      },
+   },
+   {{0}}, /* unused (41) */
+   { /* GL_DOUBLE | (doubles << 5) (real double) */
+     {
+        PIPE_FORMAT_R64_UINT,
+        PIPE_FORMAT_R64G64_UINT,
+        PIPE_FORMAT_R64G64B64_UINT,
+        PIPE_FORMAT_R64G64B64A64_UINT,
+     },
+   },
+   {{0}}, /* unused (43) */
+   {{0}}, /* unused (44) */
+   {{0}}, /* unused (45) */
+   {{0}}, /* unused (46) */
+   { /* GL_UNSIGNED_INT64_ARB | (doubles << 5) (doubles is always true) */
+     {0},
+     {0},
+     {
+        PIPE_FORMAT_R64_UINT,
+        PIPE_FORMAT_R64G64_UINT,
+        PIPE_FORMAT_R64G64B64_UINT,
+        PIPE_FORMAT_R64G64B64A64_UINT,
+     },
+   },
+   {{0}}, /* unused (48) */
+   {{0}}, /* unused (49) */
+   {{0}}, /* unused (50) */
+   {{0}}, /* unused (51) */
+   {{0}}, /* unused (52) */
+   {{0}}, /* unused (53) */
+   {{0}}, /* unused (54) */
+   {{0}}, /* unused (55) */
+   {{0}}, /* unused (56) */
+   {{0}}, /* unused (57) */
+   {{0}}, /* unused (58) */
+   { /* GL_UNSIGNED_INT_10F_11F_11F_REV */
+      {
+         0,
+         0,
+         PIPE_FORMAT_R11G11B10_FLOAT,
+         0
+      },
+      {
+         0,
+         0,
+         PIPE_FORMAT_R11G11B10_FLOAT,
+         0
+      },
+   },
+};
+
+/* bgra_vertex_formats[type & 0x3][normalized] */
+static const uint8_t bgra_vertex_formats[4][2] = {
+   { /* GL_UNSIGNED_INT_2_10_10_10_REV */
+      PIPE_FORMAT_B10G10R10A2_USCALED,
+      PIPE_FORMAT_B10G10R10A2_UNORM
+   },
+   { /* GL_UNSIGNED_BYTE */
+      0,
+      PIPE_FORMAT_B8G8R8A8_UNORM
+   },
+   {0}, /* unused (2) */
+   { /* GL_INT_2_10_10_10_REV */
+      PIPE_FORMAT_B10G10R10A2_SSCALED,
+      PIPE_FORMAT_B10G10R10A2_SNORM
+   }
 };
 
 /**
@@ -482,64 +617,31 @@ vertex_format_to_pipe_format(GLubyte size, GLenum16 type, GLenum16 format,
    assert(size >= 1 && size <= 4);
    assert(format == GL_RGBA || format == GL_BGRA);
 
-   /* Raw doubles use 64_UINT. */
-   if (doubles)
-      return PIPE_FORMAT_R64_UINT + size - 1;
-
-   switch (type) {
-   case GL_HALF_FLOAT_OES:
-      type = GL_HALF_FLOAT;
-      break;
-
-   case GL_INT_2_10_10_10_REV:
+   if (format == GL_BGRA) {
       assert(size == 4 && !integer);
+      assert(type == GL_UNSIGNED_BYTE ||
+             type == GL_INT_2_10_10_10_REV ||
+             type == GL_UNSIGNED_INT_2_10_10_10_REV);
 
-      if (format == GL_BGRA) {
-         if (normalized)
-            return PIPE_FORMAT_B10G10R10A2_SNORM;
-         else
-            return PIPE_FORMAT_B10G10R10A2_SSCALED;
-      } else {
-         if (normalized)
-            return PIPE_FORMAT_R10G10B10A2_SNORM;
-         else
-            return PIPE_FORMAT_R10G10B10A2_SSCALED;
-      }
-      break;
-
-   case GL_UNSIGNED_INT_2_10_10_10_REV:
-      assert(size == 4 && !integer);
-
-      if (format == GL_BGRA) {
-         if (normalized)
-            return PIPE_FORMAT_B10G10R10A2_UNORM;
-         else
-            return PIPE_FORMAT_B10G10R10A2_USCALED;
-      } else {
-         if (normalized)
-            return PIPE_FORMAT_R10G10B10A2_UNORM;
-         else
-            return PIPE_FORMAT_R10G10B10A2_USCALED;
-      }
-      break;
-
-   case GL_UNSIGNED_INT_10F_11F_11F_REV:
-      assert(size == 3 && !integer && format == GL_RGBA);
-      return PIPE_FORMAT_R11G11B10_FLOAT;
-
-   case GL_UNSIGNED_BYTE:
-      if (format == GL_BGRA) {
-         /* this is an odd-ball case */
-         assert(normalized);
-         return PIPE_FORMAT_B8G8R8A8_UNORM;
-      }
-      break;
+      enum pipe_format pipe_format =
+         bgra_vertex_formats[type & 0x3][normalized];
+      assert(pipe_format);
+      return pipe_format;
    }
 
    unsigned index = integer*2 + normalized;
    assert(index <= 2);
-   assert(type >= GL_BYTE && type <= GL_FIXED);
-   return vertex_formats[type - GL_BYTE][index][size-1];
+   assert((type >= GL_BYTE && type <= GL_FIXED) ||
+          type == GL_HALF_FLOAT_OES ||
+          type == GL_INT_2_10_10_10_REV ||
+          type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+          type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
+          (type == GL_UNSIGNED_INT64_ARB && doubles));
+
+   enum pipe_format pipe_format =
+      vertex_formats[(type & 0x3f) | ((int)doubles << 5)][index][size-1];
+   assert(pipe_format);
+   return pipe_format;
 }
 
 void
@@ -667,8 +769,10 @@ _mesa_update_array_format(struct gl_context *ctx,
    array->RelativeOffset = relativeOffset;
    array->Format = new_format;
 
-   if (vao->Enabled & VERT_BIT(attrib))
-      vao->NewVertexElements = true;
+   if (vao->Enabled & VERT_BIT(attrib)) {
+      ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
+      ctx->Array.NewVertexElements = true;
+   }
 
    vao->NonDefaultStateMask |= BITFIELD_BIT(attrib);
 }
@@ -931,10 +1035,10 @@ update_array(struct gl_context *ctx,
       array->Ptr = ptr;
 
       if (vao->Enabled & VERT_BIT(attrib)) {
-         vao->NewVertexBuffers = true;
+         ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
          /* Non-dynamic VAOs merge vertex buffers, which affects vertex elements. */
          if (!vao->IsDynamic)
-            vao->NewVertexElements = true;
+            ctx->Array.NewVertexElements = true;
       }
 
       vao->NonDefaultStateMask |= BITFIELD_BIT(attrib);
@@ -1894,13 +1998,68 @@ _mesa_VertexAttribLPointer(GLuint index, GLint size, GLenum type,
                 stride, GL_FALSE, GL_FALSE, GL_TRUE, ptr);
 }
 
+/**
+ * Set the per-vertex edge flag enablement according to the "enable"
+ * parameter. If "enable" is false, the zero-stride edge flag attribute value
+ * will be used instead.
+ *
+ * This is used by VAOs, glBegin/End and display lists.
+ */
+void
+_mesa_update_edgeflag_state_explicit(struct gl_context *ctx,
+                                     bool per_vertex_enable)
+{
+   if (ctx->API != API_OPENGL_COMPAT)
+      return;
+
+   /* Edge flags take effect only if the polygon mode is not FILL, and they
+    * determine whether a line or point is drawn with that polygon mode.
+    */
+   bool edgeflags_have_effect = ctx->Polygon.FrontMode != GL_FILL ||
+                                ctx->Polygon.BackMode != GL_FILL;
+   per_vertex_enable &= edgeflags_have_effect;
+
+   if (per_vertex_enable != ctx->Array._PerVertexEdgeFlagsEnabled) {
+      ctx->Array._PerVertexEdgeFlagsEnabled = per_vertex_enable;
+
+      struct gl_program *vp = ctx->VertexProgram._Current;
+      if (vp) {
+         ctx->NewDriverState |= ST_NEW_VS_STATE |
+                                ST_NEW_VERTEX_ARRAYS;
+         ctx->Array.NewVertexElements = true;
+      }
+   }
+
+   /* If there are no per-vertex edge flags and the zero-stride edge flag is
+    * false, all front and back points and lines generated by polygon mode
+    * are not drawn.
+    */
+   bool polygon_mode_always_culls = edgeflags_have_effect &&
+                                    !ctx->Array._PerVertexEdgeFlagsEnabled &&
+                                    !ctx->Current.Attrib[VERT_ATTRIB_EDGEFLAG][0];
+   if (polygon_mode_always_culls != ctx->Array._PolygonModeAlwaysCulls) {
+      ctx->Array._PolygonModeAlwaysCulls = polygon_mode_always_culls;
+      ctx->NewDriverState |= ST_NEW_RASTERIZER;
+   }
+}
+
+/**
+ * Set the edge flag state using the current VAO and the zero-stride
+ * edge flag attribute value if per-vertex edge flags are disabled.
+ */
+void
+_mesa_update_edgeflag_state_vao(struct gl_context *ctx)
+{
+   _mesa_update_edgeflag_state_explicit(ctx,
+                                        ctx->Array._DrawVAO->Enabled &
+                                        VERT_BIT_EDGEFLAG);
+}
 
 void
 _mesa_enable_vertex_array_attribs(struct gl_context *ctx,
                                   struct gl_vertex_array_object *vao,
                                   GLbitfield attrib_bits)
 {
-   assert((attrib_bits & ~VERT_BIT_ALL) == 0);
    assert(!vao->SharedAndImmutable);
 
    /* Only work on bits that are disabled */
@@ -1908,16 +2067,22 @@ _mesa_enable_vertex_array_attribs(struct gl_context *ctx,
    if (attrib_bits) {
       /* was disabled, now being enabled */
       vao->Enabled |= attrib_bits;
-      vao->NewVertexBuffers = true;
-      vao->NewVertexElements = true;
       vao->NonDefaultStateMask |= attrib_bits;
+      ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
+      ctx->Array.NewVertexElements = true;
 
       /* Update the map mode if needed */
       if (attrib_bits & (VERT_BIT_POS|VERT_BIT_GENERIC0))
          update_attribute_map_mode(ctx, vao);
 
+      if (attrib_bits & VERT_BIT_EDGEFLAG)
+         _mesa_update_edgeflag_state_vao(ctx);
+
       vao->_EnabledWithMapMode =
          _mesa_vao_enable_to_vp_inputs(vao->_AttributeMapMode, vao->Enabled);
+
+      _mesa_set_varying_vp_inputs(ctx, ctx->VertexProgram._VPModeInputFilter &
+                                  vao->_EnabledWithMapMode);
    }
 }
 
@@ -2002,7 +2167,6 @@ _mesa_disable_vertex_array_attribs(struct gl_context *ctx,
                                    struct gl_vertex_array_object *vao,
                                    GLbitfield attrib_bits)
 {
-   assert((attrib_bits & ~VERT_BIT_ALL) == 0);
    assert(!vao->SharedAndImmutable);
 
    /* Only work on bits that are enabled */
@@ -2010,15 +2174,21 @@ _mesa_disable_vertex_array_attribs(struct gl_context *ctx,
    if (attrib_bits) {
       /* was enabled, now being disabled */
       vao->Enabled &= ~attrib_bits;
-      vao->NewVertexBuffers = true;
-      vao->NewVertexElements = true;
+      ctx->NewDriverState |= ST_NEW_VERTEX_ARRAYS;
+      ctx->Array.NewVertexElements = true;
 
       /* Update the map mode if needed */
       if (attrib_bits & (VERT_BIT_POS|VERT_BIT_GENERIC0))
          update_attribute_map_mode(ctx, vao);
 
+      if (attrib_bits & VERT_BIT_EDGEFLAG)
+         _mesa_update_edgeflag_state_vao(ctx);
+
       vao->_EnabledWithMapMode =
          _mesa_vao_enable_to_vp_inputs(vao->_AttributeMapMode, vao->Enabled);
+
+      _mesa_set_varying_vp_inputs(ctx, ctx->VertexProgram._VPModeInputFilter &
+                                  vao->_EnabledWithMapMode);
    }
 }
 
@@ -3929,8 +4099,7 @@ _mesa_init_varray(struct gl_context *ctx)
 
    ctx->Array.DefaultVAO = _mesa_new_vao(ctx, 0);
    _mesa_reference_vao(ctx, &ctx->Array.VAO, ctx->Array.DefaultVAO);
-   ctx->Array._EmptyVAO = _mesa_new_vao(ctx, ~0u);
-   _mesa_reference_vao(ctx, &ctx->Array._DrawVAO, ctx->Array._EmptyVAO);
+   _mesa_set_draw_vao(ctx, ctx->Array.VAO);
    ctx->Array.ActiveTexture = 0;   /* GL_ARB_multitexture */
 
    ctx->Array.Objects = _mesa_NewHashTable();

@@ -115,9 +115,23 @@ unswizzled_format(enum pipe_format format)
  * the canonical AFBC internal format if it exists, or NONE if the format
  * cannot be compressed. */
 
-enum pipe_format
+enum pan_afbc_mode
 panfrost_afbc_format(unsigned arch, enum pipe_format format)
 {
+        /* Luminance-alpha not supported for AFBC on v7+ */
+        switch (format) {
+        case PIPE_FORMAT_A8_UNORM:
+        case PIPE_FORMAT_L8_UNORM:
+        case PIPE_FORMAT_I8_UNORM:
+        case PIPE_FORMAT_L8A8_UNORM:
+                if (arch >= 7)
+                        return PAN_AFBC_MODE_INVALID;
+                else
+                        break;
+        default:
+                break;
+        }
+
         /* sRGB does not change the pixel format itself, only the
          * interpretation. The interpretation is handled by conversion hardware
          * independent to the compression hardware, so we can compress sRGB
@@ -125,34 +139,27 @@ panfrost_afbc_format(unsigned arch, enum pipe_format format)
          */
         format = util_format_linear(format);
 
-        /* Don't allow swizzled formats on v7+ */
-        if (arch >= 7 && format != unswizzled_format(format))
-                return PIPE_FORMAT_NONE;
-
-        /* Otherwise swizzling doesn't affect AFBC */
+        /* We handle swizzling orthogonally to AFBC */
         format = unswizzled_format(format);
 
         switch (format) {
-        case PIPE_FORMAT_R8_UNORM:
-        case PIPE_FORMAT_R8G8_UNORM:
-        case PIPE_FORMAT_R8G8B8_UNORM:
-        case PIPE_FORMAT_R8G8B8A8_UNORM:
-        case PIPE_FORMAT_R5G6B5_UNORM:
-        case PIPE_FORMAT_R5G5B5A1_UNORM:
-        case PIPE_FORMAT_R10G10B10A2_UNORM:
-        case PIPE_FORMAT_R4G4B4A4_UNORM:
-                return format;
-
-        case PIPE_FORMAT_Z16_UNORM:
-                return PIPE_FORMAT_R8G8_UNORM;
+        case PIPE_FORMAT_R8_UNORM:              return PAN_AFBC_MODE_R8;
+        case PIPE_FORMAT_R8G8_UNORM:            return PAN_AFBC_MODE_R8G8;
+        case PIPE_FORMAT_R8G8B8_UNORM:          return PAN_AFBC_MODE_R8G8B8;
+        case PIPE_FORMAT_R8G8B8A8_UNORM:        return PAN_AFBC_MODE_R8G8B8A8;
+        case PIPE_FORMAT_R5G6B5_UNORM:          return PAN_AFBC_MODE_R5G6B5;
+        case PIPE_FORMAT_R5G5B5A1_UNORM:        return PAN_AFBC_MODE_R5G5B5A1;
+        case PIPE_FORMAT_R10G10B10A2_UNORM:     return PAN_AFBC_MODE_R10G10B10A2;
+        case PIPE_FORMAT_R4G4B4A4_UNORM:        return PAN_AFBC_MODE_R4G4B4A4;
+        case PIPE_FORMAT_Z16_UNORM:             return PAN_AFBC_MODE_R8G8;
 
         case PIPE_FORMAT_Z24_UNORM_S8_UINT:
         case PIPE_FORMAT_Z24X8_UNORM:
         case PIPE_FORMAT_X24S8_UINT:
-                return PIPE_FORMAT_R8G8B8A8_UNORM;
+                return PAN_AFBC_MODE_R8G8B8A8;
 
         default:
-                return PIPE_FORMAT_NONE;
+                return PAN_AFBC_MODE_INVALID;
         }
 }
 
@@ -161,7 +168,7 @@ panfrost_afbc_format(unsigned arch, enum pipe_format format)
 bool
 panfrost_format_supports_afbc(const struct panfrost_device *dev, enum pipe_format format)
 {
-        return panfrost_afbc_format(dev->arch, format) != PIPE_FORMAT_NONE;
+        return panfrost_afbc_format(dev->arch, format) != PAN_AFBC_MODE_INVALID;
 }
 
 /* The lossless colour transform (AFBC_FORMAT_MOD_YTR) requires RGB. */

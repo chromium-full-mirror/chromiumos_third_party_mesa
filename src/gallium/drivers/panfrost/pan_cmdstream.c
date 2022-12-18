@@ -29,6 +29,7 @@
 #include "util/u_helpers.h"
 #include "util/u_draw.h"
 #include "util/u_memory.h"
+#include "util/u_viewport.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
 #include "gallium/auxiliary/util/u_blend.h"
@@ -211,6 +212,25 @@ panfrost_create_sampler_state(
         struct panfrost_sampler_state *so = CALLOC_STRUCT(panfrost_sampler_state);
         so->base = *cso;
 
+#if PAN_ARCH == 7
+        /* On v7, pan_texture.c composes the API swizzle with a bijective
+         * swizzle derived from the format, to allow more formats than the
+         * hardware otherwise supports. When packing border colours, we need to
+         * undo this bijection, by swizzling with its inverse.
+         */
+        unsigned mali_format = panfrost_pipe_format_v7[cso->border_color_format].hw;
+        enum mali_rgb_component_order order = mali_format & BITFIELD_MASK(12);
+
+        unsigned char inverted_swizzle[4];
+        panfrost_invert_swizzle(GENX(pan_decompose_swizzle)(order).post,
+                                inverted_swizzle);
+
+        util_format_apply_color_swizzle(&so->base.border_color,
+                                        &cso->border_color,
+                                        inverted_swizzle,
+                                        false /* is_integer (irrelevant) */);
+#endif
+
         bool using_nearest = cso->min_img_filter == PIPE_TEX_MIPFILTER_NEAREST;
 
         pan_pack(&so->hw, SAMPLER, cfg) {
@@ -230,10 +250,10 @@ panfrost_create_sampler_state(
                 cfg.compare_function = panfrost_sampler_compare_func(cso);
                 cfg.seamless_cube_map = cso->seamless_cube_map;
 
-                cfg.border_color_r = cso->border_color.ui[0];
-                cfg.border_color_g = cso->border_color.ui[1];
-                cfg.border_color_b = cso->border_color.ui[2];
-                cfg.border_color_a = cso->border_color.ui[3];
+                cfg.border_color_r = so->base.border_color.ui[0];
+                cfg.border_color_g = so->base.border_color.ui[1];
+                cfg.border_color_b = so->base.border_color.ui[2];
+                cfg.border_color_a = so->base.border_color.ui[3];
 
 #if PAN_ARCH >= 6
                 if (cso->max_anisotropy > 1) {
@@ -749,8 +769,9 @@ panfrost_emit_viewport(struct panfrost_batch *batch)
         float vp_maxx = vp->translate[0] + fabsf(vp->scale[0]);
         float vp_miny = vp->translate[1] - fabsf(vp->scale[1]);
         float vp_maxy = vp->translate[1] + fabsf(vp->scale[1]);
-        float minz = (vp->translate[2] - fabsf(vp->scale[2]));
-        float maxz = (vp->translate[2] + fabsf(vp->scale[2]));
+
+        float minz, maxz;
+        util_viewport_zmin_zmax(vp, rast->clip_halfz, &minz, &maxz);
 
         /* Scissor to the intersection of viewport and to the scissor, clamped
          * to the framebuffer */

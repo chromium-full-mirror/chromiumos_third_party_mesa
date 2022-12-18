@@ -160,7 +160,9 @@ anv_shader_stage_to_nir(struct anv_device *device,
    /* Vulkan uses the separate-shader linking model */
    nir->info.separate_shader = true;
 
-   brw_preprocess_nir(compiler, nir, NULL);
+   struct brw_nir_compiler_opts opts = {};
+
+   brw_preprocess_nir(compiler, nir, &opts);
 
    return nir;
 }
@@ -258,25 +260,6 @@ static void
 populate_sampler_prog_key(const struct intel_device_info *devinfo,
                           struct brw_sampler_prog_key_data *key)
 {
-   /* Almost all multisampled textures are compressed.  The only time when we
-    * don't compress a multisampled texture is for 16x MSAA with a surface
-    * width greater than 8k which is a bit of an edge case.  Since the sampler
-    * just ignores the MCS parameter to ld2ms when MCS is disabled, it's safe
-    * to tell the compiler to always assume compression.
-    */
-   key->compressed_multisample_layout_mask = ~0;
-
-   /* SkyLake added support for 16x MSAA.  With this came a new message for
-    * reading from a 16x MSAA surface with compression.  The new message was
-    * needed because now the MCS data is 64 bits instead of 32 or lower as is
-    * the case for 8x, 4x, and 2x.  The key->msaa_16 bit-field controls which
-    * message we use.  Fortunately, the 16x message works for 8x, 4x, and 2x
-    * so we can just use it unconditionally.  This may not be quite as
-    * efficient but it saves us from recompiling.
-    */
-   if (devinfo->ver >= 9)
-      key->msaa_16 = ~0;
-
    /* XXX: Handle texture swizzle on HSW- */
    for (int i = 0; i < BRW_MAX_SAMPLERS; i++) {
       /* Assume color sampler, no swizzling. (Works for BDW+) */
@@ -1457,8 +1440,9 @@ done:
    if (create_feedback) {
       *create_feedback->pPipelineCreationFeedback = pipeline_feedback;
 
-      assert(info->stageCount == create_feedback->pipelineStageCreationFeedbackCount);
-      for (uint32_t i = 0; i < info->stageCount; i++) {
+      uint32_t stage_count = create_feedback->pipelineStageCreationFeedbackCount;
+      assert(stage_count == 0 || info->stageCount == stage_count);
+      for (uint32_t i = 0; i < stage_count; i++) {
          gl_shader_stage s = vk_to_mesa_shader_stage(info->pStages[i].stage);
          create_feedback->pPipelineStageCreationFeedbacks[i] = stages[s].feedback;
       }
@@ -1633,8 +1617,10 @@ anv_pipeline_compile_cs(struct anv_compute_pipeline *pipeline,
    if (create_feedback) {
       *create_feedback->pPipelineCreationFeedback = pipeline_feedback;
 
-      assert(create_feedback->pipelineStageCreationFeedbackCount == 1);
-      create_feedback->pPipelineStageCreationFeedbacks[0] = stage.feedback;
+      if (create_feedback->pipelineStageCreationFeedbackCount) {
+         assert(create_feedback->pipelineStageCreationFeedbackCount == 1);
+         create_feedback->pPipelineStageCreationFeedbacks[0] = stage.feedback;
+      }
    }
 
    pipeline->cs = bin;

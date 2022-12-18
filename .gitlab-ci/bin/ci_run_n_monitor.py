@@ -13,6 +13,7 @@ and show the job(s) logs.
 
 import argparse
 import re
+from subprocess import check_output
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -214,7 +215,7 @@ def print_log(project, job_id) -> None:
         job = project.jobs.get(job_id)
 
         # GitLab's REST API doesn't offer pagination for logs, so we have to refetch it all
-        lines = job.trace().decode("unicode_escape").splitlines()
+        lines = job.trace().decode("raw_unicode_escape").splitlines()
         for line in lines[printed_lines:]:
             print(line)
         printed_lines = len(lines)
@@ -235,7 +236,7 @@ def parse_args() -> None:
     )
     parser.add_argument("--target", metavar="target-job", help="Target job")
     parser.add_argument(
-        "--rev", metavar="revision", help="repository git revision", required=True
+        "--rev", metavar="revision", help="repository git revision (default: HEAD)"
     )
     parser.add_argument(
         "--token",
@@ -279,8 +280,11 @@ if __name__ == "__main__":
 
         cur_project = get_gitlab_project(gl, "mesa")
 
-        print(f"Revision: {args.rev}")
-        pipe = wait_for_pipeline(cur_project, args.rev)
+        REV: str = args.rev
+        if not REV:
+            REV = check_output(['git', 'rev-parse', 'HEAD']).decode('ascii').strip()
+        print(f"Revision: {REV}")
+        pipe = wait_for_pipeline(cur_project, REV)
         print(f"Pipeline: {pipe.web_url}")
         deps = set()
         if args.target:

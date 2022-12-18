@@ -87,6 +87,7 @@ struct agx_stage {
    struct agx_sampler_view *textures[PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    unsigned sampler_count, texture_count;
+   uint32_t valid_samplers;
 };
 
 struct agx_batch {
@@ -97,7 +98,7 @@ struct agx_batch {
    struct agx_tilebuffer_layout tilebuffer_layout;
 
    /* PIPE_CLEAR_* bitmask */
-   uint32_t clear, draw, load;
+   uint32_t clear, draw, load, resolve;
 
    /* Base of uploaded texture descriptors */
    uint64_t textures;
@@ -127,24 +128,37 @@ struct agx_batch {
 
    /* Scissor and depth-bias descriptors, uploaded at GPU time */
    struct util_dynarray scissor, depth_bias;
+
+   /* Indexed occlusion queries within the occlusion buffer, and the occlusion
+    * buffer itself which is allocated at submit time.
+    */
+   struct util_dynarray occlusion_queries;
+   struct agx_ptr occlusion_buffer;
 };
 
 struct agx_zsa {
    struct pipe_depth_stencil_alpha_state base;
    struct agx_fragment_face_packed depth;
    struct agx_fragment_stencil_packed front_stencil, back_stencil;
+
+   /* PIPE_CLEAR_* bitmask corresponding to this depth/stencil state */
+   uint32_t load, store;
 };
 
 struct agx_blend {
    bool logicop_enable, blend_enable;
    nir_lower_blend_rt rt[8];
    unsigned logicop_func;
+
+   /* PIPE_CLEAR_* bitmask corresponding to this blend state */
+   uint32_t store;
 };
 
-struct asahi_shader_key {
-   struct agx_shader_key base;
+struct asahi_vs_shader_key {
    struct agx_vbufs vbuf;
+};
 
+struct asahi_fs_shader_key {
    struct agx_blend blend;
    unsigned nr_cbufs;
 
@@ -153,6 +167,11 @@ struct asahi_shader_key {
 
    uint8_t clip_plane_enable;
    enum pipe_format rt_formats[PIPE_MAX_COLOR_BUFS];
+};
+
+union asahi_shader_key {
+   struct asahi_vs_shader_key vs;
+   struct asahi_fs_shader_key fs;
 };
 
 enum agx_dirty {
@@ -172,6 +191,9 @@ enum agx_dirty {
    /* Just the progs themselves */
    AGX_DIRTY_VS_PROG    = BITFIELD_BIT(10),
    AGX_DIRTY_FS_PROG    = BITFIELD_BIT(11),
+
+   AGX_DIRTY_BLEND      = BITFIELD_BIT(12),
+   AGX_DIRTY_QUERY      = BITFIELD_BIT(13),
 };
 
 #define AGX_MAX_BATCHES (2)
@@ -214,6 +236,9 @@ struct agx_context {
    bool cond_cond;
    enum pipe_render_cond_flag cond_mode;
 
+   struct agx_query *occlusion_query;
+   bool active_queries;
+
    struct util_debug_callback debug;
    bool is_noop;
 
@@ -230,6 +255,8 @@ agx_context(struct pipe_context *pctx)
 {
    return (struct agx_context *) pctx;
 }
+
+void agx_init_query_functions(struct pipe_context *ctx);
 
 static inline void
 agx_dirty_all(struct agx_context *ctx)
@@ -248,7 +275,19 @@ struct agx_rasterizer {
 };
 
 struct agx_query {
-   unsigned	query;
+   unsigned type;
+   unsigned index;
+
+   /* Invariant for occlusion queries:
+    *
+    *    writer != NULL => writer->occlusion_queries[writer_index] == this, and
+    *    writer == NULL => no batch such that this in batch->occlusion_queries
+    */
+   struct agx_batch *writer;
+   unsigned writer_index;
+
+   /* For occlusion queries, which use some CPU work */
+   uint64_t value;
 };
 
 struct agx_sampler_state {
@@ -329,6 +368,18 @@ static inline struct agx_resource *
 agx_resource(struct pipe_resource *pctx)
 {
    return (struct agx_resource *) pctx;
+}
+
+static inline bool
+agx_resource_valid(struct agx_resource *rsrc, int level)
+{
+   /* Shared BOs can always be potentially valid */
+   if (rsrc->bo && rsrc->bo->flags & AGX_BO_SHARED) {
+      assert(level == 0);
+      return true;
+   }
+
+   return BITSET_TEST(rsrc->data_valid, level);
 }
 
 static inline void *
@@ -422,10 +473,14 @@ void agx_flush_batch_for_reason(struct agx_context *ctx, struct agx_batch *batch
 void agx_flush_all(struct agx_context *ctx, const char *reason);
 void agx_flush_readers(struct agx_context *ctx, struct agx_resource *rsrc, const char *reason);
 void agx_flush_writer(struct agx_context *ctx, struct agx_resource *rsrc, const char *reason);
+void agx_flush_batches_writing_occlusion_queries(struct agx_context *ctx);
+void agx_flush_occlusion_queries(struct agx_context *ctx);
 
 /* Use these instead of batch_add_bo for proper resource tracking */
 void agx_batch_reads(struct agx_batch *batch, struct agx_resource *rsrc);
 void agx_batch_writes(struct agx_batch *batch, struct agx_resource *rsrc);
+
+bool agx_any_batch_uses_resource(struct agx_context *ctx, struct agx_resource *rsrc);
 
 struct agx_batch *agx_get_batch(struct agx_context *ctx);
 void agx_batch_cleanup(struct agx_context *ctx, struct agx_batch *batch);
@@ -445,5 +500,12 @@ agx_batch_init_state(struct agx_batch *batch);
 
 uint64_t
 agx_build_meta(struct agx_batch *batch, bool store, bool partial_render);
+
+/* Query management */
+uint16_t
+agx_get_oq_index(struct agx_batch *batch, struct agx_query *query);
+
+void
+agx_finish_batch_occlusion_queries(struct agx_batch *batch);
 
 #endif

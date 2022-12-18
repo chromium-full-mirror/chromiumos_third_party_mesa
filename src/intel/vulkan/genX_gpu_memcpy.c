@@ -60,6 +60,9 @@ emit_common_so_memcpy(struct anv_batch *batch, struct anv_device *device,
       vfi.VertexElementIndex = 0;
    }
    anv_batch_emit(batch, GENX(3DSTATE_VF_SGVS), sgvs);
+#if GFX_VER >= 11
+   anv_batch_emit(batch, GENX(3DSTATE_VF_SGVS_2), sgvs);
+#endif
 
    /* Disable all shader stages */
    anv_batch_emit(batch, GENX(3DSTATE_VS), vs);
@@ -306,10 +309,11 @@ genX(cmd_buffer_so_memcpy)(struct anv_cmd_buffer *cmd_buffer,
                                                        1ull << 32);
 #endif
 
-   /* Invalidate pipeline & raster discard since we touch
-    * 3DSTATE_STREAMOUT.
+   /* Invalidate pipeline, xfb (for 3DSTATE_SO_BUFFER) & raster discard (for
+    * 3DSTATE_STREAMOUT).
     */
-   cmd_buffer->state.gfx.dirty |= ANV_CMD_DIRTY_PIPELINE;
+   cmd_buffer->state.gfx.dirty |= (ANV_CMD_DIRTY_PIPELINE |
+                                   ANV_CMD_DIRTY_XFB_ENABLE);
    BITSET_SET(cmd_buffer->vk.dynamic_graphics_state.dirty,
               MESA_VK_DYNAMIC_RS_RASTERIZER_DISCARD_ENABLE);
 }

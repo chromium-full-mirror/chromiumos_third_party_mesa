@@ -66,22 +66,6 @@ anv_reloc_list_init_clone(struct anv_reloc_list *list,
                           const VkAllocationCallbacks *alloc,
                           const struct anv_reloc_list *other_list)
 {
-   list->num_relocs = other_list->num_relocs;
-   list->array_length = other_list->array_length;
-
-   if (list->num_relocs > 0) {
-      list->reloc_bos =
-         vk_alloc(alloc, list->array_length * sizeof(*list->reloc_bos), 8,
-                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-      if (list->reloc_bos == NULL)
-         return vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-      memcpy(list->reloc_bos, other_list->reloc_bos,
-             list->array_length * sizeof(*list->reloc_bos));
-   } else {
-      list->reloc_bos = NULL;
-   }
-
    list->dep_words = other_list->dep_words;
 
    if (list->dep_words > 0) {
@@ -101,33 +85,7 @@ void
 anv_reloc_list_finish(struct anv_reloc_list *list,
                       const VkAllocationCallbacks *alloc)
 {
-   vk_free(alloc, list->reloc_bos);
    vk_free(alloc, list->deps);
-}
-
-static VkResult
-anv_reloc_list_grow(struct anv_reloc_list *list,
-                    const VkAllocationCallbacks *alloc,
-                    size_t num_additional_relocs)
-{
-   if (list->num_relocs + num_additional_relocs <= list->array_length)
-      return VK_SUCCESS;
-
-   size_t new_length = MAX2(16, list->array_length * 2);
-   while (new_length < list->num_relocs + num_additional_relocs)
-      new_length *= 2;
-
-   struct anv_bo **new_reloc_bos =
-      vk_realloc(alloc, list->reloc_bos,
-                 new_length * sizeof(*list->reloc_bos), 8,
-                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (new_reloc_bos == NULL)
-      return vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
-   list->reloc_bos = new_reloc_bos;
-
-   list->array_length = new_length;
-
-   return VK_SUCCESS;
 }
 
 static VkResult
@@ -178,7 +136,6 @@ anv_reloc_list_add_bo(struct anv_reloc_list *list,
 static void
 anv_reloc_list_clear(struct anv_reloc_list *list)
 {
-   list->num_relocs = 0;
    if (list->dep_words > 0)
       memset(list->deps, 0, list->dep_words * sizeof(BITSET_WORD));
 }
@@ -188,17 +145,6 @@ anv_reloc_list_append(struct anv_reloc_list *list,
                       const VkAllocationCallbacks *alloc,
                       struct anv_reloc_list *other)
 {
-   VkResult result = anv_reloc_list_grow(list, alloc, other->num_relocs);
-   if (result != VK_SUCCESS)
-      return result;
-
-   if (other->num_relocs > 0) {
-      memcpy(&list->reloc_bos[list->num_relocs], &other->reloc_bos[0],
-             other->num_relocs * sizeof(other->reloc_bos[0]));
-
-      list->num_relocs += other->num_relocs;
-   }
-
    anv_reloc_list_grow_deps(list, alloc, other->dep_words);
    for (uint32_t w = 0; w < other->dep_words; w++)
       list->deps[w] |= other->deps[w];
@@ -213,8 +159,9 @@ anv_reloc_list_append(struct anv_reloc_list *list,
 void *
 anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords)
 {
-   if (batch->next + num_dwords * 4 > batch->end) {
-      VkResult result = batch->extend_cb(batch, batch->user_data);
+   uint32_t size = num_dwords * 4;
+   if (batch->next + size > batch->end) {
+      VkResult result = batch->extend_cb(batch, size, batch->user_data);
       if (result != VK_SUCCESS) {
          anv_batch_set_error(batch, result);
          return NULL;
@@ -227,6 +174,23 @@ anv_batch_emit_dwords(struct anv_batch *batch, int num_dwords)
    assert(batch->next <= batch->end);
 
    return p;
+}
+
+/* Ensure enough contiguous space is available */
+VkResult
+anv_batch_emit_ensure_space(struct anv_batch *batch, uint32_t size)
+{
+   if (batch->next + size > batch->end) {
+      VkResult result = batch->extend_cb(batch, size, batch->user_data);
+      if (result != VK_SUCCESS) {
+         anv_batch_set_error(batch, result);
+         return result;
+      }
+   }
+
+   assert(batch->next + size <= batch->end);
+
+   return VK_SUCCESS;
 }
 
 struct anv_address
@@ -247,7 +211,7 @@ anv_batch_emit_batch(struct anv_batch *batch, struct anv_batch *other)
    assert(size % 4 == 0);
 
    if (batch->next + size > batch->end) {
-      VkResult result = batch->extend_cb(batch, batch->user_data);
+      VkResult result = batch->extend_cb(batch, size, batch->user_data);
       if (result != VK_SUCCESS) {
          anv_batch_set_error(batch, result);
          return;
@@ -469,17 +433,11 @@ emit_batch_buffer_start(struct anv_cmd_buffer *cmd_buffer,
     * gens.
     */
 
-#define GFX7_MI_BATCH_BUFFER_START_length      2
-#define GFX7_MI_BATCH_BUFFER_START_length_bias      2
-
-   const uint32_t gfx7_length =
-      GFX7_MI_BATCH_BUFFER_START_length - GFX7_MI_BATCH_BUFFER_START_length_bias;
    const uint32_t gfx8_length =
       GFX8_MI_BATCH_BUFFER_START_length - GFX8_MI_BATCH_BUFFER_START_length_bias;
 
    anv_batch_emit(&cmd_buffer->batch, GFX8_MI_BATCH_BUFFER_START, bbs) {
-      bbs.DWordLength               = cmd_buffer->device->info->ver < 8 ?
-                                      gfx7_length : gfx8_length;
+      bbs.DWordLength               = gfx8_length;
       bbs.SecondLevelBatchBuffer    = Firstlevelbatch;
       bbs.AddressSpaceIndicator     = ASI_PPGTT;
       bbs.BatchBufferStartAddress   = (struct anv_address) { bo, offset };
@@ -548,19 +506,29 @@ anv_cmd_buffer_record_end_submit(struct anv_cmd_buffer *cmd_buffer)
 }
 
 static VkResult
-anv_cmd_buffer_chain_batch(struct anv_batch *batch, void *_data)
+anv_cmd_buffer_chain_batch(struct anv_batch *batch, uint32_t size, void *_data)
 {
+   /* The caller should not need that much space. Otherwise it should split
+    * its commands.
+    */
+   assert(size <= ANV_MAX_CMD_BUFFER_BATCH_SIZE);
+
    struct anv_cmd_buffer *cmd_buffer = _data;
    struct anv_batch_bo *new_bbo = NULL;
+   /* Amount of reserved space at the end of the batch to account for the
+    * chaining instruction.
+    */
+   const uint32_t batch_padding = GFX8_MI_BATCH_BUFFER_START_length * 4;
    /* Cap reallocation to chunk. */
-   uint32_t alloc_size = MIN2(cmd_buffer->total_batch_size,
-                              ANV_MAX_CMD_BUFFER_BATCH_SIZE);
+   uint32_t alloc_size = MIN2(
+      MAX2(batch->total_batch_size, size + batch_padding),
+      ANV_MAX_CMD_BUFFER_BATCH_SIZE);
 
    VkResult result = anv_batch_bo_create(cmd_buffer, alloc_size, &new_bbo);
    if (result != VK_SUCCESS)
       return result;
 
-   cmd_buffer->total_batch_size += alloc_size;
+   batch->total_batch_size += alloc_size;
 
    struct anv_batch_bo **seen_bbo = u_vector_add(&cmd_buffer->seen_bbos);
    if (seen_bbo == NULL) {
@@ -573,7 +541,7 @@ anv_cmd_buffer_chain_batch(struct anv_batch *batch, void *_data)
 
    list_addtail(&new_bbo->link, &cmd_buffer->batch_bos);
 
-   anv_batch_bo_start(new_bbo, batch, GFX8_MI_BATCH_BUFFER_START_length * 4);
+   anv_batch_bo_start(new_bbo, batch, batch_padding);
 
    return VK_SUCCESS;
 }
@@ -777,10 +745,8 @@ anv_cmd_buffer_init_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer)
 
    list_inithead(&cmd_buffer->batch_bos);
 
-   cmd_buffer->total_batch_size = ANV_MIN_CMD_BUFFER_BATCH_SIZE;
-
    result = anv_batch_bo_create(cmd_buffer,
-                                cmd_buffer->total_batch_size,
+                                ANV_MIN_CMD_BUFFER_BATCH_SIZE,
                                 &batch_bo);
    if (result != VK_SUCCESS)
       return result;
@@ -789,6 +755,7 @@ anv_cmd_buffer_init_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer)
 
    cmd_buffer->batch.alloc = &cmd_buffer->vk.pool->alloc;
    cmd_buffer->batch.user_data = cmd_buffer;
+   cmd_buffer->batch.total_batch_size = ANV_MIN_CMD_BUFFER_BATCH_SIZE;
 
    cmd_buffer->batch.extend_cb = anv_cmd_buffer_chain_batch;
 
@@ -884,7 +851,7 @@ anv_cmd_buffer_reset_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer)
 
 
    assert(first_bbo->bo->size == ANV_MIN_CMD_BUFFER_BATCH_SIZE);
-   cmd_buffer->total_batch_size = first_bbo->bo->size;
+   cmd_buffer->batch.total_batch_size = first_bbo->bo->size;
 }
 
 void
@@ -1106,11 +1073,6 @@ struct anv_execbuf {
    struct drm_i915_gem_exec_fence *          syncobjs;
    uint64_t *                                syncobj_values;
 
-   /* List of relocations for surface states, only used with platforms not
-    * using softpin.
-    */
-   void *                                    surface_states_relocs;
-
    uint32_t                                  cmd_buffer_count;
    struct anv_query_pool                     *perf_query_pool;
 
@@ -1125,7 +1087,6 @@ anv_execbuf_finish(struct anv_execbuf *exec)
 {
    vk_free(exec->alloc, exec->syncobjs);
    vk_free(exec->alloc, exec->syncobj_values);
-   vk_free(exec->alloc, exec->surface_states_relocs);
    vk_free(exec->alloc, exec->objects);
    vk_free(exec->alloc, exec->bos);
 }
@@ -1224,14 +1185,6 @@ anv_execbuf_add_bo(struct anv_device *device,
    }
 
    if (relocs != NULL) {
-      for (size_t i = 0; i < relocs->num_relocs; i++) {
-         VkResult result =
-            anv_execbuf_add_bo(device, exec, relocs->reloc_bos[i],
-                               NULL, extra_flags);
-         if (result != VK_SUCCESS)
-            return result;
-      }
-
       return anv_execbuf_add_bo_bitset(device, exec, relocs->dep_words,
                                        relocs->deps, extra_flags);
    }
