@@ -98,9 +98,11 @@ int rc_get_max_index(
 	struct radeon_compiler * c,
 	rc_register_file file);
 
-void rc_pair_remove_src(struct rc_instruction * inst,
+unsigned int rc_pair_remove_src(
+	struct rc_instruction * inst,
 	unsigned int src_type,
-	unsigned int source);
+	unsigned int source,
+	unsigned int new_readmask);
 
 rc_opcode rc_get_flow_control_inst(struct rc_instruction * inst);
 

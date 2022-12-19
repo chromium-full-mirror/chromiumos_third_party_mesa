@@ -144,20 +144,20 @@ FormatYCBCRToPipe(VdpYCbCrFormat vdpau_format)
 #endif
       default:
          /* NOTE: Can't be "unreachable", as it's quite reachable. */
-         assert(!"unexpected VdpYCbCrFormat");
-         return PIPE_FORMAT_NONE;
+         debug_assert(!"unexpected VdpYCbCrFormat");
+#if defined(NDEBUG) || defined(DEBUG)
+         FALLTHROUGH;
+#endif
 #ifdef VDP_YCBCR_FORMAT_Y_UV_444
       case VDP_YCBCR_FORMAT_Y_UV_444:
-         return PIPE_FORMAT_NONE;
 #endif
 #ifdef VDP_YCBCR_FORMAT_Y_U_V_444
       case VDP_YCBCR_FORMAT_Y_U_V_444:
-         return PIPE_FORMAT_NONE;
 #endif
 #ifdef VDP_YCBCR_FORMAT_Y_U_V_444_16
       case VDP_YCBCR_FORMAT_Y_U_V_444_16:
-         return PIPE_FORMAT_NONE;
 #endif
+         return PIPE_FORMAT_NONE;
    }
 
 }

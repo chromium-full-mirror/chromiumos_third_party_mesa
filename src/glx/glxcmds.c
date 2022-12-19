@@ -43,7 +43,7 @@
 #ifdef GLX_USE_APPLEGL
 #include "apple/apple_glx_context.h"
 #include "apple/apple_glx.h"
-#include "util/u_debug.h"
+#include "util/debug.h"
 #else
 #ifndef GLX_USE_WINDOWSGL
 #include <X11/extensions/xf86vmode.h>
@@ -287,10 +287,16 @@ glx_context_init(struct glx_context *gc,
 static Bool
 __glXIsDirect(Display * dpy, GLXContextID contextID, Bool *error)
 {
+   CARD8 opcode;
    xcb_connection_t *c;
    xcb_generic_error_t *err;
    xcb_glx_is_direct_reply_t *reply;
    Bool is_direct;
+
+   opcode = __glXSetupForCommand(dpy);
+   if (!opcode) {
+      return False;
+   }
 
    c = XGetXCBConnection(dpy);
    reply = xcb_glx_is_direct_reply(c, xcb_glx_is_direct(c, contextID), &err);
@@ -318,7 +324,7 @@ __glXIsDirect(Display * dpy, GLXContextID contextID, Bool *error)
 static GLXContext
 CreateContext(Display *dpy, int generic_id, struct glx_config *config,
               GLXContext shareList_user, Bool allowDirect,
-	      unsigned code, int renderType)
+	      unsigned code, int renderType, int screen)
 {
    struct glx_context *gc;
    struct glx_screen *psc;
@@ -326,7 +332,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
    if (dpy == NULL)
       return NULL;
 
-   psc = GetGLXScreenConfigs(dpy, config->screen);
+   psc = GetGLXScreenConfigs(dpy, screen);
    if (psc == NULL)
       return NULL;
 
@@ -364,7 +370,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
       req->glxCode = X_GLXCreateContext;
       req->context = gc->xid = XAllocID(dpy);
       req->visual = generic_id;
-      req->screen = config->screen;
+      req->screen = screen;
       req->shareList = shareList ? shareList->xid : None;
       req->isDirect = gc->isDirect;
       break;
@@ -379,7 +385,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
       req->glxCode = X_GLXCreateNewContext;
       req->context = gc->xid = XAllocID(dpy);
       req->fbconfig = generic_id;
-      req->screen = config->screen;
+      req->screen = screen;
       req->renderType = renderType;
       req->shareList = shareList ? shareList->xid : None;
       req->isDirect = gc->isDirect;
@@ -400,7 +406,7 @@ CreateContext(Display *dpy, int generic_id, struct glx_config *config,
       req->vendorCode = X_GLXvop_CreateContextWithConfigSGIX;
       req->context = gc->xid = XAllocID(dpy);
       req->fbconfig = generic_id;
-      req->screen = config->screen;
+      req->screen = screen;
       req->renderType = renderType;
       req->shareList = shareList ? shareList->xid : None;
       req->isDirect = gc->isDirect;
@@ -472,7 +478,7 @@ glXCreateContext(Display * dpy, XVisualInfo * vis,
 #endif
 
    return CreateContext(dpy, vis->visualid, config, shareList, allowDirect,
-                        X_GLXCreateContext, renderType);
+                        X_GLXCreateContext, renderType, vis->screen);
 }
 
 static void
@@ -1304,7 +1310,7 @@ glXChooseVisual(Display * dpy, int screen, int *attribList)
    }
 
 #ifdef GLX_USE_APPLEGL
-   if(visualList && debug_get_bool_option("LIBGL_DUMP_VISUALID", false)) {
+   if(visualList && env_var_as_boolean("LIBGL_DUMP_VISUALID", false)) {
       printf("visualid 0x%lx\n", visualList[0].visualid);
    }
 #endif
@@ -1645,7 +1651,8 @@ glXCreateNewContext(Display * dpy, GLXFBConfig fbconfig,
    }
 
    return CreateContext(dpy, config->fbconfigID, config, shareList,
-			allowDirect, X_GLXCreateNewContext, renderType);
+			allowDirect, X_GLXCreateNewContext, renderType,
+			config->screen);
 }
 
 
@@ -2044,7 +2051,8 @@ glXCreateContextWithConfigSGIX(Display * dpy,
        && __glXExtensionBitIsEnabled(psc, SGIX_fbconfig_bit)) {
       gc = CreateContext(dpy, config->fbconfigID, config, shareList,
                          allowDirect,
-			 X_GLXvop_CreateContextWithConfigSGIX, renderType);
+			 X_GLXvop_CreateContextWithConfigSGIX, renderType,
+			 config->screen);
    }
 
    return gc;

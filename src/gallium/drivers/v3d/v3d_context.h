@@ -103,9 +103,7 @@ void v3d_job_add_bo(struct v3d_job *job, struct v3d_bo *bo);
 #define MAX_JOB_SCISSORS 16
 
 enum v3d_sampler_state_variant {
-        V3D_SAMPLER_STATE_BORDER_0000,
-        V3D_SAMPLER_STATE_BORDER_0001,
-        V3D_SAMPLER_STATE_BORDER_1111,
+        V3D_SAMPLER_STATE_BORDER_0,
         V3D_SAMPLER_STATE_F16,
         V3D_SAMPLER_STATE_F16_UNORM,
         V3D_SAMPLER_STATE_F16_SNORM,
@@ -473,17 +471,6 @@ struct v3d_job {
         enum v3d_ez_state first_ez_state;
 
         /**
-         * If we have already decided if we need to disable early Z/S
-         * completely for this job.
-         */
-        bool decided_global_ez_enable;
-
-        /**
-         * If this job has been configured to use early Z/S clear.
-         */
-        bool early_zs_clear;
-
-        /**
          * Number of draw calls (not counting full buffer clears) queued in
          * the current job.
          */
@@ -613,6 +600,7 @@ struct v3d_context {
         struct v3d_bo *current_oq;
         struct pipe_resource *prim_counts;
         uint32_t prim_counts_offset;
+        struct util_debug_callback debug;
         struct v3d_perfmon_state *active_perfmon;
         struct v3d_perfmon_state *last_perfmon;
         /** @} */
@@ -644,10 +632,10 @@ struct v3d_blend_state {
 };
 
 #define perf_debug(...) do {                            \
-        if (V3D_DBG(PERF))                            \
+        if (unlikely(V3D_DEBUG & V3D_DEBUG_PERF))       \
                 fprintf(stderr, __VA_ARGS__);           \
-        if (unlikely(v3d->base.debug.debug_message))         \
-                util_debug_message(&v3d->base.debug, PERF_INFO, __VA_ARGS__); \
+        if (unlikely(v3d->debug.debug_message))         \
+                util_debug_message(&v3d->debug, PERF_INFO, __VA_ARGS__);    \
 } while (0)
 
 static inline struct v3d_context *

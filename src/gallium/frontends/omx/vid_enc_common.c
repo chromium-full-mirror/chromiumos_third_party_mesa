@@ -58,7 +58,7 @@ static void enc_GetPictureParamPreset(struct pipe_h264_enc_picture_desc *picture
    picture->motion_est.enc_disable_sub_mode = 0x000000fe;
    picture->motion_est.enc_ime2_search_range_x = 0x00000001;
    picture->motion_est.enc_ime2_search_range_y = 0x00000001;
-   picture->seq.enc_constraint_set_flags = 0x00000040;
+   picture->pic_ctrl.enc_constraint_set_flags = 0x00000040;
 }
 
 enum pipe_video_profile enc_TranslateOMXProfileToPipe(unsigned omx_profile)
@@ -137,7 +137,7 @@ void vid_enc_BufferEncoded_common(vid_enc_PrivateType * priv, OMX_BUFFERHEADERTY
    }
 #endif
 
-   task = list_entry(inp->tasks.next, struct encode_task, list);
+   task = LIST_ENTRY(struct encode_task, inp->tasks.next, list);
    list_del(&task->list);
    list_addtail(&task->list, &priv->used_tasks);
 
@@ -183,7 +183,7 @@ struct encode_task *enc_NeedTask_common(vid_enc_PrivateType * priv, OMX_VIDEO_PO
    struct encode_task *task;
 
    if (!list_is_empty(&priv->free_tasks)) {
-      task = list_entry(priv->free_tasks.next, struct encode_task, list);
+      task = LIST_ENTRY(struct encode_task, priv->free_tasks.next, list);
       list_del(&task->list);
       return task;
    }
@@ -300,10 +300,8 @@ void enc_ControlPicture_common(vid_enc_PrivateType * priv, struct pipe_h264_enc_
    picture->quant_b_frames = priv->quant.nQpB;
 
    picture->frame_num = priv->frame_num;
-   picture->num_ref_idx_l0_active_minus1 = 0;
-   picture->ref_idx_l0_list[0] = priv->ref_idx_l0;
-   picture->num_ref_idx_l1_active_minus1 = 0;
-   picture->ref_idx_l1_list[0] = priv->ref_idx_l1;
+   picture->ref_idx_l0 = priv->ref_idx_l0;
+   picture->ref_idx_l1 = priv->ref_idx_l1;
    picture->enable_vui = (picture->rate_ctrl[0].frame_rate_num != 0);
    enc_GetPictureParamPreset(picture);
 }

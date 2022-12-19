@@ -31,8 +31,7 @@
 
 namespace r600 {
 
-bool
-r600_lower_fs_out_to_vector(nir_shader *sh);
+bool r600_lower_fs_out_to_vector(nir_shader *sh);
 
 }
 

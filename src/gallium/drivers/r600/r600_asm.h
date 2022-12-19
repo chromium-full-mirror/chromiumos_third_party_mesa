@@ -254,7 +254,7 @@ struct r600_stack_info {
 };
 
 struct r600_bytecode {
-	enum amd_gfx_level			gfx_level;
+	enum chip_class			chip_class;
 	enum radeon_family		family;
 	bool				has_compressed_msaa_texturing;
 	int				type;
@@ -262,7 +262,6 @@ struct r600_bytecode {
 	struct r600_bytecode_cf		*cf_last;
 	unsigned			ndw;
 	unsigned			ncf;
-	unsigned			nalu_groups;
 	unsigned			ngpr;
 	unsigned			nstack;
 	unsigned			nlds_dw;
@@ -270,7 +269,7 @@ struct r600_bytecode {
 	unsigned			force_add_cf;
 	uint32_t			*bytecode;
 	uint32_t			fc_sp;
-	struct r600_cf_stack_entry	fc_stack[256];
+	struct r600_cf_stack_entry	fc_stack[TGSI_EXEC_MAX_NESTING];
 	struct r600_stack_info		stack;
 	unsigned	ar_loaded;
 	unsigned	ar_reg;
@@ -296,7 +295,7 @@ int eg_bytecode_alu_build(struct r600_bytecode *bc,
 			  struct r600_bytecode_alu *alu, unsigned id);
 /* r600_asm.c */
 void r600_bytecode_init(struct r600_bytecode *bc,
-			enum amd_gfx_level gfx_level,
+			enum chip_class chip_class,
 			enum radeon_family family,
 			bool has_compressed_msaa_texturing);
 void r600_bytecode_clear(struct r600_bytecode *bc);
@@ -329,7 +328,7 @@ void r600_bytecode_special_constants(uint32_t value, unsigned *sel);
 void r600_bytecode_disasm(struct r600_bytecode *bc);
 void r600_bytecode_alu_read(struct r600_bytecode *bc,
 		struct r600_bytecode_alu *alu, uint32_t word0, uint32_t word1);
-int r600_load_ar(struct r600_bytecode *bc, bool for_src);
+int r600_load_ar(struct r600_bytecode *bc);
 
 int cm_bytecode_add_cf_end(struct r600_bytecode *bc);
 
@@ -354,8 +353,6 @@ void eg_bytecode_export_read(struct r600_bytecode *bc,
 
 void r600_vertex_data_type(enum pipe_format pformat, unsigned *format,
 			   unsigned *num_format, unsigned *format_comp, unsigned *endian);
-
-int r600_load_ar(struct r600_bytecode *bc, bool for_src);
 
 static inline int fp64_switch(int i)
 {

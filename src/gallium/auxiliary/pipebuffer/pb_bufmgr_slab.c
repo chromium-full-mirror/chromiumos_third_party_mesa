@@ -403,7 +403,7 @@ pb_slab_manager_create_buffer(struct pb_manager *_mgr,
    
    /* Allocate the buffer from a partial (or just created) slab */
    list = mgr->slabs.next;
-   slab = list_entry(list, struct pb_slab, head);
+   slab = LIST_ENTRY(struct pb_slab, list, head);
    
    /* If totally full remove from the partial slab list */
    if (--slab->numFree == 0)
@@ -413,7 +413,7 @@ pb_slab_manager_create_buffer(struct pb_manager *_mgr,
    list_delinit(list);
 
    mtx_unlock(&mgr->mutex);
-   buf = list_entry(list, struct pb_slab_buffer, head);
+   buf = LIST_ENTRY(struct pb_slab_buffer, list, head);
    
    pipe_reference_init(&buf->base.reference, 1);
    buf->base.alignment_log2 = util_logbase2(desc->alignment);

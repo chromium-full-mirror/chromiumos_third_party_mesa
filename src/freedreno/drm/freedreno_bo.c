@@ -29,7 +29,7 @@
 #include "freedreno_drmif.h"
 #include "freedreno_priv.h"
 
-simple_mtx_t table_lock = SIMPLE_MTX_INITIALIZER;
+simple_mtx_t table_lock = _SIMPLE_MTX_INITIALIZER_NP;
 void bo_del(struct fd_bo *bo);
 
 /* set buffer name, and add to table, call w/ table_lock held: */
@@ -57,8 +57,8 @@ lookup_bo(struct hash_table *tbl, uint32_t key)
    return bo;
 }
 
-void
-fd_bo_init_common(struct fd_bo *bo, struct fd_device *dev)
+static void
+bo_init_common(struct fd_bo *bo, struct fd_device *dev)
 {
    /* Backend should have initialized these: */
    assert(bo->size);
@@ -89,6 +89,8 @@ bo_from_handle(struct fd_device *dev, uint32_t size, uint32_t handle)
       return NULL;
    }
 
+   bo_init_common(bo, dev);
+
    /* add ourself into the handle table: */
    _mesa_hash_table_insert(dev->handle_table, &bo->handle, bo);
 
@@ -112,6 +114,8 @@ bo_new(struct fd_device *dev, uint32_t size, uint32_t flags,
    bo = dev->funcs->bo_new(dev, size, flags);
    if (!bo)
       return NULL;
+
+   bo_init_common(bo, dev);
 
    simple_mtx_lock(&table_lock);
    /* add ourself into the handle table: */
@@ -255,6 +259,14 @@ fd_bo_mark_for_dump(struct fd_bo *bo)
    bo->reloc_flags |= FD_RELOC_DUMP;
 }
 
+uint64_t
+fd_bo_get_iova(struct fd_bo *bo)
+{
+   /* ancient kernels did not support this */
+   assert(bo->iova != 0);
+   return bo->iova;
+}
+
 struct fd_bo *
 fd_bo_ref(struct fd_bo *bo)
 {
@@ -338,9 +350,6 @@ cleanup_fences(struct fd_bo *bo, bool expired)
 void
 bo_del(struct fd_bo *bo)
 {
-   struct fd_device *dev = bo->dev;
-   uint32_t handle = bo->handle;
-
    VG_BO_FREE(bo);
 
    simple_mtx_assert_locked(&table_lock);
@@ -352,20 +361,21 @@ bo_del(struct fd_bo *bo)
    if (bo->map)
       os_munmap(bo->map, bo->size);
 
-   if (handle) {
-      _mesa_hash_table_remove_key(dev->handle_table, &handle);
+   /* TODO probably bo's in bucket list get removed from
+    * handle table??
+    */
+
+   if (bo->handle) {
+      struct drm_gem_close req = {
+         .handle = bo->handle,
+      };
+      _mesa_hash_table_remove_key(bo->dev->handle_table, &bo->handle);
       if (bo->name)
-         _mesa_hash_table_remove_key(dev->name_table, &bo->name);
+         _mesa_hash_table_remove_key(bo->dev->name_table, &bo->name);
+      drmIoctl(bo->dev->fd, DRM_IOCTL_GEM_CLOSE, &req);
    }
 
    bo->funcs->destroy(bo);
-
-   if (handle) {
-      struct drm_gem_close req = {
-         .handle = handle,
-      };
-      drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &req);
-   }
 }
 
 static void
@@ -479,23 +489,14 @@ fd_bo_map(struct fd_bo *bo)
 }
 
 void
-fd_bo_upload(struct fd_bo *bo, void *src, unsigned off, unsigned len)
+fd_bo_upload(struct fd_bo *bo, void *src, unsigned len)
 {
    if (bo->funcs->upload) {
-      bo->funcs->upload(bo, src, off, len);
+      bo->funcs->upload(bo, src, len);
       return;
    }
 
-   memcpy((uint8_t *)bo_map(bo) + off, src, len);
-}
-
-bool
-fd_bo_prefer_upload(struct fd_bo *bo, unsigned len)
-{
-   if (bo->funcs->prefer_upload)
-      return bo->funcs->prefer_upload(bo, len);
-
-   return false;
+   memcpy(bo_map(bo), src, len);
 }
 
 /* a bit odd to take the pipe as an arg, but it's a, umm, quirk of kgsl.. */
@@ -527,15 +528,10 @@ fd_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op)
     */
    bo_flush(bo);
 
-   op &= ~FD_BO_PREP_FLUSH;
-
-   if (!op)
-      return 0;
-
    /* FD_BO_PREP_FLUSH is purely a frontend flag, and is not seen/handled
     * by backend or kernel:
     */
-   return bo->funcs->cpu_prep(bo, pipe, op);
+   return bo->funcs->cpu_prep(bo, pipe, op & ~FD_BO_PREP_FLUSH);
 }
 
 void

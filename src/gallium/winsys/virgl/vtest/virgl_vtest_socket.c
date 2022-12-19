@@ -253,13 +253,8 @@ int virgl_vtest_send_get_caps(struct virgl_vtest_winsys *vws,
 
        ret = virgl_block_read(vws->sock_fd, &caps->caps, resp_size);
 
-       while (dummy_size) {
-           ret = virgl_block_read(vws->sock_fd, &dummy,
-                    dummy_size < sizeof(dummy) ? dummy_size : sizeof(dummy));
-           if (ret <= 0)
-               break;
-           dummy_size -= ret;
-       }
+       if (dummy_size)
+	   ret = virgl_block_read(vws->sock_fd, &dummy, dummy_size);
 
        /* now read back the pointless caps v1 we requested */
        ret = virgl_block_read(vws->sock_fd, resp_buf, sizeof(resp_buf));

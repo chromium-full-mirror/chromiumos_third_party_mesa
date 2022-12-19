@@ -25,27 +25,25 @@
  */
 
 #include "sfn_conditionaljumptracker.h"
-
 #include "sfn_debug.h"
 
-#include <iostream>
-#include <memory>
 #include <stack>
 #include <vector>
+#include <memory>
+#include <iostream>
 
 namespace r600 {
 
-using std::shared_ptr;
 using std::stack;
 using std::vector;
+using std::shared_ptr;
 
 struct StackFrame {
 
    StackFrame(r600_bytecode_cf *s, JumpType t):
-       type(t),
-       start(s)
-   {
-   }
+      type(t),
+      start(s)
+   {}
 
    virtual ~StackFrame();
 
@@ -79,26 +77,29 @@ struct ConditionalJumpTrackerImpl {
 };
 
 ConditionalJumpTrackerImpl::ConditionalJumpTrackerImpl():
-    m_current_loop_stack_pos(0)
+   m_current_loop_stack_pos(0)
 {
+
 }
 
-ConditionalJumpTracker::~ConditionalJumpTracker() { delete impl; }
+ConditionalJumpTracker::~ConditionalJumpTracker()
+{
+   delete impl;
+}
 
 ConditionalJumpTracker::ConditionalJumpTracker()
 {
    impl = new ConditionalJumpTrackerImpl();
 }
 
-void
-ConditionalJumpTracker::push(r600_bytecode_cf *start, JumpType type)
+void ConditionalJumpTracker::push(r600_bytecode_cf *start, JumpType type)
 {
    PStackFrame f;
    switch (type) {
-   case jt_if:
+   case  jt_if:
       f.reset(new IfFrame(start));
       break;
-   case jt_loop:
+   case  jt_loop:
       f.reset(new LoopFrame(start));
       impl->m_loop_stack.push(f);
       break;
@@ -106,8 +107,7 @@ ConditionalJumpTracker::push(r600_bytecode_cf *start, JumpType type)
    impl->m_jump_stack.push(f);
 }
 
-bool
-ConditionalJumpTracker::pop(r600_bytecode_cf *final, JumpType type)
+bool ConditionalJumpTracker::pop(r600_bytecode_cf *final, JumpType type)
 {
    if (impl->m_jump_stack.empty())
       return false;
@@ -123,8 +123,7 @@ ConditionalJumpTracker::pop(r600_bytecode_cf *final, JumpType type)
    return true;
 }
 
-bool
-ConditionalJumpTracker::add_mid(r600_bytecode_cf *source, JumpType type)
+bool ConditionalJumpTracker::add_mid(r600_bytecode_cf *source, JumpType type)
 {
    if (impl->m_jump_stack.empty()) {
       sfn_log << "Jump stack empty\n";
@@ -148,21 +147,21 @@ ConditionalJumpTracker::add_mid(r600_bytecode_cf *source, JumpType type)
 }
 
 IfFrame::IfFrame(r600_bytecode_cf *s):
-    StackFrame(s, jt_if)
+   StackFrame (s, jt_if)
 {
 }
 
-StackFrame::~StackFrame() {}
+StackFrame::~StackFrame()
+{
+}
 
-void
-IfFrame::fixup_mid(r600_bytecode_cf *source)
+void IfFrame::fixup_mid(r600_bytecode_cf *source)
 {
    /* JUMP target is ELSE */
    start->cf_addr = source->id;
 }
 
-void
-IfFrame::fixup_pop(r600_bytecode_cf *final)
+void IfFrame::fixup_pop(r600_bytecode_cf *final)
 {
    /* JUMP or ELSE target is one past last CF instruction */
    unsigned offset = final->eg_alu_extended ? 4 : 2;
@@ -172,17 +171,15 @@ IfFrame::fixup_pop(r600_bytecode_cf *final)
 }
 
 LoopFrame::LoopFrame(r600_bytecode_cf *s):
-    StackFrame(s, jt_loop)
+   StackFrame(s, jt_loop)
 {
 }
 
-void
-LoopFrame::fixup_mid(UNUSED r600_bytecode_cf *mid)
+void LoopFrame::fixup_mid(UNUSED r600_bytecode_cf *mid)
 {
 }
 
-void
-LoopFrame::fixup_pop(r600_bytecode_cf *final)
+void LoopFrame::fixup_pop(r600_bytecode_cf *final)
 {
    /* LOOP END address is past LOOP START */
    final->cf_addr = start->id + 2;
@@ -195,4 +192,4 @@ LoopFrame::fixup_pop(r600_bytecode_cf *final)
       m->cf_addr = final->id;
 }
 
-} // namespace r600
+}

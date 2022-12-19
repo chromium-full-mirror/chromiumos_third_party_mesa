@@ -14,6 +14,7 @@
 #include "vn_common.h"
 
 struct vn_present_src_attachment {
+   bool acquire;
    uint32_t index;
 
    VkPipelineStageFlags src_stage_mask;
@@ -23,39 +24,19 @@ struct vn_present_src_attachment {
    VkAccessFlags dst_access_mask;
 };
 
-struct vn_subpass {
-   bool has_color_attachment;
-   bool has_depth_stencil_attachment;
-};
-
 struct vn_render_pass {
    struct vn_object_base base;
 
    VkExtent2D granularity;
 
-   uint32_t present_count;
-   uint32_t present_acquire_count;
-   uint32_t present_release_count;
-   uint32_t subpass_count;
-
-   /* Attachments where initialLayout or finalLayout was
-    * VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
+   /* track attachments that have PRESENT_SRC as their initialLayout or
+    * finalLayout
     */
-   struct vn_present_src_attachment *present_attachments;
-
-   /* Slice of present_attachments where initialLayout was
-    * VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
-    */
-   struct vn_present_src_attachment *present_acquire_attachments;
-
-   /* Slice of present_attachments where finalLayout was
-    * VK_IMAGE_LAYOUT_PRESENT_SRC_KHR.
-    */
-   struct vn_present_src_attachment *present_release_attachments;
-
-   struct vn_subpass *subpasses;
+   uint32_t acquire_count;
+   uint32_t release_count;
+   uint32_t present_src_count;
+   struct vn_present_src_attachment present_src_attachments[];
 };
-
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_render_pass,
                                base.base,
                                VkRenderPass,

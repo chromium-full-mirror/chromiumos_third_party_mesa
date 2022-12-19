@@ -1,8 +1,8 @@
 /**************************************************************************
- *
+ * 
  * Copyright 2006 VMware, Inc.
  * All Rights Reserved.
- *
+ * 
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- *
+ * 
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- *
+ * 
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,7 +22,7 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
+ * 
  **************************************************************************/
  /*
   * Authors:
@@ -40,6 +40,7 @@
 #include "util/format/u_format.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/simple_list.h"
 #include "util/u_transfer.h"
 
 #include "lp_context.h"
@@ -75,6 +76,7 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
                         boolean allocate)
 {
    struct pipe_resource *pt = &lpr->base;
+   unsigned level;
    unsigned width = pt->width0;
    unsigned height = pt->height0;
    unsigned depth = pt->depth0;
@@ -82,28 +84,19 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
    unsigned layers = pt->array_size;
    unsigned num_samples = util_res_sample_count(pt);
 
-   /* XXX: This alignment here (same for displaytarget) was added for the
-    * purpose of ARB_map_buffer_alignment. I am not convinced it's needed for
-    * non-buffer resources. Otherwise we'd want the max of cacheline size and
-    * 16 (max size of a block for all formats) though this should not be
-    * strictly necessary neither. In any case it can only affect compressed or
-    * 1d textures.
+   /* XXX:
+    * This alignment here (same for displaytarget) was added for the purpose of
+    * ARB_map_buffer_alignment. I am not convinced it's needed for non-buffer
+    * resources. Otherwise we'd want the max of cacheline size and 16 (max size
+    * of a block for all formats) though this should not be strictly necessary
+    * neither. In any case it can only affect compressed or 1d textures.
     */
-   uint64_t mip_align = MAX2(64, util_get_cpu_caps()->cacheline);
-
-   /* KVM on Linux requires memory mapping to be aligned to the page size,
-    * otherwise Linux kernel errors out on trying to map host GPU mapping
-    * to guest (ARB_map_buffer_range). The improper alignment creates trouble
-    * for the virgl driver when host uses llvmpipe, causing Qemu and crosvm to
-    * bail out on the KVM error.
-    */
-   if (lpr->base.flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-      os_get_page_size(&mip_align);
+   unsigned mip_align = MAX2(64, util_get_cpu_caps()->cacheline);
 
    assert(LP_MAX_TEXTURE_2D_LEVELS <= LP_MAX_TEXTURE_LEVELS);
    assert(LP_MAX_TEXTURE_3D_LEVELS <= LP_MAX_TEXTURE_LEVELS);
 
-   for (unsigned level = 0; level <= pt->last_level; level++) {
+   for (level = 0; level <= pt->last_level; level++) {
       uint64_t mipsize;
       unsigned align_x, align_y, nblocksx, nblocksy, block_size, num_slices;
 
@@ -117,9 +110,9 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
        * handle specially in render output code (as we need to do special
        * handling there for buffers in any case).
        */
-      if (util_format_is_compressed(pt->format)) {
+      if (util_format_is_compressed(pt->format))
          align_x = align_y = 1;
-      } else {
+      else {
          align_x = LP_RASTER_BLOCK_SIZE;
          if (llvmpipe_resource_is_1d(&lpr->base))
             align_y = 1;
@@ -136,8 +129,7 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
       if (util_format_is_compressed(pt->format))
          lpr->row_stride[level] = nblocksx * block_size;
       else
-         lpr->row_stride[level] = align(nblocksx * block_size,
-                                        util_get_cpu_caps()->cacheline);
+         lpr->row_stride[level] = align(nblocksx * block_size, util_get_cpu_caps()->cacheline);
 
       lpr->img_stride[level] = (uint64_t)lpr->row_stride[level] * nblocksy;
 
@@ -178,7 +170,8 @@ llvmpipe_texture_layout(struct llvmpipe_screen *screen,
       lpr->tex_data = align_malloc(total_size, mip_align);
       if (!lpr->tex_data) {
          return FALSE;
-      } else {
+      }
+      else {
          memset(lpr->tex_data, 0, total_size);
       }
    }
@@ -236,8 +229,7 @@ llvmpipe_displaytarget_layout(struct llvmpipe_screen *screen,
 static struct pipe_resource *
 llvmpipe_resource_create_all(struct pipe_screen *_screen,
                              const struct pipe_resource *templat,
-                             const void *map_front_private,
-                             bool alloc_backing)
+                             const void *map_front_private, bool alloc_backing)
 {
    struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
    struct llvmpipe_resource *lpr = CALLOC_STRUCT(llvmpipe_resource);
@@ -258,12 +250,14 @@ llvmpipe_resource_create_all(struct pipe_screen *_screen,
          /* displayable surface */
          if (!llvmpipe_displaytarget_layout(screen, lpr, map_front_private))
             goto fail;
-      } else {
+      }
+      else {
          /* texture map */
          if (!llvmpipe_texture_layout(screen, lpr, alloc_backing))
             goto fail;
       }
-   } else {
+   }
+   else {
       /* other data (vertex buffer, const buffer, etc) */
       const uint bytes = templat->width0;
       assert(util_format_get_blocksize(templat->format) == 1);
@@ -287,12 +281,7 @@ llvmpipe_resource_create_all(struct pipe_screen *_screen,
          lpr->size_required += (LP_RASTER_BLOCK_SIZE - 1) * 4 * sizeof(float);
 
       if (alloc_backing) {
-         uint64_t alignment = 64;
-
-         if (templat->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-            os_get_page_size(&alignment);
-
-         lpr->data = align_malloc(lpr->size_required, alignment);
+         lpr->data = align_malloc(lpr->size_required, 64);
 
          if (!lpr->data)
             goto fail;
@@ -304,7 +293,7 @@ llvmpipe_resource_create_all(struct pipe_screen *_screen,
 
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   list_addtail(&lpr->list, &resource_list.list);
+   insert_at_tail(&resource_list, lpr);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -315,16 +304,13 @@ llvmpipe_resource_create_all(struct pipe_screen *_screen,
    return NULL;
 }
 
-
 static struct pipe_resource *
 llvmpipe_resource_create_front(struct pipe_screen *_screen,
                                const struct pipe_resource *templat,
                                const void *map_front_private)
 {
-   return llvmpipe_resource_create_all(_screen, templat,
-                                       map_front_private, true);
+   return llvmpipe_resource_create_all(_screen, templat, map_front_private, true);
 }
-
 
 static struct pipe_resource *
 llvmpipe_resource_create(struct pipe_screen *_screen,
@@ -333,22 +319,21 @@ llvmpipe_resource_create(struct pipe_screen *_screen,
    return llvmpipe_resource_create_front(_screen, templat, NULL);
 }
 
-
 static struct pipe_resource *
 llvmpipe_resource_create_unbacked(struct pipe_screen *_screen,
                                   const struct pipe_resource *templat,
                                   uint64_t *size_required)
 {
-   struct pipe_resource *pt =
-      llvmpipe_resource_create_all(_screen, templat, NULL, false);
+   struct pipe_resource *pt;
+   struct llvmpipe_resource *lpr;
+   pt = llvmpipe_resource_create_all(_screen, templat, NULL, false);
    if (!pt)
       return pt;
-   struct llvmpipe_resource *lpr = llvmpipe_resource(pt);
+   lpr = llvmpipe_resource(pt);
    lpr->backable = true;
    *size_required = lpr->size_required;
    return pt;
 }
-
 
 static struct pipe_memory_object *
 llvmpipe_memobj_create_from_handle(struct pipe_screen *pscreen,
@@ -358,7 +343,7 @@ llvmpipe_memobj_create_from_handle(struct pipe_screen *pscreen,
 #ifdef PIPE_MEMORY_FD
    struct llvmpipe_memory_object *memobj = CALLOC_STRUCT(llvmpipe_memory_object);
 
-   if (handle->type == WINSYS_HANDLE_TYPE_FD &&
+   if (handle->type == WINSYS_HANDLE_TYPE_FD && 
        pscreen->import_memory_fd(pscreen, handle->handle, &memobj->data, &memobj->size)) {
       return &memobj->b;
    }
@@ -366,7 +351,6 @@ llvmpipe_memobj_create_from_handle(struct pipe_screen *pscreen,
 #endif
    return NULL;
 }
-
 
 static void
 llvmpipe_memobj_destroy(struct pipe_screen *pscreen,
@@ -380,7 +364,6 @@ llvmpipe_memobj_destroy(struct pipe_screen *pscreen,
 #endif
    free(lpmo);
 }
-
 
 static struct pipe_resource *
 llvmpipe_resource_from_memobj(struct pipe_screen *pscreen,
@@ -403,10 +386,11 @@ llvmpipe_resource_from_memobj(struct pipe_screen *pscreen,
       /* texture map */
       if (!llvmpipe_texture_layout(screen, lpr, false))
          goto fail;
-      if (lpmo->size < lpr->size_required)
+      if(lpmo->size < lpr->size_required)
          goto fail;
       lpr->tex_data = lpmo->data;
-   } else {
+   }
+   else {
       /* other data (vertex buffer, const buffer, etc) */
       const uint bytes = templat->width0;
       assert(util_format_get_blocksize(templat->format) == 1);
@@ -429,7 +413,7 @@ llvmpipe_resource_from_memobj(struct pipe_screen *pscreen,
       if (!(templat->flags & PIPE_RESOURCE_FLAG_DONT_OVER_ALLOCATE))
          lpr->size_required += (LP_RASTER_BLOCK_SIZE - 1) * 4 * sizeof(float);
 
-      if (lpmo->size < lpr->size_required)
+      if(lpmo->size < lpr->size_required)
          goto fail;
       lpr->data = lpmo->data;
    }
@@ -438,7 +422,7 @@ llvmpipe_resource_from_memobj(struct pipe_screen *pscreen,
 
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   list_addtail(&lpr->list, &resource_list.list);
+   insert_at_tail(&resource_list, lpr);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -461,22 +445,24 @@ llvmpipe_resource_destroy(struct pipe_screen *pscreen,
          /* display target */
          struct sw_winsys *winsys = screen->winsys;
          winsys->displaytarget_destroy(winsys, lpr->dt);
-      } else if (llvmpipe_resource_is_texture(pt)) {
+      }
+      else if (llvmpipe_resource_is_texture(pt)) {
          /* free linear image data */
          if (lpr->tex_data) {
             if (!lpr->imported_memory)
                align_free(lpr->tex_data);
             lpr->tex_data = NULL;
          }
-      } else if (lpr->data) {
-         if (!lpr->imported_memory)
-            align_free(lpr->data);
+      }
+      else if (lpr->data) {
+            if (!lpr->imported_memory)
+               align_free(lpr->data);
       }
    }
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   if (!list_is_empty(&lpr->list))
-      list_del(&lpr->list);
+   if (lpr->next)
+      remove_from_list(lpr);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -511,7 +497,8 @@ llvmpipe_resource_map(struct pipe_resource *resource,
 
       if (tex_usage == LP_TEX_USAGE_READ) {
          dt_usage = PIPE_MAP_READ;
-      } else {
+      }
+      else {
          dt_usage = PIPE_MAP_READ_WRITE;
       }
 
@@ -525,11 +512,13 @@ llvmpipe_resource_map(struct pipe_resource *resource,
       lpr->tex_data = map;
 
       return map;
-   } else if (llvmpipe_resource_is_texture(resource)) {
+   }
+   else if (llvmpipe_resource_is_texture(resource)) {
 
       map = llvmpipe_get_texture_image_address(lpr, layer, level);
       return map;
-   } else {
+   }
+   else {
       return lpr->data;
    }
 }
@@ -540,8 +529,8 @@ llvmpipe_resource_map(struct pipe_resource *resource,
  */
 void
 llvmpipe_resource_unmap(struct pipe_resource *resource,
-                        unsigned level,
-                        unsigned layer)
+                       unsigned level,
+                       unsigned layer)
 {
    struct llvmpipe_resource *lpr = llvmpipe_resource(resource);
 
@@ -612,7 +601,7 @@ llvmpipe_resource_from_handle(struct pipe_screen *_screen,
 
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   list_addtail(&lpr->list, &resource_list.list);
+   insert_at_tail(&resource_list, lpr);
    mtx_unlock(&resource_list_mutex);
 #endif
 
@@ -628,8 +617,8 @@ no_lpr:
 static bool
 llvmpipe_resource_get_handle(struct pipe_screen *screen,
                              struct pipe_context *ctx,
-                             struct pipe_resource *pt,
-                             struct winsys_handle *whandle,
+                            struct pipe_resource *pt,
+                            struct winsys_handle *whandle,
                              unsigned usage)
 {
    struct sw_winsys *winsys = llvmpipe_screen(screen)->winsys;
@@ -642,11 +631,10 @@ llvmpipe_resource_get_handle(struct pipe_screen *screen,
    return winsys->displaytarget_get_handle(winsys, lpr->dt, whandle);
 }
 
-
 static struct pipe_resource *
 llvmpipe_resource_from_user_memory(struct pipe_screen *_screen,
-                                   const struct pipe_resource *resource,
-                                   void *user_memory)
+				   const struct pipe_resource *resource,
+				   void *user_memory)
 {
    struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
    struct llvmpipe_resource *lpr;
@@ -671,7 +659,7 @@ llvmpipe_resource_from_user_memory(struct pipe_screen *_screen,
    lpr->user_ptr = true;
 #ifdef DEBUG
    mtx_lock(&resource_list_mutex);
-   list_addtail(&lpr->list, &resource_list.list);
+   insert_at_tail(&resource_list, lpr);
    mtx_unlock(&resource_list_mutex);
 #endif
    return &lpr->base;
@@ -680,15 +668,14 @@ fail:
    return NULL;
 }
 
-
 void *
-llvmpipe_transfer_map_ms(struct pipe_context *pipe,
-                         struct pipe_resource *resource,
-                         unsigned level,
-                         unsigned usage,
-                         unsigned sample,
-                         const struct pipe_box *box,
-                         struct pipe_transfer **transfer)
+llvmpipe_transfer_map_ms( struct pipe_context *pipe,
+                          struct pipe_resource *resource,
+                          unsigned level,
+                          unsigned usage,
+                          unsigned sample,
+                          const struct pipe_box *box,
+                          struct pipe_transfer **transfer )
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
    struct llvmpipe_screen *screen = llvmpipe_screen(pipe->screen);
@@ -697,13 +684,15 @@ llvmpipe_transfer_map_ms(struct pipe_context *pipe,
    struct pipe_transfer *pt;
    ubyte *map;
    enum pipe_format format;
+   enum lp_texture_usage tex_usage;
+   const char *mode;
 
    assert(resource);
    assert(level <= resource->last_level);
 
    /*
-    * Transfers, like other pipe operations, must happen in order, so flush
-    * the context if necessary.
+    * Transfers, like other pipe operations, must happen in order, so flush the
+    * context if necessary.
     */
    if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
       boolean read_only = !(usage & PIPE_MAP_WRITE);
@@ -750,19 +739,18 @@ llvmpipe_transfer_map_ms(struct pipe_context *pipe,
    assert(level < LP_MAX_TEXTURE_LEVELS);
 
    /*
-   printf("tex_transfer_map(%d, %d  %d x %d of %d x %d,  usage %d)\n",
+   printf("tex_transfer_map(%d, %d  %d x %d of %d x %d,  usage %d )\n",
           transfer->x, transfer->y, transfer->width, transfer->height,
           transfer->texture->width0,
           transfer->texture->height0,
           transfer->usage);
    */
 
-   enum lp_texture_usage tex_usage;
-   const char *mode;
    if (usage == PIPE_MAP_READ) {
       tex_usage = LP_TEX_USAGE_READ;
       mode = "read";
-   } else {
+   }
+   else {
       tex_usage = LP_TEX_USAGE_READ_WRITE;
       mode = "read/write";
    }
@@ -773,7 +761,10 @@ llvmpipe_transfer_map_ms(struct pipe_context *pipe,
 
    format = lpr->base.format;
 
-   map = llvmpipe_resource_map(resource, level, box->z, tex_usage);
+   map = llvmpipe_resource_map(resource,
+                               level,
+                               box->z,
+                               tex_usage);
 
 
    /* May want to do different things here depending on read/write nature
@@ -793,19 +784,16 @@ llvmpipe_transfer_map_ms(struct pipe_context *pipe,
    return map;
 }
 
-
 static void *
-llvmpipe_transfer_map(struct pipe_context *pipe,
-                      struct pipe_resource *resource,
-                      unsigned level,
-                      unsigned usage,
-                      const struct pipe_box *box,
-                      struct pipe_transfer **transfer)
+llvmpipe_transfer_map( struct pipe_context *pipe,
+                       struct pipe_resource *resource,
+                       unsigned level,
+                       unsigned usage,
+                       const struct pipe_box *box,
+                       struct pipe_transfer **transfer )
 {
-   return llvmpipe_transfer_map_ms(pipe, resource, level, usage, 0,
-                                   box, transfer);
+   return llvmpipe_transfer_map_ms(pipe, resource, level, usage, 0, box, transfer);
 }
-
 
 static void
 llvmpipe_transfer_unmap(struct pipe_context *pipe,
@@ -826,13 +814,12 @@ llvmpipe_transfer_unmap(struct pipe_context *pipe,
    FREE(transfer);
 }
 
-
 unsigned int
-llvmpipe_is_resource_referenced(struct pipe_context *pipe,
-                                struct pipe_resource *presource,
-                                unsigned level)
+llvmpipe_is_resource_referenced( struct pipe_context *pipe,
+                                 struct pipe_resource *presource,
+                                 unsigned level)
 {
-   struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
+   struct llvmpipe_context *llvmpipe = llvmpipe_context( pipe );
    if (!(presource->bind & (PIPE_BIND_DEPTH_STENCIL |
                             PIPE_BIND_RENDER_TARGET |
                             PIPE_BIND_SAMPLER_VIEW |
@@ -848,16 +835,18 @@ llvmpipe_is_resource_referenced(struct pipe_context *pipe,
  * Returns the largest possible alignment for a format in llvmpipe
  */
 unsigned
-llvmpipe_get_format_alignment(enum pipe_format format)
+llvmpipe_get_format_alignment( enum pipe_format format )
 {
    const struct util_format_description *desc = util_format_description(format);
    unsigned size = 0;
+   unsigned bytes;
+   unsigned i;
 
-   for (unsigned i = 0; i < desc->nr_channels; ++i) {
+   for (i = 0; i < desc->nr_channels; ++i) {
       size += desc->channel[i].size;
    }
 
-   unsigned bytes = size / 8;
+   bytes = size / 8;
 
    if (!util_is_power_of_two_or_zero(bytes)) {
       bytes /= desc->nr_channels;
@@ -924,9 +913,11 @@ ubyte *
 llvmpipe_get_texture_image_address(struct llvmpipe_resource *lpr,
                                    unsigned face_slice, unsigned level)
 {
+   unsigned offset;
+
    assert(llvmpipe_resource_is_texture(&lpr->base));
 
-   unsigned offset = lpr->mip_offsets[level];
+   offset = lpr->mip_offsets[level];
 
    if (face_slice > 0)
       offset += face_slice * tex_image_face_size(lpr, level);
@@ -947,24 +938,22 @@ llvmpipe_resource_size(const struct pipe_resource *resource)
    if (llvmpipe_resource_is_texture(resource)) {
       /* Note this will always return 0 for displaytarget resources */
       size = lpr->total_alloc_size;
-   } else {
+   }
+   else {
       size = resource->width0;
    }
    return size;
 }
 
-
 static void
 llvmpipe_memory_barrier(struct pipe_context *pipe,
-                        unsigned flags)
+			unsigned flags)
 {
    /* this may be an overly large hammer for this nut. */
    llvmpipe_finish(pipe, "barrier");
 }
 
-
-static struct pipe_memory_allocation *
-llvmpipe_allocate_memory(struct pipe_screen *screen, uint64_t size)
+static struct pipe_memory_allocation *llvmpipe_allocate_memory(struct pipe_screen *screen, uint64_t size)
 {
    uint64_t alignment;
    if (!os_get_page_size(&alignment))
@@ -972,58 +961,41 @@ llvmpipe_allocate_memory(struct pipe_screen *screen, uint64_t size)
    return os_malloc_aligned(size, alignment);
 }
 
-
-static void
-llvmpipe_free_memory(struct pipe_screen *screen,
-                     struct pipe_memory_allocation *pmem)
+static void llvmpipe_free_memory(struct pipe_screen *screen,
+                                 struct pipe_memory_allocation *pmem)
 {
    os_free_aligned(pmem);
 }
-
 
 #ifdef PIPE_MEMORY_FD
 
 static const char *driver_id = "llvmpipe" MESA_GIT_SHA1;
 
-
-static struct pipe_memory_allocation *
-llvmpipe_allocate_memory_fd(struct pipe_screen *screen,
-                            uint64_t size,
-                            int *fd)
+static struct pipe_memory_allocation *llvmpipe_allocate_memory_fd(struct pipe_screen *screen, uint64_t size, int *fd)
 {
    uint64_t alignment;
    if (!os_get_page_size(&alignment))
       alignment = 256;
-   return os_malloc_aligned_fd(size, alignment, fd,
-                               "llvmpipe memory fd", driver_id);
+   return os_malloc_aligned_fd(size, alignment, fd, "llvmpipe memory fd", driver_id);
 }
 
-
-static bool
-llvmpipe_import_memory_fd(struct pipe_screen *screen,
-                          int fd,
-                          struct pipe_memory_allocation **ptr,
-                          uint64_t *size)
+static bool llvmpipe_import_memory_fd(struct pipe_screen *screen, int fd, struct pipe_memory_allocation **ptr, uint64_t *size)
 {
    return os_import_memory_fd(fd, (void**)ptr, size, driver_id);
 }
 
-
-static void
-llvmpipe_free_memory_fd(struct pipe_screen *screen,
-                        struct pipe_memory_allocation *pmem)
+static void llvmpipe_free_memory_fd(struct pipe_screen *screen,
+                                    struct pipe_memory_allocation *pmem)
 {
    os_free_fd(pmem);
 }
 
 #endif
 
-
-static bool
-llvmpipe_resource_bind_backing(struct pipe_screen *screen,
-                               struct pipe_resource *pt,
-                               struct pipe_memory_allocation *pmem,
-                               uint64_t offset)
+static bool llvmpipe_resource_bind_backing(struct pipe_screen *screen,
+                                           struct pipe_resource *pt,
+                                           struct pipe_memory_allocation *pmem,
+                                           uint64_t offset)
 {
    struct llvmpipe_resource *lpr = llvmpipe_resource(pt);
 
@@ -1042,21 +1014,16 @@ llvmpipe_resource_bind_backing(struct pipe_screen *screen,
    return TRUE;
 }
 
-
-static void *
-llvmpipe_map_memory(struct pipe_screen *screen,
-                    struct pipe_memory_allocation *pmem)
+static void *llvmpipe_map_memory(struct pipe_screen *screen,
+                                 struct pipe_memory_allocation *pmem)
 {
    return pmem;
 }
 
-
-static void
-llvmpipe_unmap_memory(struct pipe_screen *screen,
-                      struct pipe_memory_allocation *pmem)
+static void llvmpipe_unmap_memory(struct pipe_screen *screen,
+                                  struct pipe_memory_allocation *pmem)
 {
 }
-
 
 #ifdef DEBUG
 void
@@ -1067,7 +1034,7 @@ llvmpipe_print_resources(void)
 
    debug_printf("LLVMPIPE: current resources:\n");
    mtx_lock(&resource_list_mutex);
-   LIST_FOR_EACH_ENTRY(lpr, &resource_list.list, list) {
+   foreach(lpr, &resource_list) {
       unsigned size = llvmpipe_resource_size(&lpr->base);
       debug_printf("resource %u at %p, size %ux%ux%u: %u bytes, refcount %u\n",
                    lpr->id, (void *) lpr,
@@ -1081,19 +1048,17 @@ llvmpipe_print_resources(void)
 }
 #endif
 
-
 static void
 llvmpipe_get_resource_info(struct pipe_screen *screen,
-                           struct pipe_resource *resource,
-                           unsigned *stride,
-                           unsigned *offset)
+			   struct pipe_resource *resource,
+			   unsigned *stride,
+			   unsigned *offset)
 {
    struct llvmpipe_resource *lpr = llvmpipe_resource(resource);
 
    *stride = lpr->row_stride[0];
    *offset = 0;
 }
-
 
 static bool
 llvmpipe_resource_get_param(struct pipe_screen *screen,
@@ -1141,10 +1106,8 @@ llvmpipe_resource_get_param(struct pipe_screen *screen,
       else if (param == PIPE_RESOURCE_PARAM_HANDLE_TYPE_FD)
          whandle.type = WINSYS_HANDLE_TYPE_FD;
 
-      if (!llvmpipe_resource_get_handle(screen, context, resource,
-                                        &whandle, handle_usage)) {
+      if (!llvmpipe_resource_get_handle(screen, context, resource, &whandle, handle_usage))
          return false;
-      }
       *value = (uint64_t)(uintptr_t)whandle.handle;
       return true;
    default:
@@ -1155,7 +1118,6 @@ llvmpipe_resource_get_param(struct pipe_screen *screen,
    return false;
 }
 
-
 void
 llvmpipe_init_screen_resource_funcs(struct pipe_screen *screen)
 {
@@ -1165,7 +1127,7 @@ llvmpipe_init_screen_resource_funcs(struct pipe_screen *screen)
       static boolean first_call = TRUE;
       if (first_call) {
          memset(&resource_list, 0, sizeof(resource_list));
-         list_inithead(&resource_list.list);
+         make_empty_list(&resource_list);
          first_call = FALSE;
       }
    }

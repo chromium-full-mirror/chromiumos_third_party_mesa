@@ -50,7 +50,6 @@
 #include "cso_cache/cso_context.h"
 
 #include "util/format/u_format.h"
-#include "program/prog_instruction.h"
 
 
 /**
@@ -62,23 +61,19 @@ st_convert_sampler(const struct st_context *st,
                    const struct gl_sampler_object *msamp,
                    float tex_unit_lod_bias,
                    struct pipe_sampler_state *sampler,
-                   bool seamless_cube_map,
-                   bool ignore_srgb_decode,
-                   bool glsl130_or_later)
+                   bool seamless_cube_map)
 {
    memcpy(sampler, &msamp->Attrib.state, sizeof(*sampler));
 
    sampler->seamless_cube_map |= seamless_cube_map;
 
-   if (texobj->_IsIntegerFormat ||
-       (texobj->_IsFloat && st->ctx->Const.ForceFloat32TexNearest)) {
+   if (texobj->_IsIntegerFormat && st->ctx->Const.ForceIntegerTexNearest) {
       sampler->min_img_filter = PIPE_TEX_FILTER_NEAREST;
-      sampler->min_mip_filter = PIPE_TEX_FILTER_NEAREST;
       sampler->mag_img_filter = PIPE_TEX_FILTER_NEAREST;
    }
 
-   if (texobj->Target == GL_TEXTURE_RECTANGLE_ARB && !st->lower_rect_tex)
-      sampler->unnormalized_coords = 1;
+   if (texobj->Target != GL_TEXTURE_RECTANGLE_ARB || st->lower_rect_tex)
+      sampler->normalized_coords = 1;
 
    sampler->lod_bias += tex_unit_lod_bias;
 
@@ -94,29 +89,30 @@ st_convert_sampler(const struct st_context *st,
                    PIPE_TEX_WRAP_MIRROR_REPEAT |
                    PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE) & 0x1) == 0);
 
+   /* For non-black borders... */
    if (msamp->Attrib.IsBorderColorNonZero &&
        /* This is true if wrap modes are using the border color: */
        (sampler->wrap_s | sampler->wrap_t | sampler->wrap_r) & 0x1) {
+      const GLboolean is_integer = texobj->_IsIntegerFormat;
       GLenum texBaseFormat = _mesa_base_tex_image(texobj)->_BaseFormat;
-      const GLboolean is_integer =
-         texobj->_IsIntegerFormat || texobj->StencilSampling ||
-         texBaseFormat == GL_STENCIL_INDEX;
 
       if (texobj->StencilSampling)
          texBaseFormat = GL_STENCIL_INDEX;
 
-      if (st->apply_texture_swizzle_to_border_color ||
-          st->alpha_border_color_is_not_w || st->use_format_with_border_color) {
-         if (st->apply_texture_swizzle_to_border_color) {
-            const unsigned swizzle = glsl130_or_later ? texobj->SwizzleGLSL130 : texobj->Swizzle;
+      if (st->apply_texture_swizzle_to_border_color) {
+         const struct gl_texture_object *stobj = st_texture_object_const(texobj);
+         /* XXX: clean that up to not use the sampler view at all */
+         const struct st_sampler_view *sv = st_texture_get_current_sampler_view(st, stobj);
 
+         if (sv) {
+            struct pipe_sampler_view *view = sv->view;
             union pipe_color_union tmp = sampler->border_color;
             const unsigned char swz[4] =
             {
-               GET_SWZ(swizzle, 0),
-               GET_SWZ(swizzle, 1),
-               GET_SWZ(swizzle, 2),
-               GET_SWZ(swizzle, 3),
+               view->swizzle_r,
+               view->swizzle_g,
+               view->swizzle_b,
+               view->swizzle_a,
             };
 
             st_translate_color(&tmp, texBaseFormat, is_integer);
@@ -124,25 +120,8 @@ st_convert_sampler(const struct st_context *st,
             util_format_apply_color_swizzle(&sampler->border_color,
                                             &tmp, swz, is_integer);
          } else {
-            bool srgb_skip_decode = false;
-
-            if (!ignore_srgb_decode && msamp->Attrib.sRGBDecode == GL_SKIP_DECODE_EXT)
-               srgb_skip_decode = true;
-            enum pipe_format format = st_get_sampler_view_format(st, texobj, srgb_skip_decode);
-            if (st->use_format_with_border_color)
-               sampler->border_color_format = format;
-            /* alpha is not w, so set it to the first available component: */
-            if (st->alpha_border_color_is_not_w && util_format_is_alpha(format)) {
-               /* use x component */
-               sampler->border_color.ui[0] = sampler->border_color.ui[3];
-            } else if (st->alpha_border_color_is_not_w && util_format_is_luminance_alpha(format)) {
-               /* use y component */
-               sampler->border_color.ui[1] = sampler->border_color.ui[3];
-            } else {
-               /* not an alpha format */
-               st_translate_color(&sampler->border_color,
-                                  texBaseFormat, is_integer);
-            }
+            st_translate_color(&sampler->border_color,
+                               texBaseFormat, is_integer);
          }
       } else {
          st_translate_color(&sampler->border_color,
@@ -167,8 +146,7 @@ st_convert_sampler(const struct st_context *st,
 void
 st_convert_sampler_from_unit(const struct st_context *st,
                              struct pipe_sampler_state *sampler,
-                             GLuint texUnit,
-                             bool glsl130_or_later)
+                             GLuint texUnit)
 {
    const struct gl_texture_object *texobj;
    struct gl_context *ctx = st->ctx;
@@ -180,7 +158,7 @@ st_convert_sampler_from_unit(const struct st_context *st,
    msamp = _mesa_get_samplerobj(ctx, texUnit);
 
    st_convert_sampler(st, texobj, msamp, ctx->Texture.Unit[texUnit].LodBiasQuantized,
-                      sampler, ctx->Texture.CubeMapSeamless, true, glsl130_or_later);
+                      sampler, ctx->Texture.CubeMapSeamless);
 }
 
 
@@ -225,8 +203,7 @@ update_shader_samplers(struct st_context *st,
       if (samplers_used & 1 &&
           (ctx->Texture.Unit[tex_unit]._Current->Target != GL_TEXTURE_BUFFER ||
            st->texture_buffer_sampler)) {
-         st_convert_sampler_from_unit(st, sampler, tex_unit,
-                                      prog->sh.data && prog->sh.data->Version >= 130);
+         st_convert_sampler_from_unit(st, sampler, tex_unit);
          states[unit] = sampler;
       } else {
          states[unit] = NULL;

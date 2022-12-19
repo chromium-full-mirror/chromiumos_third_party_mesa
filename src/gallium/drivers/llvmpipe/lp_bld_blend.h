@@ -43,9 +43,9 @@ struct lp_build_mask_context;
 
 LLVMValueRef
 lp_build_blend(struct lp_build_context *bld,
-               enum pipe_blend_func func,
-               enum pipe_blendfactor factor_src,
-               enum pipe_blendfactor factor_dst,
+               unsigned func,
+               unsigned factor_src,
+               unsigned factor_dst,
                LLVMValueRef src,
                LLVMValueRef dst,
                LLVMValueRef src_factor,
@@ -80,24 +80,25 @@ lp_build_blend_aos(struct gallivm_state *gallivm,
  */
 LLVMValueRef
 lp_build_logicop(LLVMBuilderRef builder,
-                 enum pipe_logicop logicop_func,
+                 unsigned logicop_func,
                  LLVMValueRef src,
                  LLVMValueRef dst);
 
 
 LLVMValueRef
 lp_build_blend_func(struct lp_build_context *bld,
-                    enum pipe_blend_func func,
+                    unsigned func,
                     LLVMValueRef term1,
                     LLVMValueRef term2);
 
 
 boolean
-lp_build_blend_func_reverse(enum pipe_blend_func rgb_func,
-                            enum pipe_blend_func alpha_func);
+lp_build_blend_func_reverse(unsigned rgb_func,
+                            unsigned alpha_func);
+
 
 boolean
-lp_build_blend_func_commutative(enum pipe_blend_func func);
+lp_build_blend_func_commutative(unsigned func);
 
 void
 lp_build_alpha_to_coverage(struct gallivm_state *gallivm,

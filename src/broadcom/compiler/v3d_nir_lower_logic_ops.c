@@ -351,8 +351,6 @@ v3d_nir_lower_logic_op_instr(struct v3d_compile *c,
 static bool
 v3d_nir_lower_logic_ops_block(nir_block *block, struct v3d_compile *c)
 {
-        bool progress = false;
-
         nir_foreach_instr_safe(instr, block) {
                 if (instr->type != nir_instr_type_intrinsic)
                         continue;
@@ -392,40 +390,29 @@ v3d_nir_lower_logic_ops_block(nir_block *block, struct v3d_compile *c)
                         nir_builder_init(&b, impl);
                         b.cursor = nir_before_instr(&intr->instr);
                         v3d_nir_lower_logic_op_instr(c, &b, intr, rt);
-
-                        progress = true;
                 }
         }
 
-        return progress;
+        return true;
 }
 
-bool
+void
 v3d_nir_lower_logic_ops(nir_shader *s, struct v3d_compile *c)
 {
-        bool progress = false;
-
         /* Nothing to do if logic op is 'copy src to dst' or if logic ops are
          * disabled (we set the logic op to copy in that case).
          */
         if (c->fs_key->logicop_func == PIPE_LOGICOP_COPY)
-                return false;
+                return;
 
         nir_foreach_function(function, s) {
                 if (function->impl) {
                         nir_foreach_block(block, function->impl)
-                                progress |= v3d_nir_lower_logic_ops_block(block, c);
+                                v3d_nir_lower_logic_ops_block(block, c);
 
-                        if (progress) {
-                                nir_metadata_preserve(function->impl,
-                                                      nir_metadata_block_index |
-                                                      nir_metadata_dominance);
-                        } else {
-                                nir_metadata_preserve(function->impl,
-                                                      nir_metadata_all);
-                        }
+                        nir_metadata_preserve(function->impl,
+                                              nir_metadata_block_index |
+                                              nir_metadata_dominance);
                 }
         }
-
-        return progress;
 }

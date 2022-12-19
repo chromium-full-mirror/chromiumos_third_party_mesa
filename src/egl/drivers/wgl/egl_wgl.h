@@ -26,16 +26,12 @@
 #include <egldriver.h>
 #include <egldisplay.h>
 #include <eglconfig.h>
-#include <eglimage.h>
-#include <eglsync.h>
 
 #include <stw_pixelformat.h>
 #include <windows.h>
 
 struct wgl_egl_display
 {
-   struct st_manager base;
-   _EGLDisplay *parent;
    int ref_count;
    struct pipe_screen *screen;
 };
@@ -58,20 +54,4 @@ struct wgl_egl_surface
    struct stw_framebuffer *fb;
 };
 
-struct wgl_egl_image
-{
-   _EGLImage base;
-   struct stw_image *img;
-};
-
-struct wgl_egl_sync
-{
-   _EGLSync base;
-   int refcount;
-   struct pipe_fence_handle *fence;
-   HANDLE event;
-};
-
 _EGL_DRIVER_STANDARD_TYPECASTS(wgl_egl)
-_EGL_DRIVER_TYPECAST(wgl_egl_image, _EGLImage, obj)
-_EGL_DRIVER_TYPECAST(wgl_egl_sync, _EGLSync, obj)

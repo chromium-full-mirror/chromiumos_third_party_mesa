@@ -9,7 +9,7 @@
 #include "vn_renderer.h"
 
 struct vn_cs_renderer_protocol_info _vn_cs_renderer_protocol_info = {
-   .mutex = SIMPLE_MTX_INITIALIZER,
+   .mutex = _SIMPLE_MTX_INITIALIZER_NP,
 };
 
 static void

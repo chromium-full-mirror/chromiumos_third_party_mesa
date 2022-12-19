@@ -103,19 +103,16 @@ HARDCODED = {
 # Main script
 
 header_template = mako.template.Template("""\
-% if header:
 // DO NOT EDIT -- AUTOMATICALLY GENERATED
 
 #include "gfx10_format_table.h"
 #include "amdgfxregs.h"
 
-% endif
-
 #define FMT(_img_format, ...) \
-   { .img_format = V_008F0C_${gfx.upper()}_FORMAT_##_img_format, \
+   { .img_format = V_008F0C_GFX10_FORMAT_##_img_format, \
      ##__VA_ARGS__ }
 
-const struct gfx10_format ${gfx}_format_table[PIPE_FORMAT_COUNT] = {
+const struct gfx10_format gfx10_format_table[PIPE_FORMAT_COUNT] = {
 % for pipe_format, args in formats:
  % if args is not None:
   [${pipe_format}] = FMT(${args}),
@@ -123,8 +120,6 @@ const struct gfx10_format ${gfx}_format_table[PIPE_FORMAT_COUNT] = {
 /* ${pipe_format} is not supported */
  % endif
 % endfor
-
-#undef FMT
 };
 """)
 
@@ -193,7 +188,6 @@ class Gfx10FormatMapping(object):
                         num_format = 'UNORM'
                     else:
                         num_format = 'USCALED'
-                        extra_flags.append('buffers_only')
                 elif chan_type == SIGNED:
                     if chan_pure:
                         num_format = 'SINT'
@@ -205,7 +199,6 @@ class Gfx10FormatMapping(object):
                         num_format = 'SNORM'
                     else:
                         num_format = 'SSCALED'
-                        extra_flags.append('buffers_only')
                 elif chan_type == FLOAT:
                     num_format = 'FLOAT'
 
@@ -255,7 +248,17 @@ class Gfx10FormatMapping(object):
 
         return None
 
-def pipe_formats_to_formats(pipe_formats, mapping):
+
+if __name__ == '__main__':
+    pipe_formats = parse(sys.argv[1])
+
+    with open(sys.argv[2], 'r') as filp:
+        db = RegisterDatabase.from_json(json.load(filp))
+
+    gfx10_formats = [Gfx10Format(entry) for entry in db.enum('GFX10_FORMAT').entries]
+
+    mapping = Gfx10FormatMapping(pipe_formats, gfx10_formats)
+
     formats = []
     for fmt in pipe_formats:
         if fmt.name in HARDCODED:
@@ -271,25 +274,4 @@ def pipe_formats_to_formats(pipe_formats, mapping):
             args = None
         formats.append((fmt.name, args))
 
-    return formats
-
-if __name__ == '__main__':
-    pipe_formats = parse(sys.argv[1])
-
-    # gfx10
-    with open(sys.argv[2], 'r') as filp:
-        db = RegisterDatabase.from_json(json.load(filp))
-
-    gfx10_formats = [Gfx10Format(entry) for entry in db.enum('GFX10_FORMAT').entries]
-    mapping = Gfx10FormatMapping(pipe_formats, gfx10_formats)
-    formats = pipe_formats_to_formats(pipe_formats, mapping)
-    print(header_template.render(header=True, gfx='gfx10', formats=formats))
-
-    # gfx11
-    with open(sys.argv[3], 'r') as filp:
-        db = RegisterDatabase.from_json(json.load(filp))
-
-    gfx11_formats = [Gfx10Format(entry) for entry in db.enum('GFX11_FORMAT').entries]
-    mapping = Gfx10FormatMapping(pipe_formats, gfx11_formats)
-    formats = pipe_formats_to_formats(pipe_formats, mapping)
-    print(header_template.render(header=False, gfx='gfx11', formats=formats))
+    print(header_template.render(formats=formats))

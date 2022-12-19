@@ -34,11 +34,10 @@ static void dump_comm_bsp(struct comm *comm)
 unsigned
 nvc0_decoder_bsp_begin(struct nouveau_vp3_decoder *dec, unsigned comm_seq)
 {
-   struct nouveau_screen *screen = nouveau_screen(dec->base.context->screen);
    struct nouveau_bo *bsp_bo = dec->bsp_bo[comm_seq % NOUVEAU_VP3_VIDEO_QDEPTH];
    unsigned ret = 0;
 
-   ret = BO_MAP(screen, bsp_bo, NOUVEAU_BO_WR, dec->client);
+   ret = nouveau_bo_map(bsp_bo, NOUVEAU_BO_WR, dec->client);
    if (ret) {
       debug_printf("map failed: %i %s\n", ret, strerror(-ret));
       return -1;
@@ -54,7 +53,6 @@ nvc0_decoder_bsp_next(struct nouveau_vp3_decoder *dec,
                       unsigned comm_seq, unsigned num_buffers,
                       const void *const *data, const unsigned *num_bytes)
 {
-   struct nouveau_screen *screen = nouveau_screen(dec->base.context->screen);
    struct nouveau_bo *bsp_bo = dec->bsp_bo[comm_seq % NOUVEAU_VP3_VIDEO_QDEPTH];
    struct nouveau_bo *inter_bo = dec->inter_bo[comm_seq & 1];
    uint32_t bsp_size = 0;
@@ -84,7 +82,7 @@ nvc0_decoder_bsp_next(struct nouveau_vp3_decoder *dec,
          return -1;
       }
 
-      ret = BO_MAP(screen, tmp_bo, NOUVEAU_BO_WR, dec->client);
+      ret = nouveau_bo_map(tmp_bo, NOUVEAU_BO_WR, dec->client);
       if (ret) {
          debug_printf("map failed: %i %s\n", ret, strerror(-ret));
          return -1;
@@ -116,7 +114,7 @@ nvc0_decoder_bsp_next(struct nouveau_vp3_decoder *dec,
          return -1;
       }
 
-      ret = BO_MAP(screen, tmp_bo, NOUVEAU_BO_WR, dec->client);
+      ret = nouveau_bo_map(tmp_bo, NOUVEAU_BO_WR, dec->client);
       if (ret) {
          debug_printf("map failed: %i %s\n", ret, strerror(-ret));
          return -1;
@@ -162,8 +160,8 @@ nvc0_decoder_bsp_end(struct nouveau_vp3_decoder *dec, union pipe_desc desc,
 
    nouveau_vp3_vp_caps(dec, desc, target, comm_seq, vp_caps, is_ref, refs);
 
-   PUSH_SPACE_EX(push, 32, num_refs, 0);
-   PUSH_REFN(push, bo_refs, num_refs);
+   nouveau_pushbuf_space(push, 32, num_refs, 0);
+   nouveau_pushbuf_refn(push, bo_refs, num_refs);
 
    bsp_addr = bsp_bo->offset >> 8;
    inter_addr = inter_bo->offset >> 8;

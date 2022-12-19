@@ -24,9 +24,10 @@
 #ifndef _ROUNDING_H
 #define _ROUNDING_H
 
+#include "c99_math.h"
+
 #include <limits.h>
 #include <stdint.h>
-#include <math.h>
 
 #if defined(__SSE__) || (defined(_M_IX86_FP) && (_M_IX86_FP >= 1)) || (defined(_M_X64) && !defined(_M_ARM64EC))
 #include <xmmintrin.h>

@@ -1,10 +1,9 @@
 [binaries]
-c = ['ccache', 'x86_64-w64-mingw32-gcc-posix']
-cpp = ['ccache', 'x86_64-w64-mingw32-g++-posix']
+c = ['ccache', 'x86_64-w64-mingw32-gcc']
+cpp = ['ccache', 'x86_64-w64-mingw32-g++']
 ar = 'x86_64-w64-mingw32-ar'
 strip = 'x86_64-w64-mingw32-strip'
-pkgconfig = '/usr/x86_64-w64-mingw32/bin/pkg-config'
-llvm-config = '/usr/x86_64-w64-mingw32/bin/llvm-config'
+pkgconfig = '/usr/local/bin/x86_64-w64-mingw32-pkg-config'
 windres = 'x86_64-w64-mingw32-windres'
 exe_wrapper = ['wine64']
 

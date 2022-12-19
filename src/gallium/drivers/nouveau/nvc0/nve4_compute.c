@@ -25,7 +25,7 @@
 #include "nvc0/nvc0_context.h"
 #include "nvc0/nve4_compute.h"
 
-#include "nv50_ir_driver.h"
+#include "codegen/nv50_ir_driver.h"
 
 #include "drf.h"
 #include "qmd.h"
@@ -545,8 +545,8 @@ nve4_compute_upload_input(struct nvc0_context *nvc0,
       struct nv04_resource *res = nv04_resource(info->indirect);
       uint32_t offset = res->offset + info->indirect_offset;
 
-      PUSH_SPACE_EX(push, 32, 0, 1);
-      PUSH_REF1(push, res->bo, NOUVEAU_BO_RD | res->domain);
+      nouveau_pushbuf_space(push, 32, 0, 1);
+      PUSH_REFN(push, res->bo, NOUVEAU_BO_RD | res->domain);
 
       BEGIN_1IC0(push, NVE4_CP(UPLOAD_EXEC), 1 + 8);
       PUSH_DATA (push, NVE4_COMPUTE_UPLOAD_EXEC_LINEAR | (0x20 << 1));
@@ -829,8 +829,8 @@ nve4_upload_indirect_desc(struct nouveau_pushbuf *push,
    PUSH_DATA (push, length);
    PUSH_DATA (push, 1);
 
-   PUSH_SPACE_EX(push, 32, 0, 1);
-   PUSH_REF1(push, res->bo, NOUVEAU_BO_RD | res->domain);
+   nouveau_pushbuf_space(push, 32, 0, 1);
+   PUSH_REFN(push, res->bo, NOUVEAU_BO_RD | res->domain);
 
    BEGIN_1IC0(push, NVE4_CP(UPLOAD_EXEC), 1 + (length / 4));
    PUSH_DATA (push, NVE4_COMPUTE_UPLOAD_EXEC_LINEAR | (0x08 << 1));
@@ -867,10 +867,9 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
                         resident->flags);
    }
 
-   simple_mtx_lock(&screen->state_lock);
    ret = !nve4_state_validate_cp(nvc0, ~0);
    if (ret)
-      goto out_unlock;
+      goto out;
 
    if (nvc0->screen->compute->oclass >= GV100_COMPUTE_CLASS)
       gv100_compute_setup_launch_desc(nvc0, desc, info);
@@ -924,8 +923,8 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    }
 
    /* upload descriptor and flush */
-   PUSH_SPACE_EX(push, 32, 1, 0);
-   PUSH_REF1(push, screen->text, NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD);
+   nouveau_pushbuf_space(push, 32, 1, 0);
+   PUSH_REFN(push, screen->text, NV_VRAM_DOMAIN(&screen->base) | NOUVEAU_BO_RD);
    BEGIN_NVC0(push, NVE4_CP(LAUNCH_DESC_ADDRESS), 1);
    PUSH_DATA (push, desc_gpuaddr >> 8);
    BEGIN_NVC0(push, NVE4_CP(LAUNCH), 1);
@@ -934,10 +933,6 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    PUSH_DATA (push, 0);
 
    nvc0_update_compute_invocations_counter(nvc0, info);
-
-out_unlock:
-   PUSH_KICK(push);
-   simple_mtx_unlock(&screen->state_lock);
 
 out:
    if (ret)
@@ -1036,7 +1031,7 @@ nve4_compute_trap_info(struct nvc0_context *nvc0)
    volatile struct nve4_mp_trap_info *info;
    uint8_t *map;
 
-   ret = BO_MAP(&screen->base, bo, NOUVEAU_BO_RDWR, nvc0->base.client);
+   ret = nouveau_bo_map(bo, NOUVEAU_BO_RDWR, nvc0->base.client);
    if (ret)
       return;
    map = (uint8_t *)bo->map;

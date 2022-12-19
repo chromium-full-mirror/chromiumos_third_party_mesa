@@ -75,11 +75,9 @@ lp_build_assert(struct gallivm_state *gallivm,
    arg_types[0] = LLVMInt32TypeInContext(context);
    arg_types[1] = LLVMPointerType(LLVMInt8TypeInContext(context), 0);
 
-   LLVMTypeRef function_type = LLVMFunctionType(ret_type, arg_types, 2, 0);
-
-   function = lp_build_const_func_pointer_from_type(gallivm,
+   function = lp_build_const_func_pointer(gallivm,
                                           func_to_pointer((func_pointer)lp_assert),
-                                          function_type,
+                                          ret_type, arg_types, ARRAY_SIZE(arg_types),
                                           "assert");
 
    /* build function call param list */
@@ -89,5 +87,6 @@ lp_build_assert(struct gallivm_state *gallivm,
    /* check arg types */
    assert(LLVMTypeOf(args[0]) == arg_types[0]);
    assert(LLVMTypeOf(args[1]) == arg_types[1]);
-   LLVMBuildCall2(builder, function_type, function, args, ARRAY_SIZE(args), "");
+
+   LLVMBuildCall(builder, function, args, ARRAY_SIZE(args), "");
 }

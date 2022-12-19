@@ -105,17 +105,9 @@ has_ss_src(struct ir3_instruction *instr)
 }
 
 static void
-sched_dag_validate_cb(const struct dag_node *node, void *data)
-{
-   struct ir3_postsched_node *n = (struct ir3_postsched_node *)node;
-
-   ir3_print_instr(n->instr);
-}
-
-static void
 schedule(struct ir3_postsched_ctx *ctx, struct ir3_instruction *instr)
 {
-   assert(ctx->block == instr->block);
+   debug_assert(ctx->block == instr->block);
 
    /* remove from unscheduled_list:
     */
@@ -629,8 +621,6 @@ sched_dag_init(struct ir3_postsched_ctx *ctx)
       }
    }
 
-   dag_validate(ctx->dag, sched_dag_validate_cb, NULL);
-
    // TODO do we want to do this after reverse-dependencies?
    dag_traverse_bottom_up(ctx->dag, sched_dag_max_delay_cb, NULL);
 }
@@ -697,7 +687,7 @@ sched_block(struct ir3_postsched_ctx *ctx, struct ir3_block *block)
       unsigned delay = node_delay(ctx, instr->data);
       d("delay=%u", delay);
 
-      assert(delay <= 6);
+      debug_assert(delay <= 6);
 
       schedule(ctx, instr);
    }

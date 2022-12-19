@@ -38,6 +38,7 @@
 
 struct pipe_context;
 struct pipe_fence;
+struct st_api;
 struct st_context_iface;
 struct dri_drawable;
 
@@ -49,6 +50,8 @@ struct dri_context
    __DRIdrawable *dPriv;
    __DRIdrawable *rPriv;
 
+   unsigned int bind_count;
+
    /**
     * True if the __DRIdrawable's current __DRIimageBufferMask is
     * __DRI_IMAGE_BUFFER_SHARED.
@@ -56,6 +59,7 @@ struct dri_context
    bool is_shared_buffer_bound;
 
    /* gallium */
+   struct st_api *stapi;
    struct st_context_iface *st;
    struct pp_queue_t *pp;
    struct hud_context *hud;

@@ -32,6 +32,8 @@
 #define EGLDRIVER_INCLUDED
 
 
+#include "c99_compat.h"
+
 #include "egltypedefs.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -75,7 +77,6 @@ struct wl_display;
 struct mesa_glinterop_device_info;
 struct mesa_glinterop_export_in;
 struct mesa_glinterop_export_out;
-typedef struct __GLsync *GLsync;
 
 /**
  * The API dispatcher jumps through these functions
@@ -182,9 +183,6 @@ struct _egl_driver
                                        EGLuint64KHR *ust, EGLuint64KHR *msc,
                                        EGLuint64KHR *sbc);
 
-   EGLBoolean (*GetMscRateANGLE)(_EGLDisplay *disp, _EGLSurface *surface,
-                                 EGLint *numerator, EGLint *denominator);
-
    /* for EGL_MESA_image_dma_buf_export */
    EGLBoolean (*ExportDMABUFImageQueryMESA)(_EGLDisplay *disp, _EGLImage *img,
                                             EGLint *fourcc, EGLint *nplanes,
@@ -203,9 +201,6 @@ struct _egl_driver
    int (*GLInteropExportObject)(_EGLDisplay *disp, _EGLContext *ctx,
                                 struct mesa_glinterop_export_in *in,
                                 struct mesa_glinterop_export_out *out);
-   int (*GLInteropFlushObjects)(_EGLDisplay *disp, _EGLContext *ctx,
-                                unsigned count, struct mesa_glinterop_export_in *in,
-                                GLsync *sync);
 
    /* for EGL_EXT_image_dma_buf_import_modifiers */
    EGLBoolean (*QueryDmaBufFormatsEXT)(_EGLDisplay *disp,

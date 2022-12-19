@@ -82,7 +82,7 @@ libaco_files = files(
   'aco_validate.cpp',
 )
 
-cpp_args_aco = cpp.get_supported_arguments(['-fno-exceptions', '-fno-rtti', '-Wimplicit-fallthrough', '-Wshadow'])
+cpp_args_aco = cpp.get_supported_arguments(['-fno-exceptions', '-fno-rtti', '-Wimplicit-fallthrough', '-Wshadow', '-DNOMINMAX'])
 
 _libaco = static_library(
   'aco',

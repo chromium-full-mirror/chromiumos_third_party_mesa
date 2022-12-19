@@ -28,12 +28,13 @@ pipe_loader_incs = [
 ]
 
 if (with_gallium_va or with_gallium_vdpau or with_gallium_omx != 'disabled' or
-    with_dri or with_gallium_radeonsi)
+    with_gallium_xvmc or with_dri or with_gallium_radeonsi)
   pipe_loader_link_with += libgalliumvl
 else
   pipe_loader_link_with += libgalliumvl_stub
 endif
-if (with_gallium_va or with_gallium_vdpau or with_gallium_omx != 'disabled')
+if (with_gallium_va or with_gallium_vdpau or with_gallium_omx != 'disabled' or
+    with_gallium_xvmc)
   pipe_loader_link_with += libgalliumvlwinsys
 endif
 
@@ -48,7 +49,7 @@ pipe_loader_install_dir = join_paths(get_option('libdir'), 'gallium-pipe')
 
 _kmsro_targets = [
    driver_kmsro, driver_v3d, driver_vc4, driver_freedreno, driver_etnaviv,
-   driver_panfrost, driver_lima, driver_asahi,
+   driver_panfrost, driver_lima,
 ]
 
 if with_gallium_v3d
@@ -66,7 +67,7 @@ pipe_loaders = [
   [with_gallium_freedreno, 'msm', driver_freedreno, []],
   [with_gallium_kmsro, 'kmsro', _kmsro_targets, []],
   [with_gallium_svga, 'vmwgfx', driver_svga, []],
-  [with_gallium_softpipe, 'swrast', driver_swrast, [libwsw, libws_null, libswdri, libswkmsdri]],
+  [with_gallium_softpipe, 'swrast', driver_swrast, [libwsw, libws_null]],
 ]
 
 foreach x : pipe_loaders

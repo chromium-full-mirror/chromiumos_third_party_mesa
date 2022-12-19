@@ -18,7 +18,6 @@ liblvp_files = files(
     'lvp_util.c',
     'lvp_image.c',
     'lvp_formats.c',
-    'lvp_inline_uniforms.c',
     'lvp_lower_vulkan_resource.c',
     'lvp_lower_vulkan_resource.h',
     'lvp_lower_input_attachments.c',
@@ -26,7 +25,7 @@ liblvp_files = files(
     'lvp_pipeline.c',
     'lvp_pipeline_cache.c',
     'lvp_query.c',
-    'lvp_wsi.c') + [vk_cmd_enqueue_entrypoints[0]]
+    'lvp_wsi.c')
 
 lvp_deps = []
 lvp_flags = []

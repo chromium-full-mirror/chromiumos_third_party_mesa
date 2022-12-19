@@ -77,8 +77,6 @@ static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op
 		util_blitter_save_depth_stencil_alpha(rctx->blitter, rctx->dsa_state.cso);
 		util_blitter_save_stencil_ref(rctx->blitter, &rctx->stencil_ref.pipe_state);
                 util_blitter_save_sample_mask(rctx->blitter, rctx->sample_mask.sample_mask, rctx->ps_iter_samples);
-		util_blitter_save_fragment_constant_buffer_slot(rctx->blitter,
-								&rctx->constbuf_state[PIPE_SHADER_FRAGMENT].cb[0]);
 	}
 
 	if (op & R600_SAVE_FRAMEBUFFER)
@@ -133,7 +131,7 @@ static void r600_blit_decompress_depth(struct pipe_context *ctx,
 	/* XXX Decompressing MSAA depth textures is broken on R6xx.
 	 * There is also a hardlock if CMASK and FMASK are not present.
 	 * Just skip this until we find out how to fix it. */
-	if (rctx->b.gfx_level == R600 && max_sample > 0) {
+	if (rctx->b.chip_class == R600 && max_sample > 0) {
 		texture->dirty_level_mask = 0;
 		return;
 	}
@@ -472,7 +470,7 @@ static void r600_clear(struct pipe_context *ctx, unsigned buffers,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct pipe_framebuffer_state *fb = &rctx->framebuffer.state;
 
-	if (buffers & PIPE_CLEAR_COLOR && rctx->b.gfx_level >= EVERGREEN) {
+	if (buffers & PIPE_CLEAR_COLOR && rctx->b.chip_class >= EVERGREEN) {
 		evergreen_do_fast_color_clear(&rctx->b, fb, &rctx->framebuffer.atom,
 					      &buffers, NULL, color);
 		if (!buffers)
@@ -575,10 +573,19 @@ static void r600_copy_buffer(struct pipe_context *ctx, struct pipe_resource *dst
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
 
-	if (rctx->screen->b.has_cp_dma)
+	if (rctx->screen->b.has_cp_dma) {
 		r600_cp_dma_copy_buffer(rctx, dst, dstx, src, src_box->x, src_box->width);
-	else
+	}
+	else if (rctx->screen->b.has_streamout &&
+		 /* Require 4-byte alignment. */
+		 dstx % 4 == 0 && src_box->x % 4 == 0 && src_box->width % 4 == 0) {
+
+		r600_blitter_begin(ctx, R600_COPY_BUFFER);
+		util_blitter_copy_buffer(rctx->blitter, dst, dstx, src, src_box->x, src_box->width);
+		r600_blitter_end(ctx);
+	} else {
 		util_resource_copy_region(ctx, dst, 0, dstx, 0, 0, src, 0, src_box);
+	}
 }
 
 /**
@@ -641,7 +648,7 @@ static void r600_clear_buffer(struct pipe_context *ctx, struct pipe_resource *ds
 	struct r600_context *rctx = (struct r600_context*)ctx;
 
 	if (rctx->screen->b.has_cp_dma &&
-	    rctx->b.gfx_level >= EVERGREEN &&
+	    rctx->b.chip_class >= EVERGREEN &&
 	    offset % 4 == 0 && size % 4 == 0) {
 		evergreen_cp_dma_clear_buffer(rctx, dst, offset, size, value, coher);
 	} else if (rctx->screen->b.has_streamout && offset % 4 == 0 && size % 4 == 0) {
@@ -789,7 +796,7 @@ void r600_resource_copy_region(struct pipe_context *ctx,
 					      dst->width0, dst->height0,
 					      dst_width, dst_height);
 
-	if (rctx->b.gfx_level >= EVERGREEN) {
+	if (rctx->b.chip_class >= EVERGREEN) {
 		src_view = evergreen_create_sampler_view_custom(ctx, src, &src_templ,
 								src_width0, src_height0,
 								src_force_level);
@@ -806,7 +813,7 @@ void r600_resource_copy_region(struct pipe_context *ctx,
 	util_blitter_blit_generic(rctx->blitter, dst_view, &dstbox,
 				  src_view, src_box, src_width0, src_height0,
 				  PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL,
-				  FALSE, FALSE, 0);
+				  FALSE, FALSE);
 	r600_blitter_end(ctx);
 
 	pipe_surface_reference(&dst_view, NULL);
@@ -822,7 +829,7 @@ static bool do_hardware_msaa_resolve(struct pipe_context *ctx,
 	unsigned dst_height = u_minify(info->dst.resource->height0, info->dst.level);
 	enum pipe_format format = info->src.format;
 	unsigned sample_mask =
-		rctx->b.gfx_level == CAYMAN ? ~0 :
+		rctx->b.chip_class == CAYMAN ? ~0 :
 		((1ull << MAX2(1, info->src.resource->nr_samples)) - 1);
 	struct pipe_resource *tmp, templ;
 	struct pipe_blit_info blit;

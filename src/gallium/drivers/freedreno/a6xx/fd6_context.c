@@ -25,8 +25,6 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
-#define FD_BO_NO_HARDPIN 1
-
 #include "freedreno_query_acc.h"
 #include "freedreno_state.h"
 
@@ -90,7 +88,7 @@ fd6_vertex_state_create(struct pipe_context *pctx, unsigned num_elements,
       enum pipe_format pfmt = elem->src_format;
       enum a6xx_format fmt = fd6_vertex_format(pfmt);
       bool isint = util_format_is_pure_integer(pfmt);
-      assert(fmt != FMT6_NONE);
+      debug_assert(fmt != FMT6_NONE);
 
       OUT_RING(ring, A6XX_VFD_DECODE_INSTR_IDX(elem->vertex_buffer_index) |
                         A6XX_VFD_DECODE_INSTR_OFFSET(elem->src_offset) |
@@ -187,8 +185,7 @@ setup_state_map(struct fd_context *ctx)
    /* NOTE: scissor enabled bit is part of rasterizer state, but
     * fd_rasterizer_state_bind() will mark scissor dirty if needed:
     */
-   fd_context_add_map(ctx, FD_DIRTY_SCISSOR | FD_DIRTY_PROG,
-                      BIT(FD6_GROUP_SCISSOR));
+   fd_context_add_map(ctx, FD_DIRTY_SCISSOR, BIT(FD6_GROUP_SCISSOR));
 
    /* Stuff still emit in IB2
     *
@@ -196,7 +193,7 @@ setup_state_map(struct fd_context *ctx)
     * move it into FD6_GROUP_RASTERIZER?
     */
    fd_context_add_map(
-      ctx, FD_DIRTY_STENCIL_REF | FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER | FD_DIRTY_PROG,
+      ctx, FD_DIRTY_STENCIL_REF | FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER,
       BIT(FD6_GROUP_NON_GROUP));
 }
 

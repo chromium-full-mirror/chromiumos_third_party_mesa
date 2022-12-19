@@ -40,7 +40,6 @@
 #include "svga_cmd.h"
 #include "svga3d_caps.h"
 
-#include "c11/threads.h"
 #include "util/os_file.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
@@ -124,7 +123,7 @@ typedef __attribute__((aligned(32))) struct MKSGuestStatInfoEntry {
    } stat;
 } MKSGuestStatInfoEntry;
 
-static thread_local struct svga_winsys_stats_timeframe *mksstat_tls_global = NULL;
+static __thread struct svga_winsys_stats_timeframe *mksstat_tls_global = NULL;
 
 #define ALIGN(x, power_of_two) (((x) + (power_of_two) - 1) & ~((power_of_two) - 1))
 

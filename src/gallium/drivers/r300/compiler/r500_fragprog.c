@@ -39,14 +39,17 @@
 /**
  * Rewrite IF instructions to use the ALU result special register.
  */
-static void r500_transform_IF_instr(
+int r500_transform_IF(
 	struct radeon_compiler * c,
 	struct rc_instruction * inst_if,
-	struct rc_list * var_list)
+	void *data)
 {
+	if (inst_if->U.I.Opcode != RC_OPCODE_IF)
+		return 0;
 
 	struct rc_variable * writer;
 	struct rc_list * writer_list, * list_ptr;
+	struct rc_list * var_list = rc_get_variables(c);
 	unsigned int generic_if = 0;
 	unsigned int alu_chan;
 
@@ -174,22 +177,8 @@ static void r500_transform_IF_instr(
 				RC_SWIZZLE_X, RC_SWIZZLE_UNUSED,
 				RC_SWIZZLE_UNUSED, RC_SWIZZLE_UNUSED);
 	inst_if->U.I.SrcReg[0].Negate = 0;
-}
 
-void r500_transform_IF(
-	struct radeon_compiler * c,
-	void *user)
-{
-	struct rc_list * var_list = rc_get_variables(c);
-
-	struct rc_instruction * inst = c->Program.Instructions.Next;
-	while(inst != &c->Program.Instructions) {
-		struct rc_instruction * current = inst;
-		inst = inst->Next;
-
-		if (current->U.I.Opcode == RC_OPCODE_IF)
-			r500_transform_IF_instr(c, current, var_list);
-	}
+	return 1;
 }
 
 static int r500_swizzle_is_native(rc_opcode opcode, struct rc_src_register reg)

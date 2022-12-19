@@ -296,39 +296,39 @@ class Group(object):
                     value = "%s - 1" % value
 
                 if field.type == "mbo":
-                    s = "util_bitpack_ones(%d, %d)" % \
+                    s = "__gen_mbo(%d, %d)" % \
                         (start, end)
                 elif field.type == "address":
                     extra_shift = (31 - (end - start)) // 8 * 8
                     s = "__gen_address_offset(&values->%s)" % byte.address.name
                 elif field.type == "uint":
-                    s = "util_bitpack_uint(%s, %d, %d)" % \
+                    s = "__gen_uint(%s, %d, %d)" % \
                         (value, start, end)
                 elif field.type in self.parser.enums:
-                    s = "util_bitpack_uint(%s, %d, %d)" % \
+                    s = "__gen_uint(%s, %d, %d)" % \
                         (value, start, end)
                 elif field.type == "int":
-                    s = "util_bitpack_sint(%s, %d, %d)" % \
+                    s = "__gen_sint(%s, %d, %d)" % \
                         (value, start, end)
                 elif field.type == "bool":
-                    s = "util_bitpack_uint(%s, %d, %d)" % \
+                    s = "__gen_uint(%s, %d, %d)" % \
                         (value, start, end)
                 elif field.type == "float":
                     s = "#error %s float value mixed in with other fields" % name
                 elif field.type == "f187":
-                    s = "util_bitpack_uint(fui(%s) >> 16, %d, %d)" % \
+                    s = "__gen_uint(fui(%s) >> 16, %d, %d)" % \
                         (value, start, end)
                 elif field.type == "offset":
                     s = "__gen_offset(%s, %d, %d)" % \
                         (value, start, end)
                 elif field.type == 'ufixed':
-                    s = "util_bitpack_ufixed(%s, %d, %d, %d)" % \
+                    s = "__gen_ufixed(%s, %d, %d, %d)" % \
                         (value, start, end, field.fractional_size)
                 elif field.type == 'sfixed':
-                    s = "util_bitpack_sfixed(%s, %d, %d, %d)" % \
+                    s = "__gen_sfixed(%s, %d, %d, %d)" % \
                         (value, start, end, field.fractional_size)
                 elif field.type in self.parser.structs:
-                    s = "util_bitpack_uint(v%d_%d, %d, %d)" % \
+                    s = "__gen_uint(v%d_%d, %d, %d)" % \
                         (index, field_index, start, end)
                     field_index = field_index + 1
                 else:

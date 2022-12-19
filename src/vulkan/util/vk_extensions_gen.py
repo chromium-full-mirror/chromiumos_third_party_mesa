@@ -24,13 +24,13 @@ COPYRIGHT = """\
  */
 """
 
-import argparse
+import xml.etree.ElementTree as et
 
 from mako.template import Template
 
 # Mesa-local imports must be declared in meson variable
 # '{file_without_suffix}_depend_files'.
-from vk_extensions import get_all_exts_from_xml, init_exts_from_xml
+from vk_extensions import *
 
 _TEMPLATE_H = Template(COPYRIGHT + """
 
@@ -40,27 +40,36 @@ _TEMPLATE_H = Template(COPYRIGHT + """
 #include <stdbool.h>
 
 %if driver == 'vk':
+#define VK_INSTANCE_EXTENSION_COUNT ${len(instance_extensions)}
 
-<%def name="extension_table(type, extensions)">
-#define VK_${type.upper()}_EXTENSION_COUNT ${len(extensions)}
+extern const VkExtensionProperties vk_instance_extensions[];
 
-extern const VkExtensionProperties vk_${type}_extensions[];
-
-struct vk_${type}_extension_table {
+struct vk_instance_extension_table {
    union {
-      bool extensions[VK_${type.upper()}_EXTENSION_COUNT];
+      bool extensions[VK_INSTANCE_EXTENSION_COUNT];
       struct {
-%for ext in extensions:
+%for ext in instance_extensions:
          bool ${ext.name[3:]};
 %endfor
       };
    };
 };
-</%def>
 
-${extension_table('instance', instance_extensions)}
-${extension_table('device', device_extensions)}
 
+#define VK_DEVICE_EXTENSION_COUNT ${len(device_extensions)}
+
+extern const VkExtensionProperties vk_device_extensions[];
+
+struct vk_device_extension_table {
+   union {
+      bool extensions[VK_DEVICE_EXTENSION_COUNT];
+      struct {
+%for ext in device_extensions:
+        bool ${ext.name[3:]};
+%endfor
+      };
+   };
+};
 %else:
 #include "vk_extensions.h"
 %endif
@@ -200,7 +209,7 @@ def gen_extensions(driver, xml_files, api_versions, max_api_version,
         init_exts_from_xml(filename, extensions, platform_defines)
 
     for ext in extensions:
-        assert ext.type in {'instance', 'device'}
+        assert ext.type == 'instance' or ext.type == 'device'
 
     template_env = {
         'driver': driver,
@@ -220,7 +229,7 @@ def gen_extensions(driver, xml_files, api_versions, max_api_version,
             f.write(_TEMPLATE_C.render(**template_env))
 
 
-def main():
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--out-c', help='Output C file.')
     parser.add_argument('--out-h', help='Output H file.')
@@ -237,6 +246,3 @@ def main():
 
     gen_extensions('vk', args.xml_files, None, None,
                    extensions, args.out_c, args.out_h)
-
-if __name__ == '__main__':
-    main()

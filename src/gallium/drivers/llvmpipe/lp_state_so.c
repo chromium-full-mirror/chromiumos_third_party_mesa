@@ -32,14 +32,15 @@
 #include "util/u_memory.h"
 #include "draw/draw_context.h"
 
-
 static struct pipe_stream_output_target *
 llvmpipe_create_so_target(struct pipe_context *pipe,
                           struct pipe_resource *buffer,
                           unsigned buffer_offset,
                           unsigned buffer_size)
 {
-   struct draw_so_target *t = CALLOC_STRUCT(draw_so_target);
+   struct draw_so_target *t;
+
+   t = CALLOC_STRUCT(draw_so_target);
    if (!t)
       return NULL;
 
@@ -50,8 +51,7 @@ llvmpipe_create_so_target(struct pipe_context *pipe,
    t->target.buffer_size = buffer_size;
    return &t->target;
 }
-
-
+ 
 static void
 llvmpipe_so_target_destroy(struct pipe_context *pipe,
                            struct pipe_stream_output_target *target)
@@ -60,14 +60,12 @@ llvmpipe_so_target_destroy(struct pipe_context *pipe,
    FREE(target);
 }
 
-
 static uint32_t
 llvmpipe_so_offset(struct pipe_stream_output_target *so_target)
 {
    struct draw_so_target *target = (struct draw_so_target *)so_target;
    return target->internal_offset;
 }
-
 
 static void
 llvmpipe_set_so_targets(struct pipe_context *pipe,
@@ -76,7 +74,7 @@ llvmpipe_set_so_targets(struct pipe_context *pipe,
                         const unsigned *offsets)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
-   unsigned i;
+   int i;
    for (i = 0; i < num_targets; i++) {
       const boolean append = (offsets[i] == (unsigned)-1);
       /*
@@ -85,11 +83,10 @@ llvmpipe_set_so_targets(struct pipe_context *pipe,
        * Otherwise should just assert.
        */
       if (targets[i] && targets[i]->context != pipe) {
-         debug_printf("Illegal setting of so target with target %d created "
-                      "in another context\n", i);
+         debug_printf("Illegal setting of so target with target %d created in "
+                       "another context\n", i);
       }
-      pipe_so_target_reference((struct pipe_stream_output_target **)
-                               &llvmpipe->so_targets[i], targets[i]);
+      pipe_so_target_reference((struct pipe_stream_output_target **)&llvmpipe->so_targets[i], targets[i]);
       /* If we're not appending then lets set the internal
          offset to what was requested */
       if (!append && llvmpipe->so_targets[i]) {
@@ -103,15 +100,13 @@ llvmpipe_set_so_targets(struct pipe_context *pipe,
    }
 
    for (; i < llvmpipe->num_so_targets; i++) {
-      pipe_so_target_reference((struct pipe_stream_output_target **)
-                               &llvmpipe->so_targets[i], NULL);
+      pipe_so_target_reference((struct pipe_stream_output_target **)&llvmpipe->so_targets[i], NULL);
    }
    llvmpipe->num_so_targets = num_targets;
 
    draw_set_mapped_so_targets(llvmpipe->draw, llvmpipe->num_so_targets,
                               llvmpipe->so_targets);
 }
-
 
 void
 llvmpipe_init_so_funcs(struct llvmpipe_context *pipe)

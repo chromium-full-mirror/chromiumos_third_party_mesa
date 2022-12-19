@@ -380,7 +380,7 @@ vc4_job_submit(struct vc4_context *vc4, struct vc4_job *job)
                 goto done;
         }
 
-        if (VC4_DBG(CL)) {
+        if (vc4_debug & VC4_DEBUG_CL) {
                 fprintf(stderr, "BCL:\n");
                 vc4_dump_cl(job->bcl.base, cl_offset(&job->bcl), false);
         }
@@ -486,7 +486,7 @@ vc4_job_submit(struct vc4_context *vc4, struct vc4_job *job)
                 }
         }
 
-        if (!VC4_DBG(NORAST)) {
+        if (!(vc4_debug & VC4_DEBUG_NORAST)) {
                 int ret;
 
                 ret = vc4_ioctl(vc4->fd, DRM_IOCTL_VC4_SUBMIT_CL, &submit);
@@ -511,7 +511,7 @@ vc4_job_submit(struct vc4_context *vc4, struct vc4_job *job)
                 }
         }
 
-        if (VC4_DBG(ALWAYS_SYNC)) {
+        if (vc4_debug & VC4_DEBUG_ALWAYS_SYNC) {
                 if (!vc4_wait_seqno(vc4->screen, vc4->last_emit_seqno,
                                     PIPE_TIMEOUT_INFINITE, "sync")) {
                         fprintf(stderr, "Wait failed.\n");

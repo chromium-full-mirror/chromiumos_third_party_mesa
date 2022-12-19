@@ -345,17 +345,6 @@ _mesa_texstore_z24_s8(TEXSTORE_PARAMS)
       return GL_FALSE;
    }
 
-   /*
-    * The spec "8.5. TEXTURE IMAGE SPECIFICATION" says:
-    *
-    *    If the base internal format is DEPTH_STENCIL and format is not DEPTH_STENCIL,
-    *    then the values of the stencil index texture components are undefined.
-    *
-    * but there doesn't seem to be corresponding text saying that depth is
-    * undefined when a stencil format is supplied.
-    */
-   const bool keepdepth = (srcFormat == GL_STENCIL_INDEX);
-
    /* In case we only upload depth we need to preserve the stencil */
    for (img = 0; img < srcDepth; img++) {
       GLuint *dstRow = (GLuint *) dstSlices[img];
@@ -366,16 +355,24 @@ _mesa_texstore_z24_s8(TEXSTORE_PARAMS)
                img, 0, 0);
       for (row = 0; row < srcHeight; row++) {
          GLint i;
+         GLboolean keepdepth = GL_FALSE, keepstencil = GL_FALSE;
 
-         if (!keepdepth)
+         if (srcFormat == GL_DEPTH_COMPONENT) { /* preserve stencil */
+            keepstencil = GL_TRUE;
+         }
+         else if (srcFormat == GL_STENCIL_INDEX) { /* preserve depth */
+            keepdepth = GL_TRUE;
+         }
+
+         if (keepdepth == GL_FALSE)
             /* the 24 depth bits will be in the low position: */
             _mesa_unpack_depth_span(ctx, srcWidth,
                                     GL_UNSIGNED_INT, /* dst type */
-                                    depth, /* dst addr */
+                                    keepstencil ? depth : dstRow, /* dst addr */
                                     depthScale,
                                     srcType, src, srcPacking);
 
-         if (srcFormat != GL_DEPTH_COMPONENT)
+         if (keepstencil == GL_FALSE)
             /* get the 8-bit stencil values */
             _mesa_unpack_stencil_span(ctx, srcWidth,
                                       GL_UNSIGNED_BYTE, /* dst type */
@@ -384,10 +381,10 @@ _mesa_texstore_z24_s8(TEXSTORE_PARAMS)
                                       ctx->_ImageTransferState);
 
          for (i = 0; i < srcWidth; i++) {
-            if (keepdepth)
-               dstRow[i] = (dstRow[i] & 0xFFFFFF00) | (stencil[i] & 0xFF);
+            if (keepstencil)
+               dstRow[i] = depth[i] << 8 | (dstRow[i] & 0x000000FF);
             else
-               dstRow[i] = depth[i] << 8 | (stencil[i] & 0xFF);
+               dstRow[i] = (dstRow[i] & 0xFFFFFF00) | (stencil[i] & 0xFF);
          }
          src += srcRowStride;
          dstRow += dstRowStride / sizeof(GLuint);
@@ -430,17 +427,6 @@ _mesa_texstore_s8_z24(TEXSTORE_PARAMS)
       return GL_FALSE;
    }
 
-   /*
-    * The spec "8.5. TEXTURE IMAGE SPECIFICATION" says:
-    *
-    *    If the base internal format is DEPTH_STENCIL and format is not DEPTH_STENCIL,
-    *    then the values of the stencil index texture components are undefined.
-    *
-    * but there doesn't seem to be corresponding text saying that depth is
-    * undefined when a stencil format is supplied.
-    */
-   const bool keepdepth = (srcFormat == GL_STENCIL_INDEX);
-
    for (img = 0; img < srcDepth; img++) {
       GLuint *dstRow = (GLuint *) dstSlices[img];
       const GLubyte *src
@@ -448,19 +434,26 @@ _mesa_texstore_s8_z24(TEXSTORE_PARAMS)
                                                 srcWidth, srcHeight,
                                                 srcFormat, srcType,
                                                 img, 0, 0);
-
       for (row = 0; row < srcHeight; row++) {
          GLint i;
+         GLboolean keepdepth = GL_FALSE, keepstencil = GL_FALSE;
 
-         if (!keepdepth)
+         if (srcFormat == GL_DEPTH_COMPONENT) { /* preserve stencil */
+            keepstencil = GL_TRUE;
+         }
+         else if (srcFormat == GL_STENCIL_INDEX) { /* preserve depth */
+            keepdepth = GL_TRUE;
+         }
+
+         if (keepdepth == GL_FALSE)
             /* the 24 depth bits will be in the low position: */
             _mesa_unpack_depth_span(ctx, srcWidth,
                                     GL_UNSIGNED_INT, /* dst type */
-                                    depth, /* dst addr */
+                                    keepstencil ? depth : dstRow, /* dst addr */
                                     depthScale,
                                     srcType, src, srcPacking);
 
-         if (srcFormat != GL_DEPTH_COMPONENT)
+         if (keepstencil == GL_FALSE)
             /* get the 8-bit stencil values */
             _mesa_unpack_stencil_span(ctx, srcWidth,
                                       GL_UNSIGNED_BYTE, /* dst type */
@@ -470,12 +463,12 @@ _mesa_texstore_s8_z24(TEXSTORE_PARAMS)
 
          /* merge stencil values into depth values */
          for (i = 0; i < srcWidth; i++) {
-            if (keepdepth)
-               dstRow[i] = (dstRow[i] & 0xFFFFFF) | (stencil[i] << 24);
+            if (keepstencil)
+               dstRow[i] = depth[i] | (dstRow[i] & 0xFF000000);
             else
-               dstRow[i] = depth[i] | (stencil[i] << 24);
-         }
+               dstRow[i] = (dstRow[i] & 0xFFFFFF) | (stencil[i] << 24);
 
+         }
          src += srcRowStride;
          dstRow += dstRowStride / sizeof(GLuint);
       }

@@ -168,7 +168,7 @@ android_format_from_vk(unsigned vk_format)
 }
 
 static VkFormatFeatureFlags
-features2_to_features(VkFormatFeatureFlags2 features2)
+features2_to_features(VkFormatFeatureFlags2KHR features2)
 {
    return features2 & VK_ALL_FORMAT_FEATURE_FLAG_BITS;
 }
@@ -214,7 +214,7 @@ get_ahw_buffer_format_properties2(
       tiling = VK_IMAGE_TILING_LINEAR;
 
    p->formatFeatures =
-      anv_get_image_format_features2(device->info, p->format, anv_format,
+      anv_get_image_format_features2(&device->info, p->format, anv_format,
                                      tiling, NULL);
 
    /* "Images can be created with an external format even if the Android hardware
@@ -230,7 +230,7 @@ get_ahw_buffer_format_properties2(
     *  VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT"
     */
    p->formatFeatures |=
-      VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT;
+      VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT_KHR;
 
    /* "Implementations may not always be able to determine the color model,
     *  numerical range, or chroma offsets of the image contents, so the values
@@ -439,7 +439,7 @@ anv_create_ahw_memory(VkDevice device_h,
       usage = anv_ahw_usage_from_vk_usage(image->vk.create_flags, image->vk.usage);
    } else if (dedicated_info && dedicated_info->buffer) {
       ANV_FROM_HANDLE(anv_buffer, buffer, dedicated_info->buffer);
-      w = buffer->vk.size;
+      w = buffer->size;
       format = AHARDWAREBUFFER_FORMAT_BLOB;
       usage = AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN |
               AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
@@ -530,7 +530,7 @@ anv_image_init_from_gralloc(struct anv_device *device,
    }
    anv_info.isl_tiling_flags = 1u << tiling;
 
-   enum isl_format format = anv_get_isl_format(device->info,
+   enum isl_format format = anv_get_isl_format(&device->info,
                                                base_info->format,
                                                VK_IMAGE_ASPECT_COLOR_BIT,
                                                base_info->tiling);

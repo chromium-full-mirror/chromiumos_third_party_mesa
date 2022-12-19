@@ -33,6 +33,7 @@
 #include "glsl_parser_extras.h"
 #include "ir_optimization.h"
 #include "program.h"
+#include "loop_analysis.h"
 #include "standalone_scaffolding.h"
 #include "standalone.h"
 #include "string_to_uint_map.h"
@@ -102,7 +103,7 @@ init_gl_program(struct gl_program *prog, bool is_arb_asm, gl_shader_stage stage)
 {
    prog->RefCount = 1;
    prog->Format = GL_PROGRAM_FORMAT_ASCII_ARB;
-   prog->info.use_legacy_math_rules = is_arb_asm;
+   prog->info.is_arb_asm = is_arb_asm;
    prog->info.stage = stage;
 }
 
@@ -545,6 +546,7 @@ standalone_compile_shader(const struct standalone_options *_options,
                progress = do_function_inlining(ir);
 
                progress = do_common_optimization(ir,
+                                                 false,
                                                  false,
                                                  compiler_options,
                                                  true)

@@ -183,7 +183,7 @@ print_cs_prog_data_fields(FILE *fp, const char *prefix, const char *pad,
 static void
 print_kernel(FILE *fp, const char *prefix,
              const struct brw_kernel *kernel,
-             const struct brw_isa_info *isa)
+             const struct intel_device_info *devinfo)
 {
    struct mesa_sha1 sha1_ctx;
    _mesa_sha1_init(&sha1_ctx);
@@ -231,7 +231,7 @@ print_kernel(FILE *fp, const char *prefix,
 
    fprintf(fp, "#if 0  /* BEGIN KERNEL ASSEMBLY */\n");
    fprintf(fp, "\n");
-   intel_disassemble(isa, kernel->code, 0, fp);
+   intel_disassemble(devinfo, kernel->code, 0, fp);
    fprintf(fp, "\n");
    fprintf(fp, "#endif /* END KERNEL ASSEMBLY */\n");
    print_u32_data(fp, prefix, "code", kernel->code,
@@ -258,16 +258,14 @@ static void
 print_usage(char *exec_name, FILE *f)
 {
    fprintf(f,
-"Usage: %s [options] -- [clang args]\n"
+"Usage: %s [options] [clang args | input file]\n"
 "Options:\n"
 "  -h  --help              Print this help.\n"
 "  -e, --entrypoint <name> Specify the entry-point name.\n"
 "  -p, --platform <name>   Specify the target platform name.\n"
 "      --prefix <prefix>   Prefix for variable names in generated C code.\n"
-"  -o, --out <filename>    Specify the output filename.\n"
-"  -i, --in <filename>     Specify one input filename. Accepted multiple times.\n"
+"  -g, --out <filename>    Specify the output filename.\n"
 "  -s, --spv <filename>    Specify the output filename for spirv.\n"
-"  -v, --verbose           Print more information during compilation.\n"
    , exec_name);
 }
 
@@ -301,7 +299,7 @@ int main(int argc, char **argv)
       {"in",         required_argument,   0, 'i'},
       {"out",        required_argument,   0, 'o'},
       {"spv",        required_argument,   0, 's'},
-      {"verbose",    no_argument,         0, 'v'},
+      {"info",       no_argument,         0, 'i'},
       {0, 0, 0, 0}
    };
 
@@ -320,7 +318,7 @@ int main(int argc, char **argv)
    util_dynarray_init(&spirv_ptr_objs, mem_ctx);
 
    int ch;
-   while ((ch = getopt_long(argc, argv, "he:p:s:i:o:v", long_options, NULL)) != -1)
+   while ((ch = getopt_long(argc, argv, "he:p:s:o:i", long_options, NULL)) != -1)
    {
       switch (ch)
       {
@@ -336,13 +334,10 @@ int main(int argc, char **argv)
       case 'o':
          outfile = optarg;
          break;
-      case 'i':
-         util_dynarray_append(&input_files, char *, optarg);
-	 break;
       case 's':
          spv_outfile = optarg;
          break;
-      case 'v':
+      case 'i':
          print_info = true;
          break;
       case OPT_PREFIX:
@@ -356,7 +351,10 @@ int main(int argc, char **argv)
    }
 
    for (int i = optind; i < argc; i++) {
-      util_dynarray_append(&clang_args, char *, argv[i]);
+      if (argv[i][0] == '-')
+         util_dynarray_append(&clang_args, char *, argv[i]);
+      else
+         util_dynarray_append(&input_files, char *, argv[i]);
    }
 
    if (util_dynarray_num_elements(&input_files, char *) == 0) {
@@ -387,9 +385,6 @@ int main(int argc, char **argv)
       fprintf(stderr, "Platform currently not supported.\n");
       return -1;
    }
-
-   struct brw_isa_info _isa, *isa = &_isa;
-   brw_init_isa_info(isa, devinfo);
 
    if (entry_point == NULL) {
       fprintf(stderr, "No entry-point name specified.\n");
@@ -433,11 +428,6 @@ int main(int argc, char **argv)
             .name = *infile,
             .value = map,
          },
-         .features = {
-            .fp16 = true,
-            .intel_subgroups = true,
-            .subgroups = true,
-         },
          .args = util_dynarray_begin(&clang_args),
          .num_args = util_dynarray_num_elements(&clang_args, char *),
          .allowed_spirv_extensions = allowed_spirv_extensions,
@@ -450,10 +440,8 @@ int main(int argc, char **argv)
          ralloc_free(mem_ctx);
          return 1;
       }
-   }
 
-   util_dynarray_foreach(&spirv_objs, struct clc_binary, p) {
-      util_dynarray_append(&spirv_ptr_objs, struct clc_binary *, p);
+      util_dynarray_append(&spirv_ptr_objs, struct clc_binary *, spirv_out);
    }
 
    /* The SPIRV-Tools linker started checking that all modules have the same
@@ -566,10 +554,10 @@ int main(int argc, char **argv)
 
    if (outfile != NULL) {
       FILE *fp = fopen(outfile, "w");
-      print_kernel(fp, prefix, &kernel, isa);
+      print_kernel(fp, prefix, &kernel, devinfo);
       fclose(fp);
    } else {
-      print_kernel(stdout, prefix, &kernel, isa);
+      print_kernel(stdout, prefix, &kernel, devinfo);
    }
 
    ralloc_free(mem_ctx);

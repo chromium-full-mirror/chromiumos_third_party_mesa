@@ -155,17 +155,13 @@ fd_device_del_impl(struct fd_device *dev)
 
    assert(list_is_empty(&dev->deferred_submits));
 
+   dev->funcs->destroy(dev);
+
    if (dev->suballoc_bo)
       fd_bo_del_locked(dev->suballoc_bo);
 
    fd_bo_cache_cleanup(&dev->bo_cache, 0);
    fd_bo_cache_cleanup(&dev->ring_cache, 0);
-
-   /* Needs to be after bo cache cleanup in case backend has a
-    * util_vma_heap that it destroys:
-    */
-   dev->funcs->destroy(dev);
-
    _mesa_hash_table_destroy(dev->handle_table, NULL);
    _mesa_hash_table_destroy(dev->name_table, NULL);
 
@@ -208,12 +204,15 @@ fd_device_version(struct fd_device *dev)
    return dev->version;
 }
 
-DEBUG_GET_ONCE_BOOL_OPTION(libgl, "LIBGL_DEBUG", false)
-
 bool
 fd_dbg(void)
 {
-   return debug_get_option_libgl();
+   static int dbg;
+
+   if (!dbg)
+      dbg = getenv("LIBGL_DEBUG") ? 1 : -1;
+
+   return dbg == 1;
 }
 
 bool

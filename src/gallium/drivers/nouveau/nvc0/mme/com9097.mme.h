@@ -1,4 +1,4 @@
-const uint32_t mme9097_per_instance_bf[] = {
+uint32_t mme9097_per_instance_bf[] = {
 /* 0x0003: loop */
 	0x00000301,
 	0x00000211,
@@ -9,7 +9,7 @@ const uint32_t mme9097_per_instance_bf[] = {
 	0x00005211,
 };
 
-const uint32_t mme9097_blend_enables[] = {
+uint32_t mme9097_blend_enables[] = {
 	0x05360021,
 	0x00404042,
 	0x00424042,
@@ -21,7 +21,7 @@ const uint32_t mme9097_blend_enables[] = {
 	0x004e4042,
 };
 
-const uint32_t mme9097_vertex_array_select[] = {
+uint32_t mme9097_vertex_array_select[] = {
 	0x00000201,
 	0x00000301,
 	0x00000401,
@@ -36,7 +36,7 @@ const uint32_t mme9097_vertex_array_select[] = {
 	0x00001841,
 };
 
-const uint32_t mme9097_poly_mode_front[] = {
+uint32_t mme9097_poly_mode_front[] = {
 	0x00db0215,
 	0x020c0315,
 /* 0x000a: locn_0a_pmf */
@@ -58,7 +58,7 @@ const uint32_t mme9097_poly_mode_front[] = {
 	0x00003041,
 };
 
-const uint32_t mme9097_poly_mode_back[] = {
+uint32_t mme9097_poly_mode_back[] = {
 	0x00dac215,
 	0x020c0315,
 /* 0x000a: locn_0a_pmb */
@@ -80,7 +80,7 @@ const uint32_t mme9097_poly_mode_back[] = {
 	0x00003041,
 };
 
-const uint32_t mme9097_gp_select[] = {
+uint32_t mme9097_gp_select[] = {
 	0x00dac215,
 	0x00db0315,
 /* 0x000a: locn_0a_gs */
@@ -102,7 +102,7 @@ const uint32_t mme9097_gp_select[] = {
 	0x00003041,
 };
 
-const uint32_t mme9097_tep_select[] = {
+uint32_t mme9097_tep_select[] = {
 	0x00dac215,
 	0x00db0315,
 /* 0x000a: locn_0a_ts */
@@ -124,7 +124,7 @@ const uint32_t mme9097_tep_select[] = {
 	0x00003041,
 };
 
-const uint32_t mme9097_draw_elts_indirect[] = {
+uint32_t mme9097_draw_elts_indirect[] = {
 	0x01434615,
 /* 0x0007: dei_draw_again */
 	0x01438715,
@@ -172,7 +172,7 @@ const uint32_t mme9097_draw_elts_indirect[] = {
 	0x00003041,
 };
 
-const uint32_t mme9097_draw_arrays_indirect[] = {
+uint32_t mme9097_draw_arrays_indirect[] = {
 /* 0x0003: dai_draw_again */
 	0x01438515,
 	0x00000601,
@@ -208,7 +208,7 @@ const uint32_t mme9097_draw_arrays_indirect[] = {
 	0x00002841,
 };
 
-const uint32_t mme9097_draw_elts_indirect_count[] = {
+uint32_t mme9097_draw_elts_indirect_count[] = {
 	0x01434615,
 	0x01438715,
 	0x07400021,
@@ -278,7 +278,7 @@ const uint32_t mme9097_draw_elts_indirect_count[] = {
 	0xfffc8027,
 };
 
-const uint32_t mme9097_draw_arrays_indirect_count[] = {
+uint32_t mme9097_draw_arrays_indirect_count[] = {
 	0x01438515,
 	0x03400021,
 /* 0x0009: daic_draw_again */
@@ -333,7 +333,7 @@ const uint32_t mme9097_draw_arrays_indirect_count[] = {
 	0xfffdc027,
 };
 
-const uint32_t mme9097_query_buffer_write[] = {
+uint32_t mme9097_query_buffer_write[] = {
 	0x00000201,
 	0x00000301,
 /* 0x000b: qbw_ready */
@@ -374,7 +374,7 @@ const uint32_t mme9097_query_buffer_write[] = {
 	0x00110071,
 };
 
-const uint32_t mme9097_conservative_raster_state[] = {
+uint32_t mme9097_conservative_raster_state[] = {
 	0x07400021,
 	0x00000041,
 	0xb8d04042,
@@ -395,7 +395,7 @@ const uint32_t mme9097_conservative_raster_state[] = {
 	0x00004041,
 };
 
-const uint32_t mme9097_compute_counter[] = {
+uint32_t mme9097_compute_counter[] = {
 /* 0x0003: iic_loop_start */
 	0x00000f11,
 /* 0x0006: iic_mul_start */
@@ -427,7 +427,7 @@ const uint32_t mme9097_compute_counter[] = {
 	0x0002a040,
 };
 
-const uint32_t mme9097_compute_counter_to_query[] = {
+uint32_t mme9097_compute_counter_to_query[] = {
 	0x00000201,
 	0x03410315,
 	0x03414415,

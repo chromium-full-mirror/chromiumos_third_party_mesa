@@ -83,17 +83,6 @@ void vk_object_base_init(struct vk_device *device,
  */
 void vk_object_base_finish(struct vk_object_base *base);
 
-/** Recycles a vk_object_base
- *
- * This should be called when an object is recycled and handed back to the
- * client as if it were a new object.  When it's called is not important as
- * long as it's called between when the client thinks the object was destroyed
- * and when the client sees it again as a supposedly new object.
- *
- * @param[inout] base   The vk_object_base being recycled
- */
-void vk_object_base_recycle(struct vk_object_base *base);
-
 static inline void
 vk_object_base_assert_valid(ASSERTED struct vk_object_base *base,
                             ASSERTED VkObjectType obj_type)
@@ -169,7 +158,7 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
  *                      VK_OBJECT_TYPE_IMAGE
  */
 #define VK_DEFINE_NONDISP_HANDLE_CASTS(__driver_type, __base, __VkType, __VK_TYPE) \
-   UNUSED static inline struct __driver_type *                             \
+   static inline struct __driver_type *                                    \
    __driver_type ## _from_handle(__VkType _handle)                         \
    {                                                                       \
       struct vk_object_base *base =                                        \
@@ -179,7 +168,7 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
       return (struct __driver_type *)base;                                 \
    }                                                                       \
                                                                            \
-   UNUSED static inline __VkType                                           \
+   static inline __VkType                                                  \
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
       vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
@@ -240,29 +229,29 @@ struct vk_private_data_slot {
    uint32_t index;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_private_data_slot, base,
-                               VkPrivateDataSlot,
-                               VK_OBJECT_TYPE_PRIVATE_DATA_SLOT);
+                               VkPrivateDataSlotEXT,
+                               VK_OBJECT_TYPE_PRIVATE_DATA_SLOT_EXT);
 
 VkResult
 vk_private_data_slot_create(struct vk_device *device,
-                            const VkPrivateDataSlotCreateInfo* pCreateInfo,
+                            const VkPrivateDataSlotCreateInfoEXT* pCreateInfo,
                             const VkAllocationCallbacks* pAllocator,
-                            VkPrivateDataSlot* pPrivateDataSlot);
+                            VkPrivateDataSlotEXT* pPrivateDataSlot);
 void
 vk_private_data_slot_destroy(struct vk_device *device,
-                             VkPrivateDataSlot privateDataSlot,
+                             VkPrivateDataSlotEXT privateDataSlot,
                              const VkAllocationCallbacks *pAllocator);
 VkResult
 vk_object_base_set_private_data(struct vk_device *device,
                                 VkObjectType objectType,
                                 uint64_t objectHandle,
-                                VkPrivateDataSlot privateDataSlot,
+                                VkPrivateDataSlotEXT privateDataSlot,
                                 uint64_t data);
 void
 vk_object_base_get_private_data(struct vk_device *device,
                                 VkObjectType objectType,
                                 uint64_t objectHandle,
-                                VkPrivateDataSlot privateDataSlot,
+                                VkPrivateDataSlotEXT privateDataSlot,
                                 uint64_t *pData);
 
 const char *

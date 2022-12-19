@@ -482,6 +482,8 @@ CreateSampler(D3D10DDI_HDEVICE hDevice,                        // IN
       state.compare_func = translate_comparison(pSamplerDesc->ComparisonFunc);
    }
 
+   state.normalized_coords = 1;
+
    /* Level of detail. */
    state.lod_bias = pSamplerDesc->MipLODBias;
    state.min_lod = pSamplerDesc->MinLOD;

@@ -143,16 +143,13 @@ test_format_float(unsigned verbose, FILE *fp,
    struct gallivm_state *gallivm;
    LLVMValueRef fetch = NULL;
    fetch_ptr_t fetch_ptr;
-   alignas(16) uint8_t packed[UTIL_FORMAT_MAX_PACKED_BYTES];
-   alignas(16) float unpacked[4];
+   PIPE_ALIGN_VAR(16) uint8_t packed[UTIL_FORMAT_MAX_PACKED_BYTES];
+   PIPE_ALIGN_VAR(16) float unpacked[4];
    boolean first = TRUE;
    boolean success = TRUE;
    unsigned i, j, k, l;
 
    context = LLVMContextCreate();
-#if LLVM_VERSION_MAJOR >= 15
-   LLVMContextSetOpaquePointers(context, false);
-#endif
    gallivm = gallivm_create("test_module_float", context, NULL);
 
    fetch = add_fetch_rgba_test(gallivm, verbose, desc,
@@ -187,7 +184,7 @@ test_format_float(unsigned verbose, FILE *fp,
 
                fetch_ptr(unpacked, packed, j, i, use_cache ? cache_ptr : NULL);
 
-               for (k = 0; k < 4; ++k) {
+               for(k = 0; k < 4; ++k) {
                   if (util_double_inf_sign(test->unpacked[i][j][k]) != util_inf_sign(unpacked[k])) {
                      match = FALSE;
                   }
@@ -230,7 +227,7 @@ test_format_float(unsigned verbose, FILE *fp,
    gallivm_destroy(gallivm);
    LLVMContextDispose(context);
 
-   if (fp)
+   if(fp)
       write_tsv_row(fp, desc, success);
 
    return success;
@@ -247,16 +244,13 @@ test_format_unorm8(unsigned verbose, FILE *fp,
    struct gallivm_state *gallivm;
    LLVMValueRef fetch = NULL;
    fetch_ptr_t fetch_ptr;
-   alignas(16) uint8_t packed[UTIL_FORMAT_MAX_PACKED_BYTES];
+   PIPE_ALIGN_VAR(16) uint8_t packed[UTIL_FORMAT_MAX_PACKED_BYTES];
    uint8_t unpacked[4];
    boolean first = TRUE;
    boolean success = TRUE;
    unsigned i, j, k, l;
 
    context = LLVMContextCreate();
-#if LLVM_VERSION_MAJOR >= 15
-   LLVMContextSetOpaquePointers(context, false);
-#endif
    gallivm = gallivm_create("test_module_unorm8", context, NULL);
 
    fetch = add_fetch_rgba_test(gallivm, verbose, desc,
@@ -292,7 +286,7 @@ test_format_unorm8(unsigned verbose, FILE *fp,
                fetch_ptr(unpacked, packed, j, i, use_cache ? cache_ptr : NULL);
 
                match = TRUE;
-               for (k = 0; k < 4; ++k) {
+               for(k = 0; k < 4; ++k) {
                   int error = float_to_ubyte(test->unpacked[i][j][k]) - unpacked[k];
 
                   if (util_is_double_nan(test->unpacked[i][j][k]))
@@ -333,7 +327,7 @@ test_format_unorm8(unsigned verbose, FILE *fp,
    gallivm_destroy(gallivm);
    LLVMContextDispose(context);
 
-   if (fp)
+   if(fp)
       write_tsv_row(fp, desc, success);
 
    return success;
@@ -375,6 +369,9 @@ test_all(unsigned verbose, FILE *fp)
          const struct util_format_description *format_desc;
 
          format_desc = util_format_description(format);
+         if (!format_desc) {
+            continue;
+         }
 
          /*
           * TODO: test more

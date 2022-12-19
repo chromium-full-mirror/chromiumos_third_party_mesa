@@ -25,28 +25,21 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
-#define FD_BO_NO_HARDPIN 1
-
-/* NOTE: see https://gitlab.freedesktop.org/freedreno/freedreno/-/wikis/A5xx-Queries */
+/* NOTE: see https://github.com/freedreno/freedreno/wiki/A5xx-Queries */
 
 #include "freedreno_query_acc.h"
 #include "freedreno_resource.h"
 
 #include "fd6_context.h"
 #include "fd6_emit.h"
+#include "fd6_format.h"
 #include "fd6_query.h"
 
 struct PACKED fd6_query_sample {
-   struct fd_acc_query_sample base;
-
-   /* The RB_SAMPLE_COUNT_ADDR destination needs to be 16-byte aligned: */
-   uint64_t pad;
-
    uint64_t start;
    uint64_t result;
    uint64_t stop;
 };
-DEFINE_CAST(fd_acc_query_sample, fd6_query_sample);
 
 /* offset of a single field of an array of fd6_query_sample: */
 #define query_sample_idx(aq, idx, field)                                       \
@@ -70,8 +63,6 @@ occlusion_resume(struct fd_acc_query *aq, struct fd_batch *batch)
 {
    struct fd_ringbuffer *ring = batch->draw;
 
-   ASSERT_ALIGNED(struct fd6_query_sample, start, 16);
-
    OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_CONTROL, 1);
    OUT_RING(ring, A6XX_RB_SAMPLE_COUNT_CONTROL_COPY);
 
@@ -79,6 +70,8 @@ occlusion_resume(struct fd_acc_query *aq, struct fd_batch *batch)
    OUT_RELOC(ring, query_sample(aq, start));
 
    fd6_event_write(batch, ring, ZPASS_DONE, false);
+
+   fd6_context(batch->ctx)->samples_passed_queries++;
 }
 
 static void
@@ -96,8 +89,6 @@ occlusion_pause(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
    OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_CONTROL, 1);
    OUT_RING(ring, A6XX_RB_SAMPLE_COUNT_CONTROL_COPY);
 
-   ASSERT_ALIGNED(struct fd6_query_sample, stop, 16);
-
    OUT_PKT4(ring, REG_A6XX_RB_SAMPLE_COUNT_ADDR, 2);
    OUT_RELOC(ring, query_sample(aq, stop));
 
@@ -106,15 +97,8 @@ occlusion_pause(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
    /* To avoid stalling in the draw buffer, emit code the code to compute the
     * counter delta in the epilogue ring.
     */
-   struct fd_ringbuffer *epilogue = fd_batch_get_tile_epilogue(batch);
-
-   OUT_PKT7(epilogue, CP_WAIT_REG_MEM, 6);
-   OUT_RING(epilogue, CP_WAIT_REG_MEM_0_FUNCTION(WRITE_NE) |
-                      CP_WAIT_REG_MEM_0_POLL_MEMORY);
-   OUT_RELOC(epilogue, query_sample(aq, stop));
-   OUT_RING(epilogue, CP_WAIT_REG_MEM_3_REF(0xffffffff));
-   OUT_RING(epilogue, CP_WAIT_REG_MEM_4_MASK(0xffffffff));
-   OUT_RING(epilogue, CP_WAIT_REG_MEM_5_DELAY_LOOP_CYCLES(16));
+   struct fd_ringbuffer *epilogue = fd_batch_get_epilogue(batch);
+   fd_wfi(batch, epilogue);
 
    /* result += stop - start: */
    OUT_PKT7(epilogue, CP_MEM_TO_MEM, 9);
@@ -123,60 +107,24 @@ occlusion_pause(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
    OUT_RELOC(epilogue, query_sample(aq, result)); /* srcA */
    OUT_RELOC(epilogue, query_sample(aq, stop));   /* srcB */
    OUT_RELOC(epilogue, query_sample(aq, start));  /* srcC */
+
+   fd6_context(batch->ctx)->samples_passed_queries--;
 }
 
 static void
-occlusion_counter_result(struct fd_acc_query *aq,
-                         struct fd_acc_query_sample *s,
+occlusion_counter_result(struct fd_acc_query *aq, void *buf,
                          union pipe_query_result *result)
 {
-   struct fd6_query_sample *sp = fd6_query_sample(s);
+   struct fd6_query_sample *sp = buf;
    result->u64 = sp->result;
 }
 
 static void
-occlusion_counter_result_resource(struct fd_acc_query *aq, struct fd_ringbuffer *ring,
-                                  enum pipe_query_value_type result_type,
-                                  int index, struct fd_resource *dst,
-                                  unsigned offset)
-{
-   copy_result(ring, result_type, dst, offset, fd_resource(aq->prsc),
-               offsetof(struct fd6_query_sample, result));
-}
-
-static void
-occlusion_predicate_result(struct fd_acc_query *aq,
-                           struct fd_acc_query_sample *s,
+occlusion_predicate_result(struct fd_acc_query *aq, void *buf,
                            union pipe_query_result *result)
 {
-   struct fd6_query_sample *sp = fd6_query_sample(s);
+   struct fd6_query_sample *sp = buf;
    result->b = !!sp->result;
-}
-
-static void
-occlusion_predicate_result_resource(struct fd_acc_query *aq, struct fd_ringbuffer *ring,
-                                    enum pipe_query_value_type result_type,
-                                    int index, struct fd_resource *dst,
-                                    unsigned offset)
-{
-   /* This is a bit annoying but we need to turn the result into a one or
-    * zero.. to do this use a CP_COND_WRITE to overwrite the result with
-    * a one if it is non-zero.  This doesn't change the results if the
-    * query is also read on the CPU (ie. occlusion_predicate_result()).
-    */
-   OUT_PKT7(ring, CP_COND_WRITE5, 9);
-   OUT_RING(ring, CP_COND_WRITE5_0_FUNCTION(WRITE_NE) |
-                  CP_COND_WRITE5_0_POLL_MEMORY |
-                  CP_COND_WRITE5_0_WRITE_MEMORY);
-   OUT_RELOC(ring, query_sample(aq, result)); /* POLL_ADDR_LO/HI */
-   OUT_RING(ring, CP_COND_WRITE5_3_REF(0));
-   OUT_RING(ring, CP_COND_WRITE5_4_MASK(~0));
-   OUT_RELOC(ring, query_sample(aq, result)); /* WRITE_ADDR_LO/HI */
-   OUT_RING(ring, 1);
-   OUT_RING(ring, 0);
-
-   copy_result(ring, result_type, dst, offset, fd_resource(aq->prsc),
-               offsetof(struct fd6_query_sample, result));
 }
 
 static const struct fd_acc_sample_provider occlusion_counter = {
@@ -185,7 +133,6 @@ static const struct fd_acc_sample_provider occlusion_counter = {
    .resume = occlusion_resume,
    .pause = occlusion_pause,
    .result = occlusion_counter_result,
-   .result_resource = occlusion_counter_result_resource,
 };
 
 static const struct fd_acc_sample_provider occlusion_predicate = {
@@ -194,7 +141,6 @@ static const struct fd_acc_sample_provider occlusion_predicate = {
    .resume = occlusion_resume,
    .pause = occlusion_pause,
    .result = occlusion_predicate_result,
-   .result_resource = occlusion_predicate_result_resource,
 };
 
 static const struct fd_acc_sample_provider occlusion_predicate_conservative = {
@@ -203,7 +149,6 @@ static const struct fd_acc_sample_provider occlusion_predicate_conservative = {
    .resume = occlusion_resume,
    .pause = occlusion_pause,
    .result = occlusion_predicate_result,
-   .result_resource = occlusion_predicate_result_resource,
 };
 
 /*
@@ -275,43 +220,19 @@ ticks_to_ns(uint64_t ts)
 }
 
 static void
-time_elapsed_accumulate_result(struct fd_acc_query *aq,
-                               struct fd_acc_query_sample *s,
+time_elapsed_accumulate_result(struct fd_acc_query *aq, void *buf,
                                union pipe_query_result *result)
 {
-   struct fd6_query_sample *sp = fd6_query_sample(s);
+   struct fd6_query_sample *sp = buf;
    result->u64 = ticks_to_ns(sp->result);
 }
 
 static void
-time_elapsed_result_resource(struct fd_acc_query *aq, struct fd_ringbuffer *ring,
-                             enum pipe_query_value_type result_type,
-                             int index, struct fd_resource *dst,
-                             unsigned offset)
-{
-   // TODO ticks_to_ns conversion would require spinning up a compute shader?
-   copy_result(ring, result_type, dst, offset, fd_resource(aq->prsc),
-               offsetof(struct fd6_query_sample, result));
-}
-
-static void
-timestamp_accumulate_result(struct fd_acc_query *aq,
-                            struct fd_acc_query_sample *s,
+timestamp_accumulate_result(struct fd_acc_query *aq, void *buf,
                             union pipe_query_result *result)
 {
-   struct fd6_query_sample *sp = fd6_query_sample(s);
+   struct fd6_query_sample *sp = buf;
    result->u64 = ticks_to_ns(sp->start);
-}
-
-static void
-timestamp_result_resource(struct fd_acc_query *aq, struct fd_ringbuffer *ring,
-                          enum pipe_query_value_type result_type,
-                          int index, struct fd_resource *dst,
-                          unsigned offset)
-{
-   // TODO ticks_to_ns conversion would require spinning up a compute shader?
-   copy_result(ring, result_type, dst, offset, fd_resource(aq->prsc),
-               offsetof(struct fd6_query_sample, start));
 }
 
 static const struct fd_acc_sample_provider time_elapsed = {
@@ -321,7 +242,6 @@ static const struct fd_acc_sample_provider time_elapsed = {
    .resume = timestamp_resume,
    .pause = time_elapsed_pause,
    .result = time_elapsed_accumulate_result,
-   .result_resource = time_elapsed_result_resource,
 };
 
 /* NOTE: timestamp query isn't going to give terribly sensible results
@@ -338,22 +258,15 @@ static const struct fd_acc_sample_provider timestamp = {
    .resume = timestamp_resume,
    .pause = timestamp_pause,
    .result = timestamp_accumulate_result,
-   .result_resource = timestamp_result_resource,
 };
 
 struct PACKED fd6_primitives_sample {
-   struct fd_acc_query_sample base;
-
-   /* VPC_SO_STREAM_COUNTS dest address must be 32b aligned: */
-   uint64_t pad[3];
-
    struct {
       uint64_t emitted, generated;
    } start[4], stop[4], result;
 
    uint64_t prim_start[16], prim_stop[16], prim_emitted;
 };
-DEFINE_CAST(fd_acc_query_sample, fd6_primitives_sample);
 
 #define primitives_relocw(ring, aq, field)                                     \
    OUT_RELOC(ring, fd_resource((aq)->prsc)->bo,                                \
@@ -405,7 +318,7 @@ log_counters(struct fd6_primitives_sample *ps)
 #else
 
 static const unsigned counter_count = 1;
-static const unsigned counter_base = REG_A6XX_RBBM_PRIMCTR_7_LO;
+static const unsigned counter_base = REG_A6XX_RBBM_PRIMCTR_8_LO;
 
 static void
 log_counters(struct fd6_primitives_sample *ps)
@@ -452,32 +365,20 @@ primitives_generated_pause(struct fd_acc_query *aq,
    primitives_relocw(ring, aq, result.generated);
    primitives_reloc(ring, aq, prim_emitted);
    primitives_reloc(ring, aq,
-                    prim_stop[(REG_A6XX_RBBM_PRIMCTR_7_LO - counter_base) / 2])
+                    prim_stop[(REG_A6XX_RBBM_PRIMCTR_8_LO - counter_base) / 2])
       primitives_reloc(
-         ring, aq, prim_start[(REG_A6XX_RBBM_PRIMCTR_7_LO - counter_base) / 2]);
+         ring, aq, prim_start[(REG_A6XX_RBBM_PRIMCTR_8_LO - counter_base) / 2]);
 }
 
 static void
-primitives_generated_result(struct fd_acc_query *aq,
-                            struct fd_acc_query_sample *s,
+primitives_generated_result(struct fd_acc_query *aq, void *buf,
                             union pipe_query_result *result)
 {
-   struct fd6_primitives_sample *ps = fd6_primitives_sample(s);
+   struct fd6_primitives_sample *ps = buf;
 
    log_counters(ps);
 
    result->u64 = ps->result.generated;
-}
-
-static void
-primitives_generated_result_resource(struct fd_acc_query *aq,
-                                     struct fd_ringbuffer *ring,
-                                     enum pipe_query_value_type result_type,
-                                     int index, struct fd_resource *dst,
-                                     unsigned offset)
-{
-   copy_result(ring, result_type, dst, offset, fd_resource(aq->prsc),
-               offsetof(struct fd6_primitives_sample, result.generated));
 }
 
 static const struct fd_acc_sample_provider primitives_generated = {
@@ -486,7 +387,6 @@ static const struct fd_acc_sample_provider primitives_generated = {
    .resume = primitives_generated_resume,
    .pause = primitives_generated_pause,
    .result = primitives_generated_result,
-   .result_resource = primitives_generated_result_resource,
 };
 
 static void
@@ -496,9 +396,6 @@ primitives_emitted_resume(struct fd_acc_query *aq,
    struct fd_ringbuffer *ring = batch->draw;
 
    fd_wfi(batch, ring);
-
-   ASSERT_ALIGNED(struct fd6_primitives_sample, start[0], 32);
-
    OUT_PKT4(ring, REG_A6XX_VPC_SO_STREAM_COUNTS, 2);
    primitives_relocw(ring, aq, start[0]);
 
@@ -513,11 +410,8 @@ primitives_emitted_pause(struct fd_acc_query *aq,
 
    fd_wfi(batch, ring);
 
-   ASSERT_ALIGNED(struct fd6_primitives_sample, stop[0], 32);
-
    OUT_PKT4(ring, REG_A6XX_VPC_SO_STREAM_COUNTS, 2);
    primitives_relocw(ring, aq, stop[0]);
-
    fd6_event_write(batch, ring, WRITE_PRIMITIVE_COUNTS, false);
 
    fd6_event_write(batch, batch->draw, CACHE_FLUSH_TS, true);
@@ -532,26 +426,14 @@ primitives_emitted_pause(struct fd_acc_query *aq,
 }
 
 static void
-primitives_emitted_result(struct fd_acc_query *aq,
-                          struct fd_acc_query_sample *s,
+primitives_emitted_result(struct fd_acc_query *aq, void *buf,
                           union pipe_query_result *result)
 {
-   struct fd6_primitives_sample *ps = fd6_primitives_sample(s);
+   struct fd6_primitives_sample *ps = buf;
 
    log_counters(ps);
 
    result->u64 = ps->result.emitted;
-}
-
-static void
-primitives_emitted_result_resource(struct fd_acc_query *aq,
-                                   struct fd_ringbuffer *ring,
-                                   enum pipe_query_value_type result_type,
-                                   int index, struct fd_resource *dst,
-                                   unsigned offset)
-{
-   copy_result(ring, result_type, dst, offset, fd_resource(aq->prsc),
-               offsetof(struct fd6_primitives_sample, result.emitted));
 }
 
 static const struct fd_acc_sample_provider primitives_emitted = {
@@ -560,7 +442,6 @@ static const struct fd_acc_sample_provider primitives_emitted = {
    .resume = primitives_emitted_resume,
    .pause = primitives_emitted_pause,
    .result = primitives_emitted_result,
-   .result_resource = primitives_emitted_result_resource,
 };
 
 /*
@@ -601,7 +482,7 @@ perfcntr_resume(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
       const struct fd_perfcntr_group *g = &screen->perfcntr_groups[entry->gid];
       unsigned counter_idx = counters_per_group[entry->gid]++;
 
-      assert(counter_idx < g->num_counters);
+      debug_assert(counter_idx < g->num_counters);
 
       OUT_PKT4(ring, g->counters[counter_idx].select_reg, 1);
       OUT_RING(ring, g->countables[entry->cid].selector);
@@ -663,12 +544,11 @@ perfcntr_pause(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
 }
 
 static void
-perfcntr_accumulate_result(struct fd_acc_query *aq,
-                           struct fd_acc_query_sample *s,
+perfcntr_accumulate_result(struct fd_acc_query *aq, void *buf,
                            union pipe_query_result *result)
 {
    struct fd_batch_query_data *data = aq->query_data;
-   struct fd6_query_sample *sp = fd6_query_sample(s);
+   struct fd6_query_sample *sp = buf;
 
    for (unsigned i = 0; i < data->num_query_entries; i++) {
       result->batch[i].u64 = sp[i].result;

@@ -22,6 +22,7 @@
 //#include "state_tracker/st_cb_fbo.h"
 //#include "state_tracker/st_cb_flush.h"
 #include "state_tracker/st_context.h"
+#include "state_tracker/st_gl_api.h"
 #include "frontend/sw_winsys.h"
 #include "sw/hgl/hgl_sw_winsys.h"
 #include "util/u_atomic.h"
@@ -172,13 +173,13 @@ GalliumContext::CreateContext(HGLWinsysContext *wsContext)
 	struct st_context_iface* shared = NULL;
 
 	if (fOptions & BGL_SHARE_CONTEXT) {
-		shared = st_api_get_current();
+		shared = fDisplay->api->get_current(fDisplay->api);
 		TRACE("shared context: %p\n", shared);
 	}
 
 	// Create context using state tracker api call
 	enum st_context_error result;
-	context->st = st_api_create_context(fDisplay->manager,
+	context->st = fDisplay->api->create_context(fDisplay->api, fDisplay->manager,
 		&attribs, &result, shared);
 
 	if (!context->st) {
@@ -300,7 +301,7 @@ GalliumContext::SetCurrentContext(bool set, context_id contextID)
 	}
 
 	if (!set) {
-		st_api_make_current(NULL, NULL, NULL);
+		fDisplay->api->make_current(fDisplay->api, NULL, NULL, NULL);
 		Unlock();
 		return B_OK;
 	}
@@ -314,7 +315,7 @@ GalliumContext::SetCurrentContext(bool set, context_id contextID)
 	}
 
 	// We need to lock and unlock framebuffers before accessing them
-	st_api_make_current(context->st, context->buffer->stfbi,
+	fDisplay->api->make_current(fDisplay->api, context->st, context->buffer->stfbi,
 		context->buffer->stfbi);
 	Unlock();
 

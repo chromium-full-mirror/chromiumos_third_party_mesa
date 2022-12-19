@@ -134,27 +134,6 @@ namespace {
 
       return version;
    }
-
-   static cl_device_type
-   parse_env_device_type() {
-      const char* val = getenv("CLOVER_DEVICE_TYPE");
-      if (!val) {
-         return 0;
-      }
-      if (strcmp(val, "cpu") == 0) {
-         return CL_DEVICE_TYPE_CPU;
-      }
-      if (strcmp(val, "gpu") == 0) {
-         return CL_DEVICE_TYPE_GPU;
-      }
-      if (strcmp(val, "accelerator") == 0) {
-         return CL_DEVICE_TYPE_ACCELERATOR;
-      }
-      /* CL_DEVICE_TYPE_CUSTOM isn't implemented
-      because CL_DEVICE_TYPE_CUSTOM is OpenCL 1.2
-      and Clover is OpenCL 1.1. */
-      return 0;
-   }
 }
 
 device::device(clover::platform &platform, pipe_loader_device *ldev) :
@@ -210,11 +189,6 @@ device::operator==(const device &dev) const {
 
 cl_device_type
 device::type() const {
-   cl_device_type type = parse_env_device_type();
-   if (type != 0) {
-      return type;
-   }
-
    switch (ldev->type) {
    case PIPE_LOADER_DEVICE_SOFTWARE:
       return CL_DEVICE_TYPE_CPU;
@@ -253,7 +227,7 @@ device::max_images_write() const {
 
 size_t
 device::max_image_buffer_size() const {
-   return pipe->get_param(pipe, PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT);
+   return pipe->get_param(pipe, PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE);
 }
 
 cl_uint
@@ -298,7 +272,7 @@ device::max_mem_input() const {
 cl_ulong
 device::max_const_buffer_size() const {
    return pipe->get_shader_param(pipe, PIPE_SHADER_COMPUTE,
-                                 PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE);
+                                 PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE);
 }
 
 cl_uint

@@ -31,6 +31,6 @@
 
 /* A single dummy tile used in a couple of out-of-memory situations. 
  */
-alignas(LP_MIN_VECTOR_ALIGN)
+PIPE_ALIGN_VAR(LP_MIN_VECTOR_ALIGN)
 uint8_t lp_dummy_tile[TILE_SIZE * TILE_SIZE * 4];
 

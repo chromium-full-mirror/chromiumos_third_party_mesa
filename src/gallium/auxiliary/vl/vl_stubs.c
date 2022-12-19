@@ -108,11 +108,6 @@ vl_video_buffer_create_ex2(struct pipe_context *pipe,
    return NULL;
 }
 
-void
-vl_video_buffer_destroy(struct pipe_video_buffer *buffer)
-{
-   assert(0);
-}
 
 /*
  * vl_mpeg12_bitstream stubs

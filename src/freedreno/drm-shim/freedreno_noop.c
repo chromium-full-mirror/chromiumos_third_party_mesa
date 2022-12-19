@@ -32,6 +32,25 @@
 
 bool drm_shim_driver_prefers_first_render_node = true;
 
+struct msm_bo {
+   struct shim_bo base;
+   uint32_t offset;
+};
+
+static struct msm_bo *
+msm_bo(struct shim_bo *bo)
+{
+   return (struct msm_bo *)bo;
+}
+
+struct msm_device {
+   uint32_t next_offset;
+};
+
+static struct msm_device msm = {
+   .next_offset = 0x1000,
+};
+
 struct msm_device_info {
    uint32_t gpu_id;
    uint32_t chip_id;
@@ -51,23 +70,19 @@ msm_ioctl_gem_new(int fd, unsigned long request, void *arg)
 {
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct drm_msm_gem_new *create = arg;
+   struct msm_bo *bo = calloc(1, sizeof(*bo));
    size_t size = ALIGN(create->size, 4096);
 
-   if (!size)
-      return -EINVAL;
+   drm_shim_bo_init(&bo->base, size);
 
-   struct shim_bo *bo = calloc(1, sizeof(*bo));
-   int ret;
+   assert(UINT_MAX - msm.next_offset > size);
 
-   ret = drm_shim_bo_init(bo, size);
-   if (ret) {
-      free(bo);
-      return ret;
-   }
+   bo->offset = msm.next_offset;
+   msm.next_offset += size;
 
-   create->handle = drm_shim_bo_get_handle(shim_fd, bo);
+   create->handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
 
-   drm_shim_bo_put(bo);
+   drm_shim_bo_put(&bo->base);
 
    return 0;
 }
@@ -79,17 +94,13 @@ msm_ioctl_gem_info(int fd, unsigned long request, void *arg)
    struct drm_msm_gem_info *args = arg;
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, args->handle);
 
-   if (!bo)
-      return -ENOENT;
-
    switch (args->info) {
    case MSM_INFO_GET_OFFSET:
       args->value = drm_shim_bo_get_mmap_offset(shim_fd, bo);
       break;
    case MSM_INFO_GET_IOVA:
-      args->value = bo->mem_addr;
+      args->value = msm_bo(bo)->offset;
       break;
-   case MSM_INFO_SET_IOVA:
    case MSM_INFO_SET_NAME:
       break;
    default:
@@ -134,12 +145,7 @@ msm_ioctl_get_param(int fd, unsigned long request, void *arg)
       gp->value = 1;
       return 0;
    case MSM_PARAM_FAULTS:
-   case MSM_PARAM_SUSPENDS:
       gp->value = 0;
-      return 0;
-   case MSM_PARAM_VA_START:
-   case MSM_PARAM_VA_SIZE:
-      gp->value = 0x100000000ULL;
       return 0;
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_MSM_GET_PARAM %d\n", gp->param);
@@ -159,7 +165,6 @@ msm_ioctl_gem_madvise(int fd, unsigned long request, void *arg)
 
 static ioctl_fn_t driver_ioctls[] = {
    [DRM_MSM_GET_PARAM] = msm_ioctl_get_param,
-   [DRM_MSM_SET_PARAM] = msm_ioctl_noop,
    [DRM_MSM_GEM_NEW] = msm_ioctl_gem_new,
    [DRM_MSM_GEM_INFO] = msm_ioctl_gem_info,
    [DRM_MSM_GEM_CPU_PREP] = msm_ioctl_noop,
@@ -252,11 +257,6 @@ static const struct msm_device_info device_infos[] = {
       .chip_id = CHIPID(6, 3, 0, 0xff),
       .gmem_size = 1024 * 1024,
    },
-   {
-      .gpu_id = 660,
-      .chip_id = CHIPID(6, 6, 0, 0xff),
-      .gmem_size = 1024 * 1024 + 512 * 1024,
-   },
 };
 
 static void
@@ -295,7 +295,7 @@ drm_shim_driver_init(void)
 
    /* msm uses the DRM version to expose features, instead of getparam. */
    shim_device.version_major = 1;
-   shim_device.version_minor = 9;
+   shim_device.version_minor = 6;
    shim_device.version_patchlevel = 0;
 
    msm_driver_get_device_info();

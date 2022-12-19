@@ -1156,7 +1156,7 @@ bool ac_init_perfcounters(const struct radeon_info *info,
    const struct ac_pc_block_gfxdescr *blocks;
    unsigned num_blocks;
 
-   switch (info->gfx_level) {
+   switch (info->chip_class) {
    case GFX7:
       blocks = groups_CIK;
       num_blocks = ARRAY_SIZE(groups_CIK);

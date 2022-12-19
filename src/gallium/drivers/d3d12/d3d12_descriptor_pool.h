@@ -24,7 +24,12 @@
 #ifndef D3D12_DESCRIPTOR_POOL_H
 #define D3D12_DESCRIPTOR_POOL_H
 
-#include "d3d12_common.h"
+#ifndef _WIN32
+#include <wsl/winadapter.h>
+#endif
+
+#define D3D12_IGNORE_SDK_LAYERS
+#include <directx/d3d12.h>
 
 struct d3d12_descriptor_pool;
 struct d3d12_descriptor_heap;

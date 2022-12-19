@@ -68,9 +68,24 @@ util_make_layered_clear_helper_vertex_shader(struct pipe_context *pipe);
 extern void *
 util_make_layered_clear_geometry_shader(struct pipe_context *pipe);
 
+void *
+util_make_fragment_tex_shader_xrbias(struct pipe_context *pipe,
+                                     enum tgsi_texture_type tex_target);
+
+extern void *
+util_make_fragment_tex_shader_writemask(struct pipe_context *pipe,
+                                        enum tgsi_texture_type tex_target,
+                                        enum tgsi_interpolate_mode interp_mode,
+                                        unsigned writemask,
+                                        enum tgsi_return_type stype,
+                                        enum tgsi_return_type dtype,
+                                        bool load_level_zero,
+                                        bool use_txf);
+
 extern void *
 util_make_fragment_tex_shader(struct pipe_context *pipe,
                               enum tgsi_texture_type tex_target,
+                              enum tgsi_interpolate_mode interp_mode,
                               enum tgsi_return_type stype,
                               enum tgsi_return_type dtype,
                               bool load_level_zero,
@@ -103,37 +118,38 @@ util_make_fs_blit_msaa_color(struct pipe_context *pipe,
                              enum tgsi_texture_type tgsi_tex,
                              enum tgsi_return_type stype,
                              enum tgsi_return_type dtype,
-                             bool sample_shading, bool has_txq);
+                             bool sample_shading);
 
 
 extern void *
 util_make_fs_blit_msaa_depth(struct pipe_context *pipe,
                              enum tgsi_texture_type tgsi_tex,
-                             bool sample_shading, bool has_txq);
+                             bool sample_shading);
 
 
 extern void *
 util_make_fs_blit_msaa_depthstencil(struct pipe_context *pipe,
                                     enum tgsi_texture_type tgsi_tex,
-                                    bool sample_shading, bool has_txq);
+                                    bool sample_shading);
 
 
 void *
 util_make_fs_blit_msaa_stencil(struct pipe_context *pipe,
                                enum tgsi_texture_type tgsi_tex,
-                               bool sample_shading, bool has_txq);
+                               bool sample_shading);
 
 
 void *
 util_make_fs_msaa_resolve(struct pipe_context *pipe,
                           enum tgsi_texture_type tgsi_tex, unsigned nr_samples,
-                          bool has_txq);
+                          enum tgsi_return_type stype);
 
 
 void *
 util_make_fs_msaa_resolve_bilinear(struct pipe_context *pipe,
                                    enum tgsi_texture_type tgsi_tex,
-                                   unsigned nr_samples, bool has_txq);
+                                   unsigned nr_samples,
+                                   enum tgsi_return_type stype);
 
 extern void *
 util_make_geometry_passthrough_shader(struct pipe_context *pipe,
@@ -158,10 +174,7 @@ util_make_tess_ctrl_passthrough_shader(struct pipe_context *pipe,
                                        const unsigned vertices_per_patch);
 
 void *
-util_make_fs_stencil_blit(struct pipe_context *pipe, bool msaa_src, bool has_txq);
-
-void *
-util_make_fs_clear_all_cbufs(struct pipe_context *pipe);
+util_make_fs_stencil_blit(struct pipe_context *pipe, bool msaa_src);
 
 #ifdef __cplusplus
 }

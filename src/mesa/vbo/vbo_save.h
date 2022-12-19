@@ -94,7 +94,6 @@ struct vbo_save_vertex_list {
       struct _mesa_prim *prims;
       GLuint prim_count;
       GLuint min_index, max_index;
-      GLuint bo_bytes_used;
    } *cold;
 };
 

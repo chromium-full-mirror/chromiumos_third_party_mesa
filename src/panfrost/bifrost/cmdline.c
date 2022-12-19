@@ -193,7 +193,6 @@ compile_shader(int stages, char **files)
 
                 struct panfrost_compile_inputs inputs = {
                         .gpu_id = gpu_id,
-                        .fixed_sysval_ubo = -1,
                 };
                 struct pan_shader_info info = { 0 };
 

@@ -65,20 +65,20 @@ build_binary_int_overflow(struct gallivm_state *gallivm,
    LLVMBuilderRef builder = gallivm->builder;
    char intr_str[256];
    LLVMTypeRef type_ref;
-   ASSERTED LLVMTypeKind type_kind;
+   LLVMTypeKind type_kind;
    unsigned type_width;
    LLVMTypeRef oelems[2];
    LLVMValueRef oresult;
    LLVMTypeRef otype;
 
-   assert(LLVMTypeOf(a) == LLVMTypeOf(b));
+   debug_assert(LLVMTypeOf(a) == LLVMTypeOf(b));
    type_ref = LLVMTypeOf(a);
    type_kind = LLVMGetTypeKind(type_ref);
 
-   assert(type_kind == LLVMIntegerTypeKind);
+   debug_assert(type_kind == LLVMIntegerTypeKind);
    type_width = LLVMGetIntTypeWidth(type_ref);
 
-   assert(type_width == 16 || type_width == 32 || type_width == 64);
+   debug_assert(type_width == 16 || type_width == 32 || type_width == 64);
 
    snprintf(intr_str, sizeof intr_str, "%s.i%u",
             intr_prefix, type_width);

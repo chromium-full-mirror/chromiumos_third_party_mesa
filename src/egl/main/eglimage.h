@@ -30,6 +30,8 @@
 #ifndef EGLIMAGE_INCLUDED
 #define EGLIMAGE_INCLUDED
 
+#include "c99_compat.h"
+
 #include "egltypedefs.h"
 #include "egldisplay.h"
 
@@ -78,7 +80,7 @@ struct _egl_image_attribs
    struct _egl_image_attrib_int DMABufChromaHorizontalSiting;
    struct _egl_image_attrib_int DMABufChromaVerticalSiting;
 
-   /* EGL_EXT_protected_content || EGL_EXT_protected_surface */
+   /* EGL_EXT_protected_surface */
    EGLBoolean ProtectedContent;
 };
 

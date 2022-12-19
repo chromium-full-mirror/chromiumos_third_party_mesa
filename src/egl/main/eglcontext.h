@@ -31,6 +31,8 @@
 #ifndef EGLCONTEXT_INCLUDED
 #define EGLCONTEXT_INCLUDED
 
+#include "c99_compat.h"
+
 #include "egltypedefs.h"
 #include "egldisplay.h"
 
@@ -63,7 +65,6 @@ struct _egl_context
    EGLint ContextPriority;
    EGLBoolean NoError;
    EGLint ReleaseBehavior;
-   EGLBoolean Protected; /* EGL_EXT_protected_content */
 };
 
 

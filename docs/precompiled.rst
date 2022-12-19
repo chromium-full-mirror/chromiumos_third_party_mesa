@@ -8,7 +8,7 @@ others one has to use unofficial channels.
 
 There are some general directions:
 
--  Debian/Ubuntu based distributions - PPA: xorg-edgers, oibaf and padoka
--  Fedora - Copr: erp and che
+-  Debian/Ubuntu based distros - PPA: xorg-edgers, oibaf and padoka
+-  Fedora - Corp: erp and che
 -  OpenSuse/SLES - OBS: X11:XOrg and pontostroy:X11
--  Gentoo/Arch Linux - officially provided/supported
+-  Gentoo/Archlinux - officially provided/supported

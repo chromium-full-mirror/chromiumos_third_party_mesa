@@ -21,6 +21,7 @@
  * IN THE SOFTWARE.
  */
 
+#ifdef ENABLE_SHADER_CACHE
 
 #include <assert.h>
 #include <inttypes.h>
@@ -29,55 +30,11 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <fcntl.h>
 
 #include "util/compress.h"
 #include "util/crc32.h"
-#include "util/disk_cache.h"
-#include "util/disk_cache_os.h"
-
-#if DETECT_OS_WINDOWS
-
-#include <windows.h>
-
-bool
-disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
-{
-   HMODULE mod = NULL;
-   GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                      (LPCWSTR)ptr,
-                      &mod);
-   if (!mod)
-      return false;
-
-   WCHAR filename[MAX_PATH];
-   DWORD filename_length = GetModuleFileNameW(mod, filename, ARRAY_SIZE(filename));
-
-   if (filename_length == 0 || filename_length == ARRAY_SIZE(filename))
-      return false;
-
-   HANDLE mod_as_file = CreateFileW(
-        filename,
-        GENERIC_READ,
-        FILE_SHARE_READ,
-        NULL,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL);
-   if (mod_as_file == INVALID_HANDLE_VALUE)
-      return false;
-
-   FILETIME time;
-   bool ret = GetFileTime(mod_as_file, NULL, NULL, &time);
-   if (ret)
-      _mesa_sha1_update(ctx, &time, sizeof(time));
-   CloseHandle(mod_as_file);
-   return ret;
-}
-
-#endif
-
-#ifdef ENABLE_SHADER_CACHE
 
 #if DETECT_OS_WINDOWS
 /* TODO: implement disk cache support on windows */
@@ -97,7 +54,9 @@ disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
 
 #include "util/blob.h"
 #include "util/crc32.h"
-#include "util/u_debug.h"
+#include "util/debug.h"
+#include "util/disk_cache.h"
+#include "util/disk_cache_os.h"
 #include "util/ralloc.h"
 #include "util/rand_xor.h"
 
@@ -832,9 +791,9 @@ disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
                               const char *driver_id)
 {
    char *cache_dir_name = CACHE_DIR_NAME;
-   if (debug_get_bool_option("MESA_DISK_CACHE_SINGLE_FILE", false))
+   if (env_var_as_boolean("MESA_DISK_CACHE_SINGLE_FILE", false))
       cache_dir_name = CACHE_DIR_NAME_SF;
-   else if (debug_get_bool_option("MESA_DISK_CACHE_DATABASE", false))
+   else if (env_var_as_boolean("MESA_DISK_CACHE_DATABASE", false))
       cache_dir_name = CACHE_DIR_NAME_DB;
 
    char *path = getenv("MESA_SHADER_CACHE_DIR");
@@ -904,7 +863,7 @@ disk_cache_generate_cache_dir(void *mem_ctx, const char *gpu_name,
          return NULL;
    }
 
-   if (debug_get_bool_option("MESA_DISK_CACHE_SINGLE_FILE", false)) {
+   if (env_var_as_boolean("MESA_DISK_CACHE_SINGLE_FILE", false)) {
       path = concatenate_and_mkdir(mem_ctx, path, driver_id);
       if (!path)
          return NULL;
@@ -939,7 +898,7 @@ disk_cache_enabled()
                  "use MESA_SHADER_CACHE_DISABLE instead ***\n");
    }
 
-   if (debug_get_bool_option(envvar_name, disable_by_default))
+   if (env_var_as_boolean(envvar_name, disable_by_default))
       return false;
 
    return true;

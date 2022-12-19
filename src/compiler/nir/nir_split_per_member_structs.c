@@ -115,18 +115,13 @@ build_member_deref(nir_builder *b, nir_deref_instr *deref, nir_variable *member)
    }
 }
 
-static bool
-rewrite_deref_instr(nir_builder *b, nir_instr *instr, void *cb_data)
+static void
+rewrite_deref_instr(nir_builder *b, nir_deref_instr *deref,
+                    struct hash_table *var_to_member_map)
 {
-   if (instr->type != nir_instr_type_deref)
-      return false;
-
-   nir_deref_instr *deref = nir_instr_as_deref(instr);
-   struct hash_table *var_to_member_map = cb_data;
-
    /* We must be a struct deref */
    if (deref->deref_type != nir_deref_type_struct)
-      return false;
+      return;
 
    nir_deref_instr *base;
    for (base = nir_deref_instr_parent(deref);
@@ -135,12 +130,12 @@ rewrite_deref_instr(nir_builder *b, nir_instr *instr, void *cb_data)
 
       /* If this struct is nested inside another, bail */
       if (base->deref_type == nir_deref_type_struct)
-         return false;
+         return;
    }
 
    /* We must be on a variable with members */
    if (!base || base->var->num_members == 0)
-      return false;
+      return;
 
    nir_variable *member = find_var_member(base->var, deref->strct.index,
                                           var_to_member_map);
@@ -154,8 +149,6 @@ rewrite_deref_instr(nir_builder *b, nir_instr *instr, void *cb_data)
 
    /* The referenced variable is no longer valid, clean up the deref */
    nir_deref_instr_remove_if_unused(deref);
-
-   return true;
 }
 
 bool
@@ -182,10 +175,25 @@ nir_split_per_member_structs(nir_shader *shader)
       return false;
    }
 
-   nir_shader_instructions_pass(shader, rewrite_deref_instr,
-                                nir_metadata_block_index |
-                                nir_metadata_dominance,
-                                var_to_member_map);
+   nir_foreach_function(function, shader) {
+      if (!function->impl)
+         continue;
+
+      nir_builder b;
+      nir_builder_init(&b, function->impl);
+      nir_foreach_block(block, function->impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type == nir_instr_type_deref) {
+               rewrite_deref_instr(&b, nir_instr_as_deref(instr),
+                                   var_to_member_map);
+            }
+         }
+      }
+
+      nir_metadata_preserve(function->impl,
+                            nir_metadata_block_index |
+                            nir_metadata_dominance);
+   }
 
    ralloc_free(dead_ctx);
 

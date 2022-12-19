@@ -28,9 +28,8 @@ import serial
 import threading
 import time
 
-
 class SerialBuffer:
-    def __init__(self, dev, filename, prefix, timeout=None, line_queue=None):
+    def __init__(self, dev, filename, prefix, timeout = None):
         self.filename = filename
         self.dev = dev
 
@@ -42,13 +41,7 @@ class SerialBuffer:
             self.serial = None
 
         self.byte_queue = queue.Queue()
-        # allow multiple SerialBuffers to share a line queue so you can merge
-        # servo's CPU and EC streams into one thing to watch the boot/test
-        # progress on.
-        if line_queue:
-            self.line_queue = line_queue
-        else:
-            self.line_queue = queue.Queue()
+        self.line_queue = queue.Queue()
         self.prefix = prefix
         self.timeout = timeout
         self.sentinel = object()
@@ -137,30 +130,14 @@ class SerialBuffer:
                     self.line_queue.put(line)
                     line = bytearray()
 
-    def lines(self, timeout=None, phase=None):
-        start_time = time.monotonic()
-        while True:
-            read_timeout = None
-            if timeout:
-                read_timeout = timeout - (time.monotonic() - start_time)
-                if read_timeout <= 0:
-                    print("read timeout waiting for serial during {}".format(phase))
-                    self.close()
-                    break
+    def get_line(self):
+        line = self.line_queue.get()
+        if line == self.sentinel:
+            self.lines_thread.join()
+        return line
 
-            try:
-                line = self.line_queue.get(timeout=read_timeout)
-            except queue.Empty:
-                print("read timeout waiting for serial during {}".format(phase))
-                self.close()
-                break
-
-            if line == self.sentinel:
-                print("End of serial output")
-                self.lines_thread.join()
-                break
-
-            yield line
+    def lines(self):
+        return iter(self.get_line, self.sentinel)
 
 
 def main():

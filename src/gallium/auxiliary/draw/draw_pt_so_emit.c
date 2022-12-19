@@ -40,7 +40,6 @@
 #include "util/u_prim.h"
 #include "util/u_memory.h"
 
-
 struct pt_so_emit {
    struct draw_context *draw;
 
@@ -54,7 +53,6 @@ struct pt_so_emit {
    unsigned generated_primitives;
    unsigned stream;
 };
-
 
 static const struct pipe_stream_output_info *
 draw_so_info(const struct draw_context *draw)
@@ -83,8 +81,7 @@ draw_has_so(const struct draw_context *draw)
    return FALSE;
 }
 
-void
-draw_pt_so_emit_prepare(struct pt_so_emit *emit, boolean use_pre_clip_pos)
+void draw_pt_so_emit_prepare(struct pt_so_emit *emit, boolean use_pre_clip_pos)
 {
    struct draw_context *draw = emit->draw;
 
@@ -97,7 +94,8 @@ draw_pt_so_emit_prepare(struct pt_so_emit *emit, boolean use_pre_clip_pos)
     * buffers to output to */
    if (emit->has_so) {
       boolean has_valid_buffer = FALSE;
-      for (unsigned i = 0; i < draw->so.num_targets; ++i) {
+      unsigned i;
+      for (i = 0; i < draw->so.num_targets; ++i) {
          if (draw->so.targets[i]) {
             has_valid_buffer = TRUE;
             break;
@@ -111,20 +109,20 @@ draw_pt_so_emit_prepare(struct pt_so_emit *emit, boolean use_pre_clip_pos)
 
    /* XXX: need to flush to get prim_vbuf.c to release its allocation??
     */
-   draw_do_flush(draw, DRAW_FLUSH_BACKEND);
+   draw_do_flush( draw, DRAW_FLUSH_BACKEND );
 }
 
-
-static void
-so_emit_prim(struct pt_so_emit *so,
-             unsigned *indices,
-             unsigned num_vertices)
+static void so_emit_prim(struct pt_so_emit *so,
+                         unsigned *indices,
+                         unsigned num_vertices)
 {
+   unsigned slot, i;
    unsigned input_vertex_stride = so->input_vertex_stride;
    struct draw_context *draw = so->draw;
    const float (*input_ptr)[4];
    const float *pcp_ptr = NULL;
    const struct pipe_stream_output_info *state = draw_so_info(draw);
+   float *buffer;
    int buffer_total_bytes[PIPE_MAX_SO_BUFFERS];
    boolean buffer_written[PIPE_MAX_SO_BUFFERS] = {0};
 
@@ -134,7 +132,7 @@ so_emit_prim(struct pt_so_emit *so,
 
    ++so->generated_primitives;
 
-   for (unsigned i = 0; i < draw->so.num_targets; i++) {
+   for (i = 0; i < draw->so.num_targets; i++) {
       struct draw_so_target *target = draw->so.targets[i];
       if (target) {
          buffer_total_bytes[i] = target->internal_offset;
@@ -144,8 +142,9 @@ so_emit_prim(struct pt_so_emit *so,
    }
 
    /* check have we space to emit prim first - if not don't do anything */
-   for (unsigned i = 0; i < num_vertices; ++i) {
-      for (unsigned slot = 0; slot < state->num_outputs; ++slot) {
+   for (i = 0; i < num_vertices; ++i) {
+      unsigned ob;
+      for (slot = 0; slot < state->num_outputs; ++slot) {
          unsigned num_comps = state->output[slot].num_components;
          int ob = state->output[slot].output_buffer;
          unsigned dst_offset = state->output[slot].dst_offset * sizeof(float);
@@ -163,14 +162,15 @@ so_emit_prim(struct pt_so_emit *so,
             return;
          }
       }
-      for (unsigned ob = 0; ob < draw->so.num_targets; ++ob) {
+      for (ob = 0; ob < draw->so.num_targets; ++ob) {
          buffer_total_bytes[ob] += state->stride[ob] * sizeof(float);
       }
    }
 
-   for (unsigned i = 0; i < num_vertices; ++i) {
+   for (i = 0; i < num_vertices; ++i) {
       const float (*input)[4];
       const float *pre_clip_pos = NULL;
+      unsigned  ob;
 
       input = (const float (*)[4])(
          (const char *)input_ptr + (indices[i] * input_vertex_stride));
@@ -179,7 +179,7 @@ so_emit_prim(struct pt_so_emit *so,
          pre_clip_pos = (const float *)(
          (const char *)pcp_ptr + (indices[i] * input_vertex_stride));
 
-      for (unsigned slot = 0; slot < state->num_outputs; ++slot) {
+      for (slot = 0; slot < state->num_outputs; ++slot) {
          unsigned idx = state->output[slot].register_index;
          unsigned start_comp = state->output[slot].start_component;
          unsigned num_comps = state->output[slot].num_components;
@@ -187,30 +187,28 @@ so_emit_prim(struct pt_so_emit *so,
 
          if (stream != so->stream)
             continue;
-
-         unsigned ob = state->output[slot].output_buffer;
+         ob = state->output[slot].output_buffer;
          buffer_written[ob] = TRUE;
 
-         float *buffer = (float *)((char *)draw->so.targets[ob]->mapping +
+         buffer = (float *)((char *)draw->so.targets[ob]->mapping +
                             draw->so.targets[ob]->target.buffer_offset +
                             draw->so.targets[ob]->internal_offset) +
             state->output[slot].dst_offset;
-
-         if (idx == so->pos_idx && pcp_ptr && so->stream == 0) {
+         
+         if (idx == so->pos_idx && pcp_ptr && so->stream == 0)
             memcpy(buffer, &pre_clip_pos[start_comp],
                    num_comps * sizeof(float));
-         } else {
+         else
             memcpy(buffer, &input[idx][start_comp],
                    num_comps * sizeof(float));
-         }
-
 #if 0
          {
+            int j;
             debug_printf("VERT[%d], stream = %d, offset = %d, slot[%d] sc = %d, num_c = %d, idx = %d = [",
                          i, stream,
                          draw->so.targets[ob]->internal_offset,
                          slot, start_comp, num_comps, idx);
-            for (unsigned j = 0; j < num_comps; ++j) {
+            for (j = 0; j < num_comps; ++j) {
                unsigned *ubuffer = (unsigned*)buffer;
                debug_printf("%d (0x%x), ", ubuffer[j], ubuffer[j]);
             }
@@ -218,8 +216,7 @@ so_emit_prim(struct pt_so_emit *so,
          }
 #endif
       }
-
-      for (unsigned ob = 0; ob < draw->so.num_targets; ++ob) {
+      for (ob = 0; ob < draw->so.num_targets; ++ob) {
          struct draw_so_target *target = draw->so.targets[ob];
          if (target && buffer_written[ob]) {
             target->internal_offset += state->stride[ob] * sizeof(float);
@@ -229,33 +226,33 @@ so_emit_prim(struct pt_so_emit *so,
    ++so->emitted_primitives;
 }
 
-
-static void
-so_point(struct pt_so_emit *so, int idx)
+static void so_point(struct pt_so_emit *so, int idx)
 {
    unsigned indices[1];
+
    indices[0] = idx;
+
    so_emit_prim(so, indices, 1);
 }
 
-
-static void
-so_line(struct pt_so_emit *so, int i0, int i1)
+static void so_line(struct pt_so_emit *so, int i0, int i1)
 {
    unsigned indices[2];
+
    indices[0] = i0;
    indices[1] = i1;
+
    so_emit_prim(so, indices, 2);
 }
 
-
-static void
-so_tri(struct pt_so_emit *so, int i0, int i1, int i2)
+static void so_tri(struct pt_so_emit *so, int i0, int i1, int i2)
 {
    unsigned indices[3];
+
    indices[0] = i0;
    indices[1] = i1;
    indices[2] = i2;
+
    so_emit_prim(so, indices, 3);
 }
 
@@ -271,24 +268,26 @@ so_tri(struct pt_so_emit *so, int i0, int i1, int i2)
 #include "draw_so_emit_tmp.h"
 
 
-void
-draw_pt_so_emit(struct pt_so_emit *emit,
-                int num_vertex_streams,
-                const struct draw_vertex_info *input_verts,
-                const struct draw_prim_info *input_prims)
+void draw_pt_so_emit( struct pt_so_emit *emit,
+                      int num_vertex_streams,
+                      const struct draw_vertex_info *input_verts,
+                      const struct draw_prim_info *input_prims )
 {
    struct draw_context *draw = emit->draw;
    struct vbuf_render *render = draw->render;
+   unsigned start, i, stream;
 
    if (!emit->has_so && num_vertex_streams == 1) {
       if (draw->collect_primgen) {
+         unsigned i;
          unsigned total = 0;
-         for (unsigned i = 0; i < input_prims->primitive_count; i++) {
+         for (i = 0; i < input_prims->primitive_count; i++) {
             total +=
                u_decomposed_prims_for_vertices(input_prims->prim,
                                                input_prims->primitive_lengths[i]);
          }
-         render->set_stream_output_info(render, 0, 0, total);
+         render->set_stream_output_info(render,
+                                        0, 0, total);
       }
       return;
    }
@@ -297,9 +296,9 @@ draw_pt_so_emit(struct pt_so_emit *emit,
       return;
 
    /* XXX: need to flush to get prim_vbuf.c to release its allocation??*/
-   draw_do_flush(draw, DRAW_FLUSH_BACKEND);
+   draw_do_flush( draw, DRAW_FLUSH_BACKEND );
 
-   for (unsigned stream = 0; stream < num_vertex_streams; stream++) {
+   for (stream = 0; stream < num_vertex_streams; stream++) {
       emit->emitted_primitives = 0;
       emit->generated_primitives = 0;
       if (emit->use_pre_clip_pos)
@@ -308,10 +307,9 @@ draw_pt_so_emit(struct pt_so_emit *emit,
       emit->input_vertex_stride = input_verts[stream].stride;
       emit->inputs = (const float (*)[4])input_verts[stream].verts->data;
       emit->stream = stream;
-
-      unsigned start, i;
       for (start = i = 0; i < input_prims[stream].primitive_count;
-           start += input_prims[stream].primitive_lengths[i], i++) {
+           start += input_prims[stream].primitive_lengths[i], i++)
+      {
          unsigned count = input_prims[stream].primitive_lengths[i];
 
          if (input_prims->linear) {
@@ -330,8 +328,7 @@ draw_pt_so_emit(struct pt_so_emit *emit,
 }
 
 
-struct pt_so_emit *
-draw_pt_so_emit_create(struct draw_context *draw)
+struct pt_so_emit *draw_pt_so_emit_create( struct draw_context *draw )
 {
    struct pt_so_emit *emit = CALLOC_STRUCT(pt_so_emit);
    if (!emit)
@@ -342,9 +339,7 @@ draw_pt_so_emit_create(struct draw_context *draw)
    return emit;
 }
 
-
-void
-draw_pt_so_emit_destroy(struct pt_so_emit *emit)
+void draw_pt_so_emit_destroy( struct pt_so_emit *emit )
 {
    FREE(emit);
 }

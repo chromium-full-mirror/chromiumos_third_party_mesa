@@ -30,7 +30,6 @@ files_libvirgl = files(
   'virgl_transfer_queue.c',
   'virgl_texture.c',
   'virgl_tgsi.c',
-  'virgl_video.c',
 )
 
 libvirgl = static_library(

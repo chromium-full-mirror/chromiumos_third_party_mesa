@@ -29,7 +29,8 @@
 
 #include <assert.h>
 #include <stdint.h>
-#include <math.h>
+
+#include "c99_math.h"
 
 #define RGB9E5_EXPONENT_BITS          5
 #define RGB9E5_MANTISSA_BITS          9

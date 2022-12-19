@@ -31,8 +31,7 @@
 #include "ir3_shader.h"
 
 struct ir3_context *
-ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader *shader,
-                 struct ir3_shader_variant *so)
+ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader_variant *so)
 {
    struct ir3_context *ctx = rzalloc(NULL, struct ir3_context);
 
@@ -77,7 +76,7 @@ ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader *shader,
     * creating duplicate variants..
     */
 
-   ctx->s = nir_shader_clone(ctx, shader->nir);
+   ctx->s = nir_shader_clone(ctx, so->shader->nir);
    ir3_nir_lower_variant(so, ctx->s);
 
    /* this needs to be the last pass run, so do this here instead of
@@ -154,9 +153,9 @@ ir3_context_init(struct ir3_compiler *compiler, struct ir3_shader *shader,
       }
    }
 
-   if (shader_debug_enabled(so->type, ctx->s->info.internal)) {
+   if (shader_debug_enabled(so->type)) {
       mesa_logi("NIR (final form) for %s shader %s:", ir3_shader_stage(so),
-                so->name);
+                so->shader->nir->info.name);
       nir_log_shaderi(ctx->s);
    }
 
@@ -344,7 +343,7 @@ ir3_create_collect(struct ir3_block *block, struct ir3_instruction *const *arr,
          elem = ir3_MOV(block, elem, type);
       }
 
-      assert(dest_flags(elem) == flags);
+      debug_assert(dest_flags(elem) == flags);
       __ssa_src(collect, elem, flags);
    }
 
@@ -368,7 +367,7 @@ ir3_split_dest(struct ir3_block *block, struct ir3_instruction **dst,
    }
 
    if (src->opc == OPC_META_COLLECT) {
-      assert((base + n) <= src->srcs_count);
+      debug_assert((base + n) <= src->srcs_count);
 
       for (int i = 0; i < n; i++) {
          dst[i] = ssa(src->srcs[i + base]);

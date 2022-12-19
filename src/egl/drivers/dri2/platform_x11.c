@@ -40,11 +40,11 @@
 #endif
 #include <sys/types.h>
 #include <sys/stat.h>
-#include "util/u_debug.h"
+#include "util/debug.h"
 #include "util/macros.h"
 #include "util/bitscan.h"
 
-#include "platform_x11.h"
+#include "egl_dri2.h"
 #include "loader.h"
 #include "kopper_interface.h"
 
@@ -54,6 +54,9 @@
 
 static EGLBoolean
 dri2_x11_swap_interval(_EGLDisplay *disp, _EGLSurface *surf, EGLint interval);
+
+uint32_t
+dri2_format_for_depth(struct dri2_egl_display *dri2_dpy, uint32_t depth);
 
 static void
 swrastCreateDrawable(struct dri2_egl_display * dri2_dpy,
@@ -1191,27 +1194,6 @@ dri2_x11_get_sync_values(_EGLDisplay *display, _EGLSurface *surface,
    return EGL_TRUE;
 }
 
-EGLBoolean
-dri2_x11_get_msc_rate(_EGLDisplay *display, _EGLSurface *surface,
-                      EGLint *numerator, EGLint *denominator)
-{
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(display);
-   xcb_randr_get_screen_info_cookie_t cookie;
-   xcb_randr_get_screen_info_reply_t *reply;
-
-   cookie = xcb_randr_get_screen_info_unchecked(dri2_dpy->conn, dri2_dpy->screen->root);
-   reply = xcb_randr_get_screen_info_reply(dri2_dpy->conn, cookie, NULL);
-
-   if (!reply)
-      return _eglError(EGL_BAD_ACCESS, "eglGetMscRateANGLE");
-
-   *numerator = reply->rate;
-   *denominator = 1;
-   free(reply);
-
-   return EGL_TRUE;
-}
-
 static EGLBoolean
 dri2_kopper_swap_interval(_EGLDisplay *disp, _EGLSurface *surf, EGLint interval)
 {
@@ -1248,19 +1230,6 @@ dri2_kopper_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
    return surf;
 }
 
-static EGLint
-dri2_kopper_query_buffer_age(_EGLDisplay *disp, _EGLSurface *surf)
-{
-   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
-   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
-
-   /* This can legitimately be null for lavapipe */
-   if (dri2_dpy->kopper)
-      return dri2_dpy->kopper->queryBufferAge(dri2_surf->dri_drawable);
-
-   return 0;
-}
-
 static const struct dri2_egl_display_vtbl dri2_x11_swrast_display_vtbl = {
    .authenticate = NULL,
    .create_window_surface = dri2_x11_create_window_surface,
@@ -1274,7 +1243,6 @@ static const struct dri2_egl_display_vtbl dri2_x11_swrast_display_vtbl = {
    .copy_buffers = dri2_x11_copy_buffers,
    /* XXX: should really implement this since X11 has pixmaps */
    .query_surface = dri2_query_surface,
-   .get_msc_rate = dri2_x11_get_msc_rate,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -1290,10 +1258,8 @@ static const struct dri2_egl_display_vtbl dri2_x11_kopper_display_vtbl = {
    .swap_buffers_region = dri2_x11_swap_buffers_region,
    .post_sub_buffer = dri2_x11_post_sub_buffer,
    .copy_buffers = dri2_x11_copy_buffers,
-   .query_buffer_age = dri2_kopper_query_buffer_age,
    /* XXX: should really implement this since X11 has pixmaps */
    .query_surface = dri2_query_surface,
-   .get_msc_rate = dri2_x11_get_msc_rate,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -1311,7 +1277,6 @@ static const struct dri2_egl_display_vtbl dri2_x11_display_vtbl = {
    .copy_buffers = dri2_x11_copy_buffers,
    .query_surface = dri2_query_surface,
    .get_sync_values = dri2_x11_get_sync_values,
-   .get_msc_rate = dri2_x11_get_msc_rate,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -1478,7 +1443,6 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
    dri2_setup_screen(disp);
 
    if (disp->Options.Zink) {
-      /* kopper */
 #ifdef HAVE_WAYLAND_PLATFORM
       dri2_dpy->device_name = strdup("zink");
 #endif
@@ -1488,17 +1452,13 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
          disp->Extensions.KHR_image_pixmap = EGL_TRUE;
       disp->Extensions.NOK_texture_from_pixmap = EGL_TRUE;
       disp->Extensions.CHROMIUM_sync_control = EGL_TRUE;
-      disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
       disp->Extensions.EXT_buffer_age = EGL_TRUE;
       disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
 
       //dri2_set_WL_bind_wayland_display(disp);
-   } else {
-      /* swrast */
-      disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
    }
 
-   if (!dri2_x11_add_configs_for_visuals(dri2_dpy, disp, !disp->Options.Zink))
+   if (!dri2_x11_add_configs_for_visuals(dri2_dpy, disp, true))
       goto cleanup;
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
@@ -1573,7 +1533,6 @@ dri2_initialize_x11_dri3(_EGLDisplay *disp)
       disp->Extensions.KHR_image_pixmap = EGL_TRUE;
    disp->Extensions.NOK_texture_from_pixmap = EGL_TRUE;
    disp->Extensions.CHROMIUM_sync_control = EGL_TRUE;
-   disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
    disp->Extensions.EXT_buffer_age = EGL_TRUE;
    disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
 
@@ -1686,7 +1645,6 @@ dri2_initialize_x11_dri2(_EGLDisplay *disp)
    disp->Extensions.NOK_texture_from_pixmap = EGL_TRUE;
    disp->Extensions.NV_post_sub_buffer = EGL_TRUE;
    disp->Extensions.CHROMIUM_sync_control = EGL_TRUE;
-   disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
 
    dri2_set_WL_bind_wayland_display(disp);
 
@@ -1714,12 +1672,12 @@ dri2_initialize_x11(_EGLDisplay *disp)
       return dri2_initialize_x11_swrast(disp);
 
 #ifdef HAVE_DRI3
-   if (!debug_get_bool_option("LIBGL_DRI3_DISABLE", false))
+   if (!env_var_as_boolean("LIBGL_DRI3_DISABLE", false))
       if (dri2_initialize_x11_dri3(disp))
          return EGL_TRUE;
 #endif
 
-   if (!debug_get_bool_option("LIBGL_DRI2_DISABLE", false))
+   if (!env_var_as_boolean("LIBGL_DRI2_DISABLE", false))
       if (dri2_initialize_x11_dri2(disp))
          return EGL_TRUE;
 

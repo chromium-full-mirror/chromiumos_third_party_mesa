@@ -34,7 +34,6 @@
 #include <stdbool.h>
 #include <sys/stat.h>
 #include "util/mesa-sha1.h"
-#include "util/detect_os.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -135,9 +134,6 @@ disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
       return false;
    return true;
 }
-#elif DETECT_OS_WINDOWS
-bool
-disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx);
 #else
 static inline bool
 disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)

@@ -32,19 +32,6 @@
 #include <IOKit/IODataQueueClient.h>
 #endif
 
-/*
- * This file contains necessary defines for the macOS (IOKit) interface to the
- * AGX accelerator, required to build a userspace graphics driver on macOS.
- *
- * They are not used under Linux.
- *
- * Information is this file was originally determined independently. More
- * recently, names have been augmented via the oob_timestamp code sample from
- * Project Zero [1]
- *
- * [1] https://bugs.chromium.org/p/project-zero/issues/detail?id=1986
- */
-
 #define AGX_SERVICE_TYPE 0x100005
 
 enum agx_selector {
@@ -129,10 +116,9 @@ struct agx_create_command_queue_resp {
 } __attribute__((packed));
 
 struct agx_create_shmem_resp {
-   /* IOAccelDeviceShmemData */
-   void *map;
-   uint32_t size;
-   uint32_t id;
+	void *map;
+	uint32_t size;
+	uint32_t id;
 } __attribute__((packed));
 
 struct agx_create_notification_queue_resp {
@@ -146,18 +132,15 @@ struct agx_create_notification_queue_resp {
 } __attribute__((packed));
 
 struct agx_submit_cmdbuf_req {
-   /* IOAccelCommandQueueSubmitArgs_Header */
-   uint32_t unk0;
-   uint32_t count;
-
-   /* IOAccelCommandQueueSubmitArgs_Command */
-   uint32_t command_buffer_shmem_id;
-   uint32_t segment_list_shmem_id;
+	uint32_t unk0;
+	uint32_t unk1;
+	uint32_t cmdbuf;
+	uint32_t mappings;
    uint64_t unk1B; // 0, new in 12.x
-   uint64_t notify_1;
-   uint64_t notify_2;
-   uint32_t unk2;
-   uint32_t unk3;
+	void *user_0;
+	void *user_1;
+	uint32_t unk2;
+	uint32_t unk3;
 } __attribute__((packed));
 
 /* Memory allocation isn't really understood yet. By comparing SHADER/CMDBUF_32
@@ -187,58 +170,6 @@ agx_memory_type_name(uint32_t type)
 	}
 }
 
-struct agx_allocate_resource_req {
-   uint32_t unk0[5];
-   uint32_t mode;
-   uint32_t unk6[6];
-   uint64_t cpu_fixed;
-   uint64_t cpu_fixed_parent;
-   uint32_t size;
-   uint32_t unk17;
-
-   /* Handle of the parent resource when a suballocation is requested.
-    * Based on an assertion failure, this corresponds to:
-    *
-    * -[IOGPUMetalBuffer initWithPrimaryBuffer:heapIndex:bufferIndex:bufferOffset:length:args:argsSize:]
-    */
-   uint32_t parent;
-
-   uint32_t unk19;
-   uint32_t flags;
-   uint32_t unk21[3];
-} __attribute__((packed));
-
-struct agx_allocate_resource_resp {
-   /* Returned GPU virtual address */
-   uint64_t gpu_va;
-
-   /* Returned CPU virtual address */
-   uint64_t cpu;
-
-   uint32_t unk4[3];
-
-   /* Handle used to identify the resource in the segment list */
-   uint32_t handle;
-
-   /* Size of the root resource from which we are allocated. If this is not a
-    * suballocation, this is equal to the size.
-    */
-   uint64_t root_size;
-
-   /* Globally unique identifier for the resource, shown in Instruments */
-   uint32_t guid;
-
-   uint32_t unk11[7];
-
-   /* Maximum size of the suballocation. For a suballocation, this equals:
-    *
-    *    sub_size = root_size - (sub_cpu - root_cpu)
-    *
-    * For root allocations, this equals the size.
-    */
-   uint64_t sub_size;
-} __attribute__((packed));
-
 struct agx_notification_queue {
 #ifdef __APPLE__
    mach_port_t port;
@@ -255,29 +186,32 @@ struct agx_command_queue {
    struct agx_notification_queue notif;
 };
 
-struct agx_map_header {
-   /* IOAccelSegmentListHeader */
-   uint64_t cmdbuf_id; // GUID
-   uint32_t segment_count;
-   uint16_t length;
-   uint16_t unk; // 0x8000
-   uint64_t encoder_id; // GUID
+/* Not sure if this is hardware or software defined */
 
-   /* IOAccelSegmentResourceListHeader */
-   uint32_t kernel_commands_start_offset;
-   uint32_t kernel_commands_end_offset;
+struct agx_map_header {
+	uint64_t cmdbuf_id; // GUID
+	uint32_t unk2; // 01 00 00 00
+	uint32_t unk3; // 28 05 00 80, 12.x: 30 01 00 80
+	uint64_t encoder_id; // GUID
+	uint32_t unk6; // 00 00 00 00
+	uint32_t cmdbuf_size;
    uint32_t padding[2];
-   uint32_t total_resources;
-   uint32_t resource_group_count;
+	uint32_t nr_handles;
+	uint32_t nr_entries;
 } __attribute__((packed));
 
-/* IOAccelSegmentResourceList_ResourceGroup */
 struct agx_map_entry {
-   uint32_t resource_id[6];
-   uint32_t resource_unk[6];
-   uint16_t resource_flags[6];
-   uint16_t unka; // ff ff
-   uint16_t resource_count;
+	uint32_t indices[6];
+	uint32_t unkAAA; // 20 00 00 00
+	uint32_t unk2; // 00 00 00 00 
+	uint32_t unk3; // 00 00 00 00
+	uint32_t unk4; // 00 00 00 00
+	uint32_t unk5; // 00 00 00 00
+	uint32_t unk6; // 00 00 00 00 
+	uint32_t unkBBB; // 01 00 00 00
+	uint32_t unk8; // 00 00 00 00
+	uint32_t unk9; // 00 00 00 00
+	uint32_t unka; // ff ff 01 00 
 } __attribute__((packed));
 
 uint64_t

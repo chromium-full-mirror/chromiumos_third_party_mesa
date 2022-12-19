@@ -32,7 +32,6 @@
  * @author Jose Fonseca <jfonseca@vmware.com>
  */
 
-#include "util/simple_mtx.h"
 #include "util/u_debug.h"
 #include "u_debug_symbol.h"
 #include "u_debug_stack.h"
@@ -49,7 +48,7 @@
 #include "util/hash_table.h"
 
 static struct hash_table* symbols_hash;
-static simple_mtx_t symbols_mutex = SIMPLE_MTX_INITIALIZER;
+static mtx_t symbols_mutex = _MTX_INITIALIZER_NP;
 
 /* TODO with some refactoring we might be able to re-use debug_symbol_name_cached()
  * instead.. otoh if using libunwind I think u_debug_symbol could just be excluded
@@ -61,7 +60,7 @@ symbol_name_cached(unw_cursor_t *cursor, unw_proc_info_t *pip)
    void *addr = (void *)(uintptr_t)pip->start_ip;
    char *name;
 
-   simple_mtx_lock(&symbols_mutex);
+   mtx_lock(&symbols_mutex);
    if(!symbols_hash)
       symbols_hash = _mesa_pointer_hash_table_create(NULL);
    struct hash_entry *entry = _mesa_hash_table_search(symbols_hash, addr);
@@ -80,7 +79,7 @@ symbol_name_cached(unw_cursor_t *cursor, unw_proc_info_t *pip)
          name = "??";
       entry = _mesa_hash_table_insert(symbols_hash, addr, (void*)name);
    }
-   simple_mtx_unlock(&symbols_mutex);
+   mtx_unlock(&symbols_mutex);
 
    return entry->data;
 }
@@ -186,6 +185,7 @@ debug_backtrace_print(FILE *f,
 #if defined(PIPE_OS_WINDOWS)
 #include <windows.h>
 #endif
+
 
 /**
  * Capture stack backtrace.
@@ -295,20 +295,18 @@ debug_backtrace_capture(struct debug_stack_frame *backtrace,
    }
 }
 
-static simple_mtx_t backtrace_mutex = SIMPLE_MTX_INITIALIZER;
 
 void
 debug_backtrace_dump(const struct debug_stack_frame *backtrace,
                      unsigned nr_frames)
 {
    unsigned i;
-   simple_mtx_lock(&backtrace_mutex);
+
    for (i = 0; i < nr_frames; ++i) {
       if (!backtrace[i].function)
          break;
       debug_symbol_print(backtrace[i].function);
    }
-   simple_mtx_unlock(&backtrace_mutex);
 }
 
 
@@ -319,7 +317,6 @@ debug_backtrace_print(FILE *f,
 {
    unsigned i;
 
-   simple_mtx_lock(&backtrace_mutex);
    for (i = 0; i < nr_frames; ++i) {
       const char *symbol;
       if (!backtrace[i].function)
@@ -328,8 +325,6 @@ debug_backtrace_print(FILE *f,
       if (symbol)
          fprintf(f, "%s\n", symbol);
    }
-   fflush(f);
-   simple_mtx_unlock(&backtrace_mutex);
 }
 
 #endif /* HAVE_LIBUNWIND */

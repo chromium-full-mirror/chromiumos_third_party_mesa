@@ -21,5 +21,3 @@
 if with_tools.contains('drm-shim')
   subdir('drm-shim')
 endif
-
-subdir('codegen')

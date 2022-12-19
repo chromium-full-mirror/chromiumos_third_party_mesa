@@ -42,6 +42,7 @@
 
 void
 lp_build_sample_aos(struct lp_build_sample_context *bld,
+                    unsigned sampler_unit,
                     LLVMValueRef s,
                     LLVMValueRef t,
                     LLVMValueRef r,

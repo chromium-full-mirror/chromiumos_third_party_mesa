@@ -176,23 +176,18 @@ vector_to_scalar_alu(midgard_vector_alu v, midgard_instruction *ins)
  * with rep. Pretty nifty, huh? */
 
 static unsigned
-mir_pack_swizzle_64(unsigned *swizzle, unsigned max_component,
-                    bool expand_high)
+mir_pack_swizzle_64(unsigned *swizzle, unsigned max_component)
 {
         unsigned packed = 0;
-        unsigned base = expand_high ? 2 : 0;
 
-        for (unsigned i = base; i < base + 2; ++i) {
+        for (unsigned i = 0; i < 2; ++i) {
                 assert(swizzle[i] <= max_component);
 
                 unsigned a = (swizzle[i] & 1) ?
                         (COMPONENT_W << 2) | COMPONENT_Z :
                         (COMPONENT_Y << 2) | COMPONENT_X;
 
-                if (i & 1)
-                        packed |= a << 4;
-                else
-                        packed |= a;
+                packed |= a << (i * 4);
         }
 
         return packed;
@@ -242,26 +237,29 @@ mir_pack_swizzle(unsigned mask, unsigned *swizzle,
                 assert(sz == 64 || sz == 32);
                 unsigned components = (sz == 32) ? 4 : 2;
 
-                packed = mir_pack_swizzle_64(swizzle, components,
-                                             mask & 0xc);
+                packed = mir_pack_swizzle_64(swizzle, components);
 
                 if (sz == 32) {
-                        ASSERTED bool dontcare = true;
-                        bool hi = false;
+                        bool lo = swizzle[0] >= COMPONENT_Z;
+                        bool hi = swizzle[1] >= COMPONENT_Z;
 
-                        assert(util_bitcount(mask) <= 2);
+                        assert(!(mask & ~0xf));
+                        assert(!(mask & 0x3) || !(mask & 0xc));
 
-                        u_foreach_bit(i, mask) {
-                                bool hi_i = swizzle[i] >= COMPONENT_Z;
+                        if (mask > 3)
+                                mask >>= 2;
 
-                                /* We can't mix halves */
-                                assert(dontcare || (hi == hi_i));
-                                hi = hi_i;
-                                dontcare = false;
+                        if (mask & 0x1) {
+                                /* We can't mix halves... */
+                                if (mask & 2)
+                                        assert(lo == hi);
+
+                                *expand_mode = lo ? midgard_src_expand_high :
+                                                    midgard_src_expand_low;
+                        } else {
+                                *expand_mode = hi ? midgard_src_expand_high :
+                                                    midgard_src_expand_low;
                         }
-
-                        *expand_mode = hi ? midgard_src_expand_high :
-                                            midgard_src_expand_low;
                 } else if (sz < 32) {
                         unreachable("Cannot encode 8/16 swizzle in 64-bit");
                 }
@@ -416,11 +414,10 @@ mir_pack_swizzle_tex(midgard_instruction *ins)
         /* TODO: bias component */
 }
 
-/*
- * Up to 15 { ALU, LDST } bundles can execute in parallel with a texture op.
+/* Up to 3 { ALU, LDST } bundles can execute in parallel with a texture op.
  * Given a texture op, lookahead to see how many such bundles we can flag for
- * OoO execution
- */
+ * OoO execution */
+
 static bool
 mir_can_run_ooo(midgard_block *block, midgard_bundle *bundle,
                 unsigned dependency)
@@ -433,14 +430,11 @@ mir_can_run_ooo(midgard_block *block, midgard_bundle *bundle,
         if (!IS_ALU(bundle->tag) && bundle->tag != TAG_LOAD_STORE_4)
                 return false;
 
+        /* Ensure there is no read-after-write dependency */
+
         for (unsigned i = 0; i < bundle->instruction_count; ++i) {
                 midgard_instruction *ins = bundle->instructions[i];
 
-                /* No branches, jumps, or discards */
-                if (ins->compact_branch)
-                        return false;
-
-                /* No read-after-write data dependencies */
                 mir_foreach_src(ins, s) {
                         if (ins->src[s] == dependency)
                                 return false;
@@ -456,7 +450,7 @@ mir_pack_tex_ooo(midgard_block *block, midgard_bundle *bundle, midgard_instructi
 {
         unsigned count = 0;
 
-        for (count = 0; count < 15; ++count) {
+        for (count = 0; count < 3; ++count) {
                 if (!mir_can_run_ooo(block, bundle + count + 1, ins->dest))
                         break;
         }

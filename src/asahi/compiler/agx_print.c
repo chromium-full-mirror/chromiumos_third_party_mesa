@@ -46,7 +46,7 @@ agx_print_sized(char prefix, unsigned value, enum agx_size size, FILE *fp)
 }
 
 static void
-agx_print_index(agx_index index, bool is_float, FILE *fp)
+agx_print_index(agx_index index, FILE *fp)
 {
    switch (index.type) {
    case AGX_INDEX_NULL:
@@ -67,13 +67,7 @@ agx_print_index(agx_index index, bool is_float, FILE *fp)
       break;
 
    case AGX_INDEX_IMMEDIATE:
-      if (is_float) {
-         assert(index.value < 0x100);
-         fprintf(fp, "#%f", agx_minifloat_decode(index.value));
-      } else {
-         fprintf(fp, "#%u", index.value);
-      }
-
+      fprintf(fp, "#%u", index.value);
       break;
 
    case AGX_INDEX_UNIFORM:
@@ -89,7 +83,7 @@ agx_print_index(agx_index index, bool is_float, FILE *fp)
    }
 
    /* Print length suffixes if not implied */
-   if (index.type == AGX_INDEX_NORMAL) {
+   if (index.type == AGX_INDEX_NORMAL || index.type == AGX_INDEX_IMMEDIATE) {
       if (index.size == AGX_SIZE_16)
          fprintf(fp, "h");
       else if (index.size == AGX_SIZE_64)
@@ -108,25 +102,8 @@ agx_print_instr(agx_instr *I, FILE *fp)
 {
    assert(I->op < AGX_NUM_OPCODES);
    struct agx_opcode_info info = agx_opcodes_info[I->op];
-   bool print_comma = false;
 
-   fprintf(fp, "   ");
-
-   agx_foreach_dest(I, d) {
-      if (print_comma)
-         fprintf(fp, ", ");
-      else
-         print_comma = true;
-
-      agx_print_index(I->dest[d], false, fp);
-   }
-
-   if (I->nr_dests) {
-      fprintf(fp, " = ");
-      print_comma = false;
-   }
-
-   fprintf(fp, "%s", info.name);
+   fprintf(fp, "   %s", info.name);
 
    if (I->saturate)
       fprintf(fp, ".sat");
@@ -136,16 +113,24 @@ agx_print_instr(agx_instr *I, FILE *fp)
 
    fprintf(fp, " ");
 
-   agx_foreach_src(I, s) {
+   bool print_comma = false;
+
+   for (unsigned d = 0; d < info.nr_dests; ++d) {
       if (print_comma)
          fprintf(fp, ", ");
       else
          print_comma = true;
 
-      agx_print_index(I->src[s],
-            agx_opcodes_info[I->op].is_float &&
-            !(s >= 2 && I->op == AGX_OPCODE_FCMPSEL),
-            fp);
+      agx_print_index(I->dest[d], fp);
+   }
+
+   for (unsigned s = 0; s < info.nr_srcs; ++s) {
+      if (print_comma)
+         fprintf(fp, ", ");
+      else
+         print_comma = true;
+
+      agx_print_index(I->src[s], fp);
    }
 
    if (I->mask) {
@@ -164,7 +149,7 @@ agx_print_instr(agx_instr *I, FILE *fp)
       else
          print_comma = true;
 
-      fprintf(fp, "#%" PRIx64, I->imm);
+      fprintf(fp, "#%X", I->imm);
    }
 
    if (info.immediates & AGX_IMMEDIATE_DIM) {
@@ -173,7 +158,7 @@ agx_print_instr(agx_instr *I, FILE *fp)
       else
          print_comma = true;
 
-      fputs(agx_dim_as_str(I->dim), fp);
+      fprintf(fp, "dim %u", I->dim); // TODO enumify
    }
 
    if (info.immediates & AGX_IMMEDIATE_SCOREBOARD) {
@@ -209,7 +194,7 @@ agx_print_instr(agx_instr *I, FILE *fp)
 void
 agx_print_block(agx_block *block, FILE *fp)
 {
-   fprintf(fp, "block%u {\n", block->index);
+   fprintf(fp, "block%u {\n", block->name);
 
    agx_foreach_instr_in_block(block, ins)
       agx_print_instr(ins, fp);
@@ -220,14 +205,14 @@ agx_print_block(agx_block *block, FILE *fp)
       fprintf(fp, " -> ");
 
       agx_foreach_successor(block, succ)
-         fprintf(fp, "block%u ", succ->index);
+         fprintf(fp, "block%u ", succ->name);
    }
 
-   if (block->predecessors.size) {
+   if (block->predecessors->entries) {
       fprintf(fp, " from");
 
       agx_foreach_predecessor(block, pred)
-         fprintf(fp, " block%u", (*pred)->index);
+         fprintf(fp, " block%u", pred->name);
    }
 
    fprintf(fp, "\n\n");

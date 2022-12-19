@@ -51,12 +51,10 @@ type_size_align_1(const struct glsl_type *type, unsigned *size, unsigned *align)
 }
 
 static bool
-lower_instr(nir_builder *b, nir_instr *instr, void *cb_data)
+lower_impl(nir_builder *b, nir_instr *instr, bool bindless_only)
 {
    if (instr->type != nir_instr_type_intrinsic)
       return false;
-
-   bool bindless_only = *(bool *)cb_data;
 
    nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(instr);
 
@@ -80,8 +78,6 @@ lower_instr(nir_builder *b, nir_instr *instr, void *cb_data)
    case nir_intrinsic_image_deref_load:
    case nir_intrinsic_image_deref_samples:
    case nir_intrinsic_image_deref_size:
-   case nir_intrinsic_image_deref_samples_identical:
-   case nir_intrinsic_image_deref_descriptor_amd:
    case nir_intrinsic_image_deref_store: {
       deref = nir_src_as_deref(intrinsic->src[0]);
       var = nir_deref_instr_get_variable(deref);
@@ -113,8 +109,28 @@ lower_instr(nir_builder *b, nir_instr *instr, void *cb_data)
 bool
 gl_nir_lower_images(nir_shader *shader, bool bindless_only)
 {
-   return nir_shader_instructions_pass(shader, lower_instr,
-                                       nir_metadata_block_index |
-                                       nir_metadata_dominance,
-                                       &bindless_only);
+   bool progress = false;
+
+   nir_foreach_function(function, shader) {
+      if (function->impl) {
+         nir_builder b;
+         nir_builder_init(&b, function->impl);
+
+         bool impl_progress = false;
+         nir_foreach_block(block, function->impl)
+            nir_foreach_instr(instr, block)
+               impl_progress |= lower_impl(&b, instr, bindless_only);
+
+         if (impl_progress) {
+            nir_metadata_preserve(function->impl,
+                                  nir_metadata_block_index |
+                                  nir_metadata_dominance);
+            progress = true;
+         } else {
+            nir_metadata_preserve(function->impl, nir_metadata_all);
+         }
+      }
+   }
+
+   return progress;
 }

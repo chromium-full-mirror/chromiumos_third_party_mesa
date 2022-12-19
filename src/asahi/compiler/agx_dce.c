@@ -28,22 +28,10 @@
 void
 agx_dce(agx_context *ctx)
 {
-   bool progress;
-   do {
-      progress = false;
+   BITSET_WORD *seen = calloc(BITSET_WORDS(ctx->alloc), sizeof(BITSET_WORD));
 
-      BITSET_WORD *seen = calloc(BITSET_WORDS(ctx->alloc), sizeof(BITSET_WORD));
-
-      agx_foreach_instr_global(ctx, I) {
-         agx_foreach_src(I, s) {
-            if (I->src[s].type == AGX_INDEX_NORMAL)
-               BITSET_SET(seen, I->src[s].value);
-         }
-      }
-
-      agx_foreach_instr_global_safe_rev(ctx, I) {
-         if (!agx_opcodes_info[I->op].can_eliminate) continue;
-
+   agx_foreach_instr_global_safe_rev(ctx, I) {
+      if (agx_opcodes_info[I->op].can_eliminate) {
          bool needed = false;
 
          agx_foreach_dest(I, d) {
@@ -55,10 +43,15 @@ agx_dce(agx_context *ctx)
 
          if (!needed) {
             agx_remove_instruction(I);
-            progress = true;
+            continue;
          }
       }
 
-      free(seen);
-   } while (progress);
+      agx_foreach_src(I, s) {
+         if (I->src[s].type == AGX_INDEX_NORMAL)
+            BITSET_SET(seen, I->src[s].value);
+      }
+   }
+
+   free(seen);
 }

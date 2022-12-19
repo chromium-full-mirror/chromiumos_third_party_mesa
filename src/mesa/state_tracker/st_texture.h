@@ -46,7 +46,7 @@ struct st_texture_image_transfer
    /* For compressed texture fallback. */
    GLubyte *temp_data; /**< Temporary compressed texture storage. */
    unsigned temp_stride; /**< Stride of the compressed texture storage. */
-   struct pipe_box box; /**< Region of the transfer's resource to write. */
+   GLubyte *map; /**< Saved map pointer of the uncompressed transfer. */
 };
 
 
@@ -178,14 +178,6 @@ st_texture_match_image(struct st_context *st,
                        const struct pipe_resource *pt,
                        const struct gl_texture_image *image);
 
-/* Insert a transfer pointer into the image's transfer array at the specified
- * index. The array is reallocated if necessary.
- */
-void
-st_texture_image_insert_transfer(struct gl_texture_image *stImage,
-                                 unsigned index,
-                                 struct pipe_transfer *transfer);
-
 /* Return a pointer to an image within a texture.  Return image stride as
  * well.
  */
@@ -247,15 +239,12 @@ st_convert_sampler(const struct st_context *st,
                    const struct gl_sampler_object *msamp,
                    float tex_unit_lod_bias,
                    struct pipe_sampler_state *sampler,
-                   bool seamless_cube_map,
-                   bool ignore_srgb_decode,
-                   bool glsl130_or_later);
+                   bool seamless_cube_map);
 
 void
 st_convert_sampler_from_unit(const struct st_context *st,
                              struct pipe_sampler_state *sampler,
-                             GLuint texUnit,
-                             bool glsl130_or_later);
+                             GLuint texUnit);
 
 struct pipe_sampler_view *
 st_update_single_texture(struct st_context *st,

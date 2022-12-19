@@ -30,6 +30,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "drm-uapi/i915_drm.h"
+
 #include "dev/intel_device_info.h"
 #include "common/intel_gem.h"
 
@@ -72,7 +74,7 @@ struct aub_hw_context {
 /* GEM context, as seen from userspace */
 struct aub_context {
    uint32_t id;
-   struct aub_hw_context hw_contexts[INTEL_ENGINE_CLASS_VIDEO + 1];
+   struct aub_hw_context hw_contexts[I915_ENGINE_CLASS_VIDEO + 1];
 };
 
 struct aub_file {
@@ -94,7 +96,7 @@ struct aub_file {
 
    struct {
       uint64_t hwsp_addr;
-   } engine_setup[INTEL_ENGINE_CLASS_VIDEO_ENHANCE + 1];
+   } engine_setup[I915_ENGINE_CLASS_VIDEO_ENHANCE + 1];
 
    struct aub_context contexts[MAX_CONTEXT_COUNT];
    int num_contexts;
@@ -129,9 +131,9 @@ void aub_write_trace_block(struct aub_file *aub,
                            uint32_t type, void *virtual,
                            uint32_t size, uint64_t gtt_offset);
 void aub_write_exec(struct aub_file *aub, uint32_t ctx_id, uint64_t batch_addr,
-                    uint64_t offset, enum intel_engine_class engine_class);
+                    uint64_t offset, enum drm_i915_gem_engine_class engine_class);
 void aub_write_context_execlists(struct aub_file *aub, uint64_t context_addr,
-                                 enum intel_engine_class engine_class);
+                                 enum drm_i915_gem_engine_class engine_class);
 
 uint32_t aub_write_context_create(struct aub_file *aub, uint32_t *ctx_id);
 

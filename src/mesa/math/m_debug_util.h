@@ -32,7 +32,7 @@
 #ifdef DEBUG_MATH  /* This code only used for debugging */
 
 
-#include <math.h>
+#include "c99_math.h"
 
 
 /* Comment this out to deactivate the cycle counter.

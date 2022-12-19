@@ -269,40 +269,38 @@ stw_call_window_proc(int nCode, WPARAM wParam, LPARAM lParam)
  * with its mutex locked.
  */
 struct stw_framebuffer *
-stw_framebuffer_create(HWND hWnd, const struct stw_pixelformat_info *pfi, enum stw_framebuffer_owner owner,
-                       struct st_manager *smapi)
+stw_framebuffer_create(HWND hWnd, int iPixelFormat, enum stw_framebuffer_owner owner)
 {
    struct stw_framebuffer *fb;
+   const struct stw_pixelformat_info *pfi;
 
    fb = CALLOC_STRUCT( stw_framebuffer );
    if (fb == NULL)
       return NULL;
 
    fb->hWnd = hWnd;
+   fb->iPixelFormat = iPixelFormat;
 
    if (stw_dev->stw_winsys->create_framebuffer)
       fb->winsys_framebuffer =
-         stw_dev->stw_winsys->create_framebuffer(stw_dev->screen, hWnd, pfi->iPixelFormat);
+         stw_dev->stw_winsys->create_framebuffer(stw_dev->screen, hWnd, iPixelFormat);
 
    /*
     * We often need a displayable pixel format to make GDI happy. Set it
     * here (always 1, i.e., out first pixel format) where appropriate.
     */
-   fb->iDisplayablePixelFormat = pfi->iPixelFormat <= stw_dev->pixelformat_count
-      ? pfi->iPixelFormat : 1;
+   fb->iDisplayablePixelFormat = iPixelFormat <= stw_dev->pixelformat_count
+      ? iPixelFormat : 1;
    fb->owner = owner;
 
-   fb->pfi = pfi;
-   fb->stfb = stw_st_create_framebuffer( fb, smapi );
+   fb->pfi = pfi = stw_pixelformat_get_info( iPixelFormat );
+   fb->stfb = stw_st_create_framebuffer( fb );
    if (!fb->stfb) {
       FREE( fb );
       return NULL;
    }
 
    fb->refcnt = 1;
-
-   /* A -1 means defer to the global stw_dev->swap_interval */
-   fb->swap_interval = -1;
 
    /*
     * Windows can be sometimes have zero width and or height, but we ensure
@@ -497,9 +495,7 @@ DrvSetPixelFormat(HDC hdc, LONG iPixelFormat)
       return bPbuffer;
    }
 
-   const struct stw_pixelformat_info *pfi = stw_pixelformat_get_info(iPixelFormat);
-
-   fb = stw_framebuffer_create(WindowFromDC(hdc), pfi, STW_FRAMEBUFFER_WGL_WINDOW, stw_dev->smapi);
+   fb = stw_framebuffer_create(WindowFromDC(hdc), iPixelFormat, STW_FRAMEBUFFER_WGL_WINDOW);
    if (!fb) {
       return FALSE;
    }
@@ -528,7 +524,7 @@ stw_pixelformat_get(HDC hdc)
 
    fb = stw_framebuffer_from_hdc(hdc);
    if (fb) {
-      iPixelFormat = fb->pfi->iPixelFormat;
+      iPixelFormat = fb->iPixelFormat;
       stw_framebuffer_unlock(fb);
    }
 
@@ -608,8 +604,7 @@ stw_framebuffer_present_locked(HDC hdc,
                                struct pipe_resource *res)
 {
    if (fb->winsys_framebuffer) {
-      int interval = fb->swap_interval == -1 ? stw_dev->swap_interval : fb->swap_interval;
-      BOOL result = fb->winsys_framebuffer->present(fb->winsys_framebuffer, interval);
+      BOOL result = fb->winsys_framebuffer->present(fb->winsys_framebuffer);
 
       stw_framebuffer_update(fb);
       stw_notify_current_locked(fb);
@@ -658,7 +653,7 @@ stw_framebuffer_present_locked(HDC hdc,
  * This is for the WGL_ARB_swap_interval extension.
  */
 static void
-wait_swap_interval(struct stw_framebuffer *fb, int interval)
+wait_swap_interval(struct stw_framebuffer *fb)
 {
    /* Note: all time variables here are in units of microseconds */
    int64_t cur_time = os_time_get_nano() / 1000;
@@ -667,7 +662,7 @@ wait_swap_interval(struct stw_framebuffer *fb, int interval)
       /* Compute time since previous swap */
       int64_t delta = cur_time - fb->prev_swap_time;
       int64_t min_swap_period =
-         1.0e6 / stw_dev->refresh_rate * interval;
+         1.0e6 / stw_dev->refresh_rate * stw_dev->swap_interval;
 
       /* If time since last swap is less than wait period, wait.
        * Note that it's possible for the delta to be negative because of
@@ -709,9 +704,8 @@ stw_framebuffer_swap_locked(HDC hdc, struct stw_framebuffer *fb)
       }
    }
 
-   int interval = fb->swap_interval == -1 ? stw_dev->swap_interval : fb->swap_interval;
-   if (interval != 0 && !fb->winsys_framebuffer) {
-      wait_swap_interval(fb, interval);
+   if (stw_dev->swap_interval != 0 && !fb->winsys_framebuffer) {
+      wait_swap_interval(fb);
    }
 
    return stw_st_swap_framebuffer_locked(hdc, ctx->st, fb->stfb);

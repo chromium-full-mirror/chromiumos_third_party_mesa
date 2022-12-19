@@ -131,7 +131,7 @@ __getProgramName()
 }
 
 #    define GET_PROGRAM_NAME() __getProgramName()
-#elif DETECT_OS_WINDOWS
+#elif defined(WIN32)
 static const char *
 __getProgramName()
 {

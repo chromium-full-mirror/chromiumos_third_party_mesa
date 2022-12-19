@@ -22,9 +22,10 @@
  */
 
 #include "d3d12_bufmgr.h"
-#include "d3d12_context.h"
 #include "d3d12_format.h"
 #include "d3d12_screen.h"
+
+#include "D3D12ResourceState.h"
 
 #include "pipebuffer/pb_buffer.h"
 #include "pipebuffer/pb_bufmgr.h"
@@ -32,6 +33,7 @@
 #include "util/format/u_format.h"
 #include "util/u_memory.h"
 
+#include <directx/d3d12.h>
 #include <dxguids/dxguids.h>
 
 struct d3d12_bufmgr {
@@ -50,34 +52,27 @@ d3d12_bufmgr(struct pb_manager *mgr)
    return (struct d3d12_bufmgr *)mgr;
 }
 
-static void
-describe_direct_bo(char *buf, struct d3d12_bo *ptr)
+static struct TransitionableResourceState *
+create_trans_state(ID3D12Resource *res, enum pipe_format format)
 {
-   sprintf(buf, "d3d12_bo<direct,%p,0x%x>", ptr->res, (unsigned)ptr->estimated_size);
-}
+   D3D12_RESOURCE_DESC desc = res->GetDesc();
 
-static void
-describe_suballoc_bo(char *buf, struct d3d12_bo *ptr)
-{
-   char res[128];
-   uint64_t offset;
-   d3d12_bo *base = d3d12_bo_get_base(ptr, &offset);
-   describe_direct_bo(res, base);
-   sprintf(buf, "d3d12_bo<suballoc<%s>,0x%x,0x%x>", res,
-           (unsigned)ptr->buffer->size, (unsigned)offset);
-}
+   // Calculate the total number of subresources
+   unsigned arraySize = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ?
+                        1 : desc.DepthOrArraySize;
+   unsigned total_subresources = desc.MipLevels *
+                                 arraySize *
+                                 d3d12_non_opaque_plane_count(desc.Format);
+   total_subresources *= util_format_has_stencil(util_format_description(format)) ?
+                         2 : 1;
 
-void
-d3d12_debug_describe_bo(char *buf, struct d3d12_bo *ptr)
-{
-   if (ptr->buffer)
-      describe_suballoc_bo(buf, ptr);
-   else
-      describe_direct_bo(buf, ptr);
+   return new TransitionableResourceState(res,
+                                          total_subresources,
+                                          SupportsSimultaneousAccess(desc));
 }
 
 struct d3d12_bo *
-d3d12_bo_wrap_res(struct d3d12_screen *screen, ID3D12Resource *res, enum d3d12_residency_status residency)
+d3d12_bo_wrap_res(struct d3d12_screen *screen, ID3D12Resource *res, enum pipe_format format, enum d3d12_residency_status residency)
 {
    struct d3d12_bo *bo;
 
@@ -85,22 +80,15 @@ d3d12_bo_wrap_res(struct d3d12_screen *screen, ID3D12Resource *res, enum d3d12_r
    if (!bo)
       return NULL;
 
-   D3D12_RESOURCE_DESC desc = GetDesc(res);
-   unsigned array_size = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : desc.DepthOrArraySize;
-   unsigned total_subresources = desc.MipLevels * array_size * d3d12_non_opaque_plane_count(desc.Format);
-   bool supports_simultaneous_access = d3d12_resource_supports_simultaneous_access(&desc);
-
-   pipe_reference_init(&bo->reference, 1);
-   bo->screen = screen;
+   bo->refcount = 1;
    bo->res = res;
-   bo->unique_id = p_atomic_inc_return(&screen->resource_id_generator);
-   if (!supports_simultaneous_access)
-      d3d12_resource_state_init(&bo->global_state, total_subresources, false);
+   bo->trans_state = create_trans_state(res, format);
 
    bo->residency_status = residency;
    bo->last_used_timestamp = 0;
-   screen->dev->GetCopyableFootprints(&desc, 0, total_subresources, 0, nullptr, nullptr, nullptr, &bo->estimated_size);
-   if (residency == d3d12_resident) {
+   D3D12_RESOURCE_DESC desc = res->GetDesc();
+   screen->dev->GetCopyableFootprints(&desc, 0, bo->trans_state->NumSubresources(), 0, nullptr, nullptr, nullptr, &bo->estimated_size);
+   if (residency != d3d12_evicted) {
       mtx_lock(&screen->submit_mutex);
       list_add(&bo->residency_list_entry, &screen->residency_list);
       mtx_unlock(&screen->submit_mutex);
@@ -139,7 +127,7 @@ d3d12_bo_new(struct d3d12_screen *screen, uint64_t size, const pb_desc *pb_desc)
    enum d3d12_residency_status init_residency = screen->support_create_not_resident ?
       d3d12_evicted : d3d12_resident;
 
-   D3D12_HEAP_PROPERTIES heap_pris = GetCustomHeapProperties(dev, heap_type);
+   D3D12_HEAP_PROPERTIES heap_pris = dev->GetCustomHeapProperties(0, heap_type);
    HRESULT hres = dev->CreateCommittedResource(&heap_pris,
                                                heap_flags,
                                                &res_desc,
@@ -150,11 +138,11 @@ d3d12_bo_new(struct d3d12_screen *screen, uint64_t size, const pb_desc *pb_desc)
    if (FAILED(hres))
       return NULL;
 
-   return d3d12_bo_wrap_res(screen, res, init_residency);
+   return d3d12_bo_wrap_res(screen, res, PIPE_FORMAT_NONE, init_residency);
 }
 
 struct d3d12_bo *
-d3d12_bo_wrap_buffer(struct d3d12_screen *screen, struct pb_buffer *buf)
+d3d12_bo_wrap_buffer(struct pb_buffer *buf)
 {
    struct d3d12_bo *bo;
 
@@ -162,11 +150,9 @@ d3d12_bo_wrap_buffer(struct d3d12_screen *screen, struct pb_buffer *buf)
    if (!bo)
       return NULL;
 
-   pipe_reference_init(&bo->reference, 1);
-   bo->screen = screen;
+   bo->refcount = 1;
    bo->buffer = buf;
-   bo->unique_id = p_atomic_inc_return(&screen->resource_id_generator);
-   bo->residency_status = d3d12_evicted;
+   bo->trans_state = NULL; /* State from base BO will be used */
 
    return bo;
 }
@@ -177,29 +163,18 @@ d3d12_bo_unreference(struct d3d12_bo *bo)
    if (bo == NULL)
       return;
 
-   assert(pipe_is_referenced(&bo->reference));
+   assert(p_atomic_read(&bo->refcount) > 0);
 
-   if (pipe_reference_described(&bo->reference, NULL,
-                                (debug_reference_descriptor)
-                                d3d12_debug_describe_bo)) {
-      if (bo->buffer)
+   if (p_atomic_dec_zero(&bo->refcount)) {
+      if (bo->buffer) {
          pb_reference(&bo->buffer, NULL);
-
-      mtx_lock(&bo->screen->submit_mutex);
-
-      if (bo->residency_status == d3d12_resident)
-         list_del(&bo->residency_list_entry);
-
-      /* MSVC's offsetof fails when the name is ambiguous between struct and function */
-      typedef struct d3d12_context d3d12_context_type;
-      list_for_each_entry(d3d12_context_type, ctx, &bo->screen->context_list, context_list_entry)
-         util_dynarray_append(&ctx->recently_destroyed_bos, uint64_t, bo->unique_id);
-
-      mtx_unlock(&bo->screen->submit_mutex);
-
-      d3d12_resource_state_cleanup(&bo->global_state);
-      if (bo->res)
+      } else {
+         delete bo->trans_state;
          bo->res->Release();
+         if (bo->residency_status != d3d12_evicted) {
+            list_del(&bo->residency_list_entry);
+         }
+      }
       FREE(bo);
    }
 }
@@ -320,6 +295,10 @@ d3d12_bufmgr_create_buffer(struct pb_manager *pmgr,
    buf = CALLOC_STRUCT(d3d12_buffer);
    if (!buf)
       return NULL;
+
+   // Align the buffer to D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT
+   // in case it is to be used as a CBV.
+   size = align64(size, D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT);
 
    pipe_reference_init(&buf->base.reference, 1);
    buf->base.alignment_log2 = util_logbase2(pb_desc->alignment);

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 echo -e "\e[0Ksection_start:$(date +%s):test_setup[collapsed=true]\r\e[0Kpreparing test setup"
 

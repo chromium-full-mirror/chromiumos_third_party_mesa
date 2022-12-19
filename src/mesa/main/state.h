@@ -40,12 +40,6 @@ _mesa_update_state(struct gl_context *ctx);
 extern void
 _mesa_update_state_locked(struct gl_context *ctx);
 
-/*
- * Update state for glClear calls
-*/
-extern void
-_mesa_update_clear_state(struct gl_context *ctx);
-
 
 extern void
 _mesa_set_vp_override(struct gl_context *ctx, GLboolean flag);

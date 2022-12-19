@@ -163,7 +163,8 @@ nine_csmt_create( struct NineDevice9 *This )
 
     ctx->device = This;
 
-    if (thrd_success != u_thread_create(&ctx->worker, nine_csmt_worker, ctx)) {
+    ctx->worker = u_thread_create(nine_csmt_worker, ctx);
+    if (!ctx->worker) {
         nine_queue_delete(ctx->pool);
         FREE(ctx);
         return NULL;
@@ -417,7 +418,7 @@ prepare_vs_constants_userbuf_swvp(struct NineDevice9 *device)
         context->pipe_data.cb0_swvp.buffer_size = cb.buffer_size;
         context->pipe_data.cb0_swvp.user_buffer = cb.user_buffer;
 
-        cb.user_buffer = (int8_t *)cb.user_buffer + 4096 * sizeof(float[4]);
+        cb.user_buffer = (char *)cb.user_buffer + 4096 * sizeof(float[4]);
         context->pipe_data.cb1_swvp.buffer_offset = cb.buffer_offset;
         context->pipe_data.cb1_swvp.buffer_size = cb.buffer_size;
         context->pipe_data.cb1_swvp.user_buffer = cb.user_buffer;
@@ -839,7 +840,7 @@ update_vertex_elements(struct NineDevice9 *device)
     const struct NineVertexShader9 *vs;
     unsigned n, b, i;
     int index;
-    int8_t vdecl_index_map[16]; /* vs->num_inputs <= 16 */
+    char vdecl_index_map[16]; /* vs->num_inputs <= 16 */
     uint16_t used_streams = 0;
     int dummy_vbo_stream = -1;
     BOOL need_dummy_vbo = FALSE;
@@ -1437,8 +1438,11 @@ CSMT_ITEM_NO_WAIT(nine_context_set_render_state,
         }
     }
     if (unlikely(State == D3DRS_ALPHATESTENABLE && (context->rs[NINED3DRS_ALPHACOVERAGE] & 2))) {
+        DWORD alphacoverage_prev = context->rs[NINED3DRS_ALPHACOVERAGE];
         context->rs[NINED3DRS_ALPHACOVERAGE] &= 6;
-        context->rs[NINED3DRS_ALPHACOVERAGE] |= (Value ? 1 : 0);
+        context->rs[NINED3DRS_ALPHACOVERAGE] |= (context->rs[D3DRS_ALPHATESTENABLE] ? 1 : 0);
+        if (context->rs[NINED3DRS_ALPHACOVERAGE] != alphacoverage_prev)
+            context->changed.group |= NINE_STATE_BLEND;
     }
 
     context->rs[State] = nine_fix_render_state_value(State, Value);
@@ -2369,7 +2373,6 @@ init_draw_info(struct pipe_draw_info *info,
     info->increment_draw_id = FALSE;
     info->was_line_loop = FALSE;
     info->restart_index = 0;
-    info->view_mask = 0;
 }
 
 CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
@@ -2380,9 +2383,6 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_primitive,
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
     struct pipe_draw_start_count_bias draw;
-
-    if (context->vs && context->vs->swvp_only && !context->swvp)
-        return;
 
     nine_update_state(device);
 
@@ -2408,9 +2408,6 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive,
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
     struct pipe_draw_start_count_bias draw;
-
-    if (context->vs && context->vs->swvp_only && !context->swvp)
-        return;
 
     nine_update_state(device);
 
@@ -2441,9 +2438,6 @@ CSMT_ITEM_NO_WAIT(nine_context_draw_indexed_primitive_from_vtxbuf_idxbuf,
     struct nine_context *context = &device->context;
     struct pipe_draw_info info;
     struct pipe_draw_start_count_bias draw;
-
-    if (context->vs && context->vs->swvp_only && !context->swvp)
-        return;
 
     nine_update_state(device);
 
@@ -2841,10 +2835,10 @@ void nine_state_restore_non_cso(struct NineDevice9 *device)
 {
     struct nine_context *context = &device->context;
 
-    context->changed.group = NINE_STATE_ALL; /* TODO: we can remove states that have prepared commits */
+    context->changed.group = NINE_STATE_ALL;
     context->changed.vtxbuf = (1ULL << device->caps.MaxStreams) - 1;
     context->changed.ucp = TRUE;
-    context->commit |= 0xffffffff; /* re-commit everything */
+    context->commit |= NINE_STATE_COMMIT_CONST_VS | NINE_STATE_COMMIT_CONST_PS;
     context->enabled_sampler_count_vs = 0;
     context->enabled_sampler_count_ps = 0;
 }
@@ -3047,8 +3041,8 @@ update_vertex_elements_sw(struct NineDevice9 *device)
     const struct NineVertexShader9 *vs;
     unsigned n, b, i;
     int index;
-    int8_t vdecl_index_map[16]; /* vs->num_inputs <= 16 */
-    int8_t used_streams[device->caps.MaxStreams];
+    char vdecl_index_map[16]; /* vs->num_inputs <= 16 */
+    char used_streams[device->caps.MaxStreams];
     int dummy_vbo_stream = -1;
     BOOL need_dummy_vbo = FALSE;
     struct cso_velems_state ve;
@@ -3213,7 +3207,7 @@ update_vs_constants_sw(struct NineDevice9 *device)
         if (cb.buffer)
             pipe_resource_reference(&cb.buffer, NULL);
 
-        cb.user_buffer = (int8_t *)buf + 4096 * sizeof(float[4]);
+        cb.user_buffer = (char *)buf + 4096 * sizeof(float[4]);
 
         pipe_sw->set_constant_buffer(pipe_sw, PIPE_SHADER_VERTEX, 1, false, &cb);
         if (cb.buffer)

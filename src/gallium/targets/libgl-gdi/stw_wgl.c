@@ -80,7 +80,6 @@ WINGDIAPI BOOL APIENTRY
 wglDeleteContext(
    HGLRC hglrc )
 {
-   DrvReleaseContext((DHGLRC)(UINT_PTR)hglrc);
    return DrvDeleteContext((DHGLRC)(UINT_PTR)hglrc );
 }
 

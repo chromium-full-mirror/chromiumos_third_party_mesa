@@ -66,19 +66,21 @@ agx_push_location_direct(struct agx_context *ctx, struct agx_push push,
       return ptr.gpu;
    }
 
-   case AGX_PUSH_VBO_BASE: {
-      struct agx_ptr ptr = agx_pool_alloc_aligned(&batch->pool, sizeof(uint64_t), 8);
-      uint64_t *address = ptr.cpu;
+   case AGX_PUSH_VBO_BASES: {
+      unsigned count = util_last_bit(ctx->vb_mask);
+      struct agx_ptr ptr = agx_pool_alloc_aligned(&batch->pool, count * sizeof(uint64_t), 8);
+      uint64_t *addresses = ptr.cpu;
 
-      assert(ctx->vb_mask & BITFIELD_BIT(push.vbo) && "oob");
+      u_foreach_bit(i, ctx->vb_mask) {
+         struct pipe_vertex_buffer vb = ctx->vertex_buffers[i];
+         assert(!vb.is_user_buffer);
 
-      struct pipe_vertex_buffer vb = ctx->vertex_buffers[push.vbo];
-      assert(!vb.is_user_buffer);
+         struct agx_bo *bo = agx_resource(vb.buffer.resource)->bo;
+         agx_batch_add_bo(batch, bo);
 
-      struct agx_bo *bo = agx_resource(vb.buffer.resource)->bo;
-      agx_batch_add_bo(batch, bo);
+         addresses[i] = bo->ptr.gpu + vb.buffer_offset;
+      }
 
-      *address = bo->ptr.gpu + vb.buffer_offset;
       return ptr.gpu;
    }
 
@@ -88,10 +90,21 @@ agx_push_location_direct(struct agx_context *ctx, struct agx_push push,
             sizeof(ctx->blend_color), 8);
    }
 
-   case AGX_PUSH_TEXTURE_BASE: {
-      struct agx_ptr ptr = agx_pool_alloc_aligned(&batch->pool, sizeof(uint64_t), 8);
-      uint64_t *address = ptr.cpu;
-      *address = batch->textures;
+   case AGX_PUSH_ARRAY_SIZE_MINUS_1: {
+      struct agx_stage *st = &ctx->stage[stage];
+      unsigned count = st->texture_count;
+      struct agx_ptr ptr = agx_pool_alloc_aligned(&batch->pool, count * sizeof(uint16_t), 8);
+      uint16_t *d1 = ptr.cpu;
+
+      for (unsigned i = 0; i < count; ++i) {
+         unsigned array_size = 1;
+
+         if (st->textures[i])
+            array_size = st->textures[i]->base.texture->array_size;
+
+         d1[i] = array_size - 1;
+      }
+
       return ptr.gpu;
    }
 

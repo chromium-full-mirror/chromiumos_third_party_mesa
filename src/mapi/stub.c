@@ -31,7 +31,6 @@
 #include "c11/threads.h"
 
 #include "util/macros.h"
-#include "util/simple_mtx.h"
 #include "u_current.h"
 #include "entry.h"
 #include "stub.h"
@@ -119,11 +118,11 @@ stub_add_dynamic(const char *name)
 struct mapi_stub *
 stub_find_dynamic(const char *name, int generate)
 {
-   static simple_mtx_t dynamic_mutex = SIMPLE_MTX_INITIALIZER;
+   static mtx_t dynamic_mutex = _MTX_INITIALIZER_NP;
    struct mapi_stub *stub = NULL;
    int count, i;
-
-   simple_mtx_lock(&dynamic_mutex);
+   
+   mtx_lock(&dynamic_mutex);
 
    if (generate)
       assert(!stub_find_public(name));
@@ -140,7 +139,7 @@ stub_find_dynamic(const char *name, int generate)
    if (generate && !stub)
          stub = stub_add_dynamic(name);
 
-   simple_mtx_unlock(&dynamic_mutex);
+   mtx_unlock(&dynamic_mutex);
 
    return stub;
 }

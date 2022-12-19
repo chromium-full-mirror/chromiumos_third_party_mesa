@@ -316,11 +316,13 @@ end:
 }
 
 
-void
-_mesa_bitmap(struct gl_context *ctx, GLsizei width, GLsizei height,
-             GLfloat xorig, GLfloat yorig, GLfloat xmove, GLfloat ymove,
-             const GLubyte *bitmap, struct pipe_resource *tex)
+void GLAPIENTRY
+_mesa_Bitmap( GLsizei width, GLsizei height,
+              GLfloat xorig, GLfloat yorig, GLfloat xmove, GLfloat ymove,
+              const GLubyte *bitmap )
 {
+   GET_CURRENT_CONTEXT(ctx);
+
    FLUSH_VERTICES(ctx, 0, 0);
 
    if (width < 0 || height < 0) {
@@ -352,7 +354,7 @@ _mesa_bitmap(struct gl_context *ctx, GLsizei width, GLsizei height,
          GLint x = util_ifloor(ctx->Current.RasterPos[0] + epsilon - xorig);
          GLint y = util_ifloor(ctx->Current.RasterPos[1] + epsilon - yorig);
 
-         if (!tex && ctx->Unpack.BufferObj) {
+         if (ctx->Unpack.BufferObj) {
             /* unpack from PBO */
             if (!_mesa_validate_pbo_access(2, &ctx->Unpack, width, height,
                                            1, GL_COLOR_INDEX, GL_BITMAP,
@@ -369,7 +371,7 @@ _mesa_bitmap(struct gl_context *ctx, GLsizei width, GLsizei height,
             }
          }
 
-         st_Bitmap(ctx, x, y, width, height, &ctx->Unpack, bitmap, tex);
+         st_Bitmap( ctx, x, y, width, height, &ctx->Unpack, bitmap );
       }
    }
    else if (ctx->RenderMode == GL_FEEDBACK) {
@@ -393,14 +395,4 @@ _mesa_bitmap(struct gl_context *ctx, GLsizei width, GLsizei height,
    if (MESA_DEBUG_FLAGS & DEBUG_ALWAYS_FLUSH) {
       _mesa_flush(ctx);
    }
-}
-
-void GLAPIENTRY
-_mesa_Bitmap(GLsizei width, GLsizei height,
-             GLfloat xorig, GLfloat yorig, GLfloat xmove, GLfloat ymove,
-             const GLubyte *bitmap)
-{
-   GET_CURRENT_CONTEXT(ctx);
-
-   _mesa_bitmap(ctx, width, height, xorig, yorig, xmove, ymove, bitmap, NULL);
 }

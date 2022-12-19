@@ -28,6 +28,7 @@
  */
 
 #include "amdgpu_cs.h"
+#include "amdgpu_public.h"
 
 #include "util/os_file.h"
 #include "util/os_misc.h"
@@ -44,7 +45,7 @@
 #include "sid.h"
 
 static struct hash_table *dev_tab = NULL;
-static simple_mtx_t dev_tab_mutex = SIMPLE_MTX_INITIALIZER;
+static simple_mtx_t dev_tab_mutex = _SIMPLE_MTX_INITIALIZER_NP;
 
 #if DEBUG
 DEBUG_GET_ONCE_BOOL_OPTION(all_bos, "RADEON_ALL_BOS", false)
@@ -60,25 +61,23 @@ static void handle_env_var_force_family(struct amdgpu_winsys *ws)
 
       for (i = CHIP_TAHITI; i < CHIP_LAST; i++) {
          if (!strcmp(family, ac_get_llvm_processor_name(i))) {
-            /* Override family and gfx_level. */
+            /* Override family and chip_class. */
             ws->info.family = i;
             ws->info.name = "NOOP";
             strcpy(ws->info.lowercase_name , "noop");
 
-            if (i >= CHIP_GFX1100)
-               ws->info.gfx_level = GFX11;
-            else if (i >= CHIP_NAVI21)
-               ws->info.gfx_level = GFX10_3;
+            if (i >= CHIP_SIENNA_CICHLID)
+               ws->info.chip_class = GFX10_3;
             else if (i >= CHIP_NAVI10)
-               ws->info.gfx_level = GFX10;
+               ws->info.chip_class = GFX10;
             else if (i >= CHIP_VEGA10)
-               ws->info.gfx_level = GFX9;
+               ws->info.chip_class = GFX9;
             else if (i >= CHIP_TONGA)
-               ws->info.gfx_level = GFX8;
+               ws->info.chip_class = GFX8;
             else if (i >= CHIP_BONAIRE)
-               ws->info.gfx_level = GFX7;
+               ws->info.chip_class = GFX7;
             else
-               ws->info.gfx_level = GFX6;
+               ws->info.chip_class = GFX6;
 
             /* Don't submit any IBs. */
             setenv("RADEON_NOOP", "1", 1);
@@ -95,7 +94,7 @@ static bool do_winsys_init(struct amdgpu_winsys *ws,
                            const struct pipe_screen_config *config,
                            int fd)
 {
-   if (!ac_query_gpu_info(fd, ws->dev, &ws->info))
+   if (!ac_query_gpu_info(fd, ws->dev, &ws->info, &ws->amdinfo))
       goto fail;
 
    /* TODO: Enable this once the kernel handles it efficiently. */
@@ -363,34 +362,6 @@ static bool amdgpu_cs_is_secure(struct radeon_cmdbuf *rcs)
    return cs->csc->secure;
 }
 
-static uint32_t
-radeon_to_amdgpu_pstate(enum radeon_ctx_pstate pstate)
-{
-   switch (pstate) {
-   case RADEON_CTX_PSTATE_NONE:
-      return AMDGPU_CTX_STABLE_PSTATE_NONE;
-   case RADEON_CTX_PSTATE_STANDARD:
-      return AMDGPU_CTX_STABLE_PSTATE_STANDARD;
-   case RADEON_CTX_PSTATE_MIN_SCLK:
-      return AMDGPU_CTX_STABLE_PSTATE_MIN_SCLK;
-   case RADEON_CTX_PSTATE_MIN_MCLK:
-      return AMDGPU_CTX_STABLE_PSTATE_MIN_MCLK;
-   case RADEON_CTX_PSTATE_PEAK:
-      return AMDGPU_CTX_STABLE_PSTATE_PEAK;
-   default:
-      unreachable("Invalid pstate");
-   }
-}
-
-static bool
-amdgpu_cs_set_pstate(struct radeon_cmdbuf *rcs, enum radeon_ctx_pstate pstate)
-{
-   struct amdgpu_cs *cs = amdgpu_cs(rcs);
-   uint32_t amdgpu_pstate = radeon_to_amdgpu_pstate(pstate);
-   return amdgpu_cs_ctx_stable_pstate(cs->ctx->ctx,
-      AMDGPU_CTX_OP_SET_STABLE_PSTATE, amdgpu_pstate, NULL) == 0;
-}
-
 PUBLIC struct radeon_winsys *
 amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 		     radeon_screen_create_t screen_create)
@@ -479,9 +450,9 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
          goto fail_alloc;
 
       /* Create managers. */
-      pb_cache_init(&aws->bo_cache, RADEON_NUM_HEAPS,
+      pb_cache_init(&aws->bo_cache, RADEON_MAX_CACHED_HEAPS,
                     500000, aws->check_vm ? 1.0f : 2.0f, 0,
-                    ((uint64_t)aws->info.vram_size_kb + aws->info.gart_size_kb) * 1024 / 8, aws,
+                    (aws->info.vram_size + aws->info.gart_size) / 8, aws,
                     /* Cast to void* because one of the function parameters
                      * is a struct pointer instead of void*. */
                     (void*)amdgpu_bo_destroy, (void*)amdgpu_bo_can_reclaim);
@@ -499,10 +470,25 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 
          if (!pb_slabs_init(&aws->bo_slabs[i],
                             min_order, max_order,
-                            RADEON_NUM_HEAPS, true,
+                            RADEON_MAX_SLAB_HEAPS, true,
                             aws,
                             amdgpu_bo_can_reclaim_slab,
-                            amdgpu_bo_slab_alloc,
+                            amdgpu_bo_slab_alloc_normal,
+                            /* Cast to void* because one of the function parameters
+                             * is a struct pointer instead of void*. */
+                            (void*)amdgpu_bo_slab_free)) {
+            amdgpu_winsys_destroy(&ws->base);
+            simple_mtx_unlock(&dev_tab_mutex);
+            return NULL;
+         }
+
+         if (aws->info.has_tmz_support &&
+             !pb_slabs_init(&aws->bo_slabs_encrypted[i],
+                            min_order, max_order,
+                            RADEON_MAX_SLAB_HEAPS, true,
+                            aws,
+                            amdgpu_bo_can_reclaim_slab,
+                            amdgpu_bo_slab_alloc_encrypted,
                             /* Cast to void* because one of the function parameters
                              * is a struct pointer instead of void*. */
                             (void*)amdgpu_bo_slab_free)) {
@@ -560,7 +546,6 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
    ws->base.read_registers = amdgpu_read_registers;
    ws->base.pin_threads_to_L3_cache = amdgpu_pin_threads_to_L3_cache;
    ws->base.cs_is_secure = amdgpu_cs_is_secure;
-   ws->base.cs_set_pstate = amdgpu_cs_set_pstate;
 
    amdgpu_bo_init_functions(ws);
    amdgpu_cs_init_functions(ws);

@@ -216,9 +216,6 @@ EGL_FUNCTIONS = (
     # EGL_CHROMIUM_get_sync_values
     _eglFunc("eglGetSyncValuesCHROMIUM",             "display"),
 
-    # EGL_ANGLE_sync_control_rate
-    _eglFunc("eglGetMscRateANGLE",                   "display"),
-
     # EGL_ANDROID_native_fence_sync
     _eglFunc("eglDupNativeFenceFDANDROID",           "display"),
 

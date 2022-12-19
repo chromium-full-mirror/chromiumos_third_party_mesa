@@ -1,82 +1,35 @@
 /*
  * Copyright © 2021 Google, Inc.
- * SPDX-License-Identifier: MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include <perfetto.h>
 
 #include "tu_perfetto.h"
 
+#include "util/u_perfetto.h"
 #include "util/hash_table.h"
-#include "util/perf/u_perfetto.h"
 
 #include "tu_tracepoints.h"
 #include "tu_tracepoints_perfetto.h"
-
-/* we can't include tu_drm.h and tu_device.h */
-extern "C" {
-int
-tu_device_get_gpu_timestamp(struct tu_device *dev,
-                            uint64_t *ts);
-int
-tu_device_get_suspend_count(struct tu_device *dev,
-                            uint64_t *suspend_count);
-uint64_t
-tu_device_ticks_to_ns(struct tu_device *dev, uint64_t ts);
-
-}
-
-/**
- * Queue-id's
- */
-enum {
-   DEFAULT_HW_QUEUE_ID,
-};
-
-/**
- * Render-stage id's
- */
-enum tu_stage_id {
-   CMD_BUFFER_STAGE_ID,
-   RENDER_PASS_STAGE_ID,
-   BINNING_STAGE_ID,
-   GMEM_STAGE_ID,
-   BYPASS_STAGE_ID,
-   BLIT_STAGE_ID,
-   COMPUTE_STAGE_ID,
-   CLEAR_SYSMEM_STAGE_ID,
-   CLEAR_GMEM_STAGE_ID,
-   GMEM_LOAD_STAGE_ID,
-   GMEM_STORE_STAGE_ID,
-   SYSMEM_RESOLVE_STAGE_ID,
-   // TODO add the rest from fd_stage_id
-};
-
-static const struct {
-   const char *name;
-   const char *desc;
-} queues[] = {
-   [DEFAULT_HW_QUEUE_ID] = {"GPU Queue 0", "Default Adreno Hardware Queue"},
-};
-
-static const struct {
-   const char *name;
-   const char *desc;
-} stages[] = {
-   [CMD_BUFFER_STAGE_ID]     = { "Command Buffer" },
-   [RENDER_PASS_STAGE_ID]    = { "Render Pass" },
-   [BINNING_STAGE_ID]        = { "Binning", "Perform Visibility pass and determine target bins" },
-   [GMEM_STAGE_ID]           = { "GMEM", "Rendering to GMEM" },
-   [BYPASS_STAGE_ID]         = { "Bypass", "Rendering to system memory" },
-   [BLIT_STAGE_ID]           = { "Blit", "Performing a Blit operation" },
-   [COMPUTE_STAGE_ID]        = { "Compute", "Compute job" },
-   [CLEAR_SYSMEM_STAGE_ID]   = { "Clear Sysmem", "" },
-   [CLEAR_GMEM_STAGE_ID]     = { "Clear GMEM", "Per-tile (GMEM) clear" },
-   [GMEM_LOAD_STAGE_ID]      = { "GMEM Load", "Per tile system memory to GMEM load" },
-   [GMEM_STORE_STAGE_ID]     = { "GMEM Store", "Per tile GMEM to system memory store" },
-   [SYSMEM_RESOLVE_STAGE_ID] = { "SysMem Resolve", "System memory MSAA resolve" },
-   // TODO add the rest
-};
 
 static uint32_t gpu_clock_id;
 static uint64_t next_clock_sync_ns; /* cpu time of next clk sync */
@@ -180,68 +133,22 @@ send_descriptors(TuRenderpassDataSource::TraceContext &ctx, uint64_t ts_ns)
    }
 }
 
-static struct tu_perfetto_stage *
-stage_push(struct tu_device *dev)
-{
-   struct tu_perfetto_state *p = tu_device_get_perfetto_state(dev);
-
-   if (p->stage_depth >= ARRAY_SIZE(p->stages)) {
-      p->skipped_depth++;
-      return NULL;
-   }
-
-   return &p->stages[p->stage_depth++];
-}
-
-static struct tu_perfetto_stage *
-stage_pop(struct tu_device *dev)
-{
-   struct tu_perfetto_state *p = tu_device_get_perfetto_state(dev);
-
-   if (!p->stage_depth)
-      return NULL;
-
-   if (p->skipped_depth) {
-      p->skipped_depth--;
-      return NULL;
-   }
-
-   return &p->stages[--p->stage_depth];
-}
-
 static void
-stage_start(struct tu_device *dev, uint64_t ts_ns, enum tu_stage_id stage_id)
+stage_start(struct tu_device *dev, uint64_t ts_ns, enum tu_stage_id stage)
 {
-   struct tu_perfetto_stage *stage = stage_push(dev);
+   struct tu_perfetto_state *p = tu_device_get_perfetto_state(dev);
 
-   if (!stage) {
-      PERFETTO_ELOG("stage %d is nested too deep", stage_id);
-      return;
-   }
-
-   *stage = (struct tu_perfetto_stage){
-      .stage_id = stage_id,
-      .start_ts = ts_ns,
-   };
+   p->start_ts[stage] = ts_ns;
 }
 
 typedef void (*trace_payload_as_extra_func)(perfetto::protos::pbzero::GpuRenderStageEvent *, const void*);
 
 static void
-stage_end(struct tu_device *dev, uint64_t ts_ns, enum tu_stage_id stage_id,
+stage_end(struct tu_device *dev, uint64_t ts_ns, enum tu_stage_id stage,
           uint32_t submission_id, const void* payload = nullptr,
           trace_payload_as_extra_func payload_as_extra = nullptr)
 {
-   struct tu_perfetto_stage *stage = stage_pop(dev);
-
-   if (!stage)
-      return;
-
-   if (stage->stage_id != stage_id) {
-      PERFETTO_ELOG("stage %d ended while stage %d is expected",
-            stage_id, stage->stage_id);
-      return;
-   }
+   struct tu_perfetto_state *p = tu_device_get_perfetto_state(dev);
 
    /* If we haven't managed to calibrate the alignment between GPU and CPU
     * timestamps yet, then skip this trace, otherwise perfetto won't know
@@ -252,7 +159,7 @@ stage_end(struct tu_device *dev, uint64_t ts_ns, enum tu_stage_id stage_id,
 
    TuRenderpassDataSource::Trace([=](TuRenderpassDataSource::TraceContext tctx) {
       if (auto state = tctx.GetIncrementalState(); state->was_cleared) {
-         send_descriptors(tctx, stage->start_ts);
+         send_descriptors(tctx, p->start_ts[stage]);
          state->was_cleared = false;
       }
 
@@ -260,14 +167,14 @@ stage_end(struct tu_device *dev, uint64_t ts_ns, enum tu_stage_id stage_id,
 
       gpu_max_timestamp = MAX2(gpu_max_timestamp, ts_ns + gpu_timestamp_offset);
 
-      packet->set_timestamp(stage->start_ts + gpu_timestamp_offset);
+      packet->set_timestamp(p->start_ts[stage] + gpu_timestamp_offset);
       packet->set_timestamp_clock_id(gpu_clock_id);
 
       auto event = packet->set_gpu_render_stage_event();
       event->set_event_id(0); // ???
       event->set_hw_queue_id(DEFAULT_HW_QUEUE_ID);
-      event->set_duration(ts_ns - stage->start_ts);
-      event->set_stage_id(stage->stage_id);
+      event->set_duration(ts_ns - p->start_ts[stage]);
+      event->set_stage_id(stage);
       event->set_context((uintptr_t)dev);
       event->set_submission_id(submission_id);
 
@@ -300,15 +207,10 @@ sync_timestamp(struct tu_device *dev)
    if (cpu_ts < next_clock_sync_ns)
       return;
 
-   if (tu_device_get_gpu_timestamp(dev, &gpu_ts)) {
+    if (tu_device_get_gpu_timestamp(dev, &gpu_ts)) {
       PERFETTO_ELOG("Could not sync CPU and GPU clocks");
       return;
-   }
-
-   /* get cpu timestamp again because tu_device_get_gpu_timestamp can take
-    * >100us
-    */
-   cpu_ts = perfetto::base::GetBootTimeNs().count();
+    }
 
    uint64_t current_suspend_count = 0;
    /* If we fail to get it we will use a fallback */
@@ -400,13 +302,13 @@ tu_perfetto_submit(struct tu_device *dev, uint32_t submission_id)
  * collected.
  */
 
-#define CREATE_EVENT_CALLBACK(event_name, stage_id)                           \
+#define CREATE_EVENT_CALLBACK(event_name, stage)                              \
 void                                                                          \
 tu_start_##event_name(struct tu_device *dev, uint64_t ts_ns,                  \
                    const void *flush_data,                                    \
                    const struct trace_start_##event_name *payload)            \
 {                                                                             \
-   stage_start(dev, ts_ns, stage_id);                                         \
+   stage_start(dev, ts_ns, stage);                                            \
 }                                                                             \
                                                                               \
 void                                                                          \
@@ -417,12 +319,11 @@ tu_end_##event_name(struct tu_device *dev, uint64_t ts_ns,                    \
    auto trace_flush_data = (const struct tu_u_trace_submission_data *) flush_data; \
    uint32_t submission_id =                                                        \
       tu_u_trace_submission_data_get_submit_id(trace_flush_data);                  \
-   stage_end(dev, ts_ns, stage_id, submission_id, payload,                         \
+   stage_end(dev, ts_ns, stage, submission_id, payload,                            \
       (trace_payload_as_extra_func) &trace_payload_as_extra_end_##event_name);     \
 }
 
-CREATE_EVENT_CALLBACK(cmd_buffer, CMD_BUFFER_STAGE_ID)
-CREATE_EVENT_CALLBACK(render_pass, RENDER_PASS_STAGE_ID)
+CREATE_EVENT_CALLBACK(render_pass, SURFACE_STAGE_ID)
 CREATE_EVENT_CALLBACK(binning_ib, BINNING_STAGE_ID)
 CREATE_EVENT_CALLBACK(draw_ib_gmem, GMEM_STAGE_ID)
 CREATE_EVENT_CALLBACK(draw_ib_sysmem, BYPASS_STAGE_ID)

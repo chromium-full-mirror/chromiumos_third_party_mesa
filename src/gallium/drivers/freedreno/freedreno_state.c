@@ -29,9 +29,6 @@
 #include "util/u_helpers.h"
 #include "util/u_memory.h"
 #include "util/u_string.h"
-#include "util/u_upload_mgr.h"
-
-#include "common/freedreno_guardband.h"
 
 #include "freedreno_context.h"
 #include "freedreno_gmem.h"
@@ -106,14 +103,6 @@ fd_set_min_samples(struct pipe_context *pctx, unsigned min_samples) in_dt
    fd_context_dirty(ctx, FD_DIRTY_MIN_SAMPLES);
 }
 
-static void
-upload_user_buffer(struct pipe_context *pctx, struct pipe_constant_buffer *cb)
-{
-   u_upload_data(pctx->stream_uploader, 0, cb->buffer_size, 64,
-                 cb->user_buffer, &cb->buffer_offset, &cb->buffer);
-   cb->user_buffer = NULL;
-}
-
 /* notes from calim on #dri-devel:
  * index==0 will be non-UBO (ie. glUniformXYZ()) all packed together padded
  * out to vec4's
@@ -139,9 +128,6 @@ fd_set_constant_buffer(struct pipe_context *pctx, enum pipe_shader_type shader,
       so->enabled_mask &= ~(1 << index);
       return;
    }
-
-   if (cb->user_buffer && ctx->screen->gen >= 6)
-      upload_user_buffer(pctx, &so->cb[index]);
 
    so->enabled_mask |= 1 << index;
 
@@ -312,12 +298,10 @@ fd_set_framebuffer_state(struct pipe_context *pctx,
 
    fd_context_dirty(ctx, FD_DIRTY_FRAMEBUFFER);
 
-   for (unsigned i = 0; i < PIPE_MAX_VIEWPORTS; i++) {
-      ctx->disabled_scissor[i].minx = 0;
-      ctx->disabled_scissor[i].miny = 0;
-      ctx->disabled_scissor[i].maxx = cso->width - 1;
-      ctx->disabled_scissor[i].maxy = cso->height - 1;
-   }
+   ctx->disabled_scissor.minx = 0;
+   ctx->disabled_scissor.miny = 0;
+   ctx->disabled_scissor.maxx = cso->width;
+   ctx->disabled_scissor.maxy = cso->height;
 
    fd_context_dirty(ctx, FD_DIRTY_SCISSOR);
    update_draw_cost(ctx);
@@ -339,99 +323,46 @@ fd_set_scissor_states(struct pipe_context *pctx, unsigned start_slot,
 {
    struct fd_context *ctx = fd_context(pctx);
 
-   for (unsigned i = 0; i < num_scissors; i++) {
-      unsigned idx = start_slot + i;
-
-      if ((scissor[i].minx == scissor[i].maxx) ||
-          (scissor[i].miny == scissor[i].maxy)) {
-         ctx->scissor[idx].minx = ctx->scissor[idx].miny = 1;
-         ctx->scissor[idx].maxx = ctx->scissor[idx].maxy = 0;
-      } else {
-         ctx->scissor[idx].minx = scissor[i].minx;
-         ctx->scissor[idx].miny = scissor[i].miny;
-         ctx->scissor[idx].maxx = MAX2(scissor[i].maxx, 1) - 1;
-         ctx->scissor[idx].maxy = MAX2(scissor[i].maxy, 1) - 1;
-      }
-   }
-
+   ctx->scissor = *scissor;
    fd_context_dirty(ctx, FD_DIRTY_SCISSOR);
-}
-
-static void
-init_scissor_states(struct pipe_context *pctx)
-   in_dt
-{
-   struct fd_context *ctx = fd_context(pctx);
-
-   for (unsigned idx = 0; idx < ARRAY_SIZE(ctx->scissor); idx++) {
-      ctx->scissor[idx].minx = ctx->scissor[idx].miny = 1;
-      ctx->scissor[idx].maxx = ctx->scissor[idx].maxy = 0;
-   }
 }
 
 static void
 fd_set_viewport_states(struct pipe_context *pctx, unsigned start_slot,
                        unsigned num_viewports,
-                       const struct pipe_viewport_state *viewports) in_dt
+                       const struct pipe_viewport_state *viewport) in_dt
 {
    struct fd_context *ctx = fd_context(pctx);
+   struct pipe_scissor_state *scissor = &ctx->viewport_scissor;
+   float minx, miny, maxx, maxy;
 
-   for (unsigned i = 0; i < num_viewports; i++) {
-      unsigned idx = start_slot + i;
-      struct pipe_scissor_state *scissor = &ctx->viewport_scissor[idx];
-      const struct pipe_viewport_state *viewport = &viewports[i];
+   ctx->viewport = *viewport;
 
-      ctx->viewport[idx] = *viewport;
+   /* see si_get_scissor_from_viewport(): */
 
-      /* see si_get_scissor_from_viewport(): */
+   /* Convert (-1, -1) and (1, 1) from clip space into window space. */
+   minx = -viewport->scale[0] + viewport->translate[0];
+   miny = -viewport->scale[1] + viewport->translate[1];
+   maxx = viewport->scale[0] + viewport->translate[0];
+   maxy = viewport->scale[1] + viewport->translate[1];
 
-      /* Convert (-1, -1) and (1, 1) from clip space into window space. */
-      float minx = -viewport->scale[0] + viewport->translate[0];
-      float miny = -viewport->scale[1] + viewport->translate[1];
-      float maxx = viewport->scale[0] + viewport->translate[0];
-      float maxy = viewport->scale[1] + viewport->translate[1];
-
-      /* Handle inverted viewports. */
-      if (minx > maxx) {
-         swap(minx, maxx);
-      }
-      if (miny > maxy) {
-         swap(miny, maxy);
-      }
-
-      const float max_dims = ctx->screen->gen >= 4 ? 16384.f : 4096.f;
-
-      /* Clamp, convert to integer and round up the max bounds. */
-      scissor->minx = CLAMP(minx, 0.f, max_dims);
-      scissor->miny = CLAMP(miny, 0.f, max_dims);
-      scissor->maxx = MAX2(CLAMP(ceilf(maxx), 0.f, max_dims), 1) - 1;
-      scissor->maxy = MAX2(CLAMP(ceilf(maxy), 0.f, max_dims), 1) - 1;
+   /* Handle inverted viewports. */
+   if (minx > maxx) {
+      swap(minx, maxx);
    }
+   if (miny > maxy) {
+      swap(miny, maxy);
+   }
+
+   const float max_dims = ctx->screen->gen >= 4 ? 16384.f : 4096.f;
+
+   /* Clamp, convert to integer and round up the max bounds. */
+   scissor->minx = CLAMP(minx, 0.f, max_dims);
+   scissor->miny = CLAMP(miny, 0.f, max_dims);
+   scissor->maxx = CLAMP(ceilf(maxx), 0.f, max_dims);
+   scissor->maxy = CLAMP(ceilf(maxy), 0.f, max_dims);
 
    fd_context_dirty(ctx, FD_DIRTY_VIEWPORT);
-
-   /* Guardband is only used on a6xx so far: */
-   if (!is_a6xx(ctx->screen))
-      return;
-
-   ctx->guardband.x = ~0;
-   ctx->guardband.y = ~0;
-
-   bool is3x = is_a3xx(ctx->screen);
-
-   for (unsigned i = 0; i < PIPE_MAX_VIEWPORTS; i++) {
-      const struct pipe_viewport_state *vp = & ctx->viewport[i];
-
-      /* skip unused viewports: */
-      if (vp->scale[0] == 0)
-         continue;
-
-      unsigned gx = fd_calc_guardband(vp->translate[0], vp->scale[0], is3x);
-      unsigned gy = fd_calc_guardband(vp->translate[1], vp->scale[1], is3x);
-
-      ctx->guardband.x = MIN2(ctx->guardband.x, gx);
-      ctx->guardband.y = MIN2(ctx->guardband.y, gy);
-   }
 }
 
 static void
@@ -520,9 +451,9 @@ fd_rasterizer_state_bind(struct pipe_context *pctx, void *hwcso) in_dt
    fd_context_dirty(ctx, FD_DIRTY_RASTERIZER);
 
    if (ctx->rasterizer && ctx->rasterizer->scissor) {
-      ctx->current_scissor = ctx->scissor;
+      ctx->current_scissor = &ctx->scissor;
    } else {
-      ctx->current_scissor = ctx->disabled_scissor;
+      ctx->current_scissor = &ctx->disabled_scissor;
    }
 
    /* if scissor enable bit changed we need to mark scissor
@@ -640,7 +571,7 @@ fd_set_stream_output_targets(struct pipe_context *pctx, unsigned num_targets,
    struct fd_streamout_stateobj *so = &ctx->streamout;
    unsigned i;
 
-   assert(num_targets <= ARRAY_SIZE(so->targets));
+   debug_assert(num_targets <= ARRAY_SIZE(so->targets));
 
    /* Older targets need sw stats enabled for streamout emulation in VS: */
    if (ctx->screen->gen < 5) {
@@ -668,8 +599,6 @@ fd_set_stream_output_targets(struct pipe_context *pctx, unsigned num_targets,
          ctx->streamout.verts_written = 0;
       }
 
-      if (so->targets[i])
-         fd_resource_set_usage(so->targets[i]->buffer, FD_DIRTY_STREAMOUT);
       pipe_so_target_reference(&so->targets[i], targets[i]);
    }
 
@@ -809,6 +738,4 @@ fd_state_init(struct pipe_context *pctx)
       pctx->set_compute_resources = fd_set_compute_resources;
       pctx->set_global_binding = fd_set_global_binding;
    }
-
-   init_scissor_states(pctx);
 }

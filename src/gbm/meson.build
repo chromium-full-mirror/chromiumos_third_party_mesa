@@ -45,14 +45,8 @@ if with_platform_wayland
   incs_gbm += inc_wayland_drm
 endif
 
-libgbm_name = 'gbm'
-
-if with_platform_android and get_option('platform-sdk-version') >= 30
-  libgbm_name = 'gbm_mesa'
-endif
-
 libgbm = shared_library(
-  libgbm_name,
+  'gbm',
   files_gbm,
   include_directories : incs_gbm,
   c_args : [args_gbm],

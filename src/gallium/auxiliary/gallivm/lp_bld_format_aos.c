@@ -820,7 +820,6 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
        * Declare and bind format_desc->fetch_rgba_8unorm().
        */
 
-      LLVMTypeRef function_type;
       {
          /*
           * Function to call looks like:
@@ -828,6 +827,7 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
           */
          LLVMTypeRef ret_type;
          LLVMTypeRef arg_types[4];
+         LLVMTypeRef function_type;
 
          ret_type = LLVMVoidTypeInContext(gallivm->context);
          arg_types[0] = pi8t;
@@ -836,15 +836,18 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
          arg_types[3] = i32t;
          function_type = LLVMFunctionType(ret_type, arg_types,
                                           ARRAY_SIZE(arg_types), 0);
-      }
 
-      if (gallivm->cache)
-         gallivm->cache->dont_cache = true;
-      /* make const pointer for the C fetch_rgba_8unorm function */
-      function = lp_build_const_int_pointer(gallivm,
-                                            func_to_pointer((func_pointer) unpack->fetch_rgba_8unorm));
-      /* cast the callee pointer to the function's type */
-      function = LLVMBuildBitCast(builder, function, LLVMPointerType(function_type, 0), "cast callee");
+         if (gallivm->cache)
+            gallivm->cache->dont_cache = true;
+         /* make const pointer for the C fetch_rgba_8unorm function */
+         function = lp_build_const_int_pointer(gallivm,
+            func_to_pointer((func_pointer) unpack->fetch_rgba_8unorm));
+
+         /* cast the callee pointer to the function's type */
+         function = LLVMBuildBitCast(builder, function,
+                                     LLVMPointerType(function_type, 0),
+                                     "cast callee");
+      }
 
       tmp_ptr = lp_build_alloca(gallivm, i32t, "");
 
@@ -872,9 +875,9 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
             args[3] = LLVMBuildExtractElement(builder, j, index, "");
          }
 
-         LLVMBuildCall2(builder, function_type, function, args, ARRAY_SIZE(args), "");
+         LLVMBuildCall(builder, function, args, ARRAY_SIZE(args), "");
 
-         tmp = LLVMBuildLoad2(builder, i32t, tmp_ptr, "");
+         tmp = LLVMBuildLoad(builder, tmp_ptr, "");
 
          if (num_pixels == 1) {
             res = tmp;
@@ -926,7 +929,6 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
        * Declare and bind unpack->fetch_rgba_float().
        */
 
-      LLVMTypeRef function_type = NULL;
       {
          /*
           * Function to call looks like:
@@ -940,14 +942,15 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
          arg_types[1] = pi8t;
          arg_types[2] = i32t;
          arg_types[3] = i32t;
-         function_type = LLVMFunctionType(ret_type, arg_types, ARRAY_SIZE(arg_types), 0);
+
+         if (gallivm->cache)
+            gallivm->cache->dont_cache = true;
+         function = lp_build_const_func_pointer(gallivm,
+                                                func_to_pointer((func_pointer) fetch_rgba),
+                                                ret_type,
+                                                arg_types, ARRAY_SIZE(arg_types),
+                                                format_desc->short_name);
       }
-      if (gallivm->cache)
-         gallivm->cache->dont_cache = true;
-      function = lp_build_const_func_pointer_from_type(gallivm,
-                                                       func_to_pointer((func_pointer) fetch_rgba),
-                                                       function_type,
-                                                       format_desc->short_name);
 
       tmp_ptr = lp_build_alloca(gallivm, f32x4t, "");
 
@@ -973,9 +976,9 @@ lp_build_fetch_rgba_aos(struct gallivm_state *gallivm,
             args[3] = LLVMBuildExtractElement(builder, j, index, "");
          }
 
-         LLVMBuildCall2(builder, function_type, function, args, ARRAY_SIZE(args), "");
+         LLVMBuildCall(builder, function, args, ARRAY_SIZE(args), "");
 
-         tmps[k] = LLVMBuildLoad2(builder, f32x4t, tmp_ptr, "");
+         tmps[k] = LLVMBuildLoad(builder, tmp_ptr, "");
       }
 
       lp_build_conv(gallivm,

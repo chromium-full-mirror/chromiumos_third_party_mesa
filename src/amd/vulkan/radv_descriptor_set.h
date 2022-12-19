@@ -26,7 +26,6 @@
 
 #include "radv_constants.h"
 
-#include "vulkan/runtime/vk_descriptor_set_layout.h"
 #include "vulkan/runtime/vk_object.h"
 
 #include <vulkan/vulkan.h>
@@ -52,7 +51,10 @@ struct radv_descriptor_set_binding_layout {
 };
 
 struct radv_descriptor_set_layout {
-   struct vk_descriptor_set_layout vk;
+   struct vk_object_base base;
+
+   /* Descriptor set layouts can be destroyed at almost any time */
+   uint32_t ref_cnt;
 
    /* Everything below is hashed and shouldn't contain any pointers. Be careful when modifying this
     * structure.
@@ -101,8 +103,6 @@ struct radv_pipeline_layout {
    uint32_t dynamic_offset_count;
    uint16_t dynamic_shader_stages;
 
-   bool independent_sets;
-
    unsigned char sha1[20];
 };
 
@@ -137,8 +137,7 @@ radv_immutable_ycbcr_samplers(const struct radv_descriptor_set_layout *set, unsi
 
 struct radv_device;
 
-void radv_pipeline_layout_init(struct radv_device *device, struct radv_pipeline_layout *layout,
-                               bool independent_sets);
+void radv_pipeline_layout_init(struct radv_device *device, struct radv_pipeline_layout *layout);
 void radv_pipeline_layout_add_set(struct radv_pipeline_layout *layout, uint32_t set_idx,
                                   struct radv_descriptor_set_layout *set_layout);
 void radv_pipeline_layout_hash(struct radv_pipeline_layout *layout);

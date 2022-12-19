@@ -37,7 +37,6 @@
 #include "util/bitset.h"
 #include "util/set.h"
 #include "util/log.h"
-#include "util/disk_cache.h"
 
 #include "pan_device.h"
 #include "pan_mempool.h"
@@ -45,7 +44,7 @@
 struct panfrost_batch;
 struct panfrost_context;
 struct panfrost_resource;
-struct panfrost_compiled_shader;
+struct panfrost_shader_state;
 struct pan_fb_info;
 struct pan_blend_state;
 
@@ -54,7 +53,7 @@ struct pan_blend_state;
 struct panfrost_vtable {
         /* Prepares the renderer state descriptor or shader program descriptor
          * for a given compiled shader, and if desired uploads it as well */
-        void (*prepare_shader)(struct panfrost_compiled_shader *,
+        void (*prepare_shader)(struct panfrost_shader_state *,
                             struct panfrost_pool *, bool);
 
         /* Emits a thread local storage descriptor */
@@ -108,7 +107,6 @@ struct panfrost_screen {
         } indirect_draw;
 
         struct panfrost_vtable vtbl;
-        struct disk_cache *disk_cache;
 };
 
 static inline struct panfrost_screen *
@@ -130,7 +128,6 @@ void panfrost_cmdstream_screen_init_v4(struct panfrost_screen *screen);
 void panfrost_cmdstream_screen_init_v5(struct panfrost_screen *screen);
 void panfrost_cmdstream_screen_init_v6(struct panfrost_screen *screen);
 void panfrost_cmdstream_screen_init_v7(struct panfrost_screen *screen);
-void panfrost_cmdstream_screen_init_v9(struct panfrost_screen *screen);
 
 #define perf_debug(dev, ...) \
         do { \

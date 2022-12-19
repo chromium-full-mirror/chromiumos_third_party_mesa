@@ -54,7 +54,7 @@
 #include <OS.h>
 #endif
 
-#ifdef __cplusplus
+#ifdef	__cplusplus
 extern "C" {
 #endif
 
@@ -204,6 +204,41 @@ debug_get_num_option(const char *name, long dfault);
 void
 debug_get_version_option(const char *name, unsigned *major, unsigned *minor);
 
+#ifdef _MSC_VER
+__declspec(noreturn)
+#endif
+void _debug_assert_fail(const char *expr,
+                        const char *file,
+                        unsigned line,
+                        const char *function)
+#if defined(__GNUC__) && !defined(DEBUG)
+   __attribute__((noreturn))
+#endif
+;
+
+
+/**
+ * Assert macro
+ *
+ * Do not expect that the assert call terminates -- errors must be handled
+ * regardless of assert behavior.
+ *
+ * For non debug builds the assert macro will expand to a no-op, so do not
+ * call functions with side effects in the assert expression.
+ */
+#ifndef NDEBUG
+#define debug_assert(expr) ((expr) ? (void)0 : _debug_assert_fail(#expr, __FILE__, __LINE__, __FUNCTION__))
+#else
+#define debug_assert(expr) (void)(0 && (expr))
+#endif
+
+
+/** Override standard assert macro */
+#ifdef assert
+#undef assert
+#endif
+#define assert(expr) debug_assert(expr)
+
 
 /**
  * Output the current function name.
@@ -347,26 +382,6 @@ debug_dump_flags(const struct debug_named_value *names,
                  unsigned long value);
 
 
-struct debug_control {
-    const char * string;
-    uint64_t     flag;
-};
-
-uint64_t
-parse_debug_string(const char *debug,
-                   const struct debug_control *control);
-
-
-uint64_t
-parse_enable_string(const char *debug,
-                    uint64_t default_value,
-                    const struct debug_control *control);
-
-
-bool
-comma_separated_list_contains(const char *list, const char *s);
-
-
 /**
  * Function enter exit loggers
  */
@@ -407,8 +422,14 @@ void debug_funclog_enter_exit(const char* f, const int line, const char* file);
 /**
  * Get option.
  *
- * It is an alias for getenv on Unix and Windows.
+ * It is an alias for getenv on Linux.
  *
+ * On Windows it reads C:\gallium.cfg, which is a text file with CR+LF line
+ * endings with one option per line as
+ *
+ *   NAME=value
+ *
+ * This file must be terminated with an extra empty line.
  */
 const char *
 debug_get_option(const char *name, const char *dfault);
@@ -428,10 +449,10 @@ debug_get_flags_option(const char *name,
 static const char * \
 debug_get_option_ ## suffix (void) \
 { \
-   static bool initialized = false; \
+   static bool first = true; \
    static const char * value; \
-   if (!initialized) { \
-      initialized = true; \
+   if (first) { \
+      first = false; \
       value = debug_get_option(name, dfault); \
    } \
    return value; \
@@ -447,14 +468,37 @@ __check_suid(void)
    return false;
 }
 
+/**
+ * Define a getter for a debug option which specifies a 'FILE *'
+ * to open, with additional checks for suid executables.  Note
+ * that if the return is not NULL, the caller owns the 'FILE *'
+ * reference.
+ */
+#define DEBUG_GET_ONCE_FILE_OPTION(suffix, name, dfault, mode) \
+static FILE * \
+debug_get_option_ ## suffix (void) \
+{ \
+   static bool first = true; \
+   static const char * value; \
+   if (__check_suid()) \
+      return NULL; \
+   if (first) { \
+      first = false; \
+      value = debug_get_option(name, dfault); \
+   } \
+   if (!value) \
+      return NULL; \
+   return fopen(value, mode); \
+}
+
 #define DEBUG_GET_ONCE_BOOL_OPTION(sufix, name, dfault) \
 static bool \
 debug_get_option_ ## sufix (void) \
 { \
-   static bool initialized = false; \
+   static bool first = true; \
    static bool value; \
-   if (!initialized) { \
-      initialized = true; \
+   if (first) { \
+      first = false; \
       value = debug_get_bool_option(name, dfault); \
    } \
    return value; \
@@ -464,10 +508,10 @@ debug_get_option_ ## sufix (void) \
 static long \
 debug_get_option_ ## sufix (void) \
 { \
-   static bool initialized = false; \
+   static bool first = true; \
    static long value; \
-   if (!initialized) { \
-      initialized = true; \
+   if (first) { \
+      first = false; \
       value = debug_get_num_option(name, dfault); \
    } \
    return value; \
@@ -477,17 +521,17 @@ debug_get_option_ ## sufix (void) \
 static unsigned long \
 debug_get_option_ ## sufix (void) \
 { \
-   static bool initialized = false; \
+   static bool first = true; \
    static unsigned long value; \
-   if (!initialized) { \
-      initialized = true; \
+   if (first) { \
+      first = false; \
       value = debug_get_flags_option(name, flags, dfault); \
    } \
    return value; \
 }
 
 
-#ifdef __cplusplus
+#ifdef	__cplusplus
 }
 #endif
 

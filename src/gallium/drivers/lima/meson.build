@@ -82,8 +82,6 @@ files_lima = files(
   'lima_format.h',
   'lima_format.c',
   'lima_gpu.h',
-  'lima_blit.c',
-  'lima_blit.h',
 )
 
 lima_nir_algebraic_c = custom_target(
@@ -91,7 +89,8 @@ lima_nir_algebraic_c = custom_target(
   input : 'ir/lima_nir_algebraic.py',
   output : 'lima_nir_algebraic.c',
   command : [
-    prog_python, '@INPUT@', '-p', dir_compiler_nir,
+    prog_python, '@INPUT@',
+    '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
   depend_files : nir_algebraic_depends,

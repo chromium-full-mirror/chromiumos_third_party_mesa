@@ -87,6 +87,4 @@ anv_dump_pipe_bits(enum anv_pipe_bits bits)
       fputs("+depth_stall ", stderr);
    if (bits & ANV_PIPE_CS_STALL_BIT)
       fputs("+cs_stall ", stderr);
-   if (bits & ANV_PIPE_UNTYPED_DATAPORT_CACHE_FLUSH_BIT)
-      fputs("+utdp_flush", stderr);
 }

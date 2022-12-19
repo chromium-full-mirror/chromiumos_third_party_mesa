@@ -26,7 +26,12 @@
 
 #include "pipe/p_state.h"
 
-#include "d3d12_common.h"
+#ifndef _WIN32
+#include <wsl/winadapter.h>
+#endif
+
+#define D3D12_IGNORE_SDK_LAYERS
+#include <directx/d3d12.h>
 
 struct d3d12_context;
 struct d3d12_root_signature;

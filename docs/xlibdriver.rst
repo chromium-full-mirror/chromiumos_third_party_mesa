@@ -170,3 +170,6 @@ Summary of X-related environment variables
 | :envvar:`MESA_BACK_BUFFER`  | specifies how to implement the back  |
 |                             | color buffer (X only)                |
 +-----------------------------+--------------------------------------+
+| :envvar:`MESA_GAMMA`        | gamma correction coefficients        |
+|                             | (X only)                             |
++-----------------------------+--------------------------------------+

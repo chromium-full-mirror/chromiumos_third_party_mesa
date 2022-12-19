@@ -273,7 +273,6 @@ struct util_queue_monitoring
    unsigned num_offloaded_items;
    unsigned num_direct_items;
    unsigned num_syncs;
-   unsigned num_batches;
 };
 
 #ifdef __cplusplus

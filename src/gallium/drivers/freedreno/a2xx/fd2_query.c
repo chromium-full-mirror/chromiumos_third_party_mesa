@@ -37,11 +37,9 @@
 #include "fd2_query.h"
 
 struct PACKED fd2_query_sample {
-   struct fd_acc_query_sample base;
    uint32_t start;
    uint32_t stop;
 };
-DEFINE_CAST(fd_acc_query_sample, fd2_query_sample);
 
 /* offset of a single field of an array of fd2_query_sample: */
 #define query_sample_idx(aq, idx, field)                                       \
@@ -91,7 +89,7 @@ perfcntr_resume(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
       const struct fd_perfcntr_group *g = &screen->perfcntr_groups[entry->gid];
       unsigned counter_idx = counters_per_group[entry->gid]++;
 
-      assert(counter_idx < g->num_counters);
+      debug_assert(counter_idx < g->num_counters);
 
       OUT_PKT0(ring, g->counters[counter_idx].select_reg, 1);
       OUT_RING(ring, g->countables[entry->cid].selector);
@@ -140,12 +138,11 @@ perfcntr_pause(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
 }
 
 static void
-perfcntr_accumulate_result(struct fd_acc_query *aq,
-                           struct fd_acc_query_sample *s,
+perfcntr_accumulate_result(struct fd_acc_query *aq, void *buf,
                            union pipe_query_result *result)
 {
    struct fd_batch_query_data *data = aq->query_data;
-   struct fd2_query_sample *sp = fd2_query_sample(s);
+   struct fd2_query_sample *sp = buf;
 
    for (unsigned i = 0; i < data->num_query_entries; i++)
       result->batch[i].u64 = sp[i].stop - sp[i].start;

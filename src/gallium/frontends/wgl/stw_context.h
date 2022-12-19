@@ -29,19 +29,16 @@
 #define STW_CONTEXT_H
 
 #include <windows.h>
-#include <GL/gl.h>
-#include <gldrv.h>
 
 struct hud_context;
 struct stw_framebuffer;
 struct st_context_iface;
-struct st_manager;
 
 struct stw_context
 {
    struct st_context_iface *st;
    DHGLRC dhglrc;
-   const struct stw_pixelformat_info *pfi;
+   int iPixelFormat;
    HDC hDrawDC;
    HDC hReadDC;
    BOOL shared;
@@ -54,11 +51,9 @@ struct stw_context
 
 struct stw_context *stw_create_context_attribs(HDC hdc, INT iLayerPlane,
                                                struct stw_context *shareCtx,
-                                               struct st_manager *smapi,
                                                int majorVersion, int minorVersion,
                                                int contextFlags, int profileMask,
-                                               const struct stw_pixelformat_info *pfi,
-                                               int resetStrategy);
+                                               int iPixelFormat);
 
 DHGLRC stw_create_context_handle(struct stw_context *context, DHGLRC handle);
 

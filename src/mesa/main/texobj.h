@@ -204,9 +204,7 @@ extern struct gl_texture_object *
 _mesa_lookup_or_create_texture(struct gl_context *ctx, GLenum target,
                                GLuint texName, bool no_error, bool is_ext_dsa,
                                const char *name);
-void
-_mesa_update_texture_object_swizzle(struct gl_context *ctx,
-                                    struct gl_texture_object *texObj);
+
 /*@}*/
 
 #ifdef __cplusplus

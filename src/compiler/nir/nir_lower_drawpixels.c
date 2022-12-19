@@ -34,11 +34,12 @@
 typedef struct {
    const nir_lower_drawpixels_options *options;
    nir_shader   *shader;
+   nir_builder   b;
    nir_variable *texcoord, *texcoord_const, *scale, *bias, *tex, *pixelmap;
 } lower_drawpixels_state;
 
 static nir_ssa_def *
-get_texcoord(nir_builder *b, lower_drawpixels_state *state)
+get_texcoord(lower_drawpixels_state *state)
 {
    if (state->texcoord == NULL) {
       nir_variable *texcoord = NULL;
@@ -62,7 +63,7 @@ get_texcoord(nir_builder *b, lower_drawpixels_state *state)
 
       state->texcoord = texcoord;
    }
-   return nir_load_var(b, state->texcoord);
+   return nir_load_var(&state->b, state->texcoord);
 }
 
 static nir_variable *
@@ -81,39 +82,40 @@ create_uniform(nir_shader *shader, const char *name,
 }
 
 static nir_ssa_def *
-get_scale(nir_builder *b, lower_drawpixels_state *state)
+get_scale(lower_drawpixels_state *state)
 {
    if (state->scale == NULL) {
       state->scale = create_uniform(state->shader, "gl_PTscale",
                                     state->options->scale_state_tokens);
    }
-   return nir_load_var(b, state->scale);
+   return nir_load_var(&state->b, state->scale);
 }
 
 static nir_ssa_def *
-get_bias(nir_builder *b, lower_drawpixels_state *state)
+get_bias(lower_drawpixels_state *state)
 {
    if (state->bias == NULL) {
       state->bias = create_uniform(state->shader, "gl_PTbias",
                                    state->options->bias_state_tokens);
    }
-   return nir_load_var(b, state->bias);
+   return nir_load_var(&state->b, state->bias);
 }
 
 static nir_ssa_def *
-get_texcoord_const(nir_builder *b, lower_drawpixels_state *state)
+get_texcoord_const(lower_drawpixels_state *state)
 {
    if (state->texcoord_const == NULL) {
       state->texcoord_const = create_uniform(state->shader,
                                    "gl_MultiTexCoord0",
                                    state->options->texcoord_state_tokens);
    }
-   return nir_load_var(b, state->texcoord_const);
+   return nir_load_var(&state->b, state->texcoord_const);
 }
 
-static bool
-lower_color(nir_builder *b, lower_drawpixels_state *state, nir_intrinsic_instr *intr)
+static void
+lower_color(lower_drawpixels_state *state, nir_intrinsic_instr *intr)
 {
+   nir_builder *b = &state->b;
    nir_ssa_def *texcoord;
    nir_tex_instr *tex;
    nir_ssa_def *def;
@@ -122,7 +124,7 @@ lower_color(nir_builder *b, lower_drawpixels_state *state, nir_intrinsic_instr *
 
    b->cursor = nir_before_instr(&intr->instr);
 
-   texcoord = get_texcoord(b, state);
+   texcoord = get_texcoord(state);
 
    const struct glsl_type *sampler2D =
       glsl_sampler_type(GLSL_SAMPLER_DIM_2D, false, false, GLSL_TYPE_FLOAT);
@@ -161,7 +163,7 @@ lower_color(nir_builder *b, lower_drawpixels_state *state, nir_intrinsic_instr *
    /* Apply the scale and bias. */
    if (state->options->scale_and_bias) {
       /* MAD def, def, scale, bias; */
-      def = nir_ffma(b, def, get_scale(b, state), get_bias(b, state));
+      def = nir_ffma(b, def, get_scale(state), get_bias(state));
    }
 
    if (state->options->pixel_maps) {
@@ -221,59 +223,70 @@ lower_color(nir_builder *b, lower_drawpixels_state *state, nir_intrinsic_instr *
    }
 
    nir_ssa_def_rewrite_uses(&intr->dest.ssa, def);
-   return true;
 }
 
-static bool
-lower_texcoord(nir_builder *b, lower_drawpixels_state *state, nir_intrinsic_instr *intr)
+static void
+lower_texcoord(lower_drawpixels_state *state, nir_intrinsic_instr *intr)
 {
-   b->cursor = nir_before_instr(&intr->instr);
+   state->b.cursor = nir_before_instr(&intr->instr);
 
-   nir_ssa_def *texcoord_const = get_texcoord_const(b, state);
+   nir_ssa_def *texcoord_const = get_texcoord_const(state);
    nir_ssa_def_rewrite_uses(&intr->dest.ssa, texcoord_const);
-   return true;
 }
 
 static bool
-lower_drawpixels_instr(nir_builder *b, nir_instr *instr, void *cb_data)
+lower_drawpixels_block(lower_drawpixels_state *state, nir_block *block)
 {
-   lower_drawpixels_state *state = cb_data;
-   if (instr->type != nir_instr_type_intrinsic)
-      return false;
+   nir_foreach_instr_safe(instr, block) {
+      if (instr->type == nir_instr_type_intrinsic) {
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
 
-   nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         switch (intr->intrinsic) {
+         case nir_intrinsic_load_deref: {
+            nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+            nir_variable *var = nir_deref_instr_get_variable(deref);
 
-   switch (intr->intrinsic) {
-   case nir_intrinsic_load_deref: {
-      nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
-      nir_variable *var = nir_deref_instr_get_variable(deref);
+            if (var->data.location == VARYING_SLOT_COL0) {
+               /* gl_Color should not have array/struct derefs: */
+               assert(deref->deref_type == nir_deref_type_var);
+               lower_color(state, intr);
+            } else if (var->data.location == VARYING_SLOT_TEX0) {
+               /* gl_TexCoord should not have array/struct derefs: */
+               assert(deref->deref_type == nir_deref_type_var);
+               lower_texcoord(state, intr);
+            }
+            break;
+         }
 
-      if (var->data.location == VARYING_SLOT_COL0) {
-         /* gl_Color should not have array/struct derefs: */
-         assert(deref->deref_type == nir_deref_type_var);
-         return lower_color(b, state, intr);
-      } else if (var->data.location == VARYING_SLOT_TEX0) {
-         /* gl_TexCoord should not have array/struct derefs: */
-         assert(deref->deref_type == nir_deref_type_var);
-         return lower_texcoord(b, state, intr);
+         case nir_intrinsic_load_color0:
+            lower_color(state, intr);
+            break;
+
+         case nir_intrinsic_load_interpolated_input:
+         case nir_intrinsic_load_input: {
+            if (nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_TEX0)
+               lower_texcoord(state, intr);
+            break;
+         }
+         default:
+            break;
+         }
       }
-      break;
    }
 
-   case nir_intrinsic_load_color0:
-      return lower_color(b, state, intr);
+   return true;
+}
 
-   case nir_intrinsic_load_interpolated_input:
-   case nir_intrinsic_load_input: {
-      if (nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_TEX0)
-         return lower_texcoord(b, state, intr);
-      break;
-   }
-   default:
-      break;
-   }
+static void
+lower_drawpixels_impl(lower_drawpixels_state *state, nir_function_impl *impl)
+{
+   nir_builder_init(&state->b, impl);
 
-   return false;
+   nir_foreach_block(block, impl) {
+      lower_drawpixels_block(state, block);
+   }
+   nir_metadata_preserve(impl, nir_metadata_block_index |
+                               nir_metadata_dominance);
 }
 
 void
@@ -287,8 +300,8 @@ nir_lower_drawpixels(nir_shader *shader,
 
    assert(shader->info.stage == MESA_SHADER_FRAGMENT);
 
-   nir_shader_instructions_pass(shader, lower_drawpixels_instr,
-                                nir_metadata_block_index |
-                                nir_metadata_dominance,
-                                &state);
+   nir_foreach_function(function, shader) {
+      if (function->impl)
+         lower_drawpixels_impl(&state, function->impl);
+   }
 }

@@ -73,14 +73,6 @@
    __cs_num += __n; \
 } while (0)
 
-/* Instead of writing into the command buffer, return the pointer to the command buffer and
- * assume that the caller will fill the specified number of elements.
- */
-#define radeon_emit_array_get_ptr(num, ptr) do { \
-   *(ptr) = __cs_buf + __cs_num; \
-   __cs_num += (num); \
-} while (0)
-
 #define radeon_set_config_reg_seq(reg, num) do { \
    SI_CHECK_SHADOWED_REGS(reg, num); \
    assert((reg) < SI_CONTEXT_REG_OFFSET); \
@@ -159,13 +151,13 @@
    radeon_emit(value); \
 } while (0)
 
-#define radeon_set_uconfig_reg_idx(screen, gfx_level, reg, idx, value) do { \
+#define radeon_set_uconfig_reg_idx(screen, chip_class, reg, idx, value) do { \
    SI_CHECK_SHADOWED_REGS(reg, 1); \
    assert((reg) >= CIK_UCONFIG_REG_OFFSET && (reg) < CIK_UCONFIG_REG_END); \
    assert((idx) != 0); \
    unsigned __opcode = PKT3_SET_UCONFIG_REG_INDEX; \
-   if ((gfx_level) < GFX9 || \
-       ((gfx_level) == GFX9 && (screen)->info.me_fw_version < 26)) \
+   if ((chip_class) < GFX9 || \
+       ((chip_class) == GFX9 && (screen)->info.me_fw_version < 26)) \
       __opcode = PKT3_SET_UCONFIG_REG; \
    radeon_emit(PKT3(__opcode, 1, 0)); \
    radeon_emit(((reg) - CIK_UCONFIG_REG_OFFSET) >> 2 | ((idx) << 28)); \
@@ -271,7 +263,7 @@
    unsigned __value = val; \
    if (((sctx->tracked_regs.reg_saved >> (reg)) & 0x1) != 0x1 || \
        sctx->tracked_regs.reg_value[reg] != __value) { \
-      if (sctx->gfx_level >= GFX10) \
+      if (sctx->chip_class >= GFX10) \
          radeon_set_sh_reg_idx3(offset, __value); \
       else \
          radeon_set_sh_reg(offset, __value); \
@@ -331,7 +323,7 @@ static inline void radeon_set_sh_reg_idx3_func(struct radeon_cmdbuf *cs, unsigne
 
 /* This should be evaluated at compile time if all parameters are constants. */
 static ALWAYS_INLINE unsigned
-si_get_user_data_base(enum amd_gfx_level gfx_level, enum si_has_tess has_tess,
+si_get_user_data_base(enum chip_class chip_class, enum si_has_tess has_tess,
                       enum si_has_gs has_gs, enum si_has_ngg ngg,
                       enum pipe_shader_type shader)
 {
@@ -339,14 +331,14 @@ si_get_user_data_base(enum amd_gfx_level gfx_level, enum si_has_tess has_tess,
    case PIPE_SHADER_VERTEX:
       /* VS can be bound as VS, ES, or LS. */
       if (has_tess) {
-         if (gfx_level >= GFX10) {
+         if (chip_class >= GFX10) {
             return R_00B430_SPI_SHADER_USER_DATA_HS_0;
-         } else if (gfx_level == GFX9) {
+         } else if (chip_class == GFX9) {
             return R_00B430_SPI_SHADER_USER_DATA_LS_0;
          } else {
             return R_00B530_SPI_SHADER_USER_DATA_LS_0;
          }
-      } else if (gfx_level >= GFX10) {
+      } else if (chip_class >= GFX10) {
          if (ngg || has_gs) {
             return R_00B230_SPI_SHADER_USER_DATA_GS_0;
          } else {
@@ -359,7 +351,7 @@ si_get_user_data_base(enum amd_gfx_level gfx_level, enum si_has_tess has_tess,
       }
 
    case PIPE_SHADER_TESS_CTRL:
-      if (gfx_level == GFX9) {
+      if (chip_class == GFX9) {
          return R_00B430_SPI_SHADER_USER_DATA_LS_0;
       } else {
          return R_00B430_SPI_SHADER_USER_DATA_HS_0;
@@ -368,7 +360,7 @@ si_get_user_data_base(enum amd_gfx_level gfx_level, enum si_has_tess has_tess,
    case PIPE_SHADER_TESS_EVAL:
       /* TES can be bound as ES, VS, or not bound. */
       if (has_tess) {
-         if (gfx_level >= GFX10) {
+         if (chip_class >= GFX10) {
             if (ngg || has_gs) {
                return R_00B230_SPI_SHADER_USER_DATA_GS_0;
             } else {
@@ -384,7 +376,7 @@ si_get_user_data_base(enum amd_gfx_level gfx_level, enum si_has_tess has_tess,
       }
 
    case PIPE_SHADER_GEOMETRY:
-      if (gfx_level == GFX9) {
+      if (chip_class == GFX9) {
          return R_00B330_SPI_SHADER_USER_DATA_ES_0;
       } else {
          return R_00B230_SPI_SHADER_USER_DATA_GS_0;

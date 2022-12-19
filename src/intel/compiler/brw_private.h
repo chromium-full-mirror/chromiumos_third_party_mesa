@@ -31,7 +31,8 @@
 extern "C" {
 #endif
 
-unsigned brw_required_dispatch_width(const struct shader_info *info);
+unsigned brw_required_dispatch_width(const struct shader_info *info,
+                                     enum brw_subgroup_size_type subgroup_size_type);
 
 bool brw_simd_should_compile(void *mem_ctx,
                              unsigned simd,

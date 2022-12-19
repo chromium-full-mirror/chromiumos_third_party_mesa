@@ -144,27 +144,24 @@ r600_gpu_load_thread(void *param)
 
 void r600_gpu_load_kill_thread(struct r600_common_screen *rscreen)
 {
-	if (!rscreen->gpu_load_thread_created)
+	if (!rscreen->gpu_load_thread)
 		return;
 
 	p_atomic_inc(&rscreen->gpu_load_stop_thread);
 	thrd_join(rscreen->gpu_load_thread, NULL);
-	rscreen->gpu_load_thread_created = false;
+	rscreen->gpu_load_thread = 0;
 }
 
 static uint64_t r600_read_mmio_counter(struct r600_common_screen *rscreen,
 				       unsigned busy_index)
 {
 	/* Start the thread if needed. */
-	if (!rscreen->gpu_load_thread_created) {
+	if (!rscreen->gpu_load_thread) {
 		mtx_lock(&rscreen->gpu_load_mutex);
 		/* Check again inside the mutex. */
-		if (!rscreen->gpu_load_thread_created) {
-			int ret = u_thread_create(&rscreen->gpu_load_thread, r600_gpu_load_thread, rscreen);
-			if (ret == thrd_success) {
-				rscreen->gpu_load_thread_created = true;
-			}
-		}
+		if (!rscreen->gpu_load_thread)
+			rscreen->gpu_load_thread =
+				u_thread_create(r600_gpu_load_thread, rscreen);
 		mtx_unlock(&rscreen->gpu_load_mutex);
 	}
 

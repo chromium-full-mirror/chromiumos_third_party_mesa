@@ -23,14 +23,13 @@
 
 #include <backtrace/Backtrace.h>
 
-#include "util/simple_mtx.h"
 #include "util/u_debug.h"
 #include "u_debug_stack.h"
 #include "util/hash_table.h"
 #include "os/os_thread.h"
 
 static hash_table *symbol_table;
-static simple_mtx_t table_mutex = SIMPLE_MTX_INITIALIZER;
+static mtx_t table_mutex = _MTX_INITIALIZER_NP;
 
 static const char *
 intern_symbol(const char *symbol)
@@ -68,7 +67,7 @@ debug_backtrace_capture(debug_stack_frame *backtrace,
    /* Add one to exclude this call. Unwind already ignores itself. */
    bt->Unwind(start_frame + 1);
 
-   simple_mtx_lock(&table_mutex);
+   mtx_lock(&table_mutex);
 
    for (unsigned i = 0; i < nr_frames; i++) {
       const backtrace_frame_data_t* frame = bt->GetFrame(i);
@@ -83,7 +82,7 @@ debug_backtrace_capture(debug_stack_frame *backtrace,
       }
    }
 
-   simple_mtx_unlock(&table_mutex);
+   mtx_unlock(&table_mutex);
 
    delete bt;
 }

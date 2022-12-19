@@ -39,7 +39,6 @@ value_src(nir_intrinsic_op intrinsic)
    switch (intrinsic) {
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_store_scratch:
-   case nir_intrinsic_store_global_2x32:
       return 0;
    default:
       unreachable("Unsupported intrinsic");
@@ -53,12 +52,10 @@ offset_src(nir_intrinsic_op intrinsic)
    case nir_intrinsic_load_uniform:
    case nir_intrinsic_load_shared:
    case nir_intrinsic_load_scratch:
-   case nir_intrinsic_load_global_2x32:
       return 0;
    case nir_intrinsic_load_ubo:
    case nir_intrinsic_load_ssbo:
    case nir_intrinsic_store_scratch:
-   case nir_intrinsic_store_global_2x32:
       return 1;
    case nir_intrinsic_store_ssbo:
       return 2;
@@ -128,7 +125,6 @@ lower_load_bitsize(struct v3d_compile *c,
 
         b->cursor = nir_before_instr(&intr->instr);
 
-        /* For global 2x32 we ignore Y component because it must be zero */
         unsigned offset_idx = offset_src(intr->intrinsic);
         nir_ssa_def *offset = nir_ssa_for_src(b, intr->src[offset_idx], 1);
 
@@ -143,12 +139,7 @@ lower_load_bitsize(struct v3d_compile *c,
 
                 for (unsigned i = 0; i < info->num_srcs; i++) {
                         if (i == offset_idx) {
-                                nir_ssa_def *final_offset;
-                                final_offset = intr->intrinsic != nir_intrinsic_load_global_2x32 ?
-                                        scalar_offset :
-                                        nir_vec2(b, scalar_offset,
-                                                 nir_imm_int(b, 0));
-                                new_intr->src[i] = nir_src_for_ssa(final_offset);
+                                new_intr->src[i] = nir_src_for_ssa(scalar_offset);
                         } else {
                                 new_intr->src[i] = intr->src[i];
                         }
@@ -187,7 +178,6 @@ lower_store_bitsize(struct v3d_compile *c,
 
         b->cursor = nir_before_instr(&intr->instr);
 
-        /* For global 2x32 we ignore Y component because it must be zero */
         unsigned offset_idx = offset_src(intr->intrinsic);
         nir_ssa_def *offset = nir_ssa_for_src(b, intr->src[offset_idx], 1);
 
@@ -210,12 +200,7 @@ lower_store_bitsize(struct v3d_compile *c,
                                         nir_channels(b, value, 1 << component);
                                 new_intr->src[i] = nir_src_for_ssa(scalar_value);
                         } else if (i == offset_idx) {
-                                nir_ssa_def *final_offset;
-                                final_offset = intr->intrinsic != nir_intrinsic_store_global_2x32 ?
-                                        scalar_offset :
-                                        nir_vec2(b, scalar_offset,
-                                                 nir_imm_int(b, 0));
-                                new_intr->src[i] = nir_src_for_ssa(final_offset);
+                                new_intr->src[i] = nir_src_for_ssa(scalar_offset);
                         } else {
                                 new_intr->src[i] = intr->src[i];
                         }
@@ -244,12 +229,10 @@ lower_load_store_bitsize(nir_builder *b, nir_instr *instr, void *data)
         case nir_intrinsic_load_ubo:
         case nir_intrinsic_load_uniform:
         case nir_intrinsic_load_scratch:
-        case nir_intrinsic_load_global_2x32:
-               return lower_load_bitsize(c, b, intr);
+                return lower_load_bitsize(c, b, intr);
 
         case nir_intrinsic_store_ssbo:
         case nir_intrinsic_store_scratch:
-        case nir_intrinsic_store_global_2x32:
                 return lower_store_bitsize(c, b, intr);
 
         default:
@@ -257,12 +240,12 @@ lower_load_store_bitsize(nir_builder *b, nir_instr *instr, void *data)
         }
 }
 
-bool
+void
 v3d_nir_lower_load_store_bitsize(nir_shader *s, struct v3d_compile *c)
 {
-        return nir_shader_instructions_pass(s,
-                                            lower_load_store_bitsize,
-                                            nir_metadata_block_index |
-                                            nir_metadata_dominance,
-                                            c);
+   nir_shader_instructions_pass(s,
+                                lower_load_store_bitsize,
+                                nir_metadata_block_index |
+                                nir_metadata_dominance,
+                                c);
 }

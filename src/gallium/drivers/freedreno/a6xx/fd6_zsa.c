@@ -25,13 +25,12 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
-#define FD_BO_NO_HARDPIN 1
-
 #include "pipe/p_state.h"
 #include "util/u_memory.h"
 #include "util/u_string.h"
 
 #include "fd6_context.h"
+#include "fd6_format.h"
 #include "fd6_zsa.h"
 
 /* update lza state based on stencil-test func:

@@ -407,14 +407,6 @@ _eglParseContextAttribList(_EGLContext *ctx, _EGLDisplay *disp,
          }
          break;
 
-      case EGL_PROTECTED_CONTENT_EXT:
-         if (!disp->Extensions.EXT_protected_content) {
-            err = EGL_BAD_ATTRIBUTE;
-            break;
-         }
-         ctx->Protected = val == EGL_TRUE;
-         break;
-
       default:
          err = EGL_BAD_ATTRIBUTE;
          break;
@@ -681,8 +673,6 @@ _eglQueryContextRenderBuffer(_EGLContext *ctx)
 EGLBoolean
 _eglQueryContext(_EGLContext *c, EGLint attribute, EGLint *value)
 {
-   _EGLDisplay *disp = c->Resource.Display;
-
    if (!value)
       return _eglError(EGL_BAD_PARAMETER, "eglQueryContext");
 
@@ -708,11 +698,6 @@ _eglQueryContext(_EGLContext *c, EGLint attribute, EGLint *value)
       break;
    case EGL_CONTEXT_PRIORITY_LEVEL_IMG:
       *value = c->ContextPriority;
-      break;
-   case EGL_PROTECTED_CONTENT_EXT:
-      if (!disp->Extensions.EXT_protected_content)
-         return _eglError(EGL_BAD_ATTRIBUTE, "eglQueryContext");
-      *value = c->Protected;
       break;
    default:
       return _eglError(EGL_BAD_ATTRIBUTE, "eglQueryContext");
@@ -754,6 +739,9 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
 {
    _EGLThreadInfo *t = _eglGetCurrentThread();
    _EGLDisplay *disp;
+
+   if (_eglIsCurrentThreadDummy())
+      return _eglError(EGL_BAD_ALLOC, "eglMakeCurrent");
 
    /* this is easy */
    if (!ctx) {
@@ -800,6 +788,11 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
       /* Otherwise we must be using the EGL_KHR_no_config_context
        * extension */
       assert(disp->Extensions.KHR_no_config_context);
+
+      /* The extension doesn't permit binding draw and read buffers with
+       * differing contexts */
+      if (draw && read && draw->Config != read->Config)
+         return _eglError(EGL_BAD_MATCH, "eglMakeCurrent");
    }
 
    return EGL_TRUE;

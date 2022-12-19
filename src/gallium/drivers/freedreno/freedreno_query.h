@@ -35,7 +35,6 @@
 
 struct fd_context;
 struct fd_query;
-struct fd_resource;
 
 struct fd_query_funcs {
    void (*destroy_query)(struct fd_context *ctx, struct fd_query *q) dt;
@@ -43,11 +42,6 @@ struct fd_query_funcs {
    void (*end_query)(struct fd_context *ctx, struct fd_query *q) dt;
    bool (*get_query_result)(struct fd_context *ctx, struct fd_query *q,
                             bool wait, union pipe_query_result *result);
-   void (*get_query_result_resource)(struct fd_context *ctx, struct fd_query *q,
-                                     enum pipe_query_flags flags,
-                                     enum pipe_query_value_type result_type,
-                                     int index, struct fd_resource *dst,
-                                     unsigned offset) dt;
 };
 
 struct fd_query {

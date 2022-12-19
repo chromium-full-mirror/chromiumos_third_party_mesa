@@ -54,9 +54,11 @@ OpenGL Forums
 
 Here are some other OpenGL-related forums you might find useful:
 
--  `Khronos' OpenGL Community <https://community.khronos.org/c/opengl-general/34>`__
+-  `OpenGL discussion
+   forums <https://www.opengl.org/discussion_boards/>`__ at
+   www.opengl.org
 -  Usenet newsgroups:
 
-   -  `comp.graphics.algorithms <news:comp.graphics.algorithms>`__
-   -  `comp.graphics.api.opengl <news:comp.graphics.api.opengl>`__
-   -  `comp.os.linux.x <news:comp.os.linux.x>`__
+   -  comp.graphics.algorithms
+   -  comp.graphics.api.opengl
+   -  comp.os.linux.x

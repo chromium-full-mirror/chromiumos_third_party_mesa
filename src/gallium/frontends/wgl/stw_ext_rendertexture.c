@@ -107,7 +107,7 @@ wglBindTexImageARB(HPBUFFERARB hPbuffer, int iBuffer)
    struct stw_framebuffer *fb, *old_fb, *old_fbRead;
    GLenum texFormat, srcBuffer, target;
    boolean retVal;
-   const struct stw_pixelformat_info *pfiSave;
+   int pixelFormatSave;
 
    /*
     * Implementation notes:
@@ -170,10 +170,10 @@ wglBindTexImageARB(HPBUFFERARB hPbuffer, int iBuffer)
     * an error condition.  After the stw_make_current() we restore the
     * buffer's pixel format.
     */
-   pfiSave = fb->pfi;
-   fb->pfi = curctx->pfi;
+   pixelFormatSave = fb->iPixelFormat;
+   fb->iPixelFormat = curctx->iPixelFormat;
    retVal = stw_make_current(fb, fb, curctx);
-   fb->pfi = pfiSave;
+   fb->iPixelFormat = pixelFormatSave;
    if (!retVal) {
       debug_printf("stw_make_current(#1) failed in wglBindTexImageARB()\n");
       return FALSE;

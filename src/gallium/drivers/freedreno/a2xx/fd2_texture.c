@@ -101,7 +101,7 @@ fd2_sampler_state_create(struct pipe_context *pctx,
 
    /* TODO
     * cso->max_anisotropy
-    * cso->unnormalized_coords (dealt with by shader for rect textures?)
+    * cso->normalized_coords (dealt with by shader for rect textures?)
     */
 
    /* SQ_TEX0_PITCH() must be OR'd in later when we know the bound texture: */
@@ -146,7 +146,7 @@ tex_dimension(unsigned target)
 {
    switch (target) {
    default:
-      unreachable("Unsupported target");
+      assert(0);
    case PIPE_TEXTURE_1D:
       assert(0); /* TODO */
       return SQ_TEX_DIMENSION_1D;

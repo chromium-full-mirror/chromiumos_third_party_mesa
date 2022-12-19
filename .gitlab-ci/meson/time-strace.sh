@@ -1,8 +1,6 @@
 #!/bin/sh
 
-if [ "x$STRACEDIR" = "x" ]; then
-    STRACEDIR=meson-logs/strace/$(for i in $@; do basename -z -- $i; echo -n _; done)
-fi
+STRACEDIR=meson-logs/strace/$(for i in $@; do basename -z -- $i; echo -n _; done)
 
 mkdir -p $STRACEDIR
 

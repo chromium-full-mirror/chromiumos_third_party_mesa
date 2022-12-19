@@ -31,5 +31,4 @@ TEST_DIR=${CI_PROJECT_DIR}/.gitlab-ci/tests
 PYTHONPATH="${TEST_DIR}:${PYTHONPATH}" python3 -m \
     pytest "${TEST_DIR}" \
             -W ignore::DeprecationWarning \
-            --junitxml=artifacts/ci_scripts_report.xml \
-            -m 'not slow'
+            --junitxml=artifacts/ci_scripts_report.xml

@@ -619,7 +619,7 @@ bool alu_group_tracker::try_reserve(alu_node* n) {
 		alu_node *a = slots[i];
 		if (a) {
 			a->bc.bank_swizzle = save_bs[i];
-			ASSERTED bool b = gpr.try_reserve(a);
+			bool b = gpr.try_reserve(a);
 			assert(b);
 		}
 	}
@@ -1205,13 +1205,15 @@ bool post_scheduler::schedule_alu(container_node *c) {
 	if (!ready.empty()) {
 		sblog << "##post_scheduler: unscheduled ready instructions :";
 		dump::dump_op_list(&ready);
+		assert(!"unscheduled ready instructions");
 	}
 
 	if (!pending.empty()) {
 		sblog << "##post_scheduler: unscheduled pending instructions :";
 		dump::dump_op_list(&pending);
+		assert(!"unscheduled pending instructions");
 	}
-	return pending.empty() && ready.empty() && improving != 0;
+	return improving;
 }
 
 void post_scheduler::add_interferences(value *v, sb_bitset &rb, val_set &vs) {
@@ -2092,7 +2094,7 @@ bool alu_kcache_tracker::try_reserve(alu_group_tracker& gt) {
 
 	sb_set<unsigned> group_lines;
 
-	ASSERTED unsigned nl = kt.get_lines(group_lines);
+	unsigned nl = kt.get_lines(group_lines);
 	assert(nl);
 
 	sb_set<unsigned> clause_lines(lines);

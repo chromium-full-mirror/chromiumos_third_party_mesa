@@ -38,7 +38,6 @@
 
 
 #include "gallivm/lp_bld.h"
-#include "pipe/p_defines.h"
 
 
 struct lp_type;
@@ -100,7 +99,7 @@ lp_build_swizzle_aos_n(struct gallivm_state* gallivm,
 LLVMValueRef
 lp_build_swizzle_soa_channel(struct lp_build_context *bld,
                              const LLVMValueRef *unswizzled,
-                             enum pipe_swizzle swizzle);
+                             unsigned swizzle);
 
 
 void

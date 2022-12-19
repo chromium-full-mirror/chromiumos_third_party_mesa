@@ -21,6 +21,7 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE. */
 
 #include "util/u_memory.h"
+#include "util/simple_list.h"
 
 #include "r300_context.h"
 #include "r300_screen.h"

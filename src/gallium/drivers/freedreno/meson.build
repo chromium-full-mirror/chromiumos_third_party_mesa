@@ -192,6 +192,8 @@ files_libfreedreno = files(
   'a6xx/fd6_draw.h',
   'a6xx/fd6_emit.c',
   'a6xx/fd6_emit.h',
+  'a6xx/fd6_format.c',
+  'a6xx/fd6_format.h',
   'a6xx/fd6_gmem.c',
   'a6xx/fd6_gmem.h',
   'a6xx/fd6_image.c',

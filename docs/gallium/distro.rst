@@ -1,7 +1,7 @@
 Distribution
 ============
 
-Along with the interface definitions, the following drivers, Gallium frontends,
+Along with the interface definitions, the following drivers, gallium frontends,
 and auxiliary modules are shipped in the standard Gallium distribution.
 
 Drivers
@@ -18,45 +18,45 @@ LLVM Softpipe
 A version of :ref:`softpipe` that uses the Low-Level Virtual Machine to
 dynamically generate optimized rasterizing pipelines.
 
-NVIDIA NV30
+nVidia nv30
 ^^^^^^^^^^^
 
-Driver for the NVIDIA NV30 and NV40 families of GPUs.
+Driver for the nVidia nv30 and nv40 families of GPUs.
 
-NVIDIA NV50
+nVidia nv50
 ^^^^^^^^^^^
 
-Driver for the NVIDIA NV50 family of GPUs.
+Driver for the nVidia nv50 family of GPUs.
 
-NVIDIA NVC0
+nVidia nvc0
 ^^^^^^^^^^^
 
-Driver for the NVIDIA NVC0 / Fermi family of GPUs.
+Driver for the nVidia nvc0 / fermi family of GPUs.
 
 VMware SVGA
 ^^^^^^^^^^^
 
 Driver for VMware virtualized guest operating system graphics processing.
 
-ATI R300
+ATI r300
 ^^^^^^^^
 
-Driver for the ATI/AMD R300, R400, and R500 families of GPUs.
+Driver for the ATI/AMD r300, r400, and r500 families of GPUs.
 
-ATI/AMD R600
+ATI/AMD r600
 ^^^^^^^^^^^^
 
-Driver for the ATI/AMD R600, R700, Evergreen and Northern Islands families of GPUs.
+Driver for the ATI/AMD r600, r700, Evergreen and Northern Islands families of GPUs.
 
-AMD RadeonSI
+AMD radeonsi
 ^^^^^^^^^^^^
 
 Driver for the AMD Southern Islands family of GPUs.
 
-Freedreno
+freedreno
 ^^^^^^^^^
 
-Driver for Qualcomm Adreno 2xx, 3xx, and 4xx series of GPUs.
+Driver for Qualcomm Adreno a2xx, a3xx, and a4xx series of GPUs.
 
 .. _softpipe:
 
@@ -72,6 +72,11 @@ Trace
 
 Wrapper driver. Trace dumps an XML record of the calls made to the
 :ref:`Context` and :ref:`Screen` objects that it wraps.
+
+Rbug
+^^^^
+
+Wrapper driver. :ref:`rbug` driver used with stand alone rbug-gui.
 
 Gallium frontends
 -----------------
@@ -96,14 +101,9 @@ GLX
 MesaGL
 ^^^^^^
 
-The Gallium frontend implementing a GL state machine. Not usable as
-a standalone frontend; Mesa should be built with another Gallium frontend,
+The gallium frontend implementing a GL state machine. Not usable as
+a standalone frontend; Mesa should be built with another gallium frontend,
 such as :ref:`DRI` or EGL.
-
-Nine
-^^^^
-
-The Gallium frontend implements the Direct3D 9 API.
 
 VDPAU
 ^^^^^
@@ -118,6 +118,11 @@ Xorg DDX
 
 Tracker for Xorg X11 servers. Provides device-dependent
 modesetting and acceleration as a DDX driver.
+
+XvMC
+^^^^
+
+Tracker for X-Video Motion Compensation.
 
 Auxiliary
 ---------

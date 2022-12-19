@@ -47,7 +47,6 @@ struct aa_transform_context
    unsigned num_imm;       // number of immediates
    unsigned num_input;     // number of inputs
    unsigned aa_point_coord_index;
-   bool need_texcoord_semantic;
 };
 
 static inline struct aa_transform_context *
@@ -114,15 +113,8 @@ aa_prolog(struct tgsi_transform_context *ctx)
 
    /* Declare new generic input/texcoord */
    texIn = ts->num_input++;
-   if (ts->need_texcoord_semantic) {
-      tgsi_transform_input_decl(ctx, texIn, TGSI_SEMANTIC_TEXCOORD,
-                                ts->aa_point_coord_index,
-                                TGSI_INTERPOLATE_LINEAR);
-   } else {
-      tgsi_transform_input_decl(ctx, texIn, TGSI_SEMANTIC_GENERIC,
-                                ts->aa_point_coord_index,
-                                TGSI_INTERPOLATE_LINEAR);
-   }
+   tgsi_transform_input_decl(ctx, texIn, TGSI_SEMANTIC_GENERIC,
+                             ts->aa_point_coord_index, TGSI_INTERPOLATE_LINEAR);
 
    /* Declare extra immediates */
    imm = ts->num_imm++;
@@ -279,8 +271,7 @@ aa_epilog(struct tgsi_transform_context *ctx)
  */
 struct tgsi_token *
 tgsi_add_aa_point(const struct tgsi_token *tokens_in,
-                  const int aa_point_coord_index,
-                  const bool need_texcoord_semantic)
+                  const int aa_point_coord_index)
 {
    struct aa_transform_context transform;
    const uint num_new_tokens = 200; /* should be enough */
@@ -300,7 +291,6 @@ tgsi_add_aa_point(const struct tgsi_token *tokens_in,
 
    assert(aa_point_coord_index != -1);
    transform.aa_point_coord_index = (unsigned)aa_point_coord_index;
-   transform.need_texcoord_semantic = need_texcoord_semantic;
 
    transform.num_tmp = 0;
    transform.num_imm = 0;

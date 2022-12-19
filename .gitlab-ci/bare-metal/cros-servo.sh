@@ -90,8 +90,7 @@ echo "$BM_CMDLINE" > /tftp/cmdline
 set +e
 python3 $BM/cros_servo_run.py \
         --cpu $BM_SERIAL \
-        --ec $BM_SERIAL_EC \
-        --test-timeout ${TEST_PHASE_TIMEOUT:-20}
+        --ec $BM_SERIAL_EC
 ret=$?
 set -e
 

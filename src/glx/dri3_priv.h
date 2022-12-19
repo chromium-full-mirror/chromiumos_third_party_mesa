@@ -61,6 +61,12 @@
 
 #include "loader_dri3_helper.h"
 
+/* From driconf.h, user exposed so should be stable */
+#define DRI_CONF_VBLANK_NEVER 0
+#define DRI_CONF_VBLANK_DEF_INTERVAL_0 1
+#define DRI_CONF_VBLANK_DEF_INTERVAL_1 2
+#define DRI_CONF_VBLANK_ALWAYS_SYNC 3
+
 struct dri3_display
 {
    __GLXDRIdisplay base;
@@ -112,6 +118,12 @@ struct dri3_screen {
    struct loader_dri3_extensions loader_dri3_ext;
 };
 
+struct dri3_context
+{
+   struct glx_context base;
+   __DRIcontext *driContext;
+};
+
 struct dri3_drawable {
    __GLXDRIdrawable base;
    struct loader_dri3_drawable loader_drawable;
@@ -138,8 +150,3 @@ _X_HIDDEN int
 dri3_interop_export_object(struct glx_context *ctx,
                            struct mesa_glinterop_export_in *in,
                            struct mesa_glinterop_export_out *out);
-
-_X_HIDDEN int
-dri3_interop_flush_objects(struct glx_context *ctx,
-                           unsigned count, struct mesa_glinterop_export_in *objects,
-                           GLsync *sync);

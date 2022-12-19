@@ -163,37 +163,58 @@ lower_frexp_exp(nir_builder *b, nir_ssa_def *x)
 }
 
 static bool
-lower_frexp_instr(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+lower_frexp_impl(nir_function_impl *impl)
 {
-   if (instr->type != nir_instr_type_alu)
-      return false;
+   bool progress = false;
 
-   nir_alu_instr *alu_instr = nir_instr_as_alu(instr);
-   nir_ssa_def *lower;
+   nir_builder b;
+   nir_builder_init(&b, impl);
 
-   b->cursor = nir_before_instr(instr);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type != nir_instr_type_alu)
+            continue;
 
-   switch (alu_instr->op) {
-   case nir_op_frexp_sig:
-      lower = lower_frexp_sig(b, nir_ssa_for_alu_src(b, alu_instr, 0));
-      break;
-   case nir_op_frexp_exp:
-      lower = lower_frexp_exp(b, nir_ssa_for_alu_src(b, alu_instr, 0));
-      break;
-   default:
-      return false;
+         nir_alu_instr *alu_instr = nir_instr_as_alu(instr);
+         nir_ssa_def *lower;
+
+         b.cursor = nir_before_instr(instr);
+
+         switch (alu_instr->op) {
+         case nir_op_frexp_sig:
+            lower = lower_frexp_sig(&b, nir_ssa_for_alu_src(&b, alu_instr, 0));
+            break;
+         case nir_op_frexp_exp:
+            lower = lower_frexp_exp(&b, nir_ssa_for_alu_src(&b, alu_instr, 0));
+            break;
+         default:
+            continue;
+         }
+
+         nir_ssa_def_rewrite_uses(&alu_instr->dest.dest.ssa,
+                                  lower);
+         nir_instr_remove(instr);
+         progress = true;
+      }
    }
 
-   nir_ssa_def_rewrite_uses(&alu_instr->dest.dest.ssa, lower);
-   nir_instr_remove(instr);
-   return true;
+   if (progress) {
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
+   }
+
+   return progress;
 }
 
 bool
 nir_lower_frexp(nir_shader *shader)
 {
-   return nir_shader_instructions_pass(shader, lower_frexp_instr,
-                                       nir_metadata_block_index |
-                                       nir_metadata_dominance,
-                                       NULL);
+   bool progress = false;
+
+   nir_foreach_function(function, shader) {
+      if (function->impl)
+         progress |= lower_frexp_impl(function->impl);
+   }
+
+   return progress;
 }

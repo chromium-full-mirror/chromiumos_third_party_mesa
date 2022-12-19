@@ -35,9 +35,6 @@
 #include "vl/vl_winsys.h"
 
 #include "va_private.h"
-#ifdef HAVE_DRISW_KMS
-#include "loader/loader.h"
-#endif
 
 #include <va/va_drmcommon.h>
 
@@ -101,10 +98,6 @@ static struct VADriverVTable vtable =
    NULL, /* vaQueryProcessingRate */
    &vlVaExportSurfaceHandle,
 #endif
-#if VA_CHECK_VERSION(1, 15, 0)
-   NULL, /* vaSyncSurface2 */
-   &vlVaSyncBuffer,
-#endif
 };
 
 static struct VADriverVTableVPP vtable_vpp =
@@ -115,7 +108,7 @@ static struct VADriverVTableVPP vtable_vpp =
    &vlVaQueryVideoProcPipelineCaps
 };
 
-VA_PUBLIC_API VAStatus
+PUBLIC VAStatus
 VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
 {
    vlVaDriver *drv;
@@ -128,12 +121,6 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
       return VA_STATUS_ERROR_ALLOCATION_FAILED;
 
    switch (ctx->display_type) {
-#ifdef _WIN32
-   case VA_DISPLAY_WIN32: {
-      drv->vscreen = vl_win32_screen_create(ctx->native_dpy);
-      break;
-   }
-#else
    case VA_DISPLAY_ANDROID:
       FREE(drv);
       return VA_STATUS_ERROR_UNIMPLEMENTED;
@@ -142,8 +129,6 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
       drv->vscreen = vl_dri3_screen_create(ctx->native_dpy, ctx->x11_screen);
       if (!drv->vscreen)
          drv->vscreen = vl_dri2_screen_create(ctx->native_dpy, ctx->x11_screen);
-      if (!drv->vscreen)
-         drv->vscreen = vl_xlib_swrast_screen_create(ctx->native_dpy, ctx->x11_screen);
       break;
    case VA_DISPLAY_WAYLAND:
    case VA_DISPLAY_DRM:
@@ -154,19 +139,10 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
          FREE(drv);
          return VA_STATUS_ERROR_INVALID_PARAMETER;
       }
-#ifdef HAVE_DRISW_KMS
-      char* drm_driver_name = loader_get_driver_for_fd(drm_info->fd);
-      if(drm_driver_name) {
-         if (strcmp(drm_driver_name, "vgem") == 0)
-            drv->vscreen = vl_vgem_drm_screen_create(drm_info->fd);
-         FREE(drm_driver_name);
-      }
-#endif
-      if(!drv->vscreen)
-         drv->vscreen = vl_drm_screen_create(drm_info->fd);
+
+      drv->vscreen = vl_drm_screen_create(drm_info->fd);
       break;
    }
-#endif
    default:
       FREE(drv);
       return VA_STATUS_ERROR_INVALID_DISPLAY;
@@ -264,13 +240,10 @@ vlVaCreateContext(VADriverContextP ctx, VAConfigID config_id, int picture_width,
    if (!context)
       return VA_STATUS_ERROR_ALLOCATION_FAILED;
 
-   if (is_vpp && !drv->vscreen->pscreen->get_video_param(drv->vscreen->pscreen,
-                                                         PIPE_VIDEO_PROFILE_UNKNOWN,
-                                                         PIPE_VIDEO_ENTRYPOINT_PROCESSING,
-                                                         PIPE_VIDEO_CAP_SUPPORTED)) {
+   if (is_vpp) {
       context->decoder = NULL;
    } else {
-      if (config->entrypoint != PIPE_VIDEO_ENTRYPOINT_PROCESSING) {
+      if (config->entrypoint != PIPE_VIDEO_ENTRYPOINT_UNKNOWN) {
          max_supported_width = drv->vscreen->pscreen->get_video_param(drv->vscreen->pscreen,
                         config->profile, config->entrypoint,
                         PIPE_VIDEO_CAP_MAX_WIDTH);

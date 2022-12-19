@@ -28,7 +28,9 @@
 #ifndef RWLOCK_H
 #define RWLOCK_H
 
-#if defined(HAVE_PTHREAD)
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <pthread.h>
 #endif
 
@@ -38,21 +40,71 @@ extern "C" {
 
 struct u_rwlock
 {
-#if defined(_WIN32) && !defined(HAVE_PTHREAD)
-   struct {
-      void *Ptr;
-   } rwlock;
+#ifdef _WIN32
+   SRWLOCK rwlock;
 #else
    pthread_rwlock_t rwlock;
 #endif
 };
 
-int u_rwlock_init(struct u_rwlock *rwlock);
-int u_rwlock_destroy(struct u_rwlock *rwlock);
-int u_rwlock_rdlock(struct u_rwlock *rwlock);
-int u_rwlock_rdunlock(struct u_rwlock *rwlock);
-int u_rwlock_wrlock(struct u_rwlock *rwlock);
-int u_rwlock_wrunlock(struct u_rwlock *rwlock);
+static inline int u_rwlock_init(struct u_rwlock *rwlock)
+{
+#ifdef _WIN32
+   InitializeSRWLock(&rwlock->rwlock);
+   return 0;
+#else
+   return pthread_rwlock_init(&rwlock->rwlock, NULL);
+#endif
+}
+
+static inline int u_rwlock_destroy(struct u_rwlock *rwlock)
+{
+#ifdef _WIN32
+   return 0;
+#else
+   return pthread_rwlock_destroy(&rwlock->rwlock);
+#endif
+}
+
+static inline int u_rwlock_rdlock(struct u_rwlock *rwlock)
+{
+#ifdef _WIN32
+   AcquireSRWLockShared(&rwlock->rwlock);
+   return 0;
+#else
+   return pthread_rwlock_rdlock(&rwlock->rwlock);
+#endif
+}
+
+static inline int u_rwlock_rdunlock(struct u_rwlock *rwlock)
+{
+#ifdef _WIN32
+   ReleaseSRWLockShared(&rwlock->rwlock);
+   return 0;
+#else
+   return pthread_rwlock_unlock(&rwlock->rwlock);
+#endif
+}
+
+static inline int u_rwlock_wrlock(struct u_rwlock *rwlock)
+{
+#ifdef _WIN32
+   AcquireSRWLockExclusive(&rwlock->rwlock);
+   return 0;
+#else
+   return pthread_rwlock_wrlock(&rwlock->rwlock);
+#endif
+}
+
+static inline int u_rwlock_wrunlock(struct u_rwlock *rwlock)
+{
+#ifdef _WIN32
+   ReleaseSRWLockExclusive(&rwlock->rwlock);
+   return 0;
+#else
+   return pthread_rwlock_unlock(&rwlock->rwlock);
+#endif
+}
 
 #ifdef __cplusplus
 }

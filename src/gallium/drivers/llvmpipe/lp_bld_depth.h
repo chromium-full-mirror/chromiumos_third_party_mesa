@@ -68,8 +68,7 @@ lp_build_depth_stencil_test(struct gallivm_state *gallivm,
                             LLVMValueRef face,
                             LLVMValueRef *z_value,
                             LLVMValueRef *s_value,
-                            boolean do_branch,
-                            bool restrict_depth);
+                            boolean do_branch);
 
 void
 lp_build_depth_stencil_load_swizzled(struct gallivm_state *gallivm,

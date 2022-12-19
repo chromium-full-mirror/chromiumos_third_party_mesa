@@ -38,7 +38,6 @@ enum hud_counter {
    HUD_COUNTER_OFFLOADED,
    HUD_COUNTER_DIRECT,
    HUD_COUNTER_SYNCS,
-   HUD_COUNTER_BATCHES,
 };
 
 struct hud_context {

@@ -43,6 +43,7 @@ extern "C" {
 #endif
 
 struct pipe_screen;
+struct st_api;
 struct st_manager;
 struct stw_framebuffer;
 
@@ -57,6 +58,7 @@ struct stw_device
    /* Cache some PIPE_CAP_* */
    unsigned max_2d_length;
 
+   struct st_api *stapi;
    struct st_manager *smapi;
 
    LUID AdapterLuid;
@@ -100,9 +102,6 @@ stw_init_screen(HDC hdc);
 
 struct stw_device *
 stw_get_device(void);
-
-char *
-stw_get_config_xml(void);
 
 static inline struct stw_context *
 stw_lookup_context_locked( DHGLRC dhglrc )

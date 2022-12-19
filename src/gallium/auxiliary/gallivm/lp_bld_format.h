@@ -59,7 +59,7 @@ struct lp_build_context;
  */
 struct lp_build_format_cache
 {
-   alignas(16) uint32_t cache_data[LP_BUILD_FORMAT_CACHE_SIZE][4][4];
+   PIPE_ALIGN_VAR(16) uint32_t cache_data[LP_BUILD_FORMAT_CACHE_SIZE][4][4];
    uint64_t cache_tags[LP_BUILD_FORMAT_CACHE_SIZE];
 #if LP_BUILD_FORMAT_CACHE_DEBUG
    uint64_t cache_access_total;
@@ -68,7 +68,7 @@ struct lp_build_format_cache
 };
 
 
-enum cache_member {
+enum {
    LP_BUILD_FORMAT_CACHE_MEMBER_DATA = 0,
    LP_BUILD_FORMAT_CACHE_MEMBER_TAGS,
 #if LP_BUILD_FORMAT_CACHE_DEBUG
@@ -82,11 +82,6 @@ enum cache_member {
 LLVMTypeRef
 lp_build_format_cache_type(struct gallivm_state *gallivm);
 
-LLVMTypeRef
-lp_build_format_cache_member_type(struct gallivm_state *gallivm, enum cache_member member);
-
-LLVMTypeRef
-lp_build_format_cache_elem_type(struct gallivm_state *gallivm, enum cache_member member);
 
 /*
  * AoS

@@ -162,7 +162,7 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit, int nr,
    int constmode;
    int i, j;
 
-   assert(nr <= ARRAY_SIZE(color_regid));
+   debug_assert(nr <= ARRAY_SIZE(color_regid));
 
    if (emit->binning_pass)
       nr = 0;

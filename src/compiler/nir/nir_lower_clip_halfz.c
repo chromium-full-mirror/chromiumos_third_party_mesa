@@ -23,20 +23,20 @@
 
 #include "nir_builder.h"
 
-static bool
-lower_pos_write(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
+static void
+lower_pos_write(nir_builder *b, struct nir_instr *instr)
 {
    if (instr->type != nir_instr_type_intrinsic)
-      return false;
+      return;
 
    nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
    if (intr->intrinsic != nir_intrinsic_store_deref)
-      return false;
+      return;
 
    nir_variable *var = nir_intrinsic_get_var(intr, 0);
    if (var->data.mode != nir_var_shader_out ||
        var->data.location != VARYING_SLOT_POS)
-      return false;
+      return;
 
    b->cursor = nir_before_instr(&intr->instr);
 
@@ -51,7 +51,6 @@ lower_pos_write(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
                                             0.5),
                                nir_channel(b, pos, 3));
    nir_instr_rewrite_src(&intr->instr, intr->src + 1, nir_src_for_ssa(def));
-   return true;
 }
 
 void
@@ -62,8 +61,19 @@ nir_lower_clip_halfz(nir_shader *shader)
        shader->info.stage != MESA_SHADER_TESS_EVAL)
       return;
 
-   nir_shader_instructions_pass(shader, lower_pos_write,
-                                nir_metadata_block_index |
-                                nir_metadata_dominance,
-                                NULL);
+   nir_foreach_function(function, shader) {
+      if (function->impl) {
+         nir_builder b;
+         nir_builder_init(&b, function->impl);
+
+         nir_foreach_block(block, function->impl) {
+            nir_foreach_instr_safe(instr, block) {
+               lower_pos_write(&b, instr);
+            }
+         }
+
+         nir_metadata_preserve(function->impl, nir_metadata_block_index |
+                                               nir_metadata_dominance);
+      }
+   }
 }

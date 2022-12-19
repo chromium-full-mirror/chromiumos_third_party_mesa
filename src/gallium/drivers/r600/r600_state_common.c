@@ -39,7 +39,6 @@
 #include "tgsi/tgsi_ureg.h"
 
 #include "nir.h"
-#include "nir/nir_to_tgsi.h"
 #include "nir/nir_to_tgsi_info.h"
 #include "tgsi/tgsi_from_mesa.h"
 
@@ -87,7 +86,7 @@ void r600_emit_alphatest_state(struct r600_context *rctx, struct r600_atom *atom
 	struct r600_alphatest_state *a = (struct r600_alphatest_state*)atom;
 	unsigned alpha_ref = a->sx_alpha_ref;
 
-	if (rctx->b.gfx_level >= EVERGREEN && a->cb0_export_16bpc) {
+	if (rctx->b.chip_class >= EVERGREEN && a->cb0_export_16bpc) {
 		alpha_ref &= ~0x1FFF;
 	}
 
@@ -209,7 +208,7 @@ static void r600_bind_blend_state_internal(struct r600_context *rctx,
 		rctx->cb_misc_state.blend_colormask = blend->cb_target_mask;
 		update_cb = true;
 	}
-	if (rctx->b.gfx_level <= R700 &&
+	if (rctx->b.chip_class <= R700 &&
 	    rctx->cb_misc_state.cb_color_control != color_control) {
 		rctx->cb_misc_state.cb_color_control = color_control;
 		update_cb = true;
@@ -284,9 +283,6 @@ static void r600_set_clip_state(struct pipe_context *ctx,
 	rctx->clip_state.state = *state;
 	r600_mark_atom_dirty(rctx, &rctx->clip_state.atom);
 	rctx->driver_consts[PIPE_SHADER_VERTEX].vs_ucp_dirty = true;
-	rctx->driver_consts[PIPE_SHADER_GEOMETRY].vs_ucp_dirty = true;
-	if (rctx->b.family >= CHIP_CEDAR)
-		rctx->driver_consts[PIPE_SHADER_TESS_EVAL].vs_ucp_dirty = true;
 }
 
 static void r600_set_stencil_ref(struct pipe_context *ctx,
@@ -357,7 +353,7 @@ static void r600_bind_dsa_state(struct pipe_context *ctx, void *state)
 	ref.writemask[1] = dsa->writemask[1];
 	if (rctx->zwritemask != dsa->zwritemask) {
 		rctx->zwritemask = dsa->zwritemask;
-		if (rctx->b.gfx_level >= EVERGREEN) {
+		if (rctx->b.chip_class >= EVERGREEN) {
 			/* work around some issue when not writing to zbuffer
 			 * we are having lockup on evergreen so do not enable
 			 * hyperz when not writing zbuffer
@@ -503,7 +499,7 @@ static void r600_bind_sampler_states(struct pipe_context *pipe,
 	r600_sampler_states_dirty(rctx, &dst->states);
 
 	/* Seamless cubemap state. */
-	if (rctx->b.gfx_level <= R700 &&
+	if (rctx->b.chip_class <= R700 &&
 	    seamless_cube_map != -1 &&
 	    seamless_cube_map != rctx->seamless_cube_map.enabled) {
 		/* change in TA_CNTL_AUX need a pipeline flush */
@@ -563,7 +559,7 @@ static void r600_delete_vertex_elements(struct pipe_context *ctx, void *state)
 void r600_vertex_buffers_dirty(struct r600_context *rctx)
 {
 	if (rctx->vertex_buffer_state.dirty_mask) {
-		rctx->vertex_buffer_state.atom.num_dw = (rctx->b.gfx_level >= EVERGREEN ? 12 : 11) *
+		rctx->vertex_buffer_state.atom.num_dw = (rctx->b.chip_class >= EVERGREEN ? 12 : 11) *
 					       util_bitcount(rctx->vertex_buffer_state.dirty_mask);
 		r600_mark_atom_dirty(rctx, &rctx->vertex_buffer_state.atom);
 	}
@@ -635,7 +631,7 @@ void r600_sampler_views_dirty(struct r600_context *rctx,
 			      struct r600_samplerview_state *state)
 {
 	if (state->dirty_mask) {
-		state->atom.num_dw = (rctx->b.gfx_level >= EVERGREEN ? 14 : 13) *
+		state->atom.num_dw = (rctx->b.chip_class >= EVERGREEN ? 14 : 13) *
 				     util_bitcount(state->dirty_mask);
 		r600_mark_atom_dirty(rctx, &state->atom);
 	}
@@ -706,7 +702,7 @@ static void r600_set_sampler_views(struct pipe_context *pipe,
 
 			/* Changing from array to non-arrays textures and vice versa requires
 			 * updating TEX_ARRAY_OVERRIDE in sampler states on R6xx-R7xx. */
-			if (rctx->b.gfx_level <= R700 &&
+			if (rctx->b.chip_class <= R700 &&
 			    (dst->states.enabled_mask & (1 << i)) &&
 			    (rviews[i]->base.texture->target == PIPE_TEXTURE_1D_ARRAY ||
 			     rviews[i]->base.texture->target == PIPE_TEXTURE_2D_ARRAY) != dst->is_array_sampler[i]) {
@@ -983,23 +979,14 @@ struct r600_pipe_shader_selector *r600_create_shader_state_tokens(struct pipe_co
 								  unsigned pipe_shader_type)
 {
 	struct r600_pipe_shader_selector *sel = CALLOC_STRUCT(r600_pipe_shader_selector);
-	struct r600_screen *rscreen = (struct r600_screen *)ctx->screen;
 
 	sel->type = pipe_shader_type;
 	if (ir == PIPE_SHADER_IR_TGSI) {
 		sel->tokens = tgsi_dup_tokens((const struct tgsi_token *)prog);
 		tgsi_scan_shader(sel->tokens, &sel->info);
 	} else if (ir == PIPE_SHADER_IR_NIR){
-		nir_shader *s = (nir_shader *)prog;
-
-		if (rscreen->b.debug_flags & DBG_USE_TGSI) {
-			sel->tokens = (void *)nir_to_tgsi(s, ctx->screen);
-			ir = PIPE_SHADER_IR_TGSI;
-			tgsi_scan_shader(sel->tokens, &sel->info);
-		} else {
-			sel->nir = s;
-			nir_tgsi_scan_shader(sel->nir, &sel->info, true);
-		}
+		sel->nir = nir_shader_clone(NULL, (const nir_shader *)prog);
+		nir_tgsi_scan_shader(sel->nir, &sel->info, true);
 	}
 	sel->ir_type = ir;
 	return sel;
@@ -1017,8 +1004,9 @@ static void *r600_create_shader_state(struct pipe_context *ctx,
 	else if (state->type == PIPE_SHADER_IR_NIR) {
 		sel = r600_create_shader_state_tokens(ctx, state->ir.nir, state->type, pipe_shader_type);
 	} else
-		unreachable("Unknown shader type");
+		assert(0 && "Unknown shader type\n");
 	
+	sel->ir_type = state->type;
 	sel->so = state->stream_output;
 
 	switch (pipe_shader_type) {
@@ -1259,7 +1247,7 @@ static void r600_delete_tes_state(struct pipe_context *ctx, void *state)
 void r600_constant_buffers_dirty(struct r600_context *rctx, struct r600_constbuf_state *state)
 {
 	if (state->dirty_mask) {
-		state->atom.num_dw = rctx->b.gfx_level >= EVERGREEN ? util_bitcount(state->dirty_mask)*20
+		state->atom.num_dw = rctx->b.chip_class >= EVERGREEN ? util_bitcount(state->dirty_mask)*20
 								   : util_bitcount(state->dirty_mask)*19;
 		r600_mark_atom_dirty(rctx, &state->atom);
 	}
@@ -1353,12 +1341,6 @@ void r600_update_driver_const_buffers(struct r600_context *rctx, bool compute_on
 	start = compute_only ? PIPE_SHADER_COMPUTE : 0;
 	end = compute_only ? PIPE_SHADER_TYPES : PIPE_SHADER_COMPUTE;
 
-	int last_vertex_stage = PIPE_SHADER_VERTEX;
-	if (rctx->tes_shader)
-		last_vertex_stage = PIPE_SHADER_TESS_EVAL;
-	if (rctx->gs_shader)
-		last_vertex_stage  = PIPE_SHADER_GEOMETRY;
-
 	for (sh = start; sh < end; sh++) {
 		struct r600_shader_driver_constants_info *info = &rctx->driver_consts[sh];
 		if (!info->vs_ucp_dirty &&
@@ -1371,9 +1353,7 @@ void r600_update_driver_const_buffers(struct r600_context *rctx, bool compute_on
 		ptr = info->constants;
 		size = info->alloc_size;
 		if (info->vs_ucp_dirty) {
-			assert(sh == PIPE_SHADER_VERTEX ||
-			       sh == PIPE_SHADER_GEOMETRY ||
-			       sh == PIPE_SHADER_TESS_EVAL);
+			assert(sh == PIPE_SHADER_VERTEX);
 			if (!size) {
 				ptr = rctx->clip_state.state.ucp;
 				size = R600_UCP_SIZE;
@@ -1422,7 +1402,7 @@ void r600_update_driver_const_buffers(struct r600_context *rctx, bool compute_on
 		if (info->texture_const_dirty) {
 			assert (ptr);
 			assert (size);
-			if (sh == last_vertex_stage)
+			if (sh == PIPE_SHADER_VERTEX)
 				memcpy(ptr, rctx->clip_state.state.ucp, R600_UCP_SIZE);
 			if (sh == PIPE_SHADER_FRAGMENT)
 				memcpy(ptr, rctx->sample_positions, R600_UCP_SIZE);
@@ -1988,7 +1968,7 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 				 (rctx->rasterizer->flatshade != rctx->ps_shader->current->flatshade) ||
 				 (msaa != rctx->ps_shader->current->msaa)))) {
 
-			if (rctx->b.gfx_level >= EVERGREEN)
+			if (rctx->b.chip_class >= EVERGREEN)
 				evergreen_update_ps_state(ctx, rctx->ps_shader->current);
 			else
 				r600_update_ps_state(ctx, rctx->ps_shader->current);
@@ -2001,7 +1981,7 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 			r600_mark_atom_dirty(rctx, &rctx->cb_misc_state.atom);
 		}
 
-		if (rctx->b.gfx_level <= R700) {
+		if (rctx->b.chip_class <= R700) {
 			bool multiwrite = rctx->ps_shader->current->shader.fs_write_all;
 
 			if (rctx->cb_misc_state.multiwrite != multiwrite) {
@@ -2014,14 +1994,14 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 	}
 	UPDATE_SHADER(R600_HW_STAGE_PS, ps);
 
-	if (rctx->b.gfx_level >= EVERGREEN) {
+	if (rctx->b.chip_class >= EVERGREEN) {
 		evergreen_update_db_shader_control(rctx);
 	} else {
 		r600_update_db_shader_control(rctx);
 	}
 
 	/* For each shader stage that needs to spill, set up buffer for MEM_SCRATCH */
-	if (rctx->b.gfx_level >= EVERGREEN) {
+	if (rctx->b.chip_class >= EVERGREEN) {
 		evergreen_setup_scratch_buffers(rctx);
 	} else {
 		r600_setup_scratch_buffers(rctx);
@@ -2032,7 +2012,7 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 	if (rctx->ps_shader) {
 		need_buf_const = rctx->ps_shader->current->shader.uses_tex_buffers || rctx->ps_shader->current->shader.has_txq_cube_array_z_comp;
 		if (need_buf_const) {
-			if (rctx->b.gfx_level < EVERGREEN)
+			if (rctx->b.chip_class < EVERGREEN)
 				r600_setup_buffer_constants(rctx, PIPE_SHADER_FRAGMENT);
 			else
 				eg_setup_buffer_constants(rctx, PIPE_SHADER_FRAGMENT);
@@ -2042,7 +2022,7 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 	if (rctx->vs_shader) {
 		need_buf_const = rctx->vs_shader->current->shader.uses_tex_buffers || rctx->vs_shader->current->shader.has_txq_cube_array_z_comp;
 		if (need_buf_const) {
-			if (rctx->b.gfx_level < EVERGREEN)
+			if (rctx->b.chip_class < EVERGREEN)
 				r600_setup_buffer_constants(rctx, PIPE_SHADER_VERTEX);
 			else
 				eg_setup_buffer_constants(rctx, PIPE_SHADER_VERTEX);
@@ -2052,7 +2032,7 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 	if (rctx->gs_shader) {
 		need_buf_const = rctx->gs_shader->current->shader.uses_tex_buffers || rctx->gs_shader->current->shader.has_txq_cube_array_z_comp;
 		if (need_buf_const) {
-			if (rctx->b.gfx_level < EVERGREEN)
+			if (rctx->b.chip_class < EVERGREEN)
 				r600_setup_buffer_constants(rctx, PIPE_SHADER_GEOMETRY);
 			else
 				eg_setup_buffer_constants(rctx, PIPE_SHADER_GEOMETRY);
@@ -2060,7 +2040,7 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 	}
 
 	if (rctx->tes_shader) {
-		assert(rctx->b.gfx_level >= EVERGREEN);
+		assert(rctx->b.chip_class >= EVERGREEN);
 		need_buf_const = rctx->tes_shader->current->shader.uses_tex_buffers ||
 				 rctx->tes_shader->current->shader.has_txq_cube_array_z_comp;
 		if (need_buf_const) {
@@ -2077,14 +2057,14 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 
 	r600_update_driver_const_buffers(rctx, false);
 
-	if (rctx->b.gfx_level < EVERGREEN && rctx->ps_shader && rctx->vs_shader) {
+	if (rctx->b.chip_class < EVERGREEN && rctx->ps_shader && rctx->vs_shader) {
 		if (!r600_adjust_gprs(rctx)) {
 			/* discard rendering */
 			return false;
 		}
 	}
 
-	if (rctx->b.gfx_level == EVERGREEN) {
+	if (rctx->b.chip_class == EVERGREEN) {
 		if (!evergreen_adjust_gprs(rctx)) {
 			/* discard rendering */
 			return false;
@@ -2118,7 +2098,7 @@ void r600_emit_clip_misc_state(struct r600_context *rctx, struct r600_atom *atom
 			       (state->clip_plane_enable & state->clip_dist_write) |
 			       (state->cull_dist_write << 8));
 	/* reuse needs to be set off if we write oViewport */
-	if (rctx->b.gfx_level >= EVERGREEN)
+	if (rctx->b.chip_class >= EVERGREEN)
 		radeon_set_context_reg(cs, R_028AB4_VGT_REUSE_OFF,
 				       S_028AB4_REUSE_OFF(state->vs_out_viewport));
 }
@@ -2235,7 +2215,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 		: (rctx->tes_shader)? rctx->tes_shader->info.properties[TGSI_PROPERTY_TES_PRIM_MODE]
 		: info->mode;
 
-	if (rctx->b.gfx_level >= EVERGREEN) {
+	if (rctx->b.chip_class >= EVERGREEN) {
 		evergreen_emit_atomic_buffer_setup_count(rctx, NULL, combined_atomics, &atomic_used_mask);
 	}
 
@@ -2320,12 +2300,12 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 	}
 
 	/* Workaround for hardware deadlock on certain R600 ASICs: write into a CB register. */
-	if (rctx->b.gfx_level == R600) {
+	if (rctx->b.chip_class == R600) {
 		rctx->b.flags |= R600_CONTEXT_PS_PARTIAL_FLUSH;
 		r600_mark_atom_dirty(rctx, &rctx->cb_misc_state.atom);
 	}
 
-	if (rctx->b.gfx_level >= EVERGREEN)
+	if (rctx->b.chip_class >= EVERGREEN)
 		evergreen_setup_tess_constants(rctx, info, &num_patches);
 
 	/* Emit states. */
@@ -2337,11 +2317,11 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 		r600_emit_atom(rctx, rctx->atoms[u_bit_scan64(&mask)]);
 	}
 
-	if (rctx->b.gfx_level >= EVERGREEN) {
+	if (rctx->b.chip_class >= EVERGREEN) {
 		evergreen_emit_atomic_buffer_setup(rctx, false, combined_atomics, atomic_used_mask);
 	}
 		
-	if (rctx->b.gfx_level == CAYMAN) {
+	if (rctx->b.chip_class == CAYMAN) {
 		/* Copied from radeonsi. */
 		unsigned primgroup_size = 128; /* recommended without a GS */
 		bool ia_switch_on_eop = false;
@@ -2364,7 +2344,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 				       S_028AA8_PRIMGROUP_SIZE(primgroup_size - 1));
 	}
 
-	if (rctx->b.gfx_level >= EVERGREEN) {
+	if (rctx->b.chip_class >= EVERGREEN) {
 		uint32_t ls_hs_config = evergreen_get_ls_hs_config(rctx, info,
 								   num_patches);
 
@@ -2374,7 +2354,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 
 	/* On R6xx, CULL_FRONT=1 culls all points, lines, and rectangles,
 	 * even though it should have no effect on those. */
-	if (rctx->b.gfx_level == R600 && rctx->rasterizer) {
+	if (rctx->b.chip_class == R600 && rctx->rasterizer) {
 		unsigned su_sc_mode_cntl = rctx->rasterizer->pa_su_sc_mode_cntl;
 		unsigned prim = info->mode;
 
@@ -2412,7 +2392,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 		radeon_emit(cs, info->instance_count);
 	} else {
 		uint64_t va = r600_resource(indirect->buffer)->gpu_address;
-		assert(rctx->b.gfx_level >= EVERGREEN);
+		assert(rctx->b.chip_class >= EVERGREEN);
 
 		// Invalidate so non-indirect draw calls reset this state
 		rctx->vgt_state.last_draw_was_indirect = true;
@@ -2524,13 +2504,13 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 	}
 
 	/* ES ring rolling over at EOP - workaround */
-	if (rctx->b.gfx_level == R600) {
+	if (rctx->b.chip_class == R600) {
 		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
 		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_SQ_NON_EVENT));
 	}
 
 
-	if (rctx->b.gfx_level >= EVERGREEN)
+	if (rctx->b.chip_class >= EVERGREEN)
 		evergreen_emit_atomic_buffer_save(rctx, false, combined_atomics, &atomic_used_mask);
 
 	if (rctx->trace_buf)
@@ -2798,6 +2778,8 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 		format = PIPE_FORMAT_A4R4_UNORM;
 
 	desc = util_format_description(format);
+	if (!desc)
+		goto out_unknown;
 
 	/* Depth and stencil swizzling is handled separately. */
 	if (desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS) {
@@ -2837,7 +2819,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 			goto out_word4;
 		case PIPE_FORMAT_X8Z24_UNORM:
 		case PIPE_FORMAT_S8_UINT_Z24_UNORM:
-			if (rscreen->b.gfx_level < EVERGREEN)
+			if (rscreen->b.chip_class < EVERGREEN)
 				goto out_unknown;
 			word4 |= r600_get_swizzle_combined(swizzle_yyyy, swizzle_view, FALSE);
 			result = FMT_24_8;
@@ -2862,7 +2844,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 			result = FMT_8_24;
 			goto out_word4;
 		case PIPE_FORMAT_S8X24_UINT:
-			if (rscreen->b.gfx_level < EVERGREEN)
+			if (rscreen->b.chip_class < EVERGREEN)
 				goto out_unknown;
 			word4 |= S_038010_NUM_FORMAT_ALL(V_038010_SQ_NUM_FORMAT_INT);
 			word4 |= r600_get_swizzle_combined(swizzle_xxxx, swizzle_view, FALSE);
@@ -2943,7 +2925,7 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	}
 
 	if (desc->layout == UTIL_FORMAT_LAYOUT_BPTC) {
-		if (rscreen->b.gfx_level < EVERGREEN)
+		if (rscreen->b.chip_class < EVERGREEN)
 			goto out_unknown;
 
 		switch (format) {
@@ -3157,12 +3139,14 @@ out_unknown:
 	return ~0;
 }
 
-uint32_t r600_translate_colorformat(enum amd_gfx_level chip, enum pipe_format format,
+uint32_t r600_translate_colorformat(enum chip_class chip, enum pipe_format format,
 						bool do_endian_swap)
 {
 	const struct util_format_description *desc = util_format_description(format);
 	int channel = util_format_get_first_non_void_channel(format);
 	bool is_float;
+	if (!desc)
+		return ~0U;
 
 #define HAS_SIZE(x,y,z,w) \
 	(desc->channel[0].size == (x) && desc->channel[1].size == (y) && \

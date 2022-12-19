@@ -402,65 +402,34 @@ register_complex_use(nir_deref_instr *deref,
    node->has_complex_use = true;
 }
 
-static bool
+static void
 register_load_instr(nir_intrinsic_instr *load_instr,
                     struct lower_variables_state *state)
 {
    nir_deref_instr *deref = nir_src_as_deref(load_instr->src[0]);
    struct deref_node *node = get_deref_node(deref, state);
-   if (node == NULL)
-      return false;
-
-   /* Replace out-of-bounds load derefs with an undef, so that they don't get
-    * left around when a driver has lowered all indirects and thus doesn't
-    * expect any array derefs at all after vars_to_ssa.
-    */
-   if (node == UNDEF_NODE) {
-      nir_ssa_undef_instr *undef =
-         nir_ssa_undef_instr_create(state->shader,
-                                    load_instr->num_components,
-                                    load_instr->dest.ssa.bit_size);
-
-      nir_instr_insert_before(&load_instr->instr, &undef->instr);
-      nir_instr_remove(&load_instr->instr);
-
-      nir_ssa_def_rewrite_uses(&load_instr->dest.ssa, &undef->def);
-      return true;
-   }
+   if (node == NULL || node == UNDEF_NODE)
+      return;
 
    if (node->loads == NULL)
       node->loads = _mesa_pointer_set_create(state->dead_ctx);
 
    _mesa_set_add(node->loads, load_instr);
-
-   return false;
 }
 
-static bool
+static void
 register_store_instr(nir_intrinsic_instr *store_instr,
                      struct lower_variables_state *state)
 {
    nir_deref_instr *deref = nir_src_as_deref(store_instr->src[0]);
    struct deref_node *node = get_deref_node(deref, state);
-
-   /* Drop out-of-bounds store derefs, so that they don't get left around when a
-    * driver has lowered all indirects and thus doesn't expect any array derefs
-    * at all after vars_to_ssa.
-    */
-   if (node == UNDEF_NODE) {
-      nir_instr_remove(&store_instr->instr);
-      return true;
-   }
-
-   if (node == NULL)
-      return false;
+   if (node == NULL || node == UNDEF_NODE)
+      return;
 
    if (node->stores == NULL)
       node->stores = _mesa_pointer_set_create(state->dead_ctx);
 
    _mesa_set_add(node->stores, store_instr);
-
-   return false;
 }
 
 static void
@@ -480,12 +449,10 @@ register_copy_instr(nir_intrinsic_instr *copy_instr,
    }
 }
 
-static bool
+static void
 register_variable_uses(nir_function_impl *impl,
                        struct lower_variables_state *state)
 {
-   bool progress = false;
-
    nir_foreach_block(block, impl) {
       nir_foreach_instr_safe(instr, block) {
          switch (instr->type) {
@@ -493,7 +460,7 @@ register_variable_uses(nir_function_impl *impl,
             nir_deref_instr *deref = nir_instr_as_deref(instr);
 
             if (deref->deref_type == nir_deref_type_var &&
-                nir_deref_instr_has_complex_use(deref, 0))
+                nir_deref_instr_has_complex_use(deref))
                register_complex_use(deref, state);
 
             break;
@@ -504,11 +471,11 @@ register_variable_uses(nir_function_impl *impl,
 
             switch (intrin->intrinsic) {
             case nir_intrinsic_load_deref:
-               progress = register_load_instr(intrin, state) || progress;
+               register_load_instr(intrin, state);
                break;
 
             case nir_intrinsic_store_deref:
-               progress = register_store_instr(intrin, state) || progress;
+               register_store_instr(intrin, state);
                break;
 
             case nir_intrinsic_copy_deref:
@@ -526,7 +493,6 @@ register_variable_uses(nir_function_impl *impl,
          }
       }
    }
-   return progress;
 }
 
 /* Walks over all of the copy instructions to or from the given deref_node
@@ -596,8 +562,24 @@ rename_variables(struct lower_variables_state *state)
             if (node == NULL)
                continue;
 
-            /* Should have been removed before rename_variables(). */
-            assert(node != UNDEF_NODE);
+            if (node == UNDEF_NODE) {
+               /* If we hit this path then we are referencing an invalid
+                * value.  Most likely, we unrolled something and are
+                * reading past the end of some array.  In any case, this
+                * should result in an undefined value.
+                */
+               nir_ssa_undef_instr *undef =
+                  nir_ssa_undef_instr_create(state->shader,
+                                             intrin->num_components,
+                                             intrin->dest.ssa.bit_size);
+
+               nir_instr_insert_before(&intrin->instr, &undef->instr);
+               nir_instr_remove(&intrin->instr);
+
+               nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
+                                        &undef->def);
+               continue;
+            }
 
             if (!node->lower_to_ssa)
                continue;
@@ -633,11 +615,15 @@ rename_variables(struct lower_variables_state *state)
             if (node == NULL)
                continue;
 
-            /* Should have been removed before rename_variables(). */
-            assert(node != UNDEF_NODE);
-
             assert(intrin->src[1].is_ssa);
             nir_ssa_def *value = intrin->src[1].ssa;
+
+            if (node == UNDEF_NODE) {
+               /* Probably an out-of-bounds array store.  That should be a
+                * no-op. */
+               nir_instr_remove(&intrin->instr);
+               continue;
+            }
 
             if (!node->lower_to_ssa)
                continue;
@@ -734,7 +720,9 @@ nir_lower_vars_to_ssa_impl(nir_function_impl *impl)
    /* Build the initial deref structures and direct_deref_nodes table */
    state.add_to_direct_deref_nodes = true;
 
-   bool progress = register_variable_uses(impl, &state);
+   register_variable_uses(impl, &state);
+
+   bool progress = false;
 
    nir_metadata_require(impl, nir_metadata_block_index);
 

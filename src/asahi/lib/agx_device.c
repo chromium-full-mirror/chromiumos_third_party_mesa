@@ -120,13 +120,18 @@ agx_bo_alloc(struct agx_device *dev, size_t size,
    unsigned handle = 0;
 
 #if __APPLE__
+   bool write_combine = false;
    uint32_t mode = 0x430; // shared, ?
 
    uint32_t args_in[24] = { 0 };
+   args_in[1] = write_combine ? 0x400 : 0x0;
+   args_in[2] = 0x2580320; //0x18000; // unk
+   args_in[3] = 0x1; // unk;
    args_in[4] = 0x4000101; //0x1000101; // unk
    args_in[5] = mode;
    args_in[16] = size;
    args_in[20] = flags;
+   args_in[21] = 0x3;
 
    uint64_t out[10] = { 0 };
    size_t out_sz = sizeof(out);
@@ -285,7 +290,9 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    /* TODO: Support other models */
    CFDictionaryRef matching = IOServiceNameMatching("AGXAcceleratorG13G_B0");
-   io_service_t service = IOServiceGetMatchingService(0, matching);
+
+   io_service_t service =
+      IOServiceGetMatchingService(kIOMasterPortDefault, matching);
 
    if (!service)
       return false;
@@ -306,6 +313,10 @@ agx_open_device(void *memctx, struct agx_device *dev)
    /* Oddly, the return codes are flipped for SET_API */
    if (ret != 1)
       return false;
+#else
+   /* Only open a fake AGX device on other operating systems if forced */
+   if (!getenv("AGX_FAKE_DEVICE"))
+      return false;
 #endif
 
    dev->memctx = memctx;
@@ -313,7 +324,7 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    dev->queue = agx_create_command_queue(dev);
    dev->cmdbuf = agx_shmem_alloc(dev, 0x4000, true); // length becomes kernelCommandDataSize
-   dev->memmap = agx_shmem_alloc(dev, 0x10000, false);
+   dev->memmap = agx_shmem_alloc(dev, 0x4000, false);
    agx_get_global_ids(dev);
 
    return true;
@@ -434,11 +445,14 @@ agx_submit_cmdbuf(struct agx_device *dev, unsigned cmdbuf, unsigned mappings, ui
 {
 #if __APPLE__
    struct agx_submit_cmdbuf_req req = {
-      .count = 1,
-      .command_buffer_shmem_id = cmdbuf,
-      .segment_list_shmem_id = mappings,
-      .notify_1 = 0xABCD,
-      .notify_2 = 0x1234,
+      .unk0 = 0x10,
+      .unk1 = 0x1,
+      .cmdbuf = cmdbuf,
+      .mappings = mappings,
+      .user_0 = (void *) ((uintptr_t) 0xABCD), // Passed in the notif queue
+      .user_1 = (void *) ((uintptr_t) 0x1234), // Maybe pick better
+      .unk2 = 0x0,
+      .unk3 = 0x1,
    };
 
    ASSERTED kern_return_t ret = IOConnectCallMethod(dev->fd,
@@ -451,39 +465,23 @@ agx_submit_cmdbuf(struct agx_device *dev, unsigned cmdbuf, unsigned mappings, ui
 #endif
 }
 
-/*
- * Wait for a frame to finish rendering.
- *
- * The macOS kernel indicates that rendering has finished using a notification
- * queue. The kernel will send two messages on the notification queue. The
- * second message indicates that rendering has completed. This simple routine
- * waits for both messages. It's important that IODataQueueDequeue is used in a
- * loop to flush the entire queue before calling
- * IODataQueueWaitForAvailableData. Otherwise, we can race and get stuck in
- * WaitForAvailabaleData.
- */
 void
 agx_wait_queue(struct agx_command_queue queue)
 {
 #if __APPLE__
-   uint64_t data[4];
-   unsigned sz = sizeof(data);
-   unsigned message_id = 0;
-   uint64_t magic_numbers[2] = { 0xABCD, 0x1234 };
+   IOReturn ret = IODataQueueWaitForAvailableData(queue.notif.queue, queue.notif.port);
 
-   while (message_id < 2) {
-      IOReturn ret = IODataQueueWaitForAvailableData(queue.notif.queue, queue.notif.port);
+	   uint64_t data[4];
+	   unsigned sz = sizeof(data);
+      ret = IODataQueueDequeue(queue.notif.queue, data, &sz);
+      assert(sz == sizeof(data));
+      assert(data[0] == 0xABCD);
 
-      if (ret) {
-         fprintf(stderr, "Error waiting for available data\n");
-         return;
-      }
+      ret = IODataQueueWaitForAvailableData(queue.notif.queue, queue.notif.port);
+      ret = IODataQueueDequeue(queue.notif.queue, data, &sz);
+      assert(sz == sizeof(data));
+      assert(data[0] == 0x1234);
 
-      while (IODataQueueDequeue(queue.notif.queue, data, &sz) == kIOReturnSuccess) {
-         assert(sz == sizeof(data));
-         assert(data[0] == magic_numbers[message_id]);
-         message_id++;
-      }
-   }
+   assert(!IODataQueueDataAvailable(queue.notif.queue));
 #endif
 }

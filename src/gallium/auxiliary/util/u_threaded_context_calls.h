@@ -1,5 +1,4 @@
 CALL(flush)
-CALL(flush_deferred)
 CALL(callback)
 CALL(fence_server_sync)
 CALL(destroy_query)

@@ -19,6 +19,7 @@
 # SOFTWARE.
 
 files_libzink = files(
+  'nir_lower_dynamic_bo_access.c',
   'zink_lower_cubemap_to_array.c',
   'nir_to_spirv/nir_to_spirv.c',
   'nir_to_spirv/spirv_builder.c',
@@ -30,6 +31,7 @@ files_libzink = files(
   'zink_context.c',
   'zink_kopper.c',
   'zink_descriptors.c',
+  'zink_descriptors_lazy.c',
   'zink_draw.cpp',
   'zink_fence.c',
   'zink_format.c',
@@ -67,7 +69,8 @@ zink_nir_algebraic_c = custom_target(
   input : 'nir_to_spirv/zink_nir_algebraic.py',
   output : 'zink_nir_algebraic.c',
   command : [
-    prog_python, '@INPUT@', '-p', dir_compiler_nir,
+    prog_python, '@INPUT@',
+    '-p', join_paths(meson.source_root(), 'src/compiler/nir/'),
   ],
   capture : true,
   depend_files : nir_algebraic_depends,
@@ -88,10 +91,9 @@ libzink = static_library(
   [files_libzink, zink_device_info, zink_instance, zink_nir_algebraic_c, vk_dispatch_table],
   gnu_symbol_visibility : 'hidden',
   include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_vulkan_util, inc_zink_vk],
-  link_args : [ld_args_build_id],
   dependencies: [
-    idep_nir_headers, idep_mesautil, idep_vulkan_util_headers,
-    idep_vulkan_wsi_headers, idep_vulkan_util, dep_libdrm
+    dep_vulkan, idep_nir_headers, idep_mesautil, idep_vulkan_util_headers,
+    idep_vulkan_wsi_headers, idep_vulkan_util
   ],
   c_args: zink_c_args,
 )

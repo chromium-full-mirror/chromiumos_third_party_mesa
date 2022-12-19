@@ -28,6 +28,7 @@
 #ifndef _TABLE_H_
 #define _TABLE_H_
 
+#include "c99_compat.h"
 #include "entry.h"
 
 #define MAPI_TMP_TABLE

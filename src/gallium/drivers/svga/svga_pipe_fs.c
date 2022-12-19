@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2008-2022 VMware, Inc.  All rights reserved.
+ * Copyright 2008-2009 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -23,7 +23,6 @@
  *
  **********************************************************/
 
-#include "nir/nir_to_tgsi.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -45,32 +44,26 @@ svga_create_fs_state(struct pipe_context *pipe,
    struct svga_context *svga = svga_context(pipe);
    struct svga_fragment_shader *fs;
 
+   fs = CALLOC_STRUCT(svga_fragment_shader);
+   if (!fs)
+      return NULL;
+
    SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_CREATEFS);
 
-   fs = (struct svga_fragment_shader *)
-            svga_create_shader(pipe, templ, PIPE_SHADER_FRAGMENT,
-                               sizeof(struct svga_fragment_shader));
-   if (!fs)
-      goto done;
+   fs->base.tokens = tgsi_dup_tokens(templ->tokens);
 
-   /* Original shader IR could have been deleted if it is converted from
-    * NIR to TGSI. So need to explicitly set the shader state type to TGSI
-    * before passing it to draw.
+   /* Collect basic info that we'll need later:
     */
-   struct pipe_shader_state tmp = *templ;
-   tmp.type = PIPE_SHADER_IR_TGSI;
-   tmp.tokens = fs->base.tokens;
+   tgsi_scan_shader(fs->base.tokens, &fs->base.info);
 
-   fs->generic_inputs = svga_get_generic_inputs_mask(&fs->base.tgsi_info);
+   fs->base.id = svga->debug.shader_id++;
 
-   fs->base.get_dummy_shader = svga_get_compiled_dummy_fragment_shader;
+   fs->generic_inputs = svga_get_generic_inputs_mask(&fs->base.info);
 
-   svga_remap_generics(fs->base.info.generic_inputs_mask,
-                       fs->generic_remap_table);
+   svga_remap_generics(fs->generic_inputs, fs->generic_remap_table);
 
-   fs->draw_shader = draw_create_fragment_shader(svga->swtnl.draw, &tmp);
+   fs->draw_shader = draw_create_fragment_shader(svga->swtnl.draw, templ);
 
-done:
    SVGA_STATS_TIME_POP(svga_sws(svga));
    return fs;
 }

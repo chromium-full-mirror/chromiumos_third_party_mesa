@@ -27,7 +27,9 @@
 #include "nv30/nv30-40_3d.xml.h"
 #include "nv30/nv30_screen.h"
 #include "nv30/nv30_context.h"
-#include "nv30/nv30_winsys.h"
+
+#define LIST_FIRST_ENTRY(__type, __item, __field) \
+   LIST_ENTRY(__type, (__item)->next, __field)
 
 struct nv30_query_object {
    struct list_head list;
@@ -74,7 +76,7 @@ nv30_query_object_new(struct nv30_screen *screen)
     * spin waiting for one to become free
     */
    while (nouveau_heap_alloc(screen->query_heap, 32, NULL, &qo->hw)) {
-      oq = list_first_entry(&screen->queries, struct nv30_query_object, list);
+      oq = LIST_FIRST_ENTRY(struct nv30_query_object, &screen->queries, list);
       nv30_query_object_del(screen, &oq);
    }
 

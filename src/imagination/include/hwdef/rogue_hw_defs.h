@@ -90,8 +90,7 @@
 /* Number of TEXSTATE_IMAGE_WORD values that need setting up. */
 #define ROGUE_NUM_TEXSTATE_IMAGE_WORDS 2U
 
-/* Number of TEXSTATE_SAMPLER state words that need setting up. */
-#define ROGUE_NUM_TEXSTATE_SAMPLER_WORDS 2U
+#define ROGUE_MAX_RENDER_TARGETS 2048U
 
 /* 12 dwords reserved for shared register management. The first dword is the
  * number of shared register blocks to reload. Should be a multiple of 4 dwords,
@@ -124,7 +123,5 @@
  * task will be able to run and allocations will be freed.
  */
 #define ROGUE_MAX_OVERLAPPED_PIXEL_TASK_INSTANCES 7U
-
-#define PVR_NUM_PBE_EMIT_REGS 8U
 
 #endif /* ROGUE_HW_DEFS_H */

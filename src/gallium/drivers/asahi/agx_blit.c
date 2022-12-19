@@ -66,11 +66,10 @@ agx_build_reload_shader(struct agx_device *dev)
       struct agx_shader_info info;
 
       struct agx_shader_key key = {
-         .fs.tib_formats[0] = i,
-         .fs.ignore_tib_dependencies = true,
+         .fs.tib_formats[0] = i
       };
 
-      agx_compile_shader_nir(s, &key, NULL, &binary, &info);
+      agx_compile_shader_nir(s, &key, &binary, &info);
 
       assert(offset + binary.size < bo_size);
       memcpy(((uint8_t *) bo->ptr.cpu) + offset, binary.data, binary.size);
@@ -82,7 +81,7 @@ agx_build_reload_shader(struct agx_device *dev)
    }
 }
 
-void
+static void
 agx_blitter_save(struct agx_context *ctx, struct blitter_context *blitter,
                  bool render_cond)
 {
@@ -94,7 +93,7 @@ agx_blitter_save(struct agx_context *ctx, struct blitter_context *blitter,
    util_blitter_save_scissor(blitter, &ctx->scissor);
    util_blitter_save_fragment_shader(blitter, ctx->stage[PIPE_SHADER_FRAGMENT].shader);
    util_blitter_save_blend(blitter, ctx->blend);
-   util_blitter_save_depth_stencil_alpha(blitter, ctx->zs);
+   util_blitter_save_depth_stencil_alpha(blitter, &ctx->zs);
    util_blitter_save_stencil_ref(blitter, &ctx->stencil_ref);
    util_blitter_save_so_targets(blitter, 0, NULL);
    util_blitter_save_sample_mask(blitter, ctx->sample_mask, 0);

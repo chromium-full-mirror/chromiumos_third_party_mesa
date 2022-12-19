@@ -44,8 +44,6 @@ va_op_add_imm(enum bi_opcode op)
 static bool
 va_is_add_imm(bi_instr *I, unsigned s)
 {
-   assert(s < I->nr_srcs);
-
    return I->src[s].swizzle == BI_SWIZZLE_H01 &&
           !I->src[s].abs && !I->src[s].neg && !I->clamp && !I->round;
 }
@@ -65,8 +63,6 @@ va_choose_imm(bi_instr *I)
 static void
 va_lower_mov_imm(bi_instr *I)
 {
-   assert(I->nr_srcs == 1);
-
    if (I->src[0].type == BI_INDEX_CONSTANT) {
       I->op = BI_OPCODE_IADD_IMM_I32;
       I->index = I->src[0].value;
@@ -105,7 +101,7 @@ va_fuse_add_imm(bi_instr *I)
    }
 
    I->src[0] = I->src[1 - s];
-   bi_drop_srcs(I, 1);
+   I->src[1] = bi_null();
 }
 
 void

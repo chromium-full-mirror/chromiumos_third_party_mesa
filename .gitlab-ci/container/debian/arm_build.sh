@@ -1,5 +1,4 @@
 #!/bin/bash
-# shellcheck disable=SC2086 # we want word splitting
 
 set -e
 set -o xtrace
@@ -9,15 +8,9 @@ sed -i -e 's/http:\/\/deb/https:\/\/deb/g' /etc/apt/sources.list
 echo 'deb https://deb.debian.org/debian buster main' >/etc/apt/sources.list.d/buster.list
 apt-get update
 
-# Ephemeral packages (installed for this script and removed again at
-# the end)
-STABLE_EPHEMERAL=" \
-        libssl-dev \
-        "
-
 apt-get -y install \
 	${EXTRA_LOCAL_PACKAGES} \
-	${STABLE_EPHEMERAL} \
+	abootimg \
 	autoconf \
 	automake \
 	bc \
@@ -29,13 +22,11 @@ apt-get -y install \
 	flex \
 	g++ \
 	git \
-	glslang-tools \
 	kmod \
 	libasan6 \
 	libdrm-dev \
 	libelf-dev \
 	libexpat1-dev \
-	libvulkan-dev \
 	libx11-dev \
 	libx11-xcb-dev \
 	libxcb-dri2-0-dev \
@@ -61,26 +52,21 @@ apt-get -y install \
 	u-boot-tools \
 	wget \
 	xz-utils \
-	zlib1g-dev \
-	zstd
+	zlib1g-dev
 
 # Not available anymore in bullseye
 apt-get install -y --no-remove -t buster \
         android-sdk-ext4-utils
 
-pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@ffe4d1b10aab7534489f0c4bbc4c5899df17d3f2
+pip3 install git+http://gitlab.freedesktop.org/freedesktop/ci-templates@34f4ade99434043f88e164933f570301fd18b125
 
 arch=armhf
 . .gitlab-ci/container/cross_build.sh
 
 . .gitlab-ci/container/container_pre_build.sh
 
-. .gitlab-ci/container/build-mold.sh
-
 # dependencies where we want a specific version
 EXTRA_MESON_ARGS=
 . .gitlab-ci/container/build-libdrm.sh
-
-apt-get purge -y $STABLE_EPHEMERAL
 
 . .gitlab-ci/container/container_post_build.sh

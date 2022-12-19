@@ -49,9 +49,6 @@ intel_flush_range(void *start, size_t size)
 static inline void
 intel_invalidate_range(void *start, size_t size)
 {
-   if (size == 0)
-      return;
-
    intel_clflush_range(start, size);
 
    /* Modern Atom CPUs (Baytrail+) have issues with clflush serialization,

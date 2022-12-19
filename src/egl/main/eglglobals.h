@@ -32,7 +32,7 @@
 #define EGLGLOBALS_INCLUDED
 
 #include <stdbool.h>
-#include "util/simple_mtx.h"
+#include "c11/threads.h"
 
 #include "egltypedefs.h"
 
@@ -49,7 +49,7 @@ enum
  */
 struct _egl_global
 {
-   simple_mtx_t *Mutex;
+   mtx_t *Mutex;
 
    /* the list of all displays */
    _EGLDisplay *DisplayList;
