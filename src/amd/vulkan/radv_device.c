@@ -398,7 +398,7 @@ radv_taskmesh_enabled(const struct radv_physical_device *pdevice)
 #endif
 
 #ifdef ANDROID
-#define RADV_API_VERSION VK_MAKE_VERSION(1, 0, VK_HEADER_VERSION)
+#define RADV_API_VERSION VK_MAKE_VERSION(1, 1, VK_HEADER_VERSION)
 #else
 #define RADV_API_VERSION VK_MAKE_VERSION(1, 3, VK_HEADER_VERSION)
 #endif
