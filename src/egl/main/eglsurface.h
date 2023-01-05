@@ -31,6 +31,8 @@
 #ifndef EGLSURFACE_INCLUDED
 #define EGLSURFACE_INCLUDED
 
+#include "c99_compat.h"
+
 #include "egltypedefs.h"
 #include "egldisplay.h"
 

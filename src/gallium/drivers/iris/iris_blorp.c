@@ -353,15 +353,8 @@ iris_blorp_exec_render(struct blorp_batch *blorp_batch,
                          IRIS_DIRTY_LINE_STIPPLE |
                          IRIS_ALL_DIRTY_FOR_COMPUTE |
                          IRIS_DIRTY_SCISSOR_RECT |
-                         IRIS_DIRTY_VF);
-   /* Wa_14016820455
-    * On Gfx 12.5 platforms, the SF_CL_VIEWPORT pointer can be invalidated
-    * likely by a read cache invalidation when clipping is disabled, so we
-    * don't skip its dirty bit here, in order to reprogram it.
-    */
-   if (GFX_VERx10 != 125)
-      skip_bits |= IRIS_DIRTY_SF_CL_VIEWPORT;
-
+                         IRIS_DIRTY_VF |
+                         IRIS_DIRTY_SF_CL_VIEWPORT);
    uint64_t skip_stage_bits = (IRIS_ALL_STAGE_DIRTY_FOR_COMPUTE |
                                IRIS_STAGE_DIRTY_UNCOMPILED_VS |
                                IRIS_STAGE_DIRTY_UNCOMPILED_TCS |
@@ -460,7 +453,7 @@ blorp_measure_start(struct blorp_batch *blorp_batch,
    struct iris_context *ice = blorp_batch->blorp->driver_ctx;
    struct iris_batch *batch = blorp_batch->driver_batch;
 
-   trace_intel_begin_blorp(&batch->trace);
+   trace_intel_begin_blorp(&batch->trace, batch);
 
    if (batch->measure == NULL)
       return;
@@ -475,7 +468,7 @@ blorp_measure_end(struct blorp_batch *blorp_batch,
 {
    struct iris_batch *batch = blorp_batch->driver_batch;
 
-   trace_intel_end_blorp(&batch->trace,
+   trace_intel_end_blorp(&batch->trace, batch,
                          params->x1 - params->x0,
                          params->y1 - params->y0,
                          params->hiz_op,

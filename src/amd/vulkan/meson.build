@@ -49,7 +49,6 @@ libradv_files = files(
   'radv_device.c',
   'radv_descriptor_set.c',
   'radv_descriptor_set.h',
-  'radv_device_generated_commands.c',
   'radv_formats.c',
   'radv_image.c',
   'radv_meta.c',
@@ -71,7 +70,6 @@ libradv_files = files(
   'radv_meta_resolve_cs.c',
   'radv_meta_resolve_fs.c',
   'radv_nir_apply_pipeline_layout.c',
-  'radv_nir_lower_abi.c',
   'radv_nir_lower_ray_queries.c',
   'radv_nir_lower_ycbcr_textures.c',
   'radv_pass.c',
@@ -122,9 +120,6 @@ if with_llvm
   )
 endif
 
-subdir('radix_sort')
-libradv_files += radix_sort_files
-
 radv_deps = []
 radv_flags = cc.get_supported_arguments(['-Wimplicit-fallthrough', '-Wshadow'])
 
@@ -154,15 +149,12 @@ if with_ld_version_script
   libvulkan_radeon_link_depends += files('vulkan.sym')
 endif
 
-radv_build_id = get_option('radv-build-id')
-if radv_build_id != ''
-  radv_flags += '-DRADV_BUILD_ID_OVERRIDE="' + radv_build_id + '"'
-endif
+vulkan_radv_def = 'vulkan_radv.def'
 
 libvulkan_radeon = shared_library(
   'vulkan_radeon',
-  [libradv_files, radv_entrypoints, sha1_h, radix_sort_spv],
-  vs_module_defs : vulkan_api_def,
+  [libradv_files, radv_entrypoints, sha1_h],
+  vs_module_defs : vulkan_radv_def,
   include_directories : [
     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_amd, inc_amd_common, inc_amd_common_llvm, inc_compiler, inc_util,
   ],

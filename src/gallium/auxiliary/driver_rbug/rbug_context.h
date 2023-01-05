@@ -39,7 +39,7 @@ struct rbug_context {
 
    struct pipe_context *pipe;
 
-   struct list_head list;
+   struct rbug_list list;
 
    /* call locking */
    mtx_t call_mutex;
@@ -76,7 +76,7 @@ struct rbug_context {
    /* list of state objects */
    mtx_t list_mutex;
    unsigned num_shaders;
-   struct list_head shaders;
+   struct rbug_list shaders;
 };
 
 static inline struct rbug_context *

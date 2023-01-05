@@ -43,7 +43,7 @@ struct rbug_resource
 
    struct pipe_resource *resource;
 
-   struct list_head list;
+   struct rbug_list list;
 };
 
 
@@ -56,7 +56,7 @@ enum rbug_shader_type
 
 struct rbug_shader
 {
-   struct list_head list;
+   struct rbug_list list;
 
    void *shader;
    void *tokens;

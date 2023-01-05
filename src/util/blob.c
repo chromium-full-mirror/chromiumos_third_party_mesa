@@ -82,8 +82,8 @@ grow_to_fit(struct blob *blob, size_t additional)
  *
  * \return True unless allocation fails
  */
-bool
-blob_align(struct blob *blob, size_t alignment)
+static bool
+align_blob(struct blob *blob, size_t alignment)
 {
    const size_t new_size = align64(blob->size, alignment);
 
@@ -99,8 +99,8 @@ blob_align(struct blob *blob, size_t alignment)
    return true;
 }
 
-void
-blob_reader_align(struct blob_reader *blob, size_t alignment)
+static void
+align_blob_reader(struct blob_reader *blob, size_t alignment)
 {
    blob->current = blob->data + align64(blob->current - blob->data, alignment);
 }
@@ -186,14 +186,14 @@ blob_reserve_bytes(struct blob *blob, size_t to_write)
 intptr_t
 blob_reserve_uint32(struct blob *blob)
 {
-   blob_align(blob, sizeof(uint32_t));
+   align_blob(blob, sizeof(uint32_t));
    return blob_reserve_bytes(blob, sizeof(uint32_t));
 }
 
 intptr_t
 blob_reserve_intptr(struct blob *blob)
 {
-   blob_align(blob, sizeof(intptr_t));
+   align_blob(blob, sizeof(intptr_t));
    return blob_reserve_bytes(blob, sizeof(intptr_t));
 }
 
@@ -201,7 +201,7 @@ blob_reserve_intptr(struct blob *blob)
 bool                                                     \
 name(struct blob *blob, type value)                      \
 {                                                        \
-   blob_align(blob, sizeof(value));                      \
+   align_blob(blob, sizeof(value));                      \
    return blob_write_bytes(blob, &value, sizeof(value)); \
 }
 
@@ -308,14 +308,22 @@ blob_skip_bytes(struct blob_reader *blob, size_t size)
       blob->current += size;
 }
 
+/* These next three read functions have identical form. If we add any beyond
+ * these first three we should probably switch to generating these with a
+ * preprocessor macro.
+*/
+
 #define BLOB_READ_TYPE(name, type)         \
 type                                       \
 name(struct blob_reader *blob)             \
 {                                          \
-   type ret = 0;                           \
+   type ret;                               \
    int size = sizeof(ret);                 \
-   blob_reader_align(blob, size);          \
-   blob_copy_bytes(blob, &ret, size);      \
+   align_blob_reader(blob, size);          \
+   if (! ensure_can_read(blob, size))      \
+      return 0;                            \
+   ret = *((type*) blob->current);         \
+   blob->current += size;                  \
    return ret;                             \
 }
 

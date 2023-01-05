@@ -34,7 +34,6 @@
 #include "program/program.h"
 
 #include "brw_clip.h"
-#include "brw_prim.h"
 
 static void brw_clip_line_alloc_regs( struct brw_clip_compile *c )
 {

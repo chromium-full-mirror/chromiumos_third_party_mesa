@@ -41,10 +41,10 @@ vk_common_CreateFramebuffer(VkDevice _device,
 
    /* VK_KHR_imageless_framebuffer extension says:
     *
-    *    If flags includes VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT,
+    *    If flags includes VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT_KHR,
     *    parameter pAttachments is ignored.
     */
-   if (!(pCreateInfo->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT))
+   if (!(pCreateInfo->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT_KHR))
       size += sizeof(VkImageView) * pCreateInfo->attachmentCount;
 
    framebuffer = vk_object_alloc(device, pAllocator, size,
@@ -57,7 +57,7 @@ vk_common_CreateFramebuffer(VkDevice _device,
    framebuffer->height = pCreateInfo->height;
    framebuffer->layers = pCreateInfo->layers;
 
-   if (!(pCreateInfo->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT)) {
+   if (!(pCreateInfo->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT_KHR)) {
       for (uint32_t i = 0; i < pCreateInfo->attachmentCount; i++)
          framebuffer->attachments[i] = pCreateInfo->pAttachments[i];
       framebuffer->attachment_count = pCreateInfo->attachmentCount;

@@ -35,7 +35,6 @@
 #include "vl/vl_winsys.h"
 
 #include "va_private.h"
-#include "loader/loader.h"
 
 #include <va/va_drmcommon.h>
 
@@ -130,8 +129,6 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
       drv->vscreen = vl_dri3_screen_create(ctx->native_dpy, ctx->x11_screen);
       if (!drv->vscreen)
          drv->vscreen = vl_dri2_screen_create(ctx->native_dpy, ctx->x11_screen);
-      if (!drv->vscreen)
-         drv->vscreen = vl_xlib_swrast_screen_create(ctx->native_dpy, ctx->x11_screen);
       break;
    case VA_DISPLAY_WAYLAND:
    case VA_DISPLAY_DRM:
@@ -142,14 +139,8 @@ VA_DRIVER_INIT_FUNC(VADriverContextP ctx)
          FREE(drv);
          return VA_STATUS_ERROR_INVALID_PARAMETER;
       }
-      char* drm_driver_name = loader_get_driver_for_fd(drm_info->fd);
-      if(drm_driver_name) {
-         if (strcmp(drm_driver_name, "vgem") == 0)
-            drv->vscreen = vl_vgem_drm_screen_create(drm_info->fd);
-         FREE(drm_driver_name);
-      }
-      if(!drv->vscreen)
-         drv->vscreen = vl_drm_screen_create(drm_info->fd);
+
+      drv->vscreen = vl_drm_screen_create(drm_info->fd);
       break;
    }
    default:
@@ -249,13 +240,10 @@ vlVaCreateContext(VADriverContextP ctx, VAConfigID config_id, int picture_width,
    if (!context)
       return VA_STATUS_ERROR_ALLOCATION_FAILED;
 
-   if (is_vpp && !drv->vscreen->pscreen->get_video_param(drv->vscreen->pscreen,
-                                                         PIPE_VIDEO_PROFILE_UNKNOWN,
-                                                         PIPE_VIDEO_ENTRYPOINT_PROCESSING,
-                                                         PIPE_VIDEO_CAP_SUPPORTED)) {
+   if (is_vpp) {
       context->decoder = NULL;
    } else {
-      if (config->entrypoint != PIPE_VIDEO_ENTRYPOINT_PROCESSING) {
+      if (config->entrypoint != PIPE_VIDEO_ENTRYPOINT_UNKNOWN) {
          max_supported_width = drv->vscreen->pscreen->get_video_param(drv->vscreen->pscreen,
                         config->profile, config->entrypoint,
                         PIPE_VIDEO_CAP_MAX_WIDTH);

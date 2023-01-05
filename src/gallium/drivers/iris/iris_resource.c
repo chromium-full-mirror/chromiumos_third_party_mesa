@@ -471,10 +471,8 @@ iris_resource_alloc_flags(const struct iris_screen *screen,
                        PIPE_RESOURCE_FLAG_MAP_PERSISTENT))
       flags |= BO_ALLOC_SMEM;
 
-   if (screen->devinfo.verx10 >= 125 && isl_aux_usage_has_ccs(aux_usage)) {
-      assert((flags & BO_ALLOC_SMEM) == 0);
+   if (screen->devinfo.verx10 >= 125 && isl_aux_usage_has_ccs(aux_usage))
       flags |= BO_ALLOC_LMEM;
-   }
 
    if ((templ->bind & PIPE_BIND_SHARED) ||
        util_format_get_num_planes(templ->format) > 1)
@@ -671,11 +669,9 @@ iris_resource_configure_main(const struct iris_screen *screen,
    } else if (templ->usage == PIPE_USAGE_STAGING ||
               templ->bind & (PIPE_BIND_LINEAR | PIPE_BIND_CURSOR)) {
       tiling_flags = ISL_TILING_LINEAR_BIT;
-   } else if (!screen->devinfo.has_tiling_uapi &&
-              (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_SHARED))) {
-      tiling_flags = ISL_TILING_LINEAR_BIT;
    } else if (templ->bind & PIPE_BIND_SCANOUT) {
-      tiling_flags = ISL_TILING_X_BIT;
+      tiling_flags = screen->devinfo.has_tiling_uapi ?
+                     ISL_TILING_X_BIT : ISL_TILING_LINEAR_BIT;
    } else {
       tiling_flags = ISL_TILING_ANY_MASK;
    }
@@ -916,48 +912,26 @@ static bool
 iris_resource_init_aux_buf(struct iris_screen *screen,
                            struct iris_resource *res)
 {
-   void *map = NULL;
+   void *map = iris_bo_map(NULL, res->bo, MAP_WRITE | MAP_RAW);
 
-   if (iris_resource_get_aux_state(res, 0, 0) != ISL_AUX_STATE_AUX_INVALID &&
-       res->aux.surf.size_B > 0) {
-      if (!map)
-         map = iris_bo_map(NULL, res->bo, MAP_WRITE | MAP_RAW);
-      if (!map)
-         return false;
+   if (!map)
+      return false;
 
+   if (iris_resource_get_aux_state(res, 0, 0) != ISL_AUX_STATE_AUX_INVALID) {
       /* See iris_resource_configure_aux for the memset_value rationale. */
       uint8_t memset_value = isl_aux_usage_has_mcs(res->aux.usage) ? 0xFF : 0;
       memset((char*)map + res->aux.offset, memset_value,
              res->aux.surf.size_B);
    }
 
-   if (res->aux.extra_aux.surf.size_B > 0) {
-      if (!map)
-         map = iris_bo_map(NULL, res->bo, MAP_WRITE | MAP_RAW);
-      if (!map)
-         return false;
+   memset((char*)map + res->aux.extra_aux.offset,
+          0, res->aux.extra_aux.surf.size_B);
 
-      memset((char*)map + res->aux.extra_aux.offset,
-             0, res->aux.extra_aux.surf.size_B);
-   }
+   /* Zero the indirect clear color to match ::fast_clear_color. */
+   memset((char *)map + res->aux.clear_color_offset, 0,
+          iris_get_aux_clear_color_state_size(screen, res));
 
-   unsigned clear_color_size = iris_get_aux_clear_color_state_size(screen, res);
-   if (clear_color_size > 0) {
-      if (iris_bo_mmap_mode(res->bo) != IRIS_MMAP_NONE) {
-         if (!map)
-            map = iris_bo_map(NULL, res->bo, MAP_WRITE | MAP_RAW);
-         if (!map)
-            return false;
-
-         /* Zero the indirect clear color to match ::fast_clear_color. */
-         memset((char *)map + res->aux.clear_color_offset, 0, clear_color_size);
-      } else {
-         res->aux.clear_color_unknown = true;
-      }
-   }
-
-   if (map)
-      iris_bo_unmap(res->bo);
+   iris_bo_unmap(res->bo);
 
    if (res->aux.surf.size_B > 0) {
       res->aux.bo = res->bo;
@@ -965,7 +939,7 @@ iris_resource_init_aux_buf(struct iris_screen *screen,
       map_aux_addresses(screen, res, res->internal_format, 0);
    }
 
-   if (clear_color_size > 0) {
+   if (iris_get_aux_clear_color_state_size(screen, res) > 0) {
       res->aux.clear_color_bo = res->bo;
       iris_bo_reference(res->aux.clear_color_bo);
    }
@@ -2706,6 +2680,5 @@ iris_init_resource_functions(struct pipe_context *ctx)
    ctx->buffer_unmap = u_transfer_helper_transfer_unmap;
    ctx->texture_unmap = u_transfer_helper_transfer_unmap;
    ctx->buffer_subdata = u_default_buffer_subdata;
-   ctx->clear_buffer = u_default_clear_buffer;
    ctx->texture_subdata = iris_texture_subdata;
 }

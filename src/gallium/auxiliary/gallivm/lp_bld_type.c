@@ -33,23 +33,20 @@
 #include "lp_bld_init.h"
 #include "lp_bld_limits.h"
 
-
-/*
- * Return a scalar LLVMTypeRef corresponding to the given lp_type.
- */
 LLVMTypeRef
-lp_build_elem_type(const struct gallivm_state *gallivm, struct lp_type type)
+lp_build_elem_type(struct gallivm_state *gallivm, struct lp_type type)
 {
    if (type.floating) {
-      switch (type.width) {
+      switch(type.width) {
       case 16:
-         return lp_has_fp16()
-            ? LLVMHalfTypeInContext(gallivm->context)
-            : LLVMInt16TypeInContext(gallivm->context);
+         return lp_has_fp16() ? LLVMHalfTypeInContext(gallivm->context) : LLVMInt16TypeInContext(gallivm->context);
+         break;
       case 32:
          return LLVMFloatTypeInContext(gallivm->context);
+         break;
       case 64:
          return LLVMDoubleTypeInContext(gallivm->context);
+         break;
       default:
          assert(0);
          return LLVMFloatTypeInContext(gallivm->context);
@@ -61,11 +58,8 @@ lp_build_elem_type(const struct gallivm_state *gallivm, struct lp_type type)
 }
 
 
-/*
- * Return a vector LLVMTypeRef corresponding to the given lp_type.
- */
 LLVMTypeRef
-lp_build_vec_type(const struct gallivm_state *gallivm, struct lp_type type)
+lp_build_vec_type(struct gallivm_state *gallivm,struct lp_type type)
 {
    LLVMTypeRef elem_type = lp_build_elem_type(gallivm, type);
    if (type.length == 1)
@@ -84,32 +78,27 @@ lp_build_vec_type(const struct gallivm_state *gallivm, struct lp_type type)
 boolean
 lp_check_elem_type(struct lp_type type, LLVMTypeRef elem_type)
 {
+   LLVMTypeKind elem_kind;
+
    assert(elem_type);
-   if (!elem_type)
+   if(!elem_type)
       return FALSE;
 
-   const LLVMTypeKind elem_kind = LLVMGetTypeKind(elem_type);
+   elem_kind = LLVMGetTypeKind(elem_type);
 
    if (type.floating) {
-      switch (type.width) {
+      switch(type.width) {
       case 16:
-         if (elem_kind != (lp_has_fp16()
-                           ? LLVMHalfTypeKind : LLVMIntegerTypeKind)) {
-            debug_printf("%s:%d: type is not 16 bits\n", __FILE__, __LINE__);
+         if(elem_kind != (lp_has_fp16() ? LLVMHalfTypeKind : LLVMIntegerTypeKind))
             return FALSE;
-         }
          break;
       case 32:
-         if (elem_kind != LLVMFloatTypeKind) {
-            debug_printf("%s:%d: type is not float\n", __FILE__, __LINE__);
+         if(elem_kind != LLVMFloatTypeKind)
             return FALSE;
-         }
          break;
       case 64:
-         if (elem_kind != LLVMDoubleTypeKind) {
-            debug_printf("%s:%d: type is not double\n", __FILE__, __LINE__);
+         if(elem_kind != LLVMDoubleTypeKind)
             return FALSE;
-         }
          break;
       default:
          assert(0);
@@ -117,17 +106,11 @@ lp_check_elem_type(struct lp_type type, LLVMTypeRef elem_type)
       }
    }
    else {
-      if (elem_kind != LLVMIntegerTypeKind) {
-         debug_printf("%s:%d: element is not integer\n", __FILE__, __LINE__);
+      if(elem_kind != LLVMIntegerTypeKind)
          return FALSE;
-      }
 
-      if (LLVMGetIntTypeWidth(elem_type) != type.width) {
-         debug_printf("%s:%d: type width mismatch %d != %d\n",
-                      __FILE__, __LINE__,
-                      LLVMGetIntTypeWidth(elem_type), type.width);
+      if(LLVMGetIntTypeWidth(elem_type) != type.width)
          return FALSE;
-      }
    }
 
    return TRUE;
@@ -137,25 +120,22 @@ lp_check_elem_type(struct lp_type type, LLVMTypeRef elem_type)
 boolean
 lp_check_vec_type(struct lp_type type, LLVMTypeRef vec_type)
 {
+   LLVMTypeRef elem_type;
+
    assert(vec_type);
-   if (!vec_type)
+   if(!vec_type)
       return FALSE;
 
    if (type.length == 1)
       return lp_check_elem_type(type, vec_type);
 
-   if (LLVMGetTypeKind(vec_type) != LLVMVectorTypeKind) {
-      printf("%s:%d: kind is not vector\n", __FILE__, __LINE__);
+   if(LLVMGetTypeKind(vec_type) != LLVMVectorTypeKind)
       return FALSE;
-   }
 
-   if (LLVMGetVectorSize(vec_type) != type.length) {
-      printf("%s:%d: vector size mismatch %d != expected %d\n", __FILE__, __LINE__,
-             LLVMGetVectorSize(vec_type), type.length);
+   if(LLVMGetVectorSize(vec_type) != type.length)
       return FALSE;
-   }
 
-   LLVMTypeRef elem_type = LLVMGetElementType(vec_type);
+   elem_type = LLVMGetElementType(vec_type);
 
    return lp_check_elem_type(type, elem_type);
 }
@@ -164,27 +144,27 @@ lp_check_vec_type(struct lp_type type, LLVMTypeRef vec_type)
 boolean
 lp_check_value(struct lp_type type, LLVMValueRef val)
 {
+   LLVMTypeRef vec_type;
+
    assert(val);
-   if (!val)
+   if(!val)
       return FALSE;
 
-   LLVMTypeRef vec_type = LLVMTypeOf(val);
+   vec_type = LLVMTypeOf(val);
 
    return lp_check_vec_type(type, vec_type);
 }
 
 
 LLVMTypeRef
-lp_build_int_elem_type(const struct gallivm_state *gallivm,
-                       struct lp_type type)
+lp_build_int_elem_type(struct gallivm_state *gallivm, struct lp_type type)
 {
    return LLVMIntTypeInContext(gallivm->context, type.width);
 }
 
 
 LLVMTypeRef
-lp_build_int_vec_type(const struct gallivm_state *gallivm,
-                      struct lp_type type)
+lp_build_int_vec_type(struct gallivm_state *gallivm, struct lp_type type)
 {
    LLVMTypeRef elem_type = lp_build_int_elem_type(gallivm, type);
    if (type.length == 1)

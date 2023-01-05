@@ -72,6 +72,13 @@ get_texture_index(struct gl_context *ctx, const unsigned unit)
    return index;
 }
 
+
+static inline GLboolean
+is_wrap_gl_clamp(GLint param)
+{
+   return param == GL_CLAMP || param == GL_MIRROR_CLAMP_EXT;
+}
+
 static void
 update_gl_clamp(struct st_context *st, struct gl_program *prog, uint32_t *gl_clamp)
 {
@@ -229,7 +236,7 @@ st_update_vp( struct st_context *st )
           !st->ctx->TessEvalProgram._Current) {
          /* _NEW_POINT */
          if (st->lower_point_size)
-            key.export_point_size = !st->ctx->VertexProgram.PointSizeEnabled && !st->ctx->PointSizeIsSet;
+            key.export_point_size = !st->ctx->VertexProgram.PointSizeEnabled && !st->ctx->PointSizeIsOne;
          /* _NEW_TRANSFORM */
          if (st->lower_ucp && st_user_clip_planes_enabled(st->ctx))
             key.lower_ucp = st->ctx->Transform.ClipPlanesEnabled;
@@ -286,7 +293,7 @@ st_update_common_program(struct st_context *st, struct gl_program *prog,
          key.lower_ucp = st->ctx->Transform.ClipPlanesEnabled;
 
       if (st->lower_point_size)
-         key.export_point_size = !st->ctx->VertexProgram.PointSizeEnabled && !st->ctx->PointSizeIsSet;
+         key.export_point_size = !st->ctx->VertexProgram.PointSizeEnabled && !st->ctx->PointSizeIsOne;
    }
 
    update_gl_clamp(st, prog, key.gl_clamp);

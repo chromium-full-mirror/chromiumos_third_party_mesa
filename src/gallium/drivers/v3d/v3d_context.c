@@ -293,9 +293,7 @@ v3d_context_destroy(struct pipe_context *pctx)
 
         slab_destroy_child(&v3d->transfer_pool);
 
-        for (int i = 0; i < v3d->framebuffer.nr_cbufs; i++)
-                pipe_surface_reference(&v3d->framebuffer.cbufs[i], NULL);
-
+        pipe_surface_reference(&v3d->framebuffer.cbufs[0], NULL);
         pipe_surface_reference(&v3d->framebuffer.zsbuf, NULL);
 
         if (v3d->sand8_blit_vs)

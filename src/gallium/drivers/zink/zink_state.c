@@ -32,7 +32,6 @@
 #include "util/u_dual_blend.h"
 #include "util/u_memory.h"
 #include "util/u_helpers.h"
-#include "vulkan/util/vk_format.h"
 
 #include <math.h>
 
@@ -119,7 +118,6 @@ zink_create_vertex_elements_state(struct pipe_context *pctx,
          ves->hw_state.attribs[i].format = format;
          assert(ves->hw_state.attribs[i].format != VK_FORMAT_UNDEFINED);
          ves->hw_state.attribs[i].offset = elem->src_offset;
-         ves->min_stride[binding] = MAX2(ves->min_stride[binding], elem->src_offset + vk_format_get_blocksize(format));
       }
    }
    assert(num_decomposed + num_elements <= PIPE_MAX_ATTRIBS);
@@ -533,8 +531,8 @@ zink_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *cso)
       }
    }
    if (prev_zwrite != (ctx->dsa_state ? ctx->dsa_state->hw_state.depth_write : false)) {
-      /* flag renderpass for re-check on next draw */
-      ctx->rp_layout_changed = true;
+      ctx->rp_changed = true;
+      zink_batch_no_rp(ctx);
    }
 }
 
@@ -578,7 +576,7 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    state->hw_state.line_stipple_enable = rs_state->line_stipple_enable;
 
    assert(rs_state->depth_clip_far == rs_state->depth_clip_near);
-   state->hw_state.depth_clip = rs_state->depth_clip_near;
+   state->hw_state.depth_clamp = rs_state->depth_clip_near == 0;
    state->hw_state.force_persample_interp = rs_state->force_persample_interp;
    state->hw_state.pv_last = !rs_state->flatshade_first;
    state->hw_state.clip_halfz = rs_state->clip_halfz;
@@ -587,7 +585,7 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    if (rs_state->fill_back != rs_state->fill_front)
       debug_printf("BUG: vulkan doesn't support different front and back fill modes\n");
    state->hw_state.polygon_mode = rs_state->fill_front; // same values
-   state->cull_mode = rs_state->cull_face; // same bits
+   state->hw_state.cull_mode = rs_state->cull_face; // same bits
 
    state->front_face = rs_state->front_ccw ?
                        VK_FRONT_FACE_COUNTER_CLOCKWISE :
@@ -612,8 +610,6 @@ zink_create_rasterizer_state(struct pipe_context *pctx,
    state->offset_line = rs_state->offset_line;
    state->offset_tri = rs_state->offset_tri;
    state->offset_units = rs_state->offset_units;
-   if (!rs_state->offset_units_unscaled)
-      state->offset_units *= 2;
    state->offset_clamp = rs_state->offset_clamp;
    state->offset_scale = rs_state->offset_scale;
 
@@ -635,7 +631,6 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
    bool force_persample_interp = ctx->rast_state ? ctx->rast_state->hw_state.force_persample_interp : false;
    bool clip_halfz = ctx->rast_state ? ctx->rast_state->hw_state.clip_halfz : false;
    bool rasterizer_discard = ctx->rast_state ? ctx->rast_state->base.rasterizer_discard : false;
-   bool half_pixel_center = ctx->rast_state ? ctx->rast_state->base.half_pixel_center : true;
    ctx->rast_state = cso;
 
    if (ctx->rast_state) {
@@ -663,10 +658,6 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
          ctx->gfx_pipeline_state.dyn_state1.front_face = ctx->rast_state->front_face;
          ctx->gfx_pipeline_state.dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
       }
-      if (ctx->gfx_pipeline_state.dyn_state1.cull_mode != ctx->rast_state->cull_mode) {
-         ctx->gfx_pipeline_state.dyn_state1.cull_mode = ctx->rast_state->cull_mode;
-         ctx->gfx_pipeline_state.dirty |= !zink_screen(pctx->screen)->info.have_EXT_extended_dynamic_state;
-      }
       if (!ctx->primitives_generated_active)
          zink_set_rasterizer_discard(ctx, false);
       else if (rasterizer_discard != ctx->rast_state->base.rasterizer_discard)
@@ -679,9 +670,6 @@ zink_bind_rasterizer_state(struct pipe_context *pctx, void *cso)
 
       if (ctx->rast_state->base.force_persample_interp != force_persample_interp)
          zink_set_fs_key(ctx)->force_persample_interp = ctx->rast_state->base.force_persample_interp;
-
-      if (ctx->rast_state->base.half_pixel_center != half_pixel_center)
-         ctx->vp_state_changed = true;
    }
 }
 

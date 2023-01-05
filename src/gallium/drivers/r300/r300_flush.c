@@ -24,6 +24,7 @@
 #include "draw/draw_context.h"
 #include "draw/draw_private.h"
 
+#include "util/simple_list.h"
 #include "util/u_upload_mgr.h"
 
 #include "util/os_time.h"

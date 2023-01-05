@@ -74,25 +74,16 @@ enum dxil_part_fourcc {
    DXIL_HASH = DXIL_FOURCC('H', 'A', 'S', 'H'),
 };
 
-struct dxil_resource_v0 {
+struct dxil_resource {
    uint32_t resource_type;
    uint32_t space;
    uint32_t lower_bound;
    uint32_t upper_bound;
 };
 
-struct dxil_resource_v1 {
-   struct dxil_resource_v0 v0;
-   uint32_t resource_kind;
-   uint32_t resource_flags;
-};
-
 struct dxil_validation_state {
-   struct dxil_psv_runtime_info_2 state;
-   union {
-      const struct dxil_resource_v0 *v0;
-      const struct dxil_resource_v1 *v1;
-   } resources;
+   struct dxil_psv_runtime_info_1 state;
+   const struct dxil_resource *resources;
    uint32_t num_resources;
 };
 
@@ -113,8 +104,7 @@ bool
 dxil_container_add_io_signature(struct dxil_container *c,
                                 enum dxil_part_fourcc part,
                                 unsigned num_records,
-                                struct dxil_signature_record *io,
-                                bool validator_7);
+                                struct dxil_signature_record *io);
 
 bool
 dxil_container_add_state_validation(struct dxil_container *c,

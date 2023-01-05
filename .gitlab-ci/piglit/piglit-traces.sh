@@ -13,7 +13,6 @@ mkdir -p "$RESULTS"
 # using a command wrapper. Hence, we will just set it when running the
 # command.
 export __LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$INSTALL/lib/"
-export VK_ICD_FILENAMES="$INSTALL/share/vulkan/icd.d/${VK_DRIVER}_icd.${VK_CPU:-`uname -m`}.json"
 
 # Sanity check to ensure that our environment is sufficient to make our tests
 # run against the Mesa built by CI, rather than any installed distro version.
@@ -34,48 +33,96 @@ quiet() {
     set -x
 }
 
-# Set environment for apitrace executable.
-export PATH="/apitrace/build:$PATH"
+if [ "$VK_DRIVER" ]; then
 
-# Our rootfs may not have "less", which apitrace uses during
-# apitrace dump
-export PAGER=cat
+    ### VULKAN ###
 
-SANITY_MESA_VERSION_CMD="wflinfo"
+    # Set the Vulkan driver to use.
+    export VK_ICD_FILENAMES="$INSTALL/share/vulkan/icd.d/${VK_DRIVER}_icd.x86_64.json"
 
-HANG_DETECTION_CMD=""
+    # Set environment for Wine.
+    export WINEDEBUG="-all"
+    export WINEPREFIX="/dxvk-wine64"
+    export WINEESYNC=1
+
+    # Set environment for DXVK.
+    export DXVK_LOG_LEVEL="none"
+    export DXVK_STATE_CACHE=0
+
+    # Set environment for gfxreconstruct executables.
+    export PATH="/gfxreconstruct/build/bin:$PATH"
+
+    SANITY_MESA_VERSION_CMD="vulkaninfo"
+
+    HANG_DETECTION_CMD="/parallel-deqp-runner/build/bin/hang-detection"
 
 
-# Set up the platform windowing system.
+    # Set up the Window System Interface (WSI)
 
-if [ "x$EGL_PLATFORM" = "xsurfaceless" ]; then
-    # Use the surfaceless EGL platform.
-    export DISPLAY=
-    export WAFFLE_PLATFORM="surfaceless_egl"
-
-    SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform surfaceless_egl --api gles2"
-
-    if [ "x$GALLIUM_DRIVER" = "xvirpipe" ]; then
-    # piglit is to use virpipe, and virgl_test_server llvmpipe
-    export GALLIUM_DRIVER="$GALLIUM_DRIVER"
-
-    LD_LIBRARY_PATH="$__LD_LIBRARY_PATH" \
-    GALLIUM_DRIVER=llvmpipe \
-    VTEST_USE_EGL_SURFACELESS=1 \
-    VTEST_USE_GLES=1 \
-    virgl_test_server >"$RESULTS"/vtest-log.txt 2>&1 &
-
-    sleep 1
+    if [ ${TEST_START_XORG:-0} -eq 1 ]; then
+        "$INSTALL"/common/start-x.sh "$INSTALL"
+        export DISPLAY=:0
+    else
+        # Run vulkan against the host's running X server (xvfb doesn't
+        # have DRI3 support).
+        # Set the DISPLAY env variable in each gitlab-runner's
+        # configuration file:
+        # https://docs.gitlab.com/runner/configuration/advanced-configuration.html#the-runners-section
+        quiet printf "%s%s\n" "Running against the hosts' X server. " \
+              "DISPLAY is \"$DISPLAY\"."
     fi
-elif [ "x$PIGLIT_PLATFORM" = "xgbm" ]; then
-    SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform gbm --api gl"
-elif [ "x$PIGLIT_PLATFORM" = "xmixed_glx_egl" ]; then
-    # It is assumed that you have already brought up your X server before
-    # calling this script.
-    SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform glx --api gl"
 else
-    SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform glx --api gl --profile core"
-    RUN_CMD_WRAPPER="xvfb-run --server-args=\"-noreset\" sh -c"
+
+    ### GL/ES ###
+
+    # Set environment for apitrace executable.
+    export PATH="/apitrace/build:$PATH"
+
+    # Our rootfs may not have "less", which apitrace uses during
+    # apitrace dump
+    export PAGER=cat
+
+    SANITY_MESA_VERSION_CMD="wflinfo"
+
+    HANG_DETECTION_CMD=""
+
+
+    # Set up the platform windowing system.
+
+    if [ "x$EGL_PLATFORM" = "xsurfaceless" ]; then
+
+        # Use the surfaceless EGL platform.
+        export DISPLAY=
+        export WAFFLE_PLATFORM="surfaceless_egl"
+
+        SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform surfaceless_egl --api gles2"
+
+        if [ "x$GALLIUM_DRIVER" = "xvirpipe" ]; then
+            # piglit is to use virpipe, and virgl_test_server llvmpipe
+            export GALLIUM_DRIVER="$GALLIUM_DRIVER"
+
+            LD_LIBRARY_PATH="$__LD_LIBRARY_PATH" \
+            GALLIUM_DRIVER=llvmpipe \
+            VTEST_USE_EGL_SURFACELESS=1 \
+            VTEST_USE_GLES=1 \
+            virgl_test_server >"$RESULTS"/vtest-log.txt 2>&1 &
+
+            sleep 1
+        fi
+    elif [ "x$PIGLIT_PLATFORM" = "xgbm" ]; then
+        SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform gbm --api gl"
+    elif [ "x$PIGLIT_PLATFORM" = "xmixed_glx_egl" ]; then
+        # It is assumed that you have already brought up your X server before
+        # calling this script.
+        SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform glx --api gl"
+    else
+        SANITY_MESA_VERSION_CMD="$SANITY_MESA_VERSION_CMD --platform glx --api gl --profile core"
+        RUN_CMD_WRAPPER="xvfb-run --server-args=\"-noreset\" sh -c"
+    fi
+fi
+
+if [ "$ZINK_USE_LAVAPIPE" ]; then
+    export VK_ICD_FILENAMES="$INSTALL/share/vulkan/icd.d/lvp_icd.x86_64.json"
 fi
 
 # If the job is parallel at the  gitlab job level, will take the corresponding
@@ -131,7 +178,7 @@ PIGLIT_OPTIONS=$(printf "%s" "$PIGLIT_OPTIONS")
 
 PIGLIT_TESTS=$(printf "%s" "$PIGLIT_TESTS")
 
-PIGLIT_CMD="./piglit run -l verbose --timeout 300 -j${FDO_CI_CONCURRENT:-4} $PIGLIT_OPTIONS $PIGLIT_TESTS replay "$(/usr/bin/printf "%q" "$RESULTS")
+PIGLIT_CMD="./piglit run --timeout 300 -j${FDO_CI_CONCURRENT:-4} $PIGLIT_OPTIONS $PIGLIT_TESTS replay "$(/usr/bin/printf "%q" "$RESULTS")
 
 RUN_CMD="export LD_LIBRARY_PATH=$__LD_LIBRARY_PATH; $SANITY_MESA_VERSION_CMD && $HANG_DETECTION_CMD $PIGLIT_CMD"
 

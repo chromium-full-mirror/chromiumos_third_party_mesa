@@ -34,6 +34,7 @@
 #include "pipe/p_context.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
+#include "util/u_cpu_detect.h"
 #include "util/u_inlines.h"
 #include "util/u_helpers.h"
 #include "util/u_prim.h"
@@ -83,6 +84,9 @@ draw_create_context(struct pipe_context *pipe, void *context,
    struct draw_context *draw = CALLOC_STRUCT( draw_context );
    if (!draw)
       goto err_out;
+
+   /* we need correct cpu caps for disabling denorms in draw_vbo() */
+   util_cpu_detect();
 
 #ifdef DRAW_LLVM_AVAILABLE
    if (try_llvm && draw_get_option_use_llvm()) {
@@ -386,8 +390,8 @@ void draw_set_viewport_states( struct draw_context *draw,
    const struct pipe_viewport_state *viewport = vps;
    draw_do_flush(draw, DRAW_FLUSH_PARAMETER_CHANGE);
 
-   assert(start_slot < PIPE_MAX_VIEWPORTS);
-   assert((start_slot + num_viewports) <= PIPE_MAX_VIEWPORTS);
+   debug_assert(start_slot < PIPE_MAX_VIEWPORTS);
+   debug_assert((start_slot + num_viewports) <= PIPE_MAX_VIEWPORTS);
 
    memcpy(draw->viewports + start_slot, vps,
           sizeof(struct pipe_viewport_state) * num_viewports);
@@ -455,11 +459,11 @@ draw_set_mapped_constant_buffer(struct draw_context *draw,
                                 const void *buffer,
                                 unsigned size )
 {
-   assert(shader_type == PIPE_SHADER_VERTEX ||
+   debug_assert(shader_type == PIPE_SHADER_VERTEX ||
                 shader_type == PIPE_SHADER_GEOMETRY ||
                 shader_type == PIPE_SHADER_TESS_CTRL ||
                 shader_type == PIPE_SHADER_TESS_EVAL);
-   assert(slot < PIPE_MAX_CONSTANT_BUFFERS);
+   debug_assert(slot < PIPE_MAX_CONSTANT_BUFFERS);
 
    draw_do_flush(draw, DRAW_FLUSH_PARAMETER_CHANGE);
 
@@ -492,11 +496,11 @@ draw_set_mapped_shader_buffer(struct draw_context *draw,
                               const void *buffer,
                               unsigned size )
 {
-   assert(shader_type == PIPE_SHADER_VERTEX ||
+   debug_assert(shader_type == PIPE_SHADER_VERTEX ||
                 shader_type == PIPE_SHADER_GEOMETRY ||
                 shader_type == PIPE_SHADER_TESS_CTRL ||
                 shader_type == PIPE_SHADER_TESS_EVAL);
-   assert(slot < PIPE_MAX_SHADER_BUFFERS);
+   debug_assert(slot < PIPE_MAX_SHADER_BUFFERS);
 
    draw_do_flush(draw, DRAW_FLUSH_PARAMETER_CHANGE);
 
@@ -1010,7 +1014,7 @@ draw_current_shader_clipvertex_output(const struct draw_context *draw)
 uint
 draw_current_shader_ccdistance_output(const struct draw_context *draw, int index)
 {
-   assert(index < PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
+   debug_assert(index < PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
    if (draw->gs.geometry_shader)
       return draw->gs.geometry_shader->ccdistance_output[index];
    if (draw->tes.tess_eval_shader)
@@ -1099,8 +1103,8 @@ draw_set_sampler_views(struct draw_context *draw,
 {
    unsigned i;
 
-   assert(shader_stage < PIPE_SHADER_TYPES);
-   assert(num <= PIPE_MAX_SHADER_SAMPLER_VIEWS);
+   debug_assert(shader_stage < PIPE_SHADER_TYPES);
+   debug_assert(num <= PIPE_MAX_SHADER_SAMPLER_VIEWS);
 
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 
@@ -1120,8 +1124,8 @@ draw_set_samplers(struct draw_context *draw,
 {
    unsigned i;
 
-   assert(shader_stage < PIPE_SHADER_TYPES);
-   assert(num <= PIPE_MAX_SAMPLERS);
+   debug_assert(shader_stage < PIPE_SHADER_TYPES);
+   debug_assert(num <= PIPE_MAX_SAMPLERS);
 
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 
@@ -1146,8 +1150,8 @@ draw_set_images(struct draw_context *draw,
 {
    unsigned i;
 
-   assert(shader_stage < PIPE_SHADER_TYPES);
-   assert(num <= PIPE_MAX_SHADER_IMAGES);
+   debug_assert(shader_stage < PIPE_SHADER_TYPES);
+   debug_assert(num <= PIPE_MAX_SHADER_IMAGES);
 
    draw_do_flush( draw, DRAW_FLUSH_STATE_CHANGE );
 

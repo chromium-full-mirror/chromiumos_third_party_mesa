@@ -28,7 +28,6 @@
 #include <xf86drm.h>
 
 #include "pvr_private.h"
-#include "pvr_types.h"
 #include "pvr_winsys.h"
 #include "pvr_winsys_helper.h"
 #include "util/u_atomic.h"
@@ -78,10 +77,9 @@ VkResult pvr_winsys_helper_winsys_heap_init(
 {
    const bool reserved_area_bottom_of_heap = reserved_address.addr ==
                                              base_address.addr;
-   const pvr_dev_addr_t vma_heap_begin_addr =
-      reserved_area_bottom_of_heap
-         ? PVR_DEV_ADDR_OFFSET(base_address, reserved_size)
-         : base_address;
+   const uint64_t vma_heap_begin_addr =
+      base_address.addr +
+      (uint64_t)reserved_area_bottom_of_heap * reserved_size;
    const uint64_t vma_heap_size = size - reserved_size;
 
    assert(base_address.addr);
@@ -107,7 +105,7 @@ VkResult pvr_winsys_helper_winsys_heap_init(
    heap->page_size = 1 << log2_page_size;
    heap->log2_page_size = log2_page_size;
 
-   util_vma_heap_init(&heap->vma_heap, vma_heap_begin_addr.addr, vma_heap_size);
+   util_vma_heap_init(&heap->vma_heap, vma_heap_begin_addr, vma_heap_size);
 
    heap->vma_heap.alloc_high = false;
 
@@ -158,8 +156,8 @@ bool pvr_winsys_helper_heap_alloc(struct pvr_winsys_heap *const heap,
    vma.size = size;
 
    pthread_mutex_lock(&heap->lock);
-   vma.dev_addr =
-      PVR_DEV_ADDR(util_vma_heap_alloc(&heap->vma_heap, size, heap->page_size));
+   vma.dev_addr.addr =
+      util_vma_heap_alloc(&heap->vma_heap, size, heap->page_size);
    pthread_mutex_unlock(&heap->lock);
 
    if (!vma.dev_addr.addr) {
@@ -387,13 +385,13 @@ pvr_winsys_helper_fill_static_memory(struct pvr_winsys *const ws,
    pds_ptr = ws->ops->buffer_map(pds_vma->bo);
    if (!pds_ptr) {
       result = VK_ERROR_MEMORY_MAP_FAILED;
-      goto err_pvr_srv_winsys_buffer_unmap_general;
+      goto error_pvr_srv_winsys_buffer_unmap_general;
    }
 
    usc_ptr = ws->ops->buffer_map(usc_vma->bo);
    if (!usc_ptr) {
       result = VK_ERROR_MEMORY_MAP_FAILED;
-      goto err_pvr_srv_winsys_buffer_unmap_pds;
+      goto error_pvr_srv_winsys_buffer_unmap_pds;
    }
 
    pvr_setup_static_vdm_sync(pds_ptr,
@@ -412,10 +410,10 @@ pvr_winsys_helper_fill_static_memory(struct pvr_winsys *const ws,
 
    return VK_SUCCESS;
 
-err_pvr_srv_winsys_buffer_unmap_pds:
+error_pvr_srv_winsys_buffer_unmap_pds:
    ws->ops->buffer_unmap(pds_vma->bo);
 
-err_pvr_srv_winsys_buffer_unmap_general:
+error_pvr_srv_winsys_buffer_unmap_general:
    ws->ops->buffer_unmap(general_vma->bo);
 
    return result;

@@ -26,6 +26,7 @@
  *    Gareth Hughes
  */
 
+#include "c99_math.h"
 #include "main/glheader.h"
 #include "main/context.h"
 #include "main/macros.h"
@@ -36,7 +37,6 @@
 #include "m_debug.h"
 #include "m_debug_util.h"
 
-#include <math.h>
 
 #ifdef __UNIXOS2__
 /* The linker doesn't like empty files */

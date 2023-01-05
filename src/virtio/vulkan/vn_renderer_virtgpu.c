@@ -12,13 +12,6 @@
 #include <unistd.h>
 #include <xf86drm.h>
 
-#ifdef MAJOR_IN_MKDEV
-#include <sys/mkdev.h>
-#endif
-#ifdef MAJOR_IN_SYSMACROS
-#include <sys/sysmacros.h>
-#endif
-
 #include "drm-uapi/virtgpu_drm.h"
 #include "util/sparse_array.h"
 #define VIRGL_RENDERER_UNSTABLE_APIS
@@ -106,12 +99,7 @@ struct virtgpu {
    struct vn_instance *instance;
 
    int fd;
-
-   bool has_primary;
-   int primary_major;
-   int primary_minor;
-   int render_major;
-   int render_minor;
+   int version_minor;
 
    int bustype;
    drmPciBusInfo pci_bus_info;
@@ -1387,13 +1375,6 @@ virtgpu_init_renderer_info(struct virtgpu *gpu)
 {
    struct vn_renderer_info *info = &gpu->base.info;
 
-   info->drm.has_primary = gpu->has_primary;
-   info->drm.primary_major = gpu->primary_major;
-   info->drm.primary_minor = gpu->primary_minor;
-   info->drm.has_render = true;
-   info->drm.render_major = gpu->render_major;
-   info->drm.render_minor = gpu->render_minor;
-
    info->pci.vendor_id = VIRTGPU_PCI_VENDOR_ID;
    info->pci.device_id = VIRTGPU_PCI_DEVICE_ID;
 
@@ -1433,8 +1414,6 @@ virtgpu_init_renderer_info(struct virtgpu *gpu)
                  sizeof(capset->vk_extension_mask1));
    memcpy(info->vk_extension_mask, capset->vk_extension_mask1,
           sizeof(capset->vk_extension_mask1));
-
-   info->allow_vk_wait_syncs = capset->allow_vk_wait_syncs;
 
    if (gpu->bo_blob_mem == VIRTGPU_BLOB_MEM_GUEST_VRAM)
       info->has_guest_vram = true;
@@ -1602,7 +1581,6 @@ virtgpu_open_device(struct virtgpu *gpu, const drmDevicePtr dev)
       return VK_ERROR_INITIALIZATION_FAILED;
    }
 
-   const char *primary_path = dev->nodes[DRM_NODE_PRIMARY];
    const char *node_path = dev->nodes[DRM_NODE_RENDER];
 
    int fd = open(node_path, O_RDWR | O_CLOEXEC);
@@ -1630,21 +1608,7 @@ virtgpu_open_device(struct virtgpu *gpu, const drmDevicePtr dev)
    }
 
    gpu->fd = fd;
-
-   struct stat st;
-   if (stat(primary_path, &st) == 0) {
-      gpu->has_primary = true;
-      gpu->primary_major = major(st.st_rdev);
-      gpu->primary_minor = minor(st.st_rdev);
-   } else {
-      gpu->has_primary = false;
-      gpu->primary_major = 0;
-      gpu->primary_minor = 0;
-   }
-   stat(node_path, &st);
-   gpu->render_major = major(st.st_rdev);
-   gpu->render_minor = minor(st.st_rdev);
-
+   gpu->version_minor = version->version_minor;
    gpu->bustype = dev->bustype;
    if (dev->bustype == DRM_BUS_PCI)
       gpu->pci_bus_info = *dev->businfo.pci;

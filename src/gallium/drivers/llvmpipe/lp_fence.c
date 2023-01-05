@@ -46,7 +46,7 @@
 struct lp_fence *
 lp_fence_create(unsigned rank)
 {
-   static unsigned fence_id = 0;
+   static int fence_id;
    struct lp_fence *fence = CALLOC_STRUCT(lp_fence);
 
    if (!fence)
@@ -57,7 +57,7 @@ lp_fence_create(unsigned rank)
    (void) mtx_init(&fence->mutex, mtx_plain);
    cnd_init(&fence->signalled);
 
-   fence->id = p_atomic_inc_return(&fence_id) - 1;
+   fence->id = fence_id++;
    fence->rank = rank;
 
    if (LP_DEBUG & DEBUG_FENCE)

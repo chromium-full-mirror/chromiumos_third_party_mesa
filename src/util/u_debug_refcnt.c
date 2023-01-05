@@ -174,12 +174,10 @@ debug_reference_slowpath(const struct pipe_reference *p,
          /* this is here to provide a gradual change even if we don't see
           * the initialization
           */
-         if (refcnt <= 10) {
-            for (i = 1; i <= refcnt - change; ++i) {
-               fprintf(stream, "<%s> %p %u AddRef %u\n", buf, (void *) p,
-                  serial, i);
-               debug_backtrace_print(stream, frames, STACK_LEN);
-            }
+         for (i = 1; i <= refcnt - change; ++i) {
+            fprintf(stream, "<%s> %p %u AddRef %u\n", buf, (void *) p,
+                    serial, i);
+            debug_backtrace_print(stream, frames, STACK_LEN);
          }
       }
 

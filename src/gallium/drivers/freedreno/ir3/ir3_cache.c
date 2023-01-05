@@ -98,7 +98,7 @@ ir3_cache_lookup(struct ir3_cache *cache, const struct ir3_cache_key *key,
    }
 
    if (key->hs)
-      assert(key->ds);
+      debug_assert(key->ds);
 
    struct ir3_shader *shaders[MESA_SHADER_STAGES] = {
       [MESA_SHADER_VERTEX] = ir3_get_shader(key->vs),

@@ -30,6 +30,7 @@
 #include <stdbool.h>
 
 #include <assert.h>
+#include "c11_compat.h"
 #include "ac_rgp.h"
 
 struct radeon_cmdbuf;

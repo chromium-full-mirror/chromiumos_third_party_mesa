@@ -332,6 +332,16 @@ anv_measure_reset(struct anv_cmd_buffer *cmd_buffer)
    measure->base.frame = 0;
    measure->base.event_count = 0;
    list_inithead(&measure->base.link);
+
+   anv_device_release_bo(device, measure->bo);
+   ASSERTED VkResult result =
+      anv_device_alloc_bo(device, "measure data",
+                          config->batch_size * sizeof(uint64_t),
+                          ANV_BO_ALLOC_MAPPED,
+                          0,
+                          (struct anv_bo**)&measure->bo);
+   measure->base.timestamps = measure->bo->map;
+   assert(result == VK_SUCCESS);
 }
 
 void
@@ -393,24 +403,18 @@ _anv_measure_submit(struct anv_cmd_buffer *cmd_buffer)
    if (measure == NULL)
       return;
 
-   struct intel_measure_batch *base = &measure->base;
-   if (base->index == 0)
+   if (measure->base.index == 0)
       /* no snapshots were started */
       return;
 
    /* finalize snapshots and enqueue them */
    static unsigned cmd_buffer_count = 0;
-   base->batch_count = p_atomic_inc_return(&cmd_buffer_count);
+   measure->base.batch_count = p_atomic_inc_return(&cmd_buffer_count);
 
-   if (base->index %2 == 1) {
-      anv_measure_end_snapshot(cmd_buffer, base->event_count);
-      base->event_count = 0;
+   if (measure->base.index %2 == 1) {
+      anv_measure_end_snapshot(cmd_buffer, measure->base.event_count);
+      measure->base.event_count = 0;
    }
-
-   /* Mark the final timestamp as 'not completed'.  This marker will be used
-    * to verify that rendering is complete.
-    */
-   base->timestamps[base->index - 1] = 0;
 
    /* add to the list of submitted snapshots */
    pthread_mutex_lock(&measure_device->mutex);

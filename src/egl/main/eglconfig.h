@@ -34,6 +34,7 @@
 
 #include <assert.h>
 #include <stddef.h>
+#include "c99_compat.h"
 
 #include "egltypedefs.h"
 

@@ -125,7 +125,7 @@ static bool
 move_src(nir_src *src, void *state)
 {
    /* At this point we shouldn't have any non-ssa src: */
-   assert(src->is_ssa);
+   debug_assert(src->is_ssa);
    move_instruction_to_start_block(state, src->ssa->parent_instr);
    return true;
 }
@@ -169,7 +169,7 @@ move_varying_inputs_block(state *state, nir_block *block)
          continue;
       }
 
-      assert(intr->dest.is_ssa);
+      debug_assert(intr->dest.is_ssa);
 
       move_instruction_to_start_block(state, instr);
 
@@ -184,7 +184,7 @@ ir3_nir_move_varying_inputs(nir_shader *shader)
 {
    bool progress = false;
 
-   assert(shader->info.stage == MESA_SHADER_FRAGMENT);
+   debug_assert(shader->info.stage == MESA_SHADER_FRAGMENT);
 
    nir_foreach_function (function, shader) {
       precond_state state;

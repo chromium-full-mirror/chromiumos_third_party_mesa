@@ -74,7 +74,6 @@ foreach d : [[with_gallium_kmsro, [
                'ili9341_dri.so',
                'imx-drm_dri.so',
                'imx-dcss_dri.so',
-               'imx-lcdif_dri.so',
                'ingenic-drm_dri.so',
                'kirin_dri.so',
                'komeda_dri.so',

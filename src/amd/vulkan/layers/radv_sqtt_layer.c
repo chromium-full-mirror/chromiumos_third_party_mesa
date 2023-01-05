@@ -33,11 +33,12 @@ radv_write_begin_general_api_marker(struct radv_cmd_buffer *cmd_buffer,
                                     enum rgp_sqtt_marker_general_api_type api_type)
 {
    struct rgp_sqtt_marker_general_api marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    marker.identifier = RGP_SQTT_MARKER_IDENTIFIER_GENERAL_API;
    marker.api_type = api_type;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 static void
@@ -45,12 +46,13 @@ radv_write_end_general_api_marker(struct radv_cmd_buffer *cmd_buffer,
                                   enum rgp_sqtt_marker_general_api_type api_type)
 {
    struct rgp_sqtt_marker_general_api marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    marker.identifier = RGP_SQTT_MARKER_IDENTIFIER_GENERAL_API;
    marker.api_type = api_type;
    marker.is_end = 1;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 static void
@@ -59,6 +61,7 @@ radv_write_event_marker(struct radv_cmd_buffer *cmd_buffer,
                         uint32_t instance_offset_user_data, uint32_t draw_index_user_data)
 {
    struct rgp_sqtt_marker_event marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    marker.identifier = RGP_SQTT_MARKER_IDENTIFIER_EVENT;
    marker.api_type = api_type;
@@ -77,7 +80,7 @@ radv_write_event_marker(struct radv_cmd_buffer *cmd_buffer,
    marker.instance_offset_reg_idx = instance_offset_user_data;
    marker.draw_index_reg_idx = draw_index_user_data;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 static void
@@ -86,6 +89,7 @@ radv_write_event_with_dims_marker(struct radv_cmd_buffer *cmd_buffer,
                                   uint32_t z)
 {
    struct rgp_sqtt_marker_event_with_dims marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    marker.event.identifier = RGP_SQTT_MARKER_IDENTIFIER_EVENT;
    marker.event.api_type = api_type;
@@ -97,20 +101,22 @@ radv_write_event_with_dims_marker(struct radv_cmd_buffer *cmd_buffer,
    marker.thread_y = y;
    marker.thread_z = z;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 static void
 radv_write_user_event_marker(struct radv_cmd_buffer *cmd_buffer,
                              enum rgp_sqtt_marker_user_event_type type, const char *str)
 {
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
+
    if (type == UserEventPop) {
       assert(str == NULL);
       struct rgp_sqtt_marker_user_event marker = {0};
       marker.identifier = RGP_SQTT_MARKER_IDENTIFIER_USER_EVENT;
       marker.data_type = type;
 
-      radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+      radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
    } else {
       assert(str != NULL);
       unsigned len = strlen(str);
@@ -124,7 +130,7 @@ radv_write_user_event_marker(struct radv_cmd_buffer *cmd_buffer,
       memcpy(buffer, &marker, sizeof(marker));
       memcpy(buffer + sizeof(marker), str, len);
 
-      radv_emit_thread_trace_userdata(cmd_buffer, buffer,
+      radv_emit_thread_trace_userdata(cmd_buffer->device, cs, buffer,
                                       sizeof(marker) / 4 + marker.length / 4);
    }
 }
@@ -134,6 +140,7 @@ radv_describe_begin_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
 {
    uint64_t device_id = (uintptr_t)cmd_buffer->device;
    struct rgp_sqtt_marker_cb_start marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    if (likely(!cmd_buffer->device->thread_trace.bo))
       return;
@@ -148,7 +155,7 @@ radv_describe_begin_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
    if (cmd_buffer->qf == RADV_QUEUE_GENERAL)
       marker.queue_flags |= VK_QUEUE_GRAPHICS_BIT;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 void
@@ -156,6 +163,7 @@ radv_describe_end_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
 {
    uint64_t device_id = (uintptr_t)cmd_buffer->device;
    struct rgp_sqtt_marker_cb_end marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    if (likely(!cmd_buffer->device->thread_trace.bo))
       return;
@@ -165,7 +173,7 @@ radv_describe_end_cmd_buffer(struct radv_cmd_buffer *cmd_buffer)
    marker.device_id_low = device_id;
    marker.device_id_high = device_id >> 32;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 void
@@ -218,6 +226,7 @@ void
 radv_describe_barrier_end_delayed(struct radv_cmd_buffer *cmd_buffer)
 {
    struct rgp_sqtt_marker_barrier_end marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    if (likely(!cmd_buffer->device->thread_trace.bo) || !cmd_buffer->state.pending_sqtt_barrier_end)
       return;
@@ -262,7 +271,7 @@ radv_describe_barrier_end_delayed(struct radv_cmd_buffer *cmd_buffer)
    if (cmd_buffer->state.sqtt_flush_bits & RGP_FLUSH_INVAL_L1)
       marker.inval_gl1 = true;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 
    cmd_buffer->state.num_layout_transitions = 0;
 }
@@ -271,6 +280,7 @@ void
 radv_describe_barrier_start(struct radv_cmd_buffer *cmd_buffer, enum rgp_barrier_reason reason)
 {
    struct rgp_sqtt_marker_barrier_start marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    if (likely(!cmd_buffer->device->thread_trace.bo))
       return;
@@ -282,7 +292,7 @@ radv_describe_barrier_start(struct radv_cmd_buffer *cmd_buffer, enum rgp_barrier
    marker.cb_id = 0;
    marker.dword02 = reason;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 void
@@ -296,6 +306,7 @@ radv_describe_layout_transition(struct radv_cmd_buffer *cmd_buffer,
                                 const struct radv_barrier_data *barrier)
 {
    struct rgp_sqtt_marker_layout_transition marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    if (likely(!cmd_buffer->device->thread_trace.bo))
       return;
@@ -310,7 +321,7 @@ radv_describe_layout_transition(struct radv_cmd_buffer *cmd_buffer,
    marker.fmask_color_expand = barrier->layout_transitions.fmask_color_expand;
    marker.init_mask_ram = barrier->layout_transitions.init_mask_ram;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 
    cmd_buffer->state.num_layout_transitions++;
 }
@@ -320,6 +331,7 @@ radv_describe_pipeline_bind(struct radv_cmd_buffer *cmd_buffer,
                             VkPipelineBindPoint pipelineBindPoint, struct radv_pipeline *pipeline)
 {
    struct rgp_sqtt_marker_pipeline_bind marker = {0};
+   struct radeon_cmdbuf *cs = cmd_buffer->cs;
 
    if (likely(!cmd_buffer->device->thread_trace.bo))
       return;
@@ -330,7 +342,7 @@ radv_describe_pipeline_bind(struct radv_cmd_buffer *cmd_buffer,
    marker.api_pso_hash[0] = pipeline->pipeline_hash;
    marker.api_pso_hash[1] = pipeline->pipeline_hash >> 32;
 
-   radv_emit_thread_trace_userdata(cmd_buffer, &marker, sizeof(marker) / 4);
+   radv_emit_thread_trace_userdata(cmd_buffer->device, cs, &marker, sizeof(marker) / 4);
 }
 
 /* TODO: Improve the way to trigger capture (overlay, etc). */
@@ -630,6 +642,14 @@ sqtt_CmdBindIndexBuffer(VkCommandBuffer commandBuffer, VkBuffer buffer, VkDevice
                         VkIndexType indexType)
 {
    API_MARKER(BindIndexBuffer, commandBuffer, buffer, offset, indexType);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+sqtt_CmdBindVertexBuffers(VkCommandBuffer commandBuffer, uint32_t firstBinding,
+                          uint32_t bindingCount, const VkBuffer *pBuffers,
+                          const VkDeviceSize *pOffsets)
+{
+   API_MARKER(BindVertexBuffers, commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets);
 }
 
 VKAPI_ATTR void VKAPI_CALL

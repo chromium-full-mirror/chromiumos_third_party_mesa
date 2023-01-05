@@ -284,6 +284,20 @@ print_tex_reg(FILE *fp, unsigned reg, bool is_write)
 }
 
 
+static char *outmod_names_float[4] = {
+        "",
+        ".clamp_0_inf",
+        ".clamp_m1_1",
+        ".clamp_0_1"
+};
+
+static char *outmod_names_int[4] = {
+        ".ssat",
+        ".usat",
+        ".keeplo",
+        ".keephi"
+};
+
 static char *srcmod_names_int[4] = {
         ".sext",
         ".zext",
@@ -305,6 +319,13 @@ static char *index_format_names[4] = {
 };
 
 static void
+print_outmod(FILE *fp, unsigned outmod, bool is_int)
+{
+        fprintf(fp, "%s", is_int ? outmod_names_int[outmod] :
+                outmod_names_float[outmod]);
+}
+
+static void
 print_alu_outmod(FILE *fp, unsigned outmod, bool is_int, bool half)
 {
         if (is_int && !half) {
@@ -315,7 +336,7 @@ print_alu_outmod(FILE *fp, unsigned outmod, bool is_int, bool half)
         if (!is_int && half)
                 fprintf(fp, ".shrink");
 
-        mir_print_outmod(fp, outmod, is_int);
+        print_outmod(fp, outmod, is_int);
 }
 
 /* arg == 0 (dest), arg == 1 (src1), arg == 2 (src2) */
@@ -1393,15 +1414,9 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                         swizzle = 0xE4;
                 print_ldst_mask(fp, word->mask, swizzle);
         } else {
-                uint8_t mask =
-                        (word->mask & 0x1) |
-                        ((word->mask & 0x2) << 1) |
-                        ((word->mask & 0x4) << 2) |
-                        ((word->mask & 0x8) << 3);
-                mask |= mask << 1;
                 print_ldst_read_reg(fp, word->reg);
                 print_vec_swizzle(fp, word->swizzle, midgard_src_passthrough,
-                                  midgard_reg_mode_32, mask);
+                                  midgard_reg_mode_32, 0xFF);
         }
 
         /* ld_ubo args */
@@ -1419,7 +1434,7 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                 print_ldst_read_reg(fp, word->index_reg);
                 fprintf(fp, ".%c", components[word->index_comp]);
                 if (word->index_shift)
-                        fprintf(fp, " << %u",  word->index_shift);
+                        fprintf(fp, " lsl %u",  word->index_shift);
                 midgard_print_sint(fp, UNPACK_LDST_UBO_OFS(word->signed_offset));
         }
 
@@ -1447,7 +1462,7 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                                 index_format_names[word->index_format],
                                 components[word->index_comp]);
                         if (word->index_shift)
-                                fprintf(fp, " << %u",  word->index_shift);
+                                fprintf(fp, " lsl %u",  word->index_shift);
                 }
 
                 midgard_print_sint(fp, word->signed_offset);
@@ -1484,7 +1499,7 @@ print_load_store_instr(disassemble_context *ctx, FILE *fp, uint64_t data, bool v
                 print_ldst_read_reg(fp, word->index_reg);
                 fprintf(fp, ".%c", components[word->index_comp]);
                 if (word->index_shift)
-                        fprintf(fp, " << %u",  word->index_shift);
+                        fprintf(fp, " lsl %u",  word->index_shift);
                 midgard_print_sint(fp, UNPACK_LDST_ATTRIB_OFS(word->signed_offset));
         }
 
@@ -1750,7 +1765,7 @@ print_texture_word(disassemble_context *ctx, FILE *fp, uint32_t *word,
 
         /* Output modifiers are only valid for float texture operations */
         if (texture->sampler_type == MALI_SAMPLER_FLOAT)
-                mir_print_outmod(fp, texture->outmod, false);
+                print_outmod(fp, texture->outmod, false);
 
         fprintf(fp, ", ");
 

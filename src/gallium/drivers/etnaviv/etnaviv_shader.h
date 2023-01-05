@@ -31,7 +31,6 @@
 #include "nir.h"
 #include "pipe/p_state.h"
 #include "util/disk_cache.h"
-#include "util/u_queue.h"
 
 struct etna_context;
 struct etna_shader_variant;
@@ -86,9 +85,6 @@ struct etna_shader {
    struct etna_shader_variant *variants;
 
    cache_key cache_key;     /* shader disk-cache key */
-
-   /* parallel shader compiles */
-   struct util_queue_fence ready;
 };
 
 bool
@@ -103,11 +99,5 @@ etna_shader_variant(struct etna_shader *shader, struct etna_shader_key key,
 
 void
 etna_shader_init(struct pipe_context *pctx);
-
-bool
-etna_shader_screen_init(struct pipe_screen *pscreen);
-
-void
-etna_shader_screen_fini(struct pipe_screen *pscreen);
 
 #endif

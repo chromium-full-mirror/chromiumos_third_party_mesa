@@ -27,10 +27,9 @@
 #include <stdio.h>
 #include "c11/threads.h"
 #include "dev/intel_device_info.h"
-#include "util/macros.h"
+#include "main/config.h"
 #include "util/ralloc.h"
 #include "util/u_math.h"
-#include "brw_isa_info.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,8 +50,6 @@ struct brw_compiler {
     * including adding something to the ralloc child list.
     */
    mtx_t mutex;
-
-   struct brw_isa_info isa;
 
    struct {
       struct ra_regs *regs;
@@ -180,15 +177,6 @@ enum PACKED gfx6_gather_sampler_wa {
    WA_16BIT = 4,     /* if we have a 16bit format needing wa */
 };
 
-#define BRW_MAX_SAMPLERS 32
-
-/* Provide explicit padding for each member, to ensure that the compiler
- * initializes every bit in the shader cache keys.  The keys will be compared
- * with memcmp.
- */
-PRAGMA_DIAGNOSTIC_PUSH
-PRAGMA_DIAGNOSTIC_ERROR(-Wpadded)
-
 /**
  * Sampler information needed by VS, WM, and GS program cache keys.
  */
@@ -196,7 +184,7 @@ struct brw_sampler_prog_key_data {
    /**
     * EXT_texture_swizzle and DEPTH_TEXTURE_MODE swizzles.
     */
-   uint16_t swizzles[BRW_MAX_SAMPLERS];
+   uint16_t swizzles[MAX_SAMPLERS];
 
    uint32_t gl_clamp_mask[3];
 
@@ -220,7 +208,7 @@ struct brw_sampler_prog_key_data {
    /**
     * For Sandybridge, which shader w/a we need for gather quirks.
     */
-   enum gfx6_gather_sampler_wa gfx6_gather_wa[BRW_MAX_SAMPLERS];
+   enum gfx6_gather_sampler_wa gfx6_gather_wa[MAX_SAMPLERS];
 
    /**
     * Texture units that have a YUV image bound.
@@ -235,22 +223,30 @@ struct brw_sampler_prog_key_data {
    uint32_t bt2020_mask;
 
    /* Scale factor for each texture. */
-   float scale_factors[BRW_MAX_SAMPLERS];
+   float scale_factors[32];
+};
+
+/** An enum representing what kind of input gl_SubgroupSize is. */
+enum PACKED brw_subgroup_size_type
+{
+   BRW_SUBGROUP_SIZE_API_CONSTANT,     /**< Default Vulkan behavior */
+   BRW_SUBGROUP_SIZE_UNIFORM,          /**< OpenGL behavior */
+   BRW_SUBGROUP_SIZE_VARYING,          /**< VK_EXT_subgroup_size_control */
+
+   /* These enums are specifically chosen so that the value of the enum is
+    * also the subgroup size.  If any new values are added, they must respect
+    * this invariant.
+    */
+   BRW_SUBGROUP_SIZE_REQUIRE_8   = 8,  /**< VK_EXT_subgroup_size_control */
+   BRW_SUBGROUP_SIZE_REQUIRE_16  = 16, /**< VK_EXT_subgroup_size_control */
+   BRW_SUBGROUP_SIZE_REQUIRE_32  = 32, /**< VK_EXT_subgroup_size_control */
 };
 
 struct brw_base_prog_key {
    unsigned program_string_id;
 
+   enum brw_subgroup_size_type subgroup_size_type;
    bool robust_buffer_access;
-
-   /**
-    * Apply workarounds for SIN and COS input range problems.
-    * This limits input range for SIN and COS to [-2p : 2p] to
-    * avoid precision issues.
-    */
-   bool limit_trig_input_range;
-   unsigned padding:16;
-
    struct brw_sampler_prog_key_data tex;
 };
 
@@ -308,7 +304,7 @@ struct brw_vs_prog_key {
     *
     * For each attribute, a combination of BRW_ATTRIB_WA_*.
     *
-    * For OpenGL, where we expose a maximum of 16 user input attributes
+    * For OpenGL, where we expose a maximum of 16 user input atttributes
     * we only need up to VERT_ATTRIB_MAX slots, however, in Vulkan
     * slots preceding VERT_ATTRIB_GENERIC0 are unused and we can
     * expose up to 28 user input vertex attributes that are mapped to slots
@@ -316,17 +312,6 @@ struct brw_vs_prog_key {
     * enough to hold this many slots.
     */
    uint8_t gl_attrib_wa_flags[MAX2(MAX_GL_VERT_ATTRIB, MAX_VK_VERT_ATTRIB)];
-
-   /**
-    * For pre-Gfx6 hardware, a bitfield indicating which texture coordinates
-    * are going to be replaced with point coordinates (as a consequence of a
-    * call to glTexEnvi(GL_POINT_SPRITE, GL_COORD_REPLACE, GL_TRUE)).  Because
-    * our SF thread requires exact matching between VS outputs and FS inputs,
-    * these texture coordinates will need to be unconditionally included in
-    * the VUE, even if they aren't written by the vertex shader.
-    */
-   uint8_t point_coord_replace;
-   unsigned clamp_pointsize:1;
 
    bool copy_edgeflag:1;
 
@@ -341,16 +326,22 @@ struct brw_vs_prog_key {
     */
    unsigned nr_userclip_plane_consts:4;
 
-   uint32_t padding: 25;
+   /**
+    * For pre-Gfx6 hardware, a bitfield indicating which texture coordinates
+    * are going to be replaced with point coordinates (as a consequence of a
+    * call to glTexEnvi(GL_POINT_SPRITE, GL_COORD_REPLACE, GL_TRUE)).  Because
+    * our SF thread requires exact matching between VS outputs and FS inputs,
+    * these texture coordinates will need to be unconditionally included in
+    * the VUE, even if they aren't written by the vertex shader.
+    */
+   uint8_t point_coord_replace;
+   unsigned clamp_pointsize:1;
 };
 
 /** The program key for Tessellation Control Shaders. */
 struct brw_tcs_prog_key
 {
    struct brw_base_prog_key base;
-
-   /** A bitfield of per-vertex outputs written. */
-   uint64_t outputs_written;
 
    enum tess_primitive_mode _tes_primitive_mode;
 
@@ -359,8 +350,10 @@ struct brw_tcs_prog_key
    /** A bitfield of per-patch outputs written. */
    uint32_t patch_outputs_written;
 
+   /** A bitfield of per-vertex outputs written. */
+   uint64_t outputs_written;
+
    bool quads_workaround;
-   uint32_t padding:24;
 };
 
 /** The program key for Tessellation Evaluation Shaders. */
@@ -368,11 +361,11 @@ struct brw_tes_prog_key
 {
    struct brw_base_prog_key base;
 
-   /** A bitfield of per-vertex inputs read. */
-   uint64_t inputs_read;
-
    /** A bitfield of per-patch inputs read. */
    uint32_t patch_inputs_read;
+
+   /** A bitfield of per-vertex inputs read. */
+   uint64_t inputs_read;
 
    /**
     * How many user clipping planes are being uploaded to the tessellation
@@ -383,7 +376,6 @@ struct brw_tes_prog_key
     */
    unsigned nr_userclip_plane_consts:4;
    unsigned clamp_pointsize:1;
-   uint32_t padding:27;
 };
 
 /** The program key for Geometry Shaders. */
@@ -400,7 +392,6 @@ struct brw_gs_prog_key
     */
    unsigned nr_userclip_plane_consts:4;
    unsigned clamp_pointsize:1;
-   unsigned padding:27;
 };
 
 struct brw_task_prog_key
@@ -432,7 +423,6 @@ struct brw_sf_prog_key {
    bool do_point_coord:1;
    bool sprite_origin_lower_left:1;
    bool userclip_active:1;
-   unsigned padding: 32;
 };
 
 enum brw_clip_mode {
@@ -456,9 +446,6 @@ enum brw_clip_fill_mode {
  */
 struct brw_clip_prog_key {
    uint64_t attrs;
-   float offset_factor;
-   float offset_units;
-   float offset_clamp;
    bool contains_flat_varying;
    bool contains_noperspective_varying;
    unsigned char interp_mode[65]; /* BRW_VARYING_SLOT_COUNT */
@@ -473,7 +460,10 @@ struct brw_clip_prog_key {
    bool copy_bfc_cw:1;
    bool copy_bfc_ccw:1;
    enum brw_clip_mode clip_mode:3;
-   uint64_t padding:51;
+
+   float offset_factor;
+   float offset_units;
+   float offset_clamp;
 };
 
 /* A big lookup table is used to figure out which and how many
@@ -501,10 +491,6 @@ enum brw_wm_aa_enable {
 struct brw_wm_prog_key {
    struct brw_base_prog_key base;
 
-   uint64_t input_slots_valid;
-   float alpha_test_ref;
-   uint8_t color_outputs_valid;
-
    /* Some collection of BRW_WM_IZ_* */
    uint8_t iz_lookup;
    bool stats_wm:1;
@@ -523,7 +509,9 @@ struct brw_wm_prog_key {
    bool ignore_sample_mask_out:1;
    bool coarse_pixel:1;
 
-   uint64_t padding:58;
+   uint8_t color_outputs_valid;
+   uint64_t input_slots_valid;
+   float alpha_test_ref;
 };
 
 struct brw_cs_prog_key {
@@ -538,6 +526,19 @@ struct brw_ff_gs_prog_key {
    uint64_t attrs;
 
    /**
+    * Hardware primitive type being drawn, e.g. _3DPRIM_TRILIST.
+    */
+   unsigned primitive:8;
+
+   unsigned pv_first:1;
+   unsigned need_gs_prog:1;
+
+   /**
+    * Number of varyings that are output to transform feedback.
+    */
+   unsigned num_transform_feedback_bindings:7; /* 0-BRW_MAX_SOL_BINDINGS */
+
+   /**
     * Map from the index of a transform feedback binding table entry to the
     * gl_varying_slot that should be streamed out through that binding table
     * entry.
@@ -550,20 +551,6 @@ struct brw_ff_gs_prog_key {
     * binding table entry.
     */
    unsigned char transform_feedback_swizzles[BRW_MAX_SOL_BINDINGS];
-
-   /**
-    * Hardware primitive type being drawn, e.g. _3DPRIM_TRILIST.
-    */
-   unsigned primitive:8;
-
-   unsigned pv_first:1;
-   unsigned need_gs_prog:1;
-
-   /**
-    * Number of varyings that are output to transform feedback.
-    */
-   unsigned num_transform_feedback_bindings:7; /* 0-BRW_MAX_SOL_BINDINGS */
-   uint64_t padding:47;
 };
 
 /* brw_any_prog_key is any of the keys that map to an API stage */
@@ -579,8 +566,6 @@ union brw_any_prog_key {
    struct brw_task_prog_key task;
    struct brw_mesh_prog_key mesh;
 };
-
-PRAGMA_DIAGNOSTIC_POP
 
 /*
  * Image metadata structure as laid out in the shader parameter
@@ -895,7 +880,6 @@ struct brw_wm_prog_data {
    bool uses_src_w;
    bool uses_depth_w_coefficients;
    bool uses_sample_mask;
-   bool uses_vmask;
    bool has_render_target_reads;
    bool has_side_effects;
    bool pulls_bary;
@@ -910,16 +894,9 @@ struct brw_wm_prog_data {
 
    /**
     * Mask of which interpolation modes are required by the fragment shader.
-    * Those interpolations are delivered as part of the thread payload. Used
-    * in hardware setup on gfx6+.
+    * Used in hardware setup on gfx6+.
     */
    uint32_t barycentric_interp_modes;
-
-   /**
-    * Whether nonperspective interpolation modes are used by the
-    * barycentric_interp_modes or fragment shader through interpolator messages.
-    */
-   bool uses_nonperspective_interp_modes;
 
    /**
     * Mask of which FS inputs are marked flat by the shader source.  This is
@@ -1419,7 +1396,7 @@ struct brw_sf_prog_data {
    uint32_t urb_read_length;
    uint32_t total_grf;
 
-   /* Each vertex may have up to 12 attributes, 4 components each,
+   /* Each vertex may have upto 12 attributes, 4 components each,
     * except WPOS which requires only 2.  (11*4 + 2) == 44 ==> 11
     * rows.
     *
@@ -1924,7 +1901,7 @@ brw_cs_push_const_total_size(const struct brw_cs_prog_data *cs_prog_data,
                              unsigned threads);
 
 void
-brw_write_shader_relocs(const struct brw_isa_info *isa,
+brw_write_shader_relocs(const struct intel_device_info *devinfo,
                         void *program,
                         const struct brw_stage_prog_data *prog_data,
                         struct brw_shader_reloc_value *values,
@@ -1983,9 +1960,7 @@ brw_stage_has_packed_dispatch(ASSERTED const struct intel_device_info *devinfo,
        */
       const struct brw_wm_prog_data *wm_prog_data =
          (const struct brw_wm_prog_data *)prog_data;
-      return devinfo->verx10 < 125 &&
-             !wm_prog_data->persample_dispatch &&
-             wm_prog_data->uses_vmask;
+      return devinfo->verx10 < 125 && !wm_prog_data->persample_dispatch;
    }
    case MESA_SHADER_COMPUTE:
       /* Compute shaders will be spawned with either a fully enabled dispatch

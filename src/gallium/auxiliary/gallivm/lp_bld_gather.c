@@ -55,8 +55,7 @@ lp_build_gather_elem_ptr(struct gallivm_state *gallivm,
    LLVMValueRef offset;
    LLVMValueRef ptr;
 
-   ASSERTED LLVMTypeRef element_type = LLVMInt8TypeInContext(gallivm->context);
-   assert(LLVMTypeOf(base_ptr) == LLVMPointerType(element_type, 0));
+   assert(LLVMTypeOf(base_ptr) == LLVMPointerType(LLVMInt8TypeInContext(gallivm->context), 0));
 
    if (length == 1) {
       assert(i == 0);
@@ -66,7 +65,7 @@ lp_build_gather_elem_ptr(struct gallivm_state *gallivm,
       offset = LLVMBuildExtractElement(gallivm->builder, offsets, index, "");
    }
 
-   ptr = LLVMBuildGEP2(gallivm->builder, element_type, base_ptr, &offset, 1, "");
+   ptr = LLVMBuildGEP(gallivm->builder, base_ptr, &offset, 1, "");
 
    return ptr;
 }
@@ -89,6 +88,7 @@ lp_build_gather_elem(struct gallivm_state *gallivm,
                      boolean vector_justify)
 {
    LLVMTypeRef src_type = LLVMIntTypeInContext(gallivm->context, src_width);
+   LLVMTypeRef src_ptr_type = LLVMPointerType(src_type, 0);
    LLVMTypeRef dst_elem_type = LLVMIntTypeInContext(gallivm->context, dst_width);
    LLVMValueRef ptr;
    LLVMValueRef res;
@@ -96,8 +96,8 @@ lp_build_gather_elem(struct gallivm_state *gallivm,
    assert(LLVMTypeOf(base_ptr) == LLVMPointerType(LLVMInt8TypeInContext(gallivm->context), 0));
 
    ptr = lp_build_gather_elem_ptr(gallivm, length, base_ptr, offsets, i);
-   ptr = LLVMBuildBitCast(gallivm->builder, ptr, LLVMPointerType(src_type, 0), "");
-   res = LLVMBuildLoad2(gallivm->builder, src_type, ptr, "");
+   ptr = LLVMBuildBitCast(gallivm->builder, ptr, src_ptr_type, "");
+   res = LLVMBuildLoad(gallivm->builder, ptr, "");
 
    /* XXX
     * On some archs we probably really want to avoid having to deal
@@ -173,11 +173,12 @@ lp_build_gather_elem_vec(struct gallivm_state *gallivm,
                          boolean vector_justify)
 {
    LLVMValueRef ptr, res;
+   LLVMTypeRef src_ptr_type = LLVMPointerType(src_type, 0);
    assert(LLVMTypeOf(base_ptr) == LLVMPointerType(LLVMInt8TypeInContext(gallivm->context), 0));
 
    ptr = lp_build_gather_elem_ptr(gallivm, length, base_ptr, offsets, i);
-   ptr = LLVMBuildBitCast(gallivm->builder, ptr, LLVMPointerType(src_type, 0), "");
-   res = LLVMBuildLoad2(gallivm->builder, src_type, ptr, "");
+   ptr = LLVMBuildBitCast(gallivm->builder, ptr, src_ptr_type, "");
+   res = LLVMBuildLoad(gallivm->builder, ptr, "");
 
    /* XXX
     * On some archs we probably really want to avoid having to deal
@@ -323,7 +324,7 @@ lp_build_gather_avx2(struct gallivm_state *gallivm,
       assert(LLVMTypeOf(offsets) == i32_vec_type);
       offsets = LLVMBuildSDiv(builder, offsets, scale, "");
 
-      src_ptr = LLVMBuildGEP2(builder, src_type, base_ptr, &offsets, 1, "vector-gep");
+      src_ptr = LLVMBuildGEP(builder, base_ptr, &offsets, 1, "vector-gep");
 
       char intrinsic[64];
       snprintf(intrinsic, sizeof intrinsic, "llvm.masked.gather.v%u%s%u",

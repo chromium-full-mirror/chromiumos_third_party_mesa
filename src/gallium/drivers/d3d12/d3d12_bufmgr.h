@@ -28,12 +28,16 @@
 #include "util/u_atomic.h"
 #include "util/list.h"
 
-#include "d3d12_common.h"
-#include "d3d12_resource_state.h"
+#ifndef _WIN32
+#include <wsl/winadapter.h>
+#endif
+
+#include <directx/d3d12.h>
 
 struct d3d12_bufmgr;
 struct d3d12_screen;
 struct pb_manager;
+struct TransitionableResourceState;
 
 enum d3d12_residency_status {
    d3d12_evicted,
@@ -42,17 +46,10 @@ enum d3d12_residency_status {
 };
 
 struct d3d12_bo {
-   struct pipe_reference reference;
-   struct d3d12_screen *screen;
+   int refcount;
    ID3D12Resource *res;
    struct pb_buffer *buffer;
-   struct d3d12_resource_state global_state;
-
-   /* Used as a key in per-context resource state maps,
-    * to avoid needing to lock them for single-threaded lookups to
-    * protect against resource destruction.
-    */
-   uint64_t unique_id;
+   struct TransitionableResourceState *trans_state;
 
    struct list_head residency_list_entry;
    uint64_t estimated_size;
@@ -95,7 +92,7 @@ d3d12_bo_get_size(struct d3d12_bo *bo)
    if (bo->buffer)
       return bo->buffer->size;
    else
-      return GetDesc(bo->res).Width;
+      return bo->res->GetDesc().Width;
 }
 
 static inline bool
@@ -115,20 +112,15 @@ struct d3d12_bo *
 d3d12_bo_new(struct d3d12_screen *screen, uint64_t size, uint64_t alignment);
 
 struct d3d12_bo *
-d3d12_bo_wrap_res(struct d3d12_screen *screen, ID3D12Resource *res, enum d3d12_residency_status residency);
+d3d12_bo_wrap_res(struct d3d12_screen *screen, ID3D12Resource *res, enum pipe_format format, enum d3d12_residency_status residency);
 
 struct d3d12_bo *
-d3d12_bo_wrap_buffer(struct d3d12_screen *screen, struct pb_buffer *buf);
-
-void
-d3d12_debug_describe_bo(char* buf, struct d3d12_bo* ptr);
+d3d12_bo_wrap_buffer(struct pb_buffer *buf);
 
 static inline void
 d3d12_bo_reference(struct d3d12_bo *bo)
 {
-   pipe_reference_described(NULL, &bo->reference,
-                            (debug_reference_descriptor)
-                            d3d12_debug_describe_bo);
+   p_atomic_inc(&bo->refcount);
 }
 
 void

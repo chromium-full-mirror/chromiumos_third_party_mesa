@@ -39,7 +39,6 @@
 #include <zlib.h>
 
 #include "common/intel_decoder.h"
-#include "compiler/brw_compiler.h"
 #include "dev/intel_debug.h"
 #include "util/macros.h"
 
@@ -419,7 +418,6 @@ read_data_file(FILE *file)
    bool ring_wraps = false;
    char *ring_name = NULL;
    struct intel_device_info devinfo;
-   struct brw_isa_info isa;
    uint64_t acthd = 0;
 
    while (getline(&line, &line_size, file) > 0) {
@@ -511,8 +509,6 @@ read_data_file(FILE *file)
             }
 
             printf("Detected GEN%i chipset\n", devinfo.ver);
-
-            brw_init_isa_info(&isa, &devinfo);
 
             if (xml_path == NULL)
                spec = intel_spec_load(&devinfo);
@@ -678,9 +674,8 @@ read_data_file(FILE *file)
    batch_flags |= INTEL_BATCH_DECODE_FLOATS;
 
    struct intel_batch_decode_ctx batch_ctx;
-   intel_batch_decode_ctx_init(&batch_ctx, &isa, &devinfo, stdout,
-                               batch_flags, xml_path, get_intel_batch_bo,
-                               NULL, NULL);
+   intel_batch_decode_ctx_init(&batch_ctx, &devinfo, stdout, batch_flags,
+                               xml_path, get_intel_batch_bo, NULL, NULL);
    batch_ctx.acthd = acthd;
 
 

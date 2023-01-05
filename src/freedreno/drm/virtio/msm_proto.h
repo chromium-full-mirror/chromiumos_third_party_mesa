@@ -28,33 +28,20 @@ struct msm_shmem {
     */
    uint32_t seqno;
 
-   /**
-    * Offset to the start of rsp memory region in the shmem buffer.  This
-    * is set by the host when the shmem buffer is allocated, to allow for
-    * extending the shmem buffer with new fields.  The size of the rsp
-    * memory region is the size of the shmem buffer (controlled by the
-    * guest) minus rsp_mem_offset.
-    *
-    * The guest should use the msm_shmem_has_field() macro to determine
-    * if the host supports a given field, ie. to handle compatibility of
-    * newer guest vs older host.
-    *
-    * Making the guest userspace responsible for backwards compatibility
-    * simplifies the host VMM.
+   /* TODO maybe separate flags for host to increment when:
+    * a) host CPU error (like async SUBMIT failed, etc)
+    * b) global reset count, if it hasn't incremented guest
+    *    can skip synchonous getparam..
     */
-   uint32_t rsp_mem_offset;
-
-#define msm_shmem_has_field(shmem, field) ({                         \
-      struct msm_shmem *_shmem = (shmem);                            \
-      (_shmem->rsp_mem_offset > offsetof(struct msm_shmem, field));  \
-   })
+   uint16_t error;
+   uint16_t rsp_mem_len;
 
    /**
-    * Counter that is incremented on asynchronous errors, like SUBMIT
-    * or GEM_NEW failures.  The guest should treat errors as context-
-    * lost.
+    * Memory to use for response messages.  The offset to use for the
+    * response message is allocated by the guest, and specified by
+    * msm_ccmd_req:rsp_off.
     */
-   uint32_t async_error;
+   uint8_t rsp_mem[0x4000-8];
 };
 
 #define DEFINE_CAST(parent, child)                                             \
@@ -70,7 +57,7 @@ enum msm_ccmd {
    MSM_CCMD_NOP = 1,         /* No payload, can be used to sync with host */
    MSM_CCMD_IOCTL_SIMPLE,
    MSM_CCMD_GEM_NEW,
-   MSM_CCMD_GEM_SET_IOVA,
+   MSM_CCMD_GEM_INFO,
    MSM_CCMD_GEM_CPU_PREP,
    MSM_CCMD_GEM_SET_NAME,
    MSM_CCMD_GEM_SUBMIT,
@@ -143,48 +130,71 @@ struct msm_ccmd_ioctl_simple_rsp {
  * MSM_CCMD_GEM_NEW
  *
  * GEM buffer allocation, maps to DRM_MSM_GEM_NEW plus DRM_MSM_GEM_INFO to
- * set the BO's iova (to avoid extra guest -> host trip)
- *
- * No response.
+ * get the BO's iova (to avoid extra guest<->host round trip)
  */
 struct msm_ccmd_gem_new_req {
    struct msm_ccmd_req hdr;
 
-   uint64_t iova;
    uint64_t size;
    uint32_t flags;
    uint32_t blob_id;
 };
 DEFINE_CAST(msm_ccmd_req, msm_ccmd_gem_new_req)
 
+struct msm_ccmd_gem_new_rsp {
+   struct msm_ccmd_rsp hdr;
+
+   int32_t ret;
+   uint32_t host_handle; /* host side GEM handle, used for cmdstream submit */
+   uint64_t iova;
+};
+
 /*
- * MSM_CCMD_GEM_SET_IOVA
+ * MSM_CCMD_GEM_INFO
  *
- * Set the buffer iova (for imported BOs).  Also used to release the iova
- * (by setting it to zero) when a BO is freed.
+ * Returns similar information as MSM_CCMD_GEM_NEW, but for imported BO's,
+ * which don't have a blob_id in our context, but do have a resource-id
  */
-struct msm_ccmd_gem_set_iova_req {
+struct msm_ccmd_gem_info_req {
    struct msm_ccmd_req hdr;
 
-   uint64_t iova;
    uint32_t res_id;
+   uint32_t blob_mem;   // TODO do we need this?
+   uint32_t blob_id;    // TODO do we need this?
 };
-DEFINE_CAST(msm_ccmd_req, msm_ccmd_gem_set_iova_req)
+DEFINE_CAST(msm_ccmd_req, msm_ccmd_gem_info_req)
+
+struct msm_ccmd_gem_info_rsp {
+   struct msm_ccmd_rsp hdr;
+
+   int32_t ret;
+   uint32_t host_handle; /* host side GEM handle, used for cmdstream submit */
+   uint64_t iova;
+   uint32_t pad;
+   uint32_t size;        /* true size of bo on host side */
+};
 
 /*
  * MSM_CCMD_GEM_CPU_PREP
  *
  * Maps to DRM_MSM_GEM_CPU_PREP
  *
- * Note: Since we don't want to block the single threaded host, this returns
- * immediately with -EBUSY if the fence is not yet signaled.  The guest
- * should poll if needed.
+ * Note: currently this uses a relative timeout mapped to absolute timeout
+ * on the host, because I don't think we can rely on monotonic time being
+ * aligned between host and guest.  This has the slight drawback of not
+ * handling interrupted syscalls on the guest side, but since the actual
+ * waiting happens on the host side (after guest execbuf ioctl returns)
+ * this shouldn't be *that* much of a problem.
+ *
+ * If we could rely on host and guest times being aligned, we could use
+ * MSM_CCMD_IOCTL_SIMPLE instead
  */
 struct msm_ccmd_gem_cpu_prep_req {
    struct msm_ccmd_req hdr;
 
-   uint32_t res_id;
+   uint32_t host_handle;
    uint32_t op;
+   uint64_t timeout;
 };
 DEFINE_CAST(msm_ccmd_req, msm_ccmd_gem_cpu_prep_req)
 
@@ -204,7 +214,7 @@ struct msm_ccmd_gem_cpu_prep_rsp {
 struct msm_ccmd_gem_set_name_req {
    struct msm_ccmd_req hdr;
 
-   uint32_t res_id;
+   uint32_t host_handle;
    /* Note: packet size aligned to 4 bytes, so the string name may
     * be shorter than the packet header indicates.
     */
@@ -272,7 +282,7 @@ DEFINE_CAST(msm_ccmd_req, msm_ccmd_gem_submit_req)
 struct msm_ccmd_gem_upload_req {
    struct msm_ccmd_req hdr;
 
-   uint32_t res_id;
+   uint32_t host_handle;
    uint32_t pad;
    uint32_t off;
 
@@ -311,15 +321,22 @@ struct msm_ccmd_submitqueue_query_rsp {
  *
  * Maps to DRM_MSM_WAIT_FENCE
  *
- * Note: Since we don't want to block the single threaded host, this returns
- * immediately with -ETIMEDOUT if the fence is not yet signaled.  The guest
- * should poll if needed.
+ * Note: currently this uses a relative timeout mapped to absolute timeout
+ * on the host, because I don't think we can rely on monotonic time being
+ * aligned between host and guest.  This has the slight drawback of not
+ * handling interrupted syscalls on the guest side, but since the actual
+ * waiting happens on the host side (after guest execbuf ioctl returns)
+ * this shouldn't be *that* much of a problem.
+ *
+ * If we could rely on host and guest times being aligned, we could use
+ * MSM_CCMD_IOCTL_SIMPLE instead
  */
 struct msm_ccmd_wait_fence_req {
    struct msm_ccmd_req hdr;
 
    uint32_t queue_id;
    uint32_t fence;
+   uint64_t timeout;
 };
 DEFINE_CAST(msm_ccmd_req, msm_ccmd_wait_fence_req)
 

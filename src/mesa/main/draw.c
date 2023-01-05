@@ -1772,15 +1772,8 @@ _mesa_validated_drawrangeelements(struct gl_context *ctx, GLenum mode,
       info.index.user = indices;
       draw.start = 0;
    } else {
-      uintptr_t start = (uintptr_t) indices;
-      if (unlikely(index_bo->Size < start)) {
-         _mesa_warning(ctx, "Invalid indices offset 0x%" PRIxPTR
-                            " (indices buffer size is %ld bytes)."
-                            " Draw skipped.", start, index_bo->Size);
-         return;
-      }
       info.index.gl_bo = index_bo;
-      draw.start = start >> index_size_shift;
+      draw.start = (uintptr_t)indices >> index_size_shift;
    }
    draw.index_bias = basevertex;
 

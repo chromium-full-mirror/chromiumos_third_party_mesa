@@ -30,6 +30,7 @@
 #include "pipe/p_state.h"
 #include "util/u_memory.h"
 #include "util/u_debug.h"
+#include "util/simple_list.h"
 
 #include "rbug_public.h"
 #include "rbug_screen.h"
@@ -451,10 +452,10 @@ rbug_screen_create(struct pipe_screen *screen)
       return screen;
 
    (void) mtx_init(&rb_screen->list_mutex, mtx_plain);
-   list_inithead(&rb_screen->contexts);
-   list_inithead(&rb_screen->resources);
-   list_inithead(&rb_screen->surfaces);
-   list_inithead(&rb_screen->transfers);
+   make_empty_list(&rb_screen->contexts);
+   make_empty_list(&rb_screen->resources);
+   make_empty_list(&rb_screen->surfaces);
+   make_empty_list(&rb_screen->transfers);
 
 #define SCR_INIT(_member) \
    rb_screen->base._member = screen->_member ? rbug_screen_##_member : NULL

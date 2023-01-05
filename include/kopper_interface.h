@@ -75,7 +75,6 @@ struct __DRIkopperExtensionRec {
                                         int pixmap);
     int64_t (*swapBuffers)(__DRIdrawable *draw);
     void (*setSwapInterval)(__DRIdrawable *drawable, int interval);
-    int (*queryBufferAge)(__DRIdrawable *drawable);
 };
 
 /**
@@ -96,7 +95,6 @@ struct kopper_loader_info {
 #endif
    };
    int has_alpha;
-   int initial_swap_interval;
 };
 
 #define __DRI_KOPPER_LOADER "DRI_KopperLoader"

@@ -178,14 +178,14 @@ compare_xfb_output_offsets(const void *_a, const void *_b)
    return a->offset - b->offset;
 }
 
-void
-nir_shader_gather_xfb_info(nir_shader *shader)
+nir_xfb_info *
+nir_gather_xfb_info(const nir_shader *shader, void *mem_ctx)
 {
-   nir_gather_xfb_info_with_varyings(shader, NULL, NULL);
+   return nir_gather_xfb_info_with_varyings(shader, mem_ctx, NULL);
 }
 
-void
-nir_gather_xfb_info_with_varyings(nir_shader *shader,
+nir_xfb_info *
+nir_gather_xfb_info_with_varyings(const nir_shader *shader,
                                   void *mem_ctx,
                                   nir_xfb_varyings_info **varyings_info_out)
 {
@@ -210,9 +210,9 @@ nir_gather_xfb_info_with_varyings(nir_shader *shader,
       }
    }
    if (num_outputs == 0 || num_varyings == 0)
-      return;
+      return NULL;
 
-   nir_xfb_info *xfb = nir_xfb_info_create(shader, num_outputs);
+   nir_xfb_info *xfb = nir_xfb_info_create(mem_ctx, num_outputs);
    if (varyings_info_out != NULL) {
       *varyings_info_out = nir_xfb_varyings_info_create(mem_ctx, num_varyings);
       varyings_info = *varyings_info_out;
@@ -284,8 +284,7 @@ nir_gather_xfb_info_with_varyings(nir_shader *shader,
    }
 #endif
 
-   ralloc_free(shader->xfb_info);
-   shader->xfb_info = xfb;
+   return xfb;
 }
 
 static int

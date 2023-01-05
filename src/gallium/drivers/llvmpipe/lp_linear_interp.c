@@ -71,21 +71,22 @@ interp_0_8(struct lp_linear_elem *elem)
    struct lp_linear_interp *interp = (struct lp_linear_interp *)elem;
    uint32_t *row = interp->row;
    __m128i a0 = interp->a0;
-   const __m128i dadx = interp->dadx;
-   const int width = (interp->width + 3) & ~3;
+   __m128i dadx = interp->dadx;
+   int width = (interp->width + 3) & ~3;
+   int i;
 
-   for (int i = 0; i < width; i += 4) {
-      __m128i l = _mm_srai_epi16(a0, 7); // l = a0 >> 7
-      a0 = _mm_add_epi16(a0, dadx);      // a0 += dadx
+   for (i = 0; i < width; i += 4) {
+      __m128i l, h;
 
-      __m128i h = _mm_srai_epi16(a0, 7); // h = a0 >> 7
-      a0 = _mm_add_epi16(a0, dadx);      // a0 += dadx
+      l = _mm_srai_epi16(a0, 7);
+      a0 = _mm_add_epi16(a0, dadx);
 
-      // pack l[0..7] and h[0..7] as 16 bytes
+      h = _mm_srai_epi16(a0, 7);
+      a0 = _mm_add_epi16(a0, dadx);
+
       *(__m128i *)&row[i] =  _mm_packus_epi16(l, h);
    }
 
-   // advance to next row
    interp->a0 = _mm_add_epi16(interp->a0, interp->dady);
    return interp->row;
 }
@@ -132,6 +133,7 @@ lp_linear_init_interp(struct lp_linear_interp *interp,
    int16_t s0_fp[8];
    int16_t dsdx_fp[4];
    int16_t dsdy_fp[4];
+   int j;
 
    /* Zero coefficients to avoid using uninitialised values */
    memset(s0, 0, sizeof(s0));
@@ -141,8 +143,8 @@ lp_linear_init_interp(struct lp_linear_interp *interp,
    memset(dsdx_fp, 0, sizeof(dsdx_fp));
    memset(dsdy_fp, 0, sizeof(dsdy_fp));
 
-   if (perspective && oow != 1.0f) {
-      for (unsigned j = 0; j < 4; j++) {
+   if (perspective) {
+      for (j = 0; j < 4; j++) {
          if (usage_mask & (1<<j)) {
             s0[j]   =   a0[j] * oow;
             dsdx[j] = dadx[j] * oow;
@@ -150,7 +152,7 @@ lp_linear_init_interp(struct lp_linear_interp *interp,
          }
       }
    } else {
-      for (unsigned j = 0; j < 4; j++) {
+      for (j = 0; j < 4; j++) {
          if (usage_mask & (1<<j)) {
             s0[j]   =   a0[j];
             dsdx[j] = dadx[j];
@@ -173,32 +175,31 @@ lp_linear_init_interp(struct lp_linear_interp *interp,
     *   - check all interpolants for min/max 0..1 (else mark as
     *          non-fastpath)
     */
-   for (unsigned j = 0; j < 4; j++) {
+   for (j = 0; j < 4; j++) {
       if (usage_mask & (1<<j)) {
-         // compute texcoords at rect corners
          float a = s0[j];
          float b = s0[j] + (width  - 1) * dsdx[j];
          float c = s0[j] + (height - 1) * dsdy[j];
          float d = s0[j] + (height - 1) * dsdy[j] + (width - 1) * dsdx[j];
 
          if (MIN4(a,b,c,d) < 0.0)
-            FAIL("min < 0.0"); // out of bounds
+            FAIL("min < 0.0");
 
          if (MAX4(a,b,c,d) > 1.0)
-            FAIL("max > 1.0"); // out of bounds
+            FAIL("max > 1.0");
 
          dsdx_fp[j]   = float_to_sfixed_1_15(dsdx[j]);
          dsdy_fp[j]   = float_to_sfixed_1_15(dsdy[j]);
 
-         s0_fp[j]     = float_to_ufixed_1_15(s0[j]);  // first pixel
-         s0_fp[j + 4] = s0_fp[j] + dsdx_fp[j];        // second pixel
+         s0_fp[j]     = float_to_ufixed_1_15(s0[j]);
+         s0_fp[j + 4] = s0_fp[j] + dsdx_fp[j];
 
          dsdx_fp[j] *= 2;
       }
    }
 
    interp->width = align(width, 4);
-   /* RGBA->BGRA swizzle here */
+
    interp->a0    = _mm_setr_epi16(s0_fp[2], s0_fp[1], s0_fp[0], s0_fp[3],
                                   s0_fp[6], s0_fp[5], s0_fp[4], s0_fp[7]);
 
@@ -214,10 +215,12 @@ lp_linear_init_interp(struct lp_linear_interp *interp,
    if (dsdy[0] == 0 &&
        dsdy[1] == 0 &&
        dsdy[2] == 0 &&
-       dsdy[3] == 0) {
+       dsdy[3] == 0)
+   {
       interp_0_8(&interp->base);
       interp->base.fetch = interp_noop;
-   } else {
+   }
+   else {
       interp->base.fetch = interp_0_8;
    }
 

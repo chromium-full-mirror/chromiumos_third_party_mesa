@@ -35,14 +35,6 @@ if with_ld_dynamic_list
   vdpau_link_depends += files('../dri-vdpau.dyn')
 endif
 
-link_with_libvdpau_gallium = [
-  libgalliumvlwinsys, libgalliumvl, libgallium,
-  libpipe_loader_static, libws_null, libwsw, libswdri, libswkmsdri,
-]
-
-if with_glx == 'xlib' or with_glx == 'gallium-xlib'
-  link_with_libvdpau_gallium += [libws_xlib]
-endif
 
 libvdpau_gallium = shared_library(
   'vdpau_gallium',
@@ -53,10 +45,13 @@ libvdpau_gallium = shared_library(
     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_util, inc_gallium_winsys, inc_gallium_drivers,
   ],
   link_whole : [libvdpau_st],
-  link_with : link_with_libvdpau_gallium,
+  link_with : [
+    libgalliumvlwinsys, libgalliumvl, libgallium,
+    libpipe_loader_static, libws_null, libwsw, libswdri, libswkmsdri,
+  ],
   dependencies : [
     idep_mesautil,
-    driver_r300, driver_r600, driver_radeonsi, driver_nouveau, driver_d3d12,
+    driver_r300, driver_r600, driver_radeonsi, driver_nouveau,
   ],
   link_depends : vdpau_link_depends,
   soversion : '@0@.@1@.0'.format(VDPAU_MAJOR, VDPAU_MINOR),
@@ -68,8 +63,7 @@ libvdpau_gallium = shared_library(
 foreach d : [[with_gallium_r300, 'r300'],
              [with_gallium_r600, 'r600'],
              [with_gallium_radeonsi, 'radeonsi'],
-             [with_gallium_nouveau, 'nouveau'],
-             [with_gallium_d3d12_video, 'd3d12']]
+             [with_gallium_nouveau, 'nouveau']]
   if d[0]
     vdpau_drivers += 'libvdpau_@0@.so.@1@.@2@.0'.format(d[1], VDPAU_MAJOR, VDPAU_MINOR)
   endif

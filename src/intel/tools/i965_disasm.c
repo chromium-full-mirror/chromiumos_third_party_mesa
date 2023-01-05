@@ -113,6 +113,24 @@ i965_disasm_read_binary(FILE *fp, size_t *end)
    return assembly;
 }
 
+static struct intel_device_info *
+i965_disasm_init(uint16_t pci_id)
+{
+   struct intel_device_info *devinfo;
+
+   devinfo = malloc(sizeof *devinfo);
+   if (devinfo == NULL)
+      return NULL;
+
+   if (!intel_get_device_info_from_pci_id(pci_id, devinfo)) {
+      fprintf(stderr, "can't find device information: pci_id=0x%x\n",
+              pci_id);
+      exit(EXIT_FAILURE);
+   }
+
+   return devinfo;
+}
+
 static void
 print_help(const char *progname, FILE *file)
 {
@@ -136,6 +154,7 @@ int main(int argc, char *argv[])
    size_t start = 0, end = 0;
    uint16_t pci_id = 0;
    int c;
+   struct intel_device_info *devinfo = NULL;
    int result = EXIT_FAILURE;
 
    bool help = false;
@@ -202,14 +221,12 @@ int main(int argc, char *argv[])
       exit(0);
    }
 
-   struct intel_device_info devinfo;
-   if (!intel_get_device_info_from_pci_id(pci_id, &devinfo)) {
-      fprintf(stderr, "can't find device information: pci_id=0x%x\n", pci_id);
-      exit(EXIT_FAILURE);
+   devinfo = i965_disasm_init(pci_id);
+   if (!devinfo) {
+      fprintf(stderr, "Unable to allocate memory for "
+                      "intel_device_info struct instance.\n");
+      goto end;
    }
-
-   struct brw_isa_info isa;
-   brw_init_isa_info(&isa, &devinfo);
 
    if (input_type == OPT_INPUT_BINARY)
       assembly = i965_disasm_read_binary(fp, &end);
@@ -226,7 +243,7 @@ int main(int argc, char *argv[])
    }
 
    /* Disassemble i965 instructions from buffer assembly */
-   brw_disassemble_with_labels(&isa, assembly, start, end, stdout);
+   brw_disassemble_with_labels(devinfo, assembly, start, end, stdout);
 
    result = EXIT_SUCCESS;
 
@@ -236,6 +253,7 @@ end:
 
    free(file_path);
    free(assembly);
+   free(devinfo);
 
    exit(result);
 }

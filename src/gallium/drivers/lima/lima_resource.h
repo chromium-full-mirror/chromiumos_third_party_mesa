@@ -55,7 +55,6 @@ struct lima_resource {
    struct renderonly_scanout *scanout;
    struct lima_bo *bo;
    struct panfrost_minmax_cache *index_cache;
-   uint32_t mrt_pitch;
    bool tiled;
    bool modifier_constant;
    unsigned full_updates;

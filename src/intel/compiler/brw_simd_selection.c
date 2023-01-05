@@ -28,17 +28,25 @@
 #include "util/ralloc.h"
 
 unsigned
-brw_required_dispatch_width(const struct shader_info *info)
+brw_required_dispatch_width(const struct shader_info *info,
+                            enum brw_subgroup_size_type subgroup_size_type)
 {
-   if ((int)info->subgroup_size >= (int)SUBGROUP_SIZE_REQUIRE_8) {
+   unsigned required = 0;
+
+   if ((int)subgroup_size_type >= (int)BRW_SUBGROUP_SIZE_REQUIRE_8) {
       assert(gl_shader_stage_uses_workgroup(info->stage));
       /* These enum values are expressly chosen to be equal to the subgroup
        * size that they require.
        */
-      return (unsigned)info->subgroup_size;
-   } else {
-      return 0;
+      required = (unsigned)subgroup_size_type;
    }
+
+   if (gl_shader_stage_is_compute(info->stage) && info->cs.subgroup_size > 0) {
+      assert(required == 0 || required == info->cs.subgroup_size);
+      required = info->cs.subgroup_size;
+   }
+
+   return required;
 }
 
 static inline bool

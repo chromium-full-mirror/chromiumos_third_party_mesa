@@ -79,9 +79,7 @@ v3d_render_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
         if (!info->mask)
                 return;
 
-        if (!src->tiled &&
-            info->src.resource->target != PIPE_TEXTURE_1D &&
-            info->src.resource->target != PIPE_TEXTURE_1D_ARRAY) {
+        if (!src->tiled) {
                 struct pipe_box box = {
                         .x = 0,
                         .y = 0,
@@ -115,8 +113,8 @@ v3d_render_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
 
         if (!util_blitter_is_blit_supported(v3d->blitter, info)) {
                 fprintf(stderr, "blit unsupported %s -> %s\n",
-                    util_format_short_name(info->src.format),
-                    util_format_short_name(info->dst.format));
+                    util_format_short_name(info->src.resource->format),
+                    util_format_short_name(info->dst.resource->format));
                 return;
         }
 
@@ -195,7 +193,7 @@ v3d_stencil_blit(struct pipe_context *ctx, struct pipe_blit_info *info)
                                   PIPE_MASK_R,
                                   PIPE_TEX_FILTER_NEAREST,
                                   info->scissor_enable ? &info->scissor : NULL,
-                                  info->alpha_blend, false, 0);
+                                  info->alpha_blend, false);
 
         pipe_surface_reference(&dst_surf, NULL);
         pipe_sampler_view_reference(&src_view, NULL);
@@ -228,6 +226,9 @@ v3d_tfu(struct pipe_context *pctx,
         if (psrc->format != pdst->format)
                 return false;
         if (psrc->nr_samples != pdst->nr_samples)
+                return false;
+
+        if (pdst->target != PIPE_TEXTURE_2D || psrc->target != PIPE_TEXTURE_2D)
                 return false;
 
         /* Can't write to raster. */
@@ -376,12 +377,10 @@ v3d_tfu_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
             info->dst.box.y != 0 ||
             info->dst.box.width != dst_width ||
             info->dst.box.height != dst_height ||
-            info->dst.box.depth != 1 ||
             info->src.box.x != 0 ||
             info->src.box.y != 0 ||
             info->src.box.width != info->dst.box.width ||
-            info->src.box.height != info->dst.box.height ||
-            info->src.box.depth != 1) {
+            info->src.box.height != info->dst.box.height) {
                 return;
         }
 
@@ -400,13 +399,12 @@ v3d_tfu_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
 static struct pipe_surface *
 v3d_get_blit_surface(struct pipe_context *pctx,
                      struct pipe_resource *prsc,
-                     enum pipe_format format,
                      unsigned level,
                      int16_t layer)
 {
         struct pipe_surface tmpl;
 
-        tmpl.format = format;
+        tmpl.format = prsc->format;
         tmpl.u.tex.level = level;
         tmpl.u.tex.first_layer = layer;
         tmpl.u.tex.last_layer = layer;
@@ -449,14 +447,14 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                 return;
 
         if (is_color_blit &&
-            util_format_is_depth_or_stencil(info->dst.format))
+            util_format_is_depth_or_stencil(info->dst.resource->format))
                 return;
 
-        if (!v3d_rt_format_supported(&screen->devinfo, info->src.format))
+        if (!v3d_rt_format_supported(&screen->devinfo, info->src.resource->format))
                 return;
 
-        if (v3d_get_rt_format(&screen->devinfo, info->src.format) !=
-            v3d_get_rt_format(&screen->devinfo, info->dst.format))
+        if (v3d_get_rt_format(&screen->devinfo, info->src.resource->format) !=
+            v3d_get_rt_format(&screen->devinfo, info->dst.resource->format))
                 return;
 
         bool msaa = (info->src.resource->nr_samples > 1 ||
@@ -465,15 +463,15 @@ v3d_tlb_blit(struct pipe_context *pctx, struct pipe_blit_info *info)
                                 info->dst.resource->nr_samples < 2);
 
         if (is_msaa_resolve &&
-            !v3d_format_supports_tlb_msaa_resolve(&screen->devinfo, info->src.format))
+            !v3d_format_supports_tlb_msaa_resolve(&screen->devinfo, info->src.resource->format))
                 return;
 
         v3d_flush_jobs_writing_resource(v3d, info->src.resource, V3D_FLUSH_DEFAULT, false);
 
         struct pipe_surface *dst_surf =
-           v3d_get_blit_surface(pctx, info->dst.resource, info->dst.format, info->dst.level, info->dst.box.z);
+           v3d_get_blit_surface(pctx, info->dst.resource, info->dst.level, info->dst.box.z);
         struct pipe_surface *src_surf =
-           v3d_get_blit_surface(pctx, info->src.resource, info->src.format, info->src.level, info->src.box.z);
+           v3d_get_blit_surface(pctx, info->src.resource, info->src.level, info->src.box.z);
 
         struct pipe_surface *surfaces[V3D_MAX_DRAW_BUFFERS] = { 0 };
         if (is_color_blit)

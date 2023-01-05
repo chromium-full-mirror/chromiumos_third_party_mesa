@@ -31,6 +31,7 @@
 #include "util/u_string.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
+#include "util/simple_list.h"
 #include "util/u_network.h"
 #include "util/os_time.h"
 
@@ -66,9 +67,11 @@ rbug_thread(void *void_rbug);
 static struct rbug_context *
 rbug_get_context_locked(struct rbug_screen *rb_screen, rbug_context_t ctx)
 {
-   struct rbug_context *rb_context;
+   struct rbug_context *rb_context = NULL;
+   struct rbug_list *ptr;
 
-   LIST_FOR_EACH_ENTRY(rb_context, &rb_screen->contexts, list) {
+   foreach(ptr, &rb_screen->contexts) {
+      rb_context = container_of(ptr, struct rbug_context, list);
       if (ctx == VOID2U64(rb_context))
          break;
       rb_context = NULL;
@@ -80,9 +83,11 @@ rbug_get_context_locked(struct rbug_screen *rb_screen, rbug_context_t ctx)
 static struct rbug_shader *
 rbug_get_shader_locked(struct rbug_context *rb_context, rbug_shader_t shdr)
 {
-   struct rbug_shader *tr_shdr;
+   struct rbug_shader *tr_shdr = NULL;
+   struct rbug_list *ptr;
 
-   LIST_FOR_EACH_ENTRY(tr_shdr, &rb_context->shaders, list) {
+   foreach(ptr, &rb_context->shaders) {
+      tr_shdr = container_of(ptr, struct rbug_shader, list);
       if (shdr == VOID2U64(tr_shdr))
          break;
       tr_shdr = NULL;
@@ -170,13 +175,15 @@ static int
 rbug_texture_list(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_t serial)
 {
    struct rbug_screen *rb_screen = tr_rbug->rb_screen;
-   struct rbug_resource *tr_tex;
+   struct rbug_resource *tr_tex = NULL;
+   struct rbug_list *ptr;
    rbug_texture_t *texs;
    int i = 0;
 
    mtx_lock(&rb_screen->list_mutex);
    texs = MALLOC(rb_screen->num_resources * sizeof(rbug_texture_t));
-   LIST_FOR_EACH_ENTRY(tr_tex, &rb_screen->resources, list) {
+   foreach(ptr, &rb_screen->resources) {
+      tr_tex = container_of(ptr, struct rbug_resource, list);
       texs[i++] = VOID2U64(tr_tex);
    }
    mtx_unlock(&rb_screen->list_mutex);
@@ -191,13 +198,15 @@ static int
 rbug_texture_info(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_t serial)
 {
    struct rbug_screen *rb_screen = tr_rbug->rb_screen;
-   struct rbug_resource *tr_tex;
+   struct rbug_resource *tr_tex = NULL;
    struct rbug_proto_texture_info *gpti = (struct rbug_proto_texture_info *)header;
+   struct rbug_list *ptr;
    struct pipe_resource *t;
    uint16_t num_layers;
 
    mtx_lock(&rb_screen->list_mutex);
-   LIST_FOR_EACH_ENTRY(tr_tex, &rb_screen->resources, list) {
+   foreach(ptr, &rb_screen->resources) {
+      tr_tex = container_of(ptr, struct rbug_resource, list);
       if (gpti->texture == VOID2U64(tr_tex))
          break;
       tr_tex = NULL;
@@ -235,7 +244,8 @@ rbug_texture_read(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_
    struct rbug_proto_texture_read *gptr = (struct rbug_proto_texture_read *)header;
 
    struct rbug_screen *rb_screen = tr_rbug->rb_screen;
-   struct rbug_resource *tr_tex;
+   struct rbug_resource *tr_tex = NULL;
+   struct rbug_list *ptr;
 
    struct pipe_context *context = rb_screen->private_context;
    struct pipe_resource *tex;
@@ -244,7 +254,8 @@ rbug_texture_read(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_
    void *map;
 
    mtx_lock(&rb_screen->list_mutex);
-   LIST_FOR_EACH_ENTRY(tr_tex, &rb_screen->resources, list) {
+   foreach(ptr, &rb_screen->resources) {
+      tr_tex = container_of(ptr, struct rbug_resource, list);
       if (gptr->texture == VOID2U64(tr_tex))
          break;
       tr_tex = NULL;
@@ -283,13 +294,15 @@ static int
 rbug_context_list(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_t serial)
 {
    struct rbug_screen *rb_screen = tr_rbug->rb_screen;
-   struct rbug_context *rb_context, *next;
+   struct rbug_list *ptr;
+   struct rbug_context *rb_context = NULL;
    rbug_context_t *ctxs;
    int i = 0;
 
    mtx_lock(&rb_screen->list_mutex);
    ctxs = MALLOC(rb_screen->num_contexts * sizeof(rbug_context_t));
-   LIST_FOR_EACH_ENTRY_SAFE(rb_context, next, &rb_screen->contexts, list) {
+   foreach(ptr, &rb_screen->contexts) {
+      rb_context = container_of(ptr, struct rbug_context, list);
       ctxs[i++] = VOID2U64(rb_context);
    }
    mtx_unlock(&rb_screen->list_mutex);
@@ -500,7 +513,8 @@ rbug_shader_list(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_t
 
    struct rbug_screen *rb_screen = tr_rbug->rb_screen;
    struct rbug_context *rb_context = NULL;
-   struct rbug_shader *tr_shdr, *next;
+   struct rbug_shader *tr_shdr = NULL;
+   struct rbug_list *ptr;
    rbug_shader_t *shdrs;
    int i = 0;
 
@@ -514,7 +528,8 @@ rbug_shader_list(struct rbug_rbug *tr_rbug, struct rbug_header *header, uint32_t
 
    mtx_lock(&rb_context->list_mutex);
    shdrs = MALLOC(rb_context->num_shaders * sizeof(rbug_shader_t));
-   LIST_FOR_EACH_ENTRY_SAFE(tr_shdr, next, &rb_context->shaders, list) {
+   foreach(ptr, &rb_context->shaders) {
+      tr_shdr = container_of(ptr, struct rbug_shader, list);
       shdrs[i++] = VOID2U64(tr_shdr);
    }
 
@@ -841,10 +856,7 @@ rbug_start(struct rbug_screen *rb_screen)
 
    tr_rbug->rb_screen = rb_screen;
    tr_rbug->running = true;
-   if (thrd_success != u_thread_create(&tr_rbug->thread, rbug_thread, tr_rbug)) {
-      FREE(tr_rbug);
-      return NULL;
-   }
+   tr_rbug->thread = u_thread_create(rbug_thread, tr_rbug);
 
    return tr_rbug;
 }

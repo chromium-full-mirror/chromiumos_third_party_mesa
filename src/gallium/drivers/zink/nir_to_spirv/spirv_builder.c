@@ -255,32 +255,32 @@ spirv_builder_emit_builtin(struct spirv_builder *b, SpvId target,
 }
 
 void
-spirv_builder_emit_vertex(struct spirv_builder *b, uint32_t stream, bool multistream)
+spirv_builder_emit_vertex(struct spirv_builder *b, uint32_t stream)
 {
    unsigned words = 1;
    SpvOp op = SpvOpEmitVertex;
-   if (multistream) {
+   if (stream > 0) {
       op = SpvOpEmitStreamVertex;
       words++;
    }
    spirv_buffer_prepare(&b->instructions, b->mem_ctx, words);
    spirv_buffer_emit_word(&b->instructions, op | (words << 16));
-   if (multistream)
+   if (stream)
       spirv_buffer_emit_word(&b->instructions, spirv_builder_const_uint(b, 32, stream));
 }
 
 void
-spirv_builder_end_primitive(struct spirv_builder *b, uint32_t stream, bool multistream)
+spirv_builder_end_primitive(struct spirv_builder *b, uint32_t stream)
 {
    unsigned words = 1;
    SpvOp op = SpvOpEndPrimitive;
-   if (multistream || stream > 0) {
+   if (stream > 0) {
       op = SpvOpEndStreamPrimitive;
       words++;
    }
    spirv_buffer_prepare(&b->instructions, b->mem_ctx, words);
    spirv_buffer_emit_word(&b->instructions, op | (words << 16));
-   if (multistream || stream > 0)
+   if (stream)
       spirv_buffer_emit_word(&b->instructions, spirv_builder_const_uint(b, 32, stream));
 }
 
@@ -403,28 +403,6 @@ spirv_builder_function_end(struct spirv_builder *b)
    spirv_buffer_prepare(&b->instructions, b->mem_ctx, 1);
    spirv_buffer_emit_word(&b->instructions, SpvOpFunctionEnd | (1 << 16));
 }
-
-SpvId
-spirv_builder_function_call(struct spirv_builder *b, SpvId result_type,
-                            SpvId function, const SpvId arguments[],
-                            size_t num_arguments)
-{
-   SpvId result = spirv_builder_new_id(b);
-
-   int words = 4 + num_arguments;
-   spirv_buffer_prepare(&b->instructions, b->mem_ctx, words);
-   spirv_buffer_emit_word(&b->instructions,
-                          SpvOpFunctionCall | (words << 16));
-   spirv_buffer_emit_word(&b->instructions, result_type);
-   spirv_buffer_emit_word(&b->instructions, result);
-   spirv_buffer_emit_word(&b->instructions, function);
-
-   for (int i = 0; i < num_arguments; ++i)
-      spirv_buffer_emit_word(&b->instructions, arguments[i]);
-
-   return result;
-}
-
 
 void
 spirv_builder_label(struct spirv_builder *b, SpvId label)
@@ -762,7 +740,7 @@ SpvId
 spirv_builder_emit_vote(struct spirv_builder *b, SpvOp op, SpvId src)
 {
    return spirv_builder_emit_binop(b, op, spirv_builder_type_bool(b),
-                                   spirv_builder_const_uint(b, 32, SpvScopeSubgroup), src);
+                                   spirv_builder_const_uint(b, 32, SpvScopeWorkgroup), src);
 }
 
 static SpvId

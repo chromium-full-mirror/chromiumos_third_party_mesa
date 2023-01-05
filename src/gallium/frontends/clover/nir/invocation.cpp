@@ -119,11 +119,7 @@ clover_nir_lower_images(nir_shader *shader)
    shader->info.num_textures = num_rd_images;
    BITSET_ZERO(shader->info.textures_used);
    if (num_rd_images)
-      BITSET_SET_RANGE(shader->info.textures_used, 0, num_rd_images - 1);
-
-   BITSET_ZERO(shader->info.images_used);
-   if (num_wr_images)
-      BITSET_SET_RANGE(shader->info.images_used, 0, num_wr_images - 1);
+      BITSET_SET_RANGE_INSIDE_WORD(shader->info.textures_used, 0, num_rd_images - 1);
    shader->info.num_images = num_wr_images;
 
    last_loc = -1;
@@ -141,9 +137,6 @@ clover_nir_lower_images(nir_shader *shader)
          assert(!glsl_type_is_sampler(var->type));
       }
    }
-   BITSET_ZERO(shader->info.samplers_used);
-   if (num_samplers)
-      BITSET_SET_RANGE(shader->info.samplers_used, 0, num_samplers - 1);
 
    nir_builder b;
    nir_builder_init(&b, impl);
@@ -482,7 +475,11 @@ binary clover::nir::spirv_to_nir(const binary &mod, const device &dev,
       NIR_PASS_V(nir, nir_opt_deref);
 
       // Pick off the single entrypoint that we want.
-      nir_remove_non_entrypoints(nir);
+      foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
+         if (!func->is_entrypoint)
+            exec_node_remove(&func->node);
+      }
+      assert(exec_list_length(&nir->functions) == 1);
 
       nir_validate_shader(nir, "clover after function inlining");
 

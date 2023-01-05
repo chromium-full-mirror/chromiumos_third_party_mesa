@@ -50,9 +50,6 @@
 #if DETECT_OS_LINUX && !defined(ANDROID)
 #include <sched.h>
 #elif defined(_WIN32) && !defined(__CYGWIN__) && _WIN32_WINNT >= 0x0600
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN 1
-#endif
 #include <windows.h>
 #endif
 
@@ -78,16 +75,15 @@
  * still want to use normal TLS (which involves a function call, but not the
  * expensive pthread_getspecific() or its equivalent).
  */
-#if DETECT_OS_APPLE
-/* Apple Clang emits wrappers when using thread_local that break module linkage,
- * but not with __thread
- */
-#define __THREAD_INITIAL_EXEC __thread
+#ifdef USE_ELF_TLS
+#ifdef _MSC_VER
+#define __THREAD_INITIAL_EXEC __declspec(thread)
 #elif defined(__GLIBC__)
-#define __THREAD_INITIAL_EXEC thread_local __attribute__((tls_model("initial-exec")))
+#define __THREAD_INITIAL_EXEC __thread __attribute__((tls_model("initial-exec")))
 #define REALLY_INITIAL_EXEC
 #else
-#define __THREAD_INITIAL_EXEC thread_local
+#define __THREAD_INITIAL_EXEC __thread
+#endif
 #endif
 
 static inline int
@@ -104,28 +100,26 @@ util_get_current_cpu(void)
 #endif
 }
 
-static inline int u_thread_create(thrd_t *thrd, int (*routine)(void *), void *param)
+static inline thrd_t u_thread_create(int (*routine)(void *), void *param)
 {
-   int ret = thrd_error;
+   thrd_t thread;
 #ifdef HAVE_PTHREAD
    sigset_t saved_set, new_set;
+   int ret;
 
    sigfillset(&new_set);
    sigdelset(&new_set, SIGSYS);
-
-   /* SIGSEGV is commonly used by Vulkan API tracing layers in order to track
-    * accesses in device memory mapped to user space. Blocking the signal hinders
-    * that tracking mechanism.
-    */
-   sigdelset(&new_set, SIGSEGV);
    pthread_sigmask(SIG_BLOCK, &new_set, &saved_set);
-   ret = thrd_create(thrd, routine, param);
+   ret = thrd_create( &thread, routine, param );
    pthread_sigmask(SIG_SETMASK, &saved_set, NULL);
 #else
-   ret = thrd_create(thrd, routine, param);
+   int ret;
+   ret = thrd_create( &thread, routine, param );
 #endif
+   if (ret)
+      return 0;
 
-   return ret;
+   return thread;
 }
 
 static inline void u_thread_setname( const char *name )

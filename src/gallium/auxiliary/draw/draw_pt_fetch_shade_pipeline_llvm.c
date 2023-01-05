@@ -53,7 +53,7 @@ struct llvm_middle_end {
 
    unsigned vertex_data_offset;
    unsigned vertex_size;
-   enum pipe_prim_type input_prim;
+   unsigned input_prim;
    unsigned opt;
 
    struct draw_llvm *llvm;
@@ -80,20 +80,23 @@ llvm_middle_end_prepare_gs(struct llvm_middle_end *fpme)
    struct draw_gs_llvm_variant_list_item *li;
    struct llvm_geometry_shader *shader = llvm_geometry_shader(gs);
    char store[DRAW_GS_LLVM_MAX_VARIANT_KEY_SIZE];
+   unsigned i;
 
    key = draw_gs_llvm_make_variant_key(llvm, store);
 
    /* Search shader's list of variants for the key */
-   LIST_FOR_EACH_ENTRY(li, &shader->variants.list, list) {
+   li = first_elem(&shader->variants);
+   while (!at_end(&shader->variants, li)) {
       if (memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
          variant = li->base;
          break;
       }
+      li = next_elem(li);
    }
 
    if (variant) {
       /* found the variant, move to head of global list (for LRU) */
-      list_move_to(&variant->list_item_global.list, &llvm->gs_variants_list.list);
+      move_to_head(&llvm->gs_variants_list, &variant->list_item_global);
    }
    else {
       /* Need to create new variant */
@@ -110,13 +113,12 @@ llvm_middle_end_prepare_gs(struct llvm_middle_end *fpme)
          /*
           * XXX: should we flush here ?
           */
-         struct draw_gs_llvm_variant_list_item *item;
-         for (unsigned i = 0; i < DRAW_MAX_SHADER_VARIANTS / 32; i++) {
-            if (list_is_empty(&llvm->gs_variants_list.list)) {
+         for (i = 0; i < DRAW_MAX_SHADER_VARIANTS / 32; i++) {
+            struct draw_gs_llvm_variant_list_item *item;
+            if (is_empty_list(&llvm->gs_variants_list)) {
                break;
             }
-            item = list_last_entry(&llvm->gs_variants_list.list,
-                                   struct draw_gs_llvm_variant_list_item, list);
+            item = last_elem(&llvm->gs_variants_list);
             assert(item);
             assert(item->base);
             draw_gs_llvm_destroy_variant(item->base);
@@ -126,8 +128,9 @@ llvm_middle_end_prepare_gs(struct llvm_middle_end *fpme)
       variant = draw_gs_llvm_create_variant(llvm, gs->info.num_outputs, key);
 
       if (variant) {
-         list_add(&variant->list_item_local.list, &shader->variants.list);
-         list_add(&variant->list_item_global.list, &llvm->gs_variants_list.list);
+         insert_at_head(&shader->variants, &variant->list_item_local);
+         insert_at_head(&llvm->gs_variants_list,
+                        &variant->list_item_global);
          llvm->nr_gs_variants++;
          shader->variants_cached++;
       }
@@ -152,16 +155,18 @@ llvm_middle_end_prepare_tcs(struct llvm_middle_end *fpme)
    key = draw_tcs_llvm_make_variant_key(llvm, store);
 
    /* Search shader's list of variants for the key */
-   LIST_FOR_EACH_ENTRY(li, &shader->variants.list, list) {
+   li = first_elem(&shader->variants);
+   while (!at_end(&shader->variants, li)) {
       if (memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
          variant = li->base;
          break;
       }
+      li = next_elem(li);
    }
 
    if (variant) {
       /* found the variant, move to head of global list (for LRU) */
-      list_move_to(&variant->list_item_global.list, &llvm->tcs_variants_list.list);
+      move_to_head(&llvm->tcs_variants_list, &variant->list_item_global);
    }
    else {
       /* Need to create new variant */
@@ -180,11 +185,10 @@ llvm_middle_end_prepare_tcs(struct llvm_middle_end *fpme)
           */
          for (i = 0; i < DRAW_MAX_SHADER_VARIANTS / 32; i++) {
             struct draw_tcs_llvm_variant_list_item *item;
-            if (list_is_empty(&llvm->tcs_variants_list.list)) {
+            if (is_empty_list(&llvm->tcs_variants_list)) {
                break;
             }
-            item = list_last_entry(&llvm->tcs_variants_list.list,
-                                   struct draw_tcs_llvm_variant_list_item, list);
+            item = last_elem(&llvm->tcs_variants_list);
             assert(item);
             assert(item->base);
             draw_tcs_llvm_destroy_variant(item->base);
@@ -194,8 +198,9 @@ llvm_middle_end_prepare_tcs(struct llvm_middle_end *fpme)
       variant = draw_tcs_llvm_create_variant(llvm, 0, key);
 
       if (variant) {
-         list_add(&variant->list_item_local.list, &shader->variants.list);
-         list_add(&variant->list_item_global.list, &llvm->tcs_variants_list.list);
+         insert_at_head(&shader->variants, &variant->list_item_local);
+         insert_at_head(&llvm->tcs_variants_list,
+                        &variant->list_item_global);
          llvm->nr_tcs_variants++;
          shader->variants_cached++;
       }
@@ -220,16 +225,18 @@ llvm_middle_end_prepare_tes(struct llvm_middle_end *fpme)
    key = draw_tes_llvm_make_variant_key(llvm, store);
 
    /* Search shader's list of variants for the key */
-   LIST_FOR_EACH_ENTRY(li, &shader->variants.list, list) {
+   li = first_elem(&shader->variants);
+   while (!at_end(&shader->variants, li)) {
       if (memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
          variant = li->base;
          break;
       }
+      li = next_elem(li);
    }
 
    if (variant) {
       /* found the variant, move to head of global list (for LRU) */
-      list_move_to(&variant->list_item_global.list, &llvm->tes_variants_list.list);
+      move_to_head(&llvm->tes_variants_list, &variant->list_item_global);
    }
    else {
       /* Need to create new variant */
@@ -248,11 +255,10 @@ llvm_middle_end_prepare_tes(struct llvm_middle_end *fpme)
           */
          for (i = 0; i < DRAW_MAX_SHADER_VARIANTS / 32; i++) {
             struct draw_tes_llvm_variant_list_item *item;
-            if (list_is_empty(&llvm->tes_variants_list.list)) {
+            if (is_empty_list(&llvm->tes_variants_list)) {
                break;
             }
-            item = list_last_entry(&llvm->tes_variants_list.list,
-                                   struct draw_tes_llvm_variant_list_item, list);
+            item = last_elem(&llvm->tes_variants_list);
             assert(item);
             assert(item->base);
             draw_tes_llvm_destroy_variant(item->base);
@@ -262,8 +268,9 @@ llvm_middle_end_prepare_tes(struct llvm_middle_end *fpme)
       variant = draw_tes_llvm_create_variant(llvm, draw_total_tes_outputs(draw), key);
 
       if (variant) {
-         list_add(&variant->list_item_local.list, &shader->variants.list);
-         list_add(&variant->list_item_global.list, &llvm->tes_variants_list.list);
+         insert_at_head(&shader->variants, &variant->list_item_local);
+         insert_at_head(&llvm->tes_variants_list,
+                        &variant->list_item_global);
          llvm->nr_tes_variants++;
          shader->variants_cached++;
       }
@@ -279,7 +286,7 @@ llvm_middle_end_prepare_tes(struct llvm_middle_end *fpme)
  */
 static void
 llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
-                         enum pipe_prim_type in_prim,
+                         unsigned in_prim,
                          unsigned opt,
                          unsigned *max_vertices )
 {
@@ -290,8 +297,7 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
    struct draw_geometry_shader *gs = draw->gs.geometry_shader;
    struct draw_tess_ctrl_shader *tcs = draw->tcs.tess_ctrl_shader;
    struct draw_tess_eval_shader *tes = draw->tes.tess_eval_shader;
-   const enum pipe_prim_type out_prim =
-      gs ? gs->output_primitive : tes ? get_tes_output_prim(tes) :
+   const unsigned out_prim = gs ? gs->output_primitive : tes ? get_tes_output_prim(tes) :
       u_assembled_prim(in_prim);
    unsigned point_clip = draw->rasterizer->fill_front == PIPE_POLYGON_MODE_POINT ||
                          out_prim == PIPE_PRIM_POINTS;
@@ -350,16 +356,18 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
       key = draw_llvm_make_variant_key(llvm, store);
 
       /* Search shader's list of variants for the key */
-      LIST_FOR_EACH_ENTRY(li, &shader->variants.list, list) {
+      li = first_elem(&shader->variants);
+      while (!at_end(&shader->variants, li)) {
          if (memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
             variant = li->base;
             break;
          }
+         li = next_elem(li);
       }
 
       if (variant) {
          /* found the variant, move to head of global list (for LRU) */
-         list_move_to(&variant->list_item_global.list, &llvm->vs_variants_list.list);
+         move_to_head(&llvm->vs_variants_list, &variant->list_item_global);
       }
       else {
          /* Need to create new variant */
@@ -378,11 +386,10 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
              */
             for (i = 0; i < DRAW_MAX_SHADER_VARIANTS / 32; i++) {
                struct draw_llvm_variant_list_item *item;
-               if (list_is_empty(&llvm->vs_variants_list.list)) {
+               if (is_empty_list(&llvm->vs_variants_list)) {
                   break;
                }
-               item = list_last_entry(&llvm->vs_variants_list.list,
-                                    struct draw_llvm_variant_list_item, list);
+               item = last_elem(&llvm->vs_variants_list);
                assert(item);
                assert(item->base);
                draw_llvm_destroy_variant(item->base);
@@ -392,8 +399,9 @@ llvm_middle_end_prepare( struct draw_pt_middle_end *middle,
          variant = draw_llvm_create_variant(llvm, nr, key);
 
          if (variant) {
-            list_add(&variant->list_item_local.list, &shader->variants.list);
-            list_add(&variant->list_item_global.list, &llvm->vs_variants_list.list);
+            insert_at_head(&shader->variants, &variant->list_item_local);
+            insert_at_head(&llvm->vs_variants_list,
+                           &variant->list_item_global);
             llvm->nr_variants++;
             shader->variants_cached++;
          }
@@ -780,8 +788,8 @@ out:
 }
 
 
-static inline enum pipe_prim_type
-prim_type(enum pipe_prim_type prim, unsigned flags)
+static inline unsigned
+prim_type(unsigned prim, unsigned flags)
 {
    if (flags & DRAW_LINE_LOOP_AS_STRIP)
       return PIPE_PRIM_LINE_STRIP;

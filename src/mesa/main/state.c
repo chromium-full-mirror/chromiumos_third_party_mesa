@@ -90,10 +90,8 @@ _mesa_update_allow_draw_out_of_order(struct gl_context *ctx)
     * for driver-internal reasons.
     */
    /* Only the compatibility profile with immediate mode needs this. */
-   if (!ctx->Const.AllowDrawOutOfOrder)
+   if (ctx->API != API_OPENGL_COMPAT || !ctx->Const.AllowDrawOutOfOrder)
       return;
-
-   assert(ctx->API == API_OPENGL_COMPAT);
 
    /* If all of these are NULL, GLSL is disabled. */
    struct gl_program *vs =

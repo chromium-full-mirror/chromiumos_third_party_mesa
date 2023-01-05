@@ -44,23 +44,20 @@
 #include "compiler/nir/nir_serialize.h"
 #include "intel/compiler/brw_compiler.h"
 #include "intel/compiler/brw_nir.h"
-#include "intel/compiler/brw_prim.h"
 #include "crocus_context.h"
 #include "nir/tgsi_to_nir.h"
 
 #define KEY_INIT_NO_ID()                              \
-   .base.tex.swizzles[0 ... BRW_MAX_SAMPLERS - 1] = 0x688,   \
+   .base.subgroup_size_type = BRW_SUBGROUP_SIZE_UNIFORM, \
+   .base.tex.swizzles[0 ... MAX_SAMPLERS - 1] = 0x688,   \
    .base.tex.compressed_multisample_layout_mask = ~0
-#define KEY_INIT()                                                        \
-   .base.program_string_id = ish->program_id,                             \
-   .base.limit_trig_input_range = screen->driconf.limit_trig_input_range, \
-   KEY_INIT_NO_ID()
+#define KEY_INIT() .base.program_string_id = ish->program_id, KEY_INIT_NO_ID()
 
 static void
 crocus_sanitize_tex_key(struct brw_sampler_prog_key_data *key)
 {
    key->gather_channel_quirk_mask = 0;
-   for (unsigned s = 0; s < BRW_MAX_SAMPLERS; s++) {
+   for (unsigned s = 0; s < MAX_SAMPLERS; s++) {
       key->swizzles[s] = SWIZZLE_NOOP;
       key->gfx6_gather_wa[s] = 0;
    }
@@ -219,9 +216,7 @@ static void
 crocus_lower_swizzles(struct nir_shader *nir,
                       const struct brw_sampler_prog_key_data *key_tex)
 {
-   struct nir_lower_tex_options tex_options = {
-      .lower_invalid_implicit_lod = true,
-   };
+   struct nir_lower_tex_options tex_options = { 0 };
    uint32_t mask = nir->info.textures_used[0];
 
    while (mask) {
@@ -1208,7 +1203,7 @@ crocus_compile_vs(struct crocus_context *ice,
    if (key->clamp_pointsize)
       nir_lower_point_size(nir, 1.0, 255.0);
 
-   prog_data->use_alt_mode = nir->info.use_legacy_math_rules;
+   prog_data->use_alt_mode = nir->info.is_arb_asm;
 
    crocus_setup_uniforms(compiler, mem_ctx, nir, prog_data, &system_values,
                          &num_system_values, &num_cbufs);
@@ -1663,8 +1658,8 @@ crocus_update_compiled_tes(struct crocus_context *ice)
    struct crocus_shader_state *shs = &ice->state.shaders[MESA_SHADER_TESS_EVAL];
    struct crocus_uncompiled_shader *ish =
       ice->shaders.uncompiled[MESA_SHADER_TESS_EVAL];
-   struct crocus_screen *screen = (struct crocus_screen *)ice->ctx.screen;
    struct brw_tes_prog_key key = { KEY_INIT() };
+   struct crocus_screen *screen = (struct crocus_screen *)ice->ctx.screen;
    const struct intel_device_info *devinfo = &screen->devinfo;
 
    if (ish->nos & (1ull << CROCUS_NOS_TEXTURES))
@@ -1858,7 +1853,7 @@ crocus_compile_fs(struct crocus_context *ice,
 
    nir_shader *nir = nir_shader_clone(mem_ctx, ish->nir);
 
-   prog_data->use_alt_mode = nir->info.use_legacy_math_rules;
+   prog_data->use_alt_mode = nir->info.is_arb_asm;
 
    crocus_setup_uniforms(compiler, mem_ctx, nir, prog_data, &system_values,
                          &num_system_values, &num_cbufs);

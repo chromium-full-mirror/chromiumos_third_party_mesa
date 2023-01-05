@@ -7,7 +7,7 @@
 
 #include <stdlib.h>
 
-#ifndef _MSC_VER
+#if __STDC_VERSION__ >= 201112L && !defined(_MSC_VER)
 #include <stddef.h>
 #define MAX_ALIGN alignof(max_align_t)
 #else

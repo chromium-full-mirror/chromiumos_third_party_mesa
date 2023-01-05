@@ -400,7 +400,7 @@ alloc_batch_locked(struct fd_batch_cache *cache, struct fd_context *ctx,
    batch->idx = idx;
    cache->batch_mask |= (1 << idx);
 
-   assert(cache->batches[idx] == NULL);
+   debug_assert(cache->batches[idx] == NULL);
    cache->batches[idx] = batch;
 
    return batch;

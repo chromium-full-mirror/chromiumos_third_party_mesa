@@ -31,6 +31,8 @@
 #ifndef EGLCONTEXT_INCLUDED
 #define EGLCONTEXT_INCLUDED
 
+#include "c99_compat.h"
+
 #include "egltypedefs.h"
 #include "egldisplay.h"
 

@@ -34,6 +34,7 @@
  */
 
 
+#include "util/u_cpu_detect.h"
 #include "util/u_math.h"
 
 #include "gallivm/lp_bld_const.h"
@@ -380,6 +381,7 @@ int main(int argc, char **argv)
    boolean single = FALSE;
    unsigned fpstate;
 
+   util_cpu_detect();
    fpstate = util_fpstate_get();
    util_fpstate_set_denorms_to_zero(fpstate);
 

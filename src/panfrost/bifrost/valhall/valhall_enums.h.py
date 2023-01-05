@@ -23,9 +23,6 @@
 
 from valhall import safe_name, enums
 
-print("#ifndef __VALHALL_ENUMS_H_")
-print("#define __VALHALL_ENUMS_H_")
-
 for enum in sorted(enums):
     print(f"enum va_{safe_name(enum)} {{")
 
@@ -35,5 +32,3 @@ for enum in sorted(enums):
             print(f"   {key.upper()} = {i},")
 
     print("};\n")
-
-print("#endif")

@@ -132,7 +132,9 @@ bo_free(struct v3dv_device *device,
       return true;
 
    assert(p_atomic_read(&bo->refcnt) == 0);
-   assert(bo->map == NULL);
+
+   if (bo->map)
+      v3dv_bo_unmap(device, bo);
 
    /* Our BO structs are stored in a sparse array in the physical device,
     * so we don't want to free the BO pointer, instead we want to reset it
@@ -457,9 +459,6 @@ v3dv_bo_free(struct v3dv_device *device,
 
    if (!p_atomic_dec_zero(&bo->refcnt))
       return true;
-
-   if (bo->map)
-      v3dv_bo_unmap(device, bo);
 
    struct timespec time;
    struct v3dv_bo_cache *cache = &device->bo_cache;

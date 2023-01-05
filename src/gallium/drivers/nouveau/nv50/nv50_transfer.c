@@ -375,6 +375,7 @@ nv50_miptree_transfer_map(struct pipe_context *pctx,
                           const struct pipe_box *box,
                           struct pipe_transfer **ptransfer)
 {
+   struct nv50_screen *screen = nv50_screen(pctx->screen);
    struct nv50_context *nv50 = nv50_context(pctx);
    struct nouveau_device *dev = nv50->screen->base.device;
    const struct nv50_miptree *mt = nv50_miptree(res);
@@ -453,7 +454,7 @@ nv50_miptree_transfer_map(struct pipe_context *pctx,
    if (usage & PIPE_MAP_WRITE)
       flags |= NOUVEAU_BO_WR;
 
-   ret = nouveau_bo_map(tx->rect[1].bo, flags, nv50->base.client);
+   ret = nouveau_bo_map(tx->rect[1].bo, flags, screen->base.client);
    if (ret) {
       nouveau_bo_ref(NULL, &tx->rect[1].bo);
       FREE(tx);

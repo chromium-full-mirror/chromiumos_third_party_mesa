@@ -48,10 +48,6 @@
 #define PAN_DBG_NO_CACHE        0x2000
 #define PAN_DBG_DUMP            0x4000
 
-#ifndef NDEBUG
-#define PAN_DBG_OVERFLOW        0x8000
-#endif
-
 struct panfrost_device;
 
 unsigned

@@ -32,6 +32,8 @@
 #define EGLDRIVER_INCLUDED
 
 
+#include "c99_compat.h"
+
 #include "egltypedefs.h"
 #include <stdbool.h>
 #include <stddef.h>

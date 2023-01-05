@@ -42,6 +42,7 @@
 #include "fd6_const.h"
 #include "fd6_context.h"
 #include "fd6_emit.h"
+#include "fd6_format.h"
 #include "fd6_image.h"
 #include "fd6_pack.h"
 #include "fd6_program.h"
@@ -67,7 +68,7 @@ struct PACKED bcolor_entry {
    uint8_t ui8[4];
    int8_t si8[4];
    uint32_t rgb10a2;
-   uint32_t z24;
+   uint32_t z24; /* also s8? */
    uint16_t
       srgb[4]; /* appears to duplicate fp16[], but clamped, used for srgb */
    uint8_t __pad1[56];
@@ -79,12 +80,10 @@ struct PACKED bcolor_entry {
 
 static void
 setup_border_colors(struct fd_texture_stateobj *tex,
-                    struct bcolor_entry *entries,
-                    struct fd_screen *screen)
+                    struct bcolor_entry *entries)
 {
    unsigned i, j;
    STATIC_ASSERT(sizeof(struct bcolor_entry) == FD6_BORDER_COLOR_SIZE);
-   const bool has_z24uint_s8uint = screen->info->a6xx.has_z24uint_s8uint;
 
    for (i = 0; i < tex->num_samplers; i++) {
       struct bcolor_entry *e = &entries[i];
@@ -121,7 +120,8 @@ setup_border_colors(struct fd_texture_stateobj *tex,
 
       unsigned char swiz[4];
 
-      fdl6_format_swiz(format, false, swiz);
+      fd6_tex_swiz(format, swiz, view->swizzle_r, view->swizzle_g,
+                   view->swizzle_b, view->swizzle_a);
 
       for (j = 0; j < 4; j++) {
          int c = swiz[j];
@@ -132,15 +132,14 @@ setup_border_colors(struct fd_texture_stateobj *tex,
           * stencil border color value in bc->ui[0] but according
           * to desc->swizzle and desc->channel, the .x/.w component
           * is NONE and the stencil value is in the y component.
-          * Meanwhile the hardware wants this in the .x component
-          * for x24s8 and x32_s8x24, or the .y component for x24s8 with the
-          * special Z24UINT_S8UINT format.
+          * Meanwhile the hardware wants this in the .w component
+          * for x24s8 and the .x component for x32_s8x24.
           */
          if ((format == PIPE_FORMAT_X24S8_UINT) ||
              (format == PIPE_FORMAT_X32_S8X24_UINT)) {
             if (j == 0) {
                c = 1;
-               cd = (format == PIPE_FORMAT_X24S8_UINT && has_z24uint_s8uint) ? 1 : 0;
+               cd = (format == PIPE_FORMAT_X32_S8X24_UINT) ? 0 : 3;
             } else {
                continue;
             }
@@ -233,10 +232,9 @@ emit_border_color(struct fd_context *ctx, struct fd_ringbuffer *ring) assert_dt
 
    entries = ptr;
 
-   setup_border_colors(&ctx->tex[PIPE_SHADER_VERTEX], &entries[0], ctx->screen);
+   setup_border_colors(&ctx->tex[PIPE_SHADER_VERTEX], &entries[0]);
    setup_border_colors(&ctx->tex[PIPE_SHADER_FRAGMENT],
-                       &entries[ctx->tex[PIPE_SHADER_VERTEX].num_samplers],
-                       ctx->screen);
+                       &entries[ctx->tex[PIPE_SHADER_VERTEX].num_samplers]);
 
    OUT_PKT4(ring, REG_A6XX_SP_TP_BORDER_COLOR_BASE_ADDR, 2);
    OUT_RELOC(ring, fd_resource(fd6_ctx->border_color_buf)->bo, off, 0, 0);
@@ -496,7 +494,7 @@ fd6_emit_combined_textures(struct fd_ringbuffer *ring, struct fd6_emit *emit,
       [PIPE_SHADER_FRAGMENT] = {FD6_GROUP_FS_TEX, ENABLE_DRAW},
    };
 
-   assert(s[type].state_id);
+   debug_assert(s[type].state_id);
 
    if (!v->image_mapping.num_tex && !v->fb_read) {
       /* in the fast-path, when we don't have to mix in any image/SSBO
@@ -554,22 +552,12 @@ build_vbo_state(struct fd6_emit *emit) assert_dt
 {
    const struct fd_vertex_state *vtx = emit->vtx;
 
-   /* Limit PKT4 size, because at max count (32) we would overflow the
-    * size of the PKT4 size field:
-    */
-   const unsigned maxcnt = 16;
-   const unsigned cnt = vtx->vertexbuf.count;
-   const unsigned dwords = (cnt * 4) /* per vbo: reg64 + two reg32 */
-               + (1 + cnt / maxcnt); /* PKT4 hdr every 16 vbo's */
-
    struct fd_ringbuffer *ring = fd_submit_new_ringbuffer(
-      emit->ctx->batch->submit, 4 * dwords, FD_RINGBUFFER_STREAMING);
+      emit->ctx->batch->submit, 4 * (1 + vtx->vertexbuf.count * 4),
+      FD_RINGBUFFER_STREAMING);
 
-   for (int32_t j = 0; j < cnt; j++) {
-      if ((j % maxcnt) == 0) {
-         unsigned sz = MIN2(maxcnt, cnt - j);
-         OUT_PKT4(ring, REG_A6XX_VFD_FETCH(j), 4 * sz);
-      }
+   OUT_PKT4(ring, REG_A6XX_VFD_FETCH(0), 4 * vtx->vertexbuf.count);
+   for (int32_t j = 0; j < vtx->vertexbuf.count; j++) {
       const struct pipe_vertex_buffer *vb = &vtx->vertexbuf.vb[j];
       struct fd_resource *rsc = fd_resource(vb->buffer.resource);
       if (rsc == NULL) {
@@ -598,7 +586,7 @@ compute_ztest_mode(struct fd6_emit *emit, bool lrz_valid) assert_dt
    struct fd6_zsa_stateobj *zsa = fd6_zsa_stateobj(ctx->zsa);
    const struct ir3_shader_variant *fs = emit->fs;
 
-   if (fs->fs.early_fragment_tests)
+   if (fs->shader->nir->info.fs.early_fragment_tests)
       return A6XX_EARLY_Z;
 
    if (fs->no_earlyz || fs->writes_pos || !zsa->base.depth_enabled ||
@@ -646,8 +634,7 @@ compute_lrz_state(struct fd6_emit *emit, bool binning_pass) assert_dt
    lrz = zsa->lrz;
 
    /* normalize lrz state: */
-   if (blend->reads_dest || fs->writes_pos || fs->no_earlyz || fs->has_kill ||
-       blend->base.alpha_to_coverage) {
+   if (blend->reads_dest || fs->writes_pos || fs->no_earlyz || fs->has_kill) {
       lrz.write = false;
       if (binning_pass)
          lrz.enable = false;
@@ -830,11 +817,11 @@ build_ibo(struct fd6_emit *emit) assert_dt
    struct fd_context *ctx = emit->ctx;
 
    if (emit->hs) {
-      assert(ir3_shader_nibo(emit->hs) == 0);
-      assert(ir3_shader_nibo(emit->ds) == 0);
+      debug_assert(ir3_shader_nibo(emit->hs) == 0);
+      debug_assert(ir3_shader_nibo(emit->ds) == 0);
    }
    if (emit->gs) {
-      assert(ir3_shader_nibo(emit->gs) == 0);
+      debug_assert(ir3_shader_nibo(emit->gs) == 0);
    }
 
    struct fd_ringbuffer *ibo_state =
@@ -869,7 +856,7 @@ fd6_emit_streamout(struct fd_ringbuffer *ring, struct fd6_emit *emit) assert_dt
 {
    struct fd_context *ctx = emit->ctx;
    const struct fd6_program_state *prog = fd6_emit_get_prog(emit);
-   const struct ir3_stream_output_info *info = prog->stream_output;
+   struct ir3_stream_output_info *info = prog->stream_output;
    struct fd_streamout_stateobj *so = &ctx->streamout;
 
    emit->streamout_mask = 0;
@@ -993,11 +980,11 @@ fd6_emit_non_ring(struct fd_ringbuffer *ring, struct fd6_emit *emit) assert_dt
                                                     .vert = guardband_y));
    }
 
-   /* The clamp ranges are only used when the rasterizer disables
-    * depth clip.
+   /* The clamp ranges are only used when the rasterizer wants depth
+    * clamping.
     */
    if ((dirty & (FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER)) &&
-       fd_depth_clip_disabled(ctx)) {
+       fd_depth_clamp_enabled(ctx)) {
       float zmin, zmax;
       util_viewport_zmin_zmax(&ctx->viewport, ctx->rasterizer->clip_halfz,
                               &zmin, &zmax);
@@ -1047,7 +1034,7 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
          state = fd6_zsa_state(
             ctx,
             util_format_is_pure_integer(pipe_surface_format(pfb->cbufs[0])),
-            fd_depth_clip_disabled(ctx));
+            fd_depth_clamp_enabled(ctx));
          fd_ringbuffer_ref(state);
          break;
       case FD6_GROUP_LRZ:
@@ -1100,8 +1087,8 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
       case FD6_GROUP_CONST:
          state = fd6_build_user_consts(emit);
          break;
-      case FD6_GROUP_DRIVER_PARAMS:
-         state = fd6_build_driver_params(emit);
+      case FD6_GROUP_VS_DRIVER_PARAMS:
+         state = fd6_build_vs_driver_params(emit);
          break;
       case FD6_GROUP_PRIMITIVE_PARAMS:
          state = fd6_build_tess_consts(emit);
@@ -1154,7 +1141,7 @@ fd6_emit_state(struct fd_ringbuffer *ring, struct fd6_emit *emit)
          struct fd6_state_group *g = &emit->groups[i];
          unsigned n = g->stateobj ? fd_ringbuffer_size(g->stateobj) / 4 : 0;
 
-         assert((g->enable_mask & ~ENABLE_ALL) == 0);
+         debug_assert((g->enable_mask & ~ENABLE_ALL) == 0);
 
          if (n == 0) {
             OUT_RING(ring, CP_SET_DRAW_STATE__0_COUNT(0) |
@@ -1352,15 +1339,6 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
    OUT_PKT4(ring, REG_A6XX_RB_LRZ_CNTL, 1);
    OUT_RING(ring, 0x00000000);
 
-   /* Initialize VFD_FETCH[n].SIZE to zero to avoid iova faults trying
-    * to fetch from a VFD_FETCH[n].BASE which we've potentially inherited
-    * from another process:
-    */
-   for (int32_t i = 0; i < 32; i++) {
-      OUT_PKT4(ring, REG_A6XX_VFD_FETCH_SIZE(i), 1);
-      OUT_RING(ring, 0);
-   }
-
    /* This happens after all drawing has been emitted to the draw CS, so we know
     * whether we need the tess BO pointers.
     */
@@ -1368,8 +1346,6 @@ fd6_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
       assert(screen->tess_bo);
       OUT_PKT4(ring, REG_A6XX_PC_TESSFACTOR_ADDR, 2);
       OUT_RELOC(ring, screen->tess_bo, 0, 0, 0);
-      /* Updating PC_TESSFACTOR_ADDR could race with the next draw which uses it. */
-      OUT_WFI5(ring);
    }
 
    if (!batch->nondraw) {
@@ -1428,7 +1404,7 @@ fd6_framebuffer_barrier(struct fd_context *ctx) assert_dt
    seqno = fd6_event_write(batch, ring, CACHE_FLUSH_TS, true);
    fd_wfi(batch, ring);
 
-   fd6_event_write(batch, ring, CACHE_INVALIDATE, false);
+   fd6_event_write(batch, ring, 0x31, false);
 
    OUT_PKT7(ring, CP_WAIT_MEM_GTE, 4);
    OUT_RING(ring, CP_WAIT_MEM_GTE_0_RESERVED(0));

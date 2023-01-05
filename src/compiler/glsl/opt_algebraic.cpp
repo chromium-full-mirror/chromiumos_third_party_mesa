@@ -860,7 +860,7 @@ ir_algebraic_visitor::handle_expression(ir_expression *ir)
 
    case ir_binop_min:
    case ir_binop_max:
-      if (!ir->type->is_float())
+      if (!ir->type->is_float() || options->EmitNoSat)
          break;
 
       /* Replace min(max) operations and its commutative combinations with

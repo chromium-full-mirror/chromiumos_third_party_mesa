@@ -149,11 +149,9 @@ struct st_context
    boolean has_shareable_shaders;
    boolean has_half_float_packing;
    boolean has_multi_draw_indirect;
-   boolean has_indirect_partial_stride;
    boolean has_single_pipe_stat;
    boolean has_indep_blend_func;
    boolean needs_rgb_dst_alpha_override;
-   boolean can_dither;
    boolean can_bind_const_buffer_as_vertex;
    boolean lower_flatshade;
    boolean lower_alpha_test;
@@ -185,7 +183,6 @@ struct st_context
 
    boolean needs_texcoord_semantic;
    boolean apply_texture_swizzle_to_border_color;
-   boolean use_format_with_border_color;
    boolean emulate_gl_clamp;
    boolean texture_buffer_sampler;
 
@@ -385,8 +382,6 @@ struct st_context
       struct st_zombie_shader_node list;
       simple_mtx_t mutex;
    } zombie_shaders;
-
-   struct hash_table *hw_select_shaders;
 };
 
 

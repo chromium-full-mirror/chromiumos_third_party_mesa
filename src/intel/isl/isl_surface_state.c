@@ -439,30 +439,11 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    s.CubeFaceEnableNegativeX = 1;
 
 #if GFX_VER >= 6
-   /* From the Broadwell PRM for "Number of Multisamples":
-    *
-    *    "If this field is any value other than MULTISAMPLECOUNT_1, Surface
-    *    Min LOD, Mip Count / LOD, and Resource Min LOD must be set to zero."
-    *
-    * This is fine because no 3D API allows multisampling and mipmapping at
-    * the same time.
-    */
-   if (info->surf->samples > 1) {
-      assert(info->view->min_lod_clamp == 0);
-      assert(info->view->base_level == 0);
-      assert(info->view->levels == 1);
-   }
    s.NumberofMultisamples = ffs(info->surf->samples) - 1;
 #if GFX_VER >= 7
    s.MultisampledSurfaceStorageFormat =
       isl_encode_multisample_layout[info->surf->msaa_layout];
 #endif
-#endif
-
-#if GFX_VER >= 7
-   s.ResourceMinLOD = info->view->min_lod_clamp;
-#else
-   assert(info->view->min_lod_clamp == 0);
 #endif
 
 #if (GFX_VERx10 >= 75)
@@ -575,7 +556,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
           * say:
           *
           *    "If Number of multisamples > 1, programming this value means
-          *    MSAA compression is enabled for that surface. Auxiliary surface
+          *    MSAA compression is enabled for that surface. Auxillary surface
           *    is MSC with tile y."
           *
           * Since this interpretation ignores whether the surface is
@@ -656,7 +637,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
    }
 
-   /* The auxiliary buffer info is filled when it's usable by the HW.
+   /* The auxiliary buffer info is filled when it's useable by the HW.
     *
     * Starting with Gfx12, the only form of compression that can be used
     * with RENDER_SURFACE_STATE which requires an aux surface is MCS.
@@ -710,7 +691,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
          /* From the SKL PRM, Programming Note under Sampler Output Channel
           * Mapping:
           *
-          *    If a surface has an associated HiZ Auxiliary surface, the
+          *    If a surface has an associated HiZ Auxilliary surface, the
           *    Sampler L2 Bypass Mode Disable field in the RENDER_SURFACE_STATE
           *    must be set.
           */
@@ -796,7 +777,7 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    uint64_t buffer_size = info->size_B;
 
    /* Uniform and Storage buffers need to have surface size not less that the
-    * aligned 32-bit size of the buffer. To calculate the array length on
+    * aligned 32-bit size of the buffer. To calculate the array lenght on
     * unsized arrays in StorageBuffer the last 2 bits store the padding size
     * added to the surface, so we can calculate latter the original buffer
     * size to know the number of elements.

@@ -82,7 +82,6 @@ def prolog():
 #include "util/u_debug.h"
 #include "util/u_memory.h"
 
-#include "c99_compat.h"
 
 static unsigned out_size_idx( unsigned index_size )
 {

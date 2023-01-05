@@ -34,6 +34,7 @@
 
 #include "freedreno_dev_info.h"
 #include "fd6_emit.h"
+#include "fd6_format.h"
 #include "fd6_resource.h"
 #include "fd6_texture.h"
 

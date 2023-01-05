@@ -101,14 +101,8 @@ vbo_exec_bind_arrays(struct gl_context *ctx)
 
    const gl_vertex_processing_mode mode = ctx->VertexProgram._VPMode;
 
-   GLbitfield vao_enabled, vao_filter;
-   if (_mesa_hw_select_enabled(ctx)) {
-      /* HW GL_SELECT has fixed input */
-      vao_enabled = vao_filter = VERT_BIT_POS | VERT_BIT_SELECT_RESULT_OFFSET;
-   } else {
-      vao_enabled = _vbo_get_vao_enabled_from_vbo(mode, exec->vtx.enabled);
-      vao_filter = _vbo_get_vao_filter(mode);
-   }
+   /* Compute the bitmasks of vao_enabled arrays */
+   GLbitfield vao_enabled = _vbo_get_vao_enabled_from_vbo(mode, exec->vtx.enabled);
 
    /* At first disable arrays no longer needed */
    _mesa_disable_vertex_array_attribs(ctx, vao, VERT_BIT_ALL & ~vao_enabled);
@@ -147,7 +141,7 @@ vbo_exec_bind_arrays(struct gl_context *ctx)
    assert(!exec->vtx.bufferobj ||
           (vao_enabled & ~vao->VertexAttribBufferMask) == 0);
 
-   _mesa_set_draw_vao(ctx, vao, vao_filter);
+   _mesa_set_draw_vao(ctx, vao, _vbo_get_vao_filter(mode));
 }
 
 

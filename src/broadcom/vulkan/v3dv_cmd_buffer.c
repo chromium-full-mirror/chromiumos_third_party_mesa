@@ -277,6 +277,27 @@ cmd_buffer_destroy(struct vk_command_buffer *vk_cmd_buffer)
 }
 
 static bool
+attachment_list_is_subset(struct v3dv_subpass_attachment *l1, uint32_t l1_count,
+                          struct v3dv_subpass_attachment *l2, uint32_t l2_count)
+{
+   for (uint32_t i = 0; i < l1_count; i++) {
+      uint32_t attachment_idx = l1[i].attachment;
+      if (attachment_idx == VK_ATTACHMENT_UNUSED)
+         continue;
+
+      uint32_t j;
+      for (j = 0; j < l2_count; j++) {
+         if (l2[j].attachment == attachment_idx)
+            break;
+      }
+      if (j == l2_count)
+         return false;
+   }
+
+   return true;
+ }
+
+static bool
 cmd_buffer_can_merge_subpass(struct v3dv_cmd_buffer *cmd_buffer,
                              uint32_t subpass_idx)
 {
@@ -311,25 +332,35 @@ cmd_buffer_can_merge_subpass(struct v3dv_cmd_buffer *cmd_buffer,
    struct v3dv_subpass *prev_subpass = &state->pass->subpasses[state->subpass_idx];
    struct v3dv_subpass *subpass = &state->pass->subpasses[subpass_idx];
 
-   if (subpass->ds_attachment.attachment !=
-       prev_subpass->ds_attachment.attachment)
-      return false;
-
-   if (subpass->color_count != prev_subpass->color_count)
-      return false;
-
-   for (uint32_t i = 0; i < subpass->color_count; i++) {
-      if (subpass->color_attachments[i].attachment !=
-          prev_subpass->color_attachments[i].attachment) {
-         return false;
-      }
-   }
-
    /* Don't merge if the subpasses have different view masks, since in that
     * case the framebuffer setup is different and we need to emit different
     * RCLs.
     */
    if (subpass->view_mask != prev_subpass->view_mask)
+      return false;
+
+   /* Because the list of subpass attachments can include VK_ATTACHMENT_UNUSED,
+    * we need to check that for each subpass all its used attachments are
+    * used by the other subpass.
+    */
+   bool compatible =
+      attachment_list_is_subset(prev_subpass->color_attachments,
+                                prev_subpass->color_count,
+                                subpass->color_attachments,
+                                subpass->color_count);
+   if (!compatible)
+      return false;
+
+   compatible =
+      attachment_list_is_subset(subpass->color_attachments,
+                                subpass->color_count,
+                                prev_subpass->color_attachments,
+                                prev_subpass->color_count);
+   if (!compatible)
+      return false;
+
+   if (subpass->ds_attachment.attachment !=
+       prev_subpass->ds_attachment.attachment)
       return false;
 
    /* FIXME: Since some attachment formats can't be resolved using the TLB we
@@ -558,17 +589,6 @@ v3dv_cmd_buffer_finish_job(struct v3dv_cmd_buffer *cmd_buffer)
    if (!job)
       return;
 
-   /* Always clear BCL state after a job has been finished if we don't have
-    * a pending graphics barrier that could consume it (BCL barriers only
-    * apply to graphics jobs). This can happen if the application recorded
-    * a barrier involving geometry stages but none of the draw calls in the
-    * job actually required a binning sync.
-    */
-   if (!(cmd_buffer->state.barrier.dst_mask & V3DV_BARRIER_GRAPHICS_BIT)) {
-      cmd_buffer->state.barrier.bcl_buffer_access = 0;
-      cmd_buffer->state.barrier.bcl_image_access = 0;
-   }
-
    if (cmd_buffer->state.oom) {
       v3dv_job_destroy(job);
       cmd_buffer->state.job = NULL;
@@ -646,40 +666,24 @@ cmd_buffer_serialize_job_if_needed(struct v3dv_cmd_buffer *cmd_buffer,
 {
    assert(cmd_buffer && job);
 
+   if (!cmd_buffer->state.has_barrier)
+      return;
+
    /* Serialization only affects GPU jobs, CPU jobs are always automatically
     * serialized.
     */
    if (!v3dv_job_type_is_gpu(job))
       return;
 
-   uint8_t barrier_mask = cmd_buffer->state.barrier.dst_mask;
-   if (barrier_mask == 0)
-      return;
-
-   uint8_t bit = 0;
-   uint8_t *src_mask;
-   if (job->type == V3DV_JOB_TYPE_GPU_CSD) {
-      assert(!job->is_transfer);
-      bit = V3DV_BARRIER_COMPUTE_BIT;
-      src_mask = &cmd_buffer->state.barrier.src_mask_compute;
-   } else if (job->is_transfer) {
-      assert(job->type == V3DV_JOB_TYPE_GPU_CL ||
-             job->type == V3DV_JOB_TYPE_GPU_CL_SECONDARY ||
-             job->type == V3DV_JOB_TYPE_GPU_TFU);
-      bit = V3DV_BARRIER_TRANSFER_BIT;
-      src_mask = &cmd_buffer->state.barrier.src_mask_transfer;
-   } else {
-      assert(job->type == V3DV_JOB_TYPE_GPU_CL ||
-             job->type == V3DV_JOB_TYPE_GPU_CL_SECONDARY);
-      bit = V3DV_BARRIER_GRAPHICS_BIT;
-      src_mask = &cmd_buffer->state.barrier.src_mask_graphics;
+   job->serialize = true;
+   if (cmd_buffer->state.has_bcl_barrier &&
+       (job->type == V3DV_JOB_TYPE_GPU_CL ||
+        job->type == V3DV_JOB_TYPE_GPU_CL_SECONDARY)) {
+      job->needs_bcl_sync = true;
    }
 
-   if (barrier_mask & bit) {
-      job->serialize = *src_mask;
-      *src_mask = 0;
-      cmd_buffer->state.barrier.dst_mask &= ~bit;
-   }
+   cmd_buffer->state.has_barrier = false;
+   cmd_buffer->state.has_bcl_barrier = false;
 }
 
 void
@@ -743,11 +747,7 @@ v3dv_job_init(struct v3dv_job *job,
       if (cmd_buffer->state.pass)
          job->first_subpass = subpass_idx;
 
-      job->is_transfer = cmd_buffer->state.is_transfer;
-
       cmd_buffer_serialize_job_if_needed(cmd_buffer, job);
-
-      job->perf = cmd_buffer->state.query.active_query.perf;
    }
 }
 
@@ -892,8 +892,8 @@ cmd_buffer_subpass_handle_pending_resolves(struct v3dv_cmd_buffer *cmd_buffer)
       struct v3dv_image_view *dst_iview =
          cmd_buffer->state.attachments[dst_attachment_idx].image_view;
 
-      VkImageResolve2 region = {
-         .sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
+      VkImageResolve2KHR region = {
+         .sType = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2_KHR,
          .srcSubresource = {
             VK_IMAGE_ASPECT_COLOR_BIT,
             src_iview->vk.base_mip_level,
@@ -913,8 +913,8 @@ cmd_buffer_subpass_handle_pending_resolves(struct v3dv_cmd_buffer *cmd_buffer)
 
       struct v3dv_image *src_image = (struct v3dv_image *) src_iview->vk.image;
       struct v3dv_image *dst_image = (struct v3dv_image *) dst_iview->vk.image;
-      VkResolveImageInfo2 resolve_info = {
-         .sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
+      VkResolveImageInfo2KHR resolve_info = {
+         .sType = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2_KHR,
          .srcImage = v3dv_image_to_handle(src_image),
          .srcImageLayout = VK_IMAGE_LAYOUT_GENERAL,
          .dstImage = v3dv_image_to_handle(dst_image),
@@ -970,14 +970,17 @@ cmd_buffer_begin_render_pass_secondary(
     *
     *    "The application must ensure (using scissor if necessary) that all
     *     rendering is contained within the render area."
+    *
+    * FIXME: setup constants for the max framebuffer dimensions and use them
+    * here and when filling in VkPhysicalDeviceLimits.
     */
    const struct v3dv_framebuffer *framebuffer = cmd_buffer->state.framebuffer;
    cmd_buffer->state.render_area.offset.x = 0;
    cmd_buffer->state.render_area.offset.y = 0;
    cmd_buffer->state.render_area.extent.width =
-      framebuffer ? framebuffer->width : V3D_MAX_IMAGE_DIMENSION;
+      framebuffer ? framebuffer->width : 4096;
    cmd_buffer->state.render_area.extent.height =
-      framebuffer ? framebuffer->height : V3D_MAX_IMAGE_DIMENSION;
+      framebuffer ? framebuffer->height : 4096;
 
    return VK_SUCCESS;
 }
@@ -1181,8 +1184,8 @@ cmd_buffer_state_set_attachments(struct v3dv_cmd_buffer *cmd_buffer,
    V3DV_FROM_HANDLE(v3dv_render_pass, pass, pRenderPassBegin->renderPass);
    V3DV_FROM_HANDLE(v3dv_framebuffer, framebuffer, pRenderPassBegin->framebuffer);
 
-   const VkRenderPassAttachmentBeginInfo *attach_begin =
-      vk_find_struct_const(pRenderPassBegin, RENDER_PASS_ATTACHMENT_BEGIN_INFO);
+   const VkRenderPassAttachmentBeginInfoKHR *attach_begin =
+      vk_find_struct_const(pRenderPassBegin, RENDER_PASS_ATTACHMENT_BEGIN_INFO_KHR);
 
    struct v3dv_cmd_buffer_state *state = &cmd_buffer->state;
 
@@ -1648,26 +1651,13 @@ v3dv_job_clone_in_cmd_buffer(struct v3dv_job *job,
    return clone_job;
 }
 
-void
-v3dv_cmd_buffer_merge_barrier_state(struct v3dv_barrier_state *dst,
-                                    struct v3dv_barrier_state *src)
-{
-   dst->dst_mask |= src->dst_mask;
-
-   dst->src_mask_graphics |= src->src_mask_graphics;
-   dst->src_mask_compute  |= src->src_mask_compute;
-   dst->src_mask_transfer |= src->src_mask_transfer;
-
-   dst->bcl_buffer_access |= src->bcl_buffer_access;
-   dst->bcl_image_access  |= src->bcl_image_access;
-}
-
 static void
 cmd_buffer_execute_outside_pass(struct v3dv_cmd_buffer *primary,
                                 uint32_t cmd_buffer_count,
                                 const VkCommandBuffer *cmd_buffers)
 {
-   struct v3dv_barrier_state pending_barrier = { 0 };
+   bool pending_barrier = false;
+   bool pending_bcl_barrier = false;
    for (uint32_t i = 0; i < cmd_buffer_count; i++) {
       V3DV_FROM_HANDLE(v3dv_cmd_buffer, secondary, cmd_buffers[i]);
 
@@ -1695,18 +1685,12 @@ cmd_buffer_execute_outside_pass(struct v3dv_cmd_buffer *primary,
          if (!job)
             return;
 
-         if (pending_barrier.dst_mask) {
-            /* FIXME: do the same we do for primaries and only choose the
-             * relevant src masks.
-             */
-            job->serialize = pending_barrier.src_mask_graphics |
-                             pending_barrier.src_mask_transfer |
-                             pending_barrier.src_mask_compute;
-            if (pending_barrier.bcl_buffer_access ||
-                pending_barrier.bcl_image_access) {
+         if (pending_barrier) {
+            job->serialize = true;
+            if (pending_bcl_barrier)
                job->needs_bcl_sync = true;
-            }
-            memset(&pending_barrier, 0, sizeof(pending_barrier));
+            pending_barrier = false;
+            pending_bcl_barrier = false;
          }
       }
 
@@ -1714,15 +1698,14 @@ cmd_buffer_execute_outside_pass(struct v3dv_cmd_buffer *primary,
        * barrier state consumed with whatever comes after it (first job in
        * the next secondary or the primary, if this was the last secondary).
        */
-      assert(secondary->state.barrier.dst_mask ||
-             (!secondary->state.barrier.bcl_buffer_access &&
-              !secondary->state.barrier.bcl_image_access));
-      pending_barrier = secondary->state.barrier;
+      assert(secondary->state.has_barrier || !secondary->state.has_bcl_barrier);
+      pending_barrier = secondary->state.has_barrier;
+      pending_bcl_barrier = secondary->state.has_bcl_barrier;
    }
 
-   if (pending_barrier.dst_mask) {
-      v3dv_cmd_buffer_merge_barrier_state(&primary->state.barrier,
-                                          &pending_barrier);
+   if (pending_barrier) {
+      primary->state.has_barrier = true;
+      primary->state.has_bcl_barrier |= pending_bcl_barrier;
    }
 }
 
@@ -2097,7 +2080,8 @@ update_gfx_uniform_state(struct v3dv_cmd_buffer *cmd_buffer,
    const bool needs_fs_update = has_new_pipeline ||
                                 has_new_view_index ||
                                 has_new_push_constants_fs ||
-                                has_new_descriptors_fs;
+                                has_new_descriptors_fs ||
+                                has_new_view_index;
 
    if (needs_fs_update) {
       struct v3dv_shader_variant *fs_variant =
@@ -2230,12 +2214,12 @@ v3dv_cmd_buffer_meta_state_push(struct v3dv_cmd_buffer *cmd_buffer,
       state->meta.has_descriptor_state = false;
    }
 
-   if (cmd_buffer->state.push_constants_size > 0) {
-      state->meta.push_constants_size = cmd_buffer->state.push_constants_size;
-      memcpy(state->meta.push_constants, cmd_buffer->state.push_constants_data,
-             cmd_buffer->state.push_constants_size);
-      cmd_buffer->state.push_constants_size = 0;
-   }
+   /* FIXME: if we keep track of wether we have bound any push constant state
+    *        at all we could restruct this only to cases where it is actually
+    *        necessary.
+    */
+   memcpy(state->meta.push_constants, cmd_buffer->push_constants_data,
+          sizeof(state->meta.push_constants));
 }
 
 /* This restores command buffer state after a meta operation
@@ -2298,23 +2282,14 @@ v3dv_cmd_buffer_meta_state_pop(struct v3dv_cmd_buffer *cmd_buffer,
       }
    }
 
-   /* We only need to restore push constant data if we had any data in the
-    * original command buffer and the meta operation wrote new push constant
-    * data.
-    */
-   if (state->meta.push_constants_size > 0 &&
-       cmd_buffer->state.push_constants_size > 0) {
-      memcpy(cmd_buffer->state.push_constants_data, state->meta.push_constants,
-             state->meta.push_constants_size);
-   }
-   cmd_buffer->state.push_constants_size = state->meta.push_constants_size;
+   memcpy(cmd_buffer->push_constants_data, state->meta.push_constants,
+          sizeof(state->meta.push_constants));
 
    state->meta.gfx.pipeline = NULL;
    state->meta.framebuffer = VK_NULL_HANDLE;
    state->meta.pass = VK_NULL_HANDLE;
    state->meta.subpass_idx = -1;
    state->meta.has_descriptor_state = false;
-   state->meta.push_constants_size = 0;
 }
 
 static struct v3dv_job *
@@ -2427,95 +2402,8 @@ cmd_buffer_restart_job_for_msaa_if_needed(struct v3dv_cmd_buffer *cmd_buffer)
    v3dv_job_destroy(old_job);
 }
 
-static bool
-cmd_buffer_binning_sync_required(struct v3dv_cmd_buffer *cmd_buffer,
-                                 struct v3dv_pipeline *pipeline,
-                                 bool indexed, bool indirect)
-{
-   const struct v3dv_descriptor_maps *vs_bin_maps =
-      pipeline->shared_data->maps[BROADCOM_SHADER_VERTEX_BIN];
-
-   const struct v3dv_descriptor_maps *gs_bin_maps =
-      pipeline->shared_data->maps[BROADCOM_SHADER_GEOMETRY_BIN];
-
-  VkAccessFlags buffer_access =
-      cmd_buffer->state.barrier.bcl_buffer_access;
-   if (buffer_access) {
-      /* Index buffer read */
-      if (indexed && (buffer_access & VK_ACCESS_INDEX_READ_BIT))
-         return true;
-
-      /* Indirect buffer read */
-      if (indirect && (buffer_access & VK_ACCESS_INDIRECT_COMMAND_READ_BIT))
-         return true;
-
-      /* Attribute read */
-      if (buffer_access & VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT) {
-         const struct v3d_vs_prog_data *prog_data =
-            pipeline->shared_data->variants[BROADCOM_SHADER_VERTEX_BIN]->prog_data.vs;
-
-         for (int i = 0; i < ARRAY_SIZE(prog_data->vattr_sizes); i++) {
-            if (prog_data->vattr_sizes[i] > 0)
-               return true;
-         }
-      }
-
-      /* UBO / SSBO read */
-      if (buffer_access & (VK_ACCESS_UNIFORM_READ_BIT |
-                           VK_ACCESS_SHADER_READ_BIT |
-                           VK_ACCESS_MEMORY_READ_BIT)) {
-
-         if (vs_bin_maps->ubo_map.num_desc > 0 ||
-             vs_bin_maps->ssbo_map.num_desc > 0) {
-            return true;
-         }
-
-         if (gs_bin_maps && (gs_bin_maps->ubo_map.num_desc > 0 ||
-                             gs_bin_maps->ssbo_map.num_desc > 0)) {
-            return true;
-         }
-      }
-
-      /* SSBO write */
-      if (buffer_access & (VK_ACCESS_SHADER_WRITE_BIT |
-                           VK_ACCESS_MEMORY_WRITE_BIT)) {
-         if (vs_bin_maps->ssbo_map.num_desc > 0)
-            return true;
-
-         if (gs_bin_maps && gs_bin_maps->ssbo_map.num_desc > 0)
-            return true;
-      }
-   }
-
-   VkAccessFlags image_access =
-      cmd_buffer->state.barrier.bcl_image_access;
-   if (image_access) {
-      /* Image load / store */
-      if (image_access & (VK_ACCESS_SHADER_READ_BIT |
-                          VK_ACCESS_SHADER_WRITE_BIT |
-                          VK_ACCESS_MEMORY_READ_BIT |
-                          VK_ACCESS_MEMORY_WRITE_BIT)) {
-         if (vs_bin_maps->texture_map.num_desc > 0 ||
-             vs_bin_maps->sampler_map.num_desc > 0) {
-            return true;
-         }
-      }
-   }
-
-   return false;
-}
-
-static void
-consume_bcl_sync(struct v3dv_cmd_buffer *cmd_buffer, struct v3dv_job *job)
-{
-   job->needs_bcl_sync = true;
-   cmd_buffer->state.barrier.bcl_buffer_access = 0;
-   cmd_buffer->state.barrier.bcl_image_access = 0;
-}
-
 void
-v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
-                              bool indexed, bool indirect)
+v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer)
 {
    assert(cmd_buffer->state.gfx.pipeline);
    assert(!(cmd_buffer->state.gfx.pipeline->active_stages & VK_SHADER_STAGE_COMPUTE_BIT));
@@ -2537,23 +2425,6 @@ v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
     */
    struct v3dv_job *job = cmd_buffer_pre_draw_split_job(cmd_buffer);
    job->draw_count++;
-
-   /* Track VK_KHR_buffer_device_address usage in the job */
-   struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
-   job->uses_buffer_device_address |= pipeline->uses_buffer_device_address;
-
-   /* If this job is serialized (has consumed a barrier) then check if we need
-    * to sync at the binning stage by testing if the binning shaders involved
-    * with the draw call require access to external resources.
-    */
-   if (job->serialize && (cmd_buffer->state.barrier.bcl_buffer_access ||
-                          cmd_buffer->state.barrier.bcl_image_access)) {
-      assert(!job->needs_bcl_sync);
-      if (cmd_buffer_binning_sync_required(cmd_buffer, pipeline,
-                                           indexed, indirect)) {
-         consume_bcl_sync(cmd_buffer, job);
-      }
-   }
 
    /* GL shader state binds shaders, uniform and vertex attribute state. The
     * compiler injects uniforms to handle some descriptor types (such as
@@ -2638,7 +2509,7 @@ cmd_buffer_draw(struct v3dv_cmd_buffer *cmd_buffer,
 
    struct v3dv_render_pass *pass = cmd_buffer->state.pass;
    if (likely(!pass->multiview_enabled)) {
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, false);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw)(cmd_buffer, info);
       return;
    }
@@ -2646,7 +2517,7 @@ cmd_buffer_draw(struct v3dv_cmd_buffer *cmd_buffer,
    uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, false);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw)(cmd_buffer, info);
    }
 }
@@ -2686,7 +2557,7 @@ v3dv_CmdDrawIndexed(VkCommandBuffer commandBuffer,
 
    struct v3dv_render_pass *pass = cmd_buffer->state.pass;
    if (likely(!pass->multiview_enabled)) {
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, false);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
          (cmd_buffer, indexCount, instanceCount,
           firstIndex, vertexOffset, firstInstance);
@@ -2696,7 +2567,7 @@ v3dv_CmdDrawIndexed(VkCommandBuffer commandBuffer,
    uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, false);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indexed)
          (cmd_buffer, indexCount, instanceCount,
           firstIndex, vertexOffset, firstInstance);
@@ -2719,7 +2590,7 @@ v3dv_CmdDrawIndirect(VkCommandBuffer commandBuffer,
 
    struct v3dv_render_pass *pass = cmd_buffer->state.pass;
    if (likely(!pass->multiview_enabled)) {
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, true);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
       return;
@@ -2728,7 +2599,7 @@ v3dv_CmdDrawIndirect(VkCommandBuffer commandBuffer,
    uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, false, true);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_draw_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
    }
@@ -2750,7 +2621,7 @@ v3dv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
 
    struct v3dv_render_pass *pass = cmd_buffer->state.pass;
    if (likely(!pass->multiview_enabled)) {
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, true);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_indexed_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
       return;
@@ -2759,7 +2630,7 @@ v3dv_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
    uint32_t view_mask = pass->subpasses[cmd_buffer->state.subpass_idx].view_mask;
    while (view_mask) {
       cmd_buffer_set_view_index(cmd_buffer, u_bit_scan(&view_mask));
-      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer, true, true);
+      v3dv_cmd_buffer_emit_pre_draw(cmd_buffer);
       v3dv_X(cmd_buffer->device, cmd_buffer_emit_indexed_indirect)
          (cmd_buffer, buffer, offset, drawCount, stride);
    }
@@ -2779,22 +2650,6 @@ v3dv_CmdPipelineBarrier(VkCommandBuffer commandBuffer,
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 
-   /* We can safely skip barriers for image layout transitions from UNDEFINED
-    * layout.
-    */
-   if (imageBarrierCount > 0) {
-      bool all_undefined = true;
-      for (int i = 0; all_undefined && i < imageBarrierCount; i++) {
-         if (pImageBarriers[i].oldLayout != VK_IMAGE_LAYOUT_UNDEFINED)
-            all_undefined = false;
-      }
-      if (all_undefined)
-         imageBarrierCount = 0;
-   }
-
-   if (memoryBarrierCount + bufferBarrierCount + imageBarrierCount == 0)
-      return;
-
    /* We only care about barriers between GPU jobs */
    if (srcStageMask == VK_PIPELINE_STAGE_HOST_BIT ||
        dstStageMask == VK_PIPELINE_STAGE_HOST_BIT) {
@@ -2806,66 +2661,14 @@ v3dv_CmdPipelineBarrier(VkCommandBuffer commandBuffer,
    if (job)
       v3dv_cmd_buffer_finish_job(cmd_buffer);
 
-   /* Track the source of the barrier */
-   uint8_t src_mask = 0;
-   if (srcStageMask & (VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
-      src_mask |= V3DV_BARRIER_COMPUTE_BIT;
-   }
-
-   if (srcStageMask & (VK_PIPELINE_STAGE_TRANSFER_BIT |
-                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
-      src_mask |= V3DV_BARRIER_TRANSFER_BIT;
-   }
-
-   if (srcStageMask & (~(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                         VK_PIPELINE_STAGE_TRANSFER_BIT))) {
-      src_mask |= V3DV_BARRIER_GRAPHICS_BIT;
-   }
-
-   /* Track consumer of the barrier */
-   if (dstStageMask & (VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
-      cmd_buffer->state.barrier.dst_mask |= V3DV_BARRIER_COMPUTE_BIT;
-      cmd_buffer->state.barrier.src_mask_compute |= src_mask;
-   }
-
-   if (dstStageMask & (VK_PIPELINE_STAGE_TRANSFER_BIT |
-                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
-      cmd_buffer->state.barrier.dst_mask |= V3DV_BARRIER_TRANSFER_BIT;
-      cmd_buffer->state.barrier.src_mask_transfer |= src_mask;
-   }
-
-   if (dstStageMask & (~(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-                         VK_PIPELINE_STAGE_TRANSFER_BIT))) {
-      cmd_buffer->state.barrier.dst_mask |= V3DV_BARRIER_GRAPHICS_BIT;
-      cmd_buffer->state.barrier.src_mask_graphics |= src_mask;
-
-      if (dstStageMask & (VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
-                          VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                          VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
-                          VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
-                          VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
-                          VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
-                          VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
-                          VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
-         for (int i = 0; i < memoryBarrierCount; i++) {
-            cmd_buffer->state.barrier.bcl_buffer_access |=
-               pMemoryBarriers[i].dstAccessMask;
-            cmd_buffer->state.barrier.bcl_image_access |=
-               pMemoryBarriers[i].dstAccessMask;
-         }
-         for (int i = 0; i < bufferBarrierCount; i++) {
-            cmd_buffer->state.barrier.bcl_buffer_access |=
-               pBufferBarriers[i].dstAccessMask;
-         }
-         for (int i = 0; i < imageBarrierCount; i++) {
-            if (pImageBarriers[i].oldLayout != VK_IMAGE_LAYOUT_UNDEFINED) {
-               cmd_buffer->state.barrier.bcl_image_access |=
-                  pImageBarriers[i].dstAccessMask;
-            }
-         }
-      }
+   cmd_buffer->state.has_barrier = true;
+   if (dstStageMask & (VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                       VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                       VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT |
+                       VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+                       VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+                       VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT)) {
+      cmd_buffer->state.has_bcl_barrier = true;
    }
 }
 
@@ -3093,18 +2896,12 @@ v3dv_CmdPushConstants(VkCommandBuffer commandBuffer,
 {
    V3DV_FROM_HANDLE(v3dv_cmd_buffer, cmd_buffer, commandBuffer);
 
-   if (!memcmp((uint8_t *) cmd_buffer->state.push_constants_data + offset,
-               pValues, size)) {
+   if (!memcmp((uint8_t *) cmd_buffer->push_constants_data + offset, pValues, size))
       return;
-   }
 
-   memcpy((uint8_t *) cmd_buffer->state.push_constants_data + offset,
-           pValues, size);
-   cmd_buffer->state.push_constants_size =
-      MAX2(offset + size, cmd_buffer->state.push_constants_size);
+   memcpy((uint8_t *) cmd_buffer->push_constants_data + offset, pValues, size);
 
-   cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_PUSH_CONSTANTS |
-                              V3DV_CMD_DIRTY_PUSH_CONSTANTS_UBO;
+   cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_PUSH_CONSTANTS;
    cmd_buffer->state.dirty_push_constants_stages |= stageFlags;
 }
 
@@ -3207,44 +3004,24 @@ v3dv_cmd_buffer_begin_query(struct v3dv_cmd_buffer *cmd_buffer,
                             uint32_t query,
                             VkQueryControlFlags flags)
 {
+   /* FIXME: we only support one active query for now */
+   assert(cmd_buffer->state.query.active_query.bo == NULL);
    assert(query < pool->query_count);
-   switch (pool->query_type) {
-   case VK_QUERY_TYPE_OCCLUSION:
-      /* FIXME: we only support one active occlusion query for now */
-      assert(cmd_buffer->state.query.active_query.bo == NULL);
 
-      cmd_buffer->state.query.active_query.bo = pool->queries[query].bo;
-      cmd_buffer->state.query.active_query.offset = pool->queries[query].offset;
-      cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_OCCLUSION_QUERY;
-      break;
-   case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR: {
-      assert(cmd_buffer->state.query.active_query.perf == NULL);
-      if (cmd_buffer->state.pass)
-         v3dv_cmd_buffer_subpass_finish(cmd_buffer);
-
-      cmd_buffer->state.query.active_query.perf =
-         &pool->queries[query].perf;
-
-      if (cmd_buffer->state.pass) {
-         v3dv_cmd_buffer_subpass_resume(cmd_buffer,
-            cmd_buffer->state.subpass_idx);
-      }
-      break;
-   }
-   default:
-      unreachable("Unsupported query type");
-   }
+   cmd_buffer->state.query.active_query.bo = pool->queries[query].bo;
+   cmd_buffer->state.query.active_query.offset = pool->queries[query].offset;
+   cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_OCCLUSION_QUERY;
 }
 
-static void
-v3dv_cmd_buffer_schedule_end_query(struct v3dv_cmd_buffer *cmd_buffer,
-                                   struct v3dv_query_pool *pool,
-                                   uint32_t query)
+void
+v3dv_cmd_buffer_end_query(struct v3dv_cmd_buffer *cmd_buffer,
+                          struct v3dv_query_pool *pool,
+                          uint32_t query)
 {
    assert(query < pool->query_count);
+   assert(cmd_buffer->state.query.active_query.bo != NULL);
 
-   if  (cmd_buffer->state.pass &&
-        pool->query_type != VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR) {
+   if  (cmd_buffer->state.pass) {
       /* Queue the EndQuery in the command buffer state, we will create a CPU
        * job to flag all of these queries as possibly available right after the
        * render pass job in which they have been recorded.
@@ -3299,55 +3076,9 @@ v3dv_cmd_buffer_schedule_end_query(struct v3dv_cmd_buffer *cmd_buffer,
 
       list_addtail(&job->list_link, &cmd_buffer->jobs);
    }
-}
-
-static void
-v3dv_cmd_buffer_end_occlusion_query(struct v3dv_cmd_buffer *cmd_buffer,
-                                    struct v3dv_query_pool *pool,
-                                    uint32_t query)
-{
-   assert(query < pool->query_count);
-   assert(cmd_buffer->state.query.active_query.bo != NULL);
-
-   v3dv_cmd_buffer_schedule_end_query(cmd_buffer, pool, query);
 
    cmd_buffer->state.query.active_query.bo = NULL;
    cmd_buffer->state.dirty |= V3DV_CMD_DIRTY_OCCLUSION_QUERY;
-}
-
-static void
-v3dv_cmd_buffer_end_performance_query(struct v3dv_cmd_buffer *cmd_buffer,
-                                      struct v3dv_query_pool *pool,
-                                      uint32_t query)
-{
-   assert(query < pool->query_count);
-   assert(cmd_buffer->state.query.active_query.perf != NULL);
-
-   if (cmd_buffer->state.pass)
-      v3dv_cmd_buffer_subpass_finish(cmd_buffer);
-
-   v3dv_cmd_buffer_schedule_end_query(cmd_buffer, pool, query);
-
-   cmd_buffer->state.query.active_query.perf = NULL;
-
-   if (cmd_buffer->state.pass)
-      v3dv_cmd_buffer_subpass_resume(cmd_buffer, cmd_buffer->state.subpass_idx);
-}
-
-void v3dv_cmd_buffer_end_query(struct v3dv_cmd_buffer *cmd_buffer,
-                               struct v3dv_query_pool *pool,
-                               uint32_t query)
-{
-   switch (pool->query_type) {
-   case VK_QUERY_TYPE_OCCLUSION:
-      v3dv_cmd_buffer_end_occlusion_query(cmd_buffer, pool, query);
-      break;
-   case VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR:
-      v3dv_cmd_buffer_end_performance_query(cmd_buffer, pool, query);
-      break;
-   default:
-      unreachable("Unsupported query type");
-   }
 }
 
 void
@@ -3722,10 +3453,6 @@ cmd_buffer_create_csd_job(struct v3dv_cmd_buffer *cmd_buffer,
                                      cs_variant,
                                      wg_uniform_offsets_out);
    submit->cfg[6] = uniforms.bo->offset + uniforms.offset;
-
-
-   /* Track VK_KHR_buffer_device_address usage in the job */
-   job->uses_buffer_device_address |= pipeline->uses_buffer_device_address;
 
    v3dv_job_add_bo(job, uniforms.bo);
 

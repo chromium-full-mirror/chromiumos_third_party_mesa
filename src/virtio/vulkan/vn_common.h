@@ -44,8 +44,7 @@
 
 #define VN_DEFAULT_ALIGN 8
 
-#define VN_DEBUG(category) (unlikely(vn_env.debug & VN_DEBUG_##category))
-#define VN_PERF(category) (unlikely(vn_env.perf & VN_PERF_##category))
+#define VN_DEBUG(category) (unlikely(vn_debug & VN_DEBUG_##category))
 
 #define vn_error(instance, error)                                            \
    (VN_DEBUG(RESULT) ? vn_log_result((instance), (error), __func__) : (error))
@@ -142,14 +141,6 @@ enum vn_debug {
    VN_DEBUG_NO_ABORT = 1ull << 4,
 };
 
-enum vn_perf {
-   VN_PERF_NO_ASYNC_SET_ALLOC = 1ull << 0,
-   VN_PERF_NO_ASYNC_BUFFER_CREATE = 1ull << 1,
-   VN_PERF_NO_ASYNC_QUEUE_SUBMIT = 1ull << 2,
-   VN_PERF_NO_EVENT_FEEDBACK = 1ull << 3,
-   VN_PERF_NO_FENCE_FEEDBACK = 1ull << 4,
-};
-
 typedef uint64_t vn_object_id;
 
 /* base class of vn_instance */
@@ -180,17 +171,10 @@ struct vn_refcount {
    atomic_int count;
 };
 
-struct vn_env {
-   uint64_t debug;
-   uint64_t perf;
-   /* zero will be overridden to UINT32_MAX as no limit */
-   uint32_t draw_cmd_batch_limit;
-   uint32_t relax_base_sleep_us;
-};
-extern struct vn_env vn_env;
+extern uint64_t vn_debug;
 
 void
-vn_env_init(void);
+vn_debug_init(void);
 
 void
 vn_trace_init(void);

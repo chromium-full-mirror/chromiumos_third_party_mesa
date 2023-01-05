@@ -37,19 +37,19 @@ vk_common_CmdCopyBuffer(VkCommandBuffer commandBuffer,
     */
    struct vk_object_base *disp = (struct vk_object_base *)commandBuffer;
 
-   STACK_ARRAY(VkBufferCopy2, region2s, regionCount);
+   STACK_ARRAY(VkBufferCopy2KHR, region2s, regionCount);
 
    for (uint32_t r = 0; r < regionCount; r++) {
-      region2s[r] = (VkBufferCopy2) {
-         .sType      = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+      region2s[r] = (VkBufferCopy2KHR) {
+         .sType      = VK_STRUCTURE_TYPE_BUFFER_COPY_2_KHR,
          .srcOffset  = pRegions[r].srcOffset,
          .dstOffset  = pRegions[r].dstOffset,
          .size       = pRegions[r].size,
       };
    }
 
-   VkCopyBufferInfo2 info = {
-      .sType         = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+   VkCopyBufferInfo2KHR info = {
+      .sType         = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2_KHR,
       .srcBuffer     = srcBuffer,
       .dstBuffer     = dstBuffer,
       .regionCount   = regionCount,
@@ -75,11 +75,11 @@ vk_common_CmdCopyImage(VkCommandBuffer commandBuffer,
     */
    struct vk_object_base *disp = (struct vk_object_base *)commandBuffer;
 
-   STACK_ARRAY(VkImageCopy2, region2s, regionCount);
+   STACK_ARRAY(VkImageCopy2KHR, region2s, regionCount);
 
    for (uint32_t r = 0; r < regionCount; r++) {
-      region2s[r] = (VkImageCopy2) {
-         .sType            = VK_STRUCTURE_TYPE_IMAGE_COPY_2,
+      region2s[r] = (VkImageCopy2KHR) {
+         .sType            = VK_STRUCTURE_TYPE_IMAGE_COPY_2_KHR,
          .srcSubresource   = pRegions[r].srcSubresource,
          .srcOffset        = pRegions[r].srcOffset,
          .dstSubresource   = pRegions[r].dstSubresource,
@@ -88,8 +88,8 @@ vk_common_CmdCopyImage(VkCommandBuffer commandBuffer,
       };
    }
 
-   VkCopyImageInfo2 info = {
-      .sType            = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2,
+   VkCopyImageInfo2KHR info = {
+      .sType            = VK_STRUCTURE_TYPE_COPY_IMAGE_INFO_2_KHR,
       .srcImage         = srcImage,
       .srcImageLayout   = srcImageLayout,
       .dstImage         = dstImage,
@@ -116,11 +116,11 @@ vk_common_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
     */
    struct vk_object_base *disp = (struct vk_object_base *)commandBuffer;
 
-   STACK_ARRAY(VkBufferImageCopy2, region2s, regionCount);
+   STACK_ARRAY(VkBufferImageCopy2KHR, region2s, regionCount);
 
    for (uint32_t r = 0; r < regionCount; r++) {
-      region2s[r] = (VkBufferImageCopy2) {
-         .sType               = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+      region2s[r] = (VkBufferImageCopy2KHR) {
+         .sType               = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2_KHR,
          .bufferOffset        = pRegions[r].bufferOffset,
          .bufferRowLength     = pRegions[r].bufferRowLength,
          .bufferImageHeight   = pRegions[r].bufferImageHeight,
@@ -130,8 +130,8 @@ vk_common_CmdCopyBufferToImage(VkCommandBuffer commandBuffer,
       };
    }
 
-   VkCopyBufferToImageInfo2 info = {
-      .sType            = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+   VkCopyBufferToImageInfo2KHR info = {
+      .sType            = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2_KHR,
       .srcBuffer        = srcBuffer,
       .dstImage         = dstImage,
       .dstImageLayout   = dstImageLayout,
@@ -157,11 +157,11 @@ vk_common_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
     */
    struct vk_object_base *disp = (struct vk_object_base *)commandBuffer;
 
-   STACK_ARRAY(VkBufferImageCopy2, region2s, regionCount);
+   STACK_ARRAY(VkBufferImageCopy2KHR, region2s, regionCount);
 
    for (uint32_t r = 0; r < regionCount; r++) {
-      region2s[r] = (VkBufferImageCopy2) {
-         .sType               = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+      region2s[r] = (VkBufferImageCopy2KHR) {
+         .sType               = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2_KHR,
          .bufferOffset        = pRegions[r].bufferOffset,
          .bufferRowLength     = pRegions[r].bufferRowLength,
          .bufferImageHeight   = pRegions[r].bufferImageHeight,
@@ -171,8 +171,8 @@ vk_common_CmdCopyImageToBuffer(VkCommandBuffer commandBuffer,
       };
    }
 
-   VkCopyImageToBufferInfo2 info = {
-      .sType            = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2,
+   VkCopyImageToBufferInfo2KHR info = {
+      .sType            = VK_STRUCTURE_TYPE_COPY_IMAGE_TO_BUFFER_INFO_2_KHR,
       .srcImage         = srcImage,
       .srcImageLayout   = srcImageLayout,
       .dstBuffer        = dstBuffer,
@@ -200,11 +200,11 @@ vk_common_CmdBlitImage(VkCommandBuffer commandBuffer,
     */
    struct vk_object_base *disp = (struct vk_object_base *)commandBuffer;
 
-   STACK_ARRAY(VkImageBlit2, region2s, regionCount);
+   STACK_ARRAY(VkImageBlit2KHR, region2s, regionCount);
 
    for (uint32_t r = 0; r < regionCount; r++) {
-      region2s[r] = (VkImageBlit2) {
-         .sType            = VK_STRUCTURE_TYPE_IMAGE_BLIT_2,
+      region2s[r] = (VkImageBlit2KHR) {
+         .sType            = VK_STRUCTURE_TYPE_IMAGE_BLIT_2_KHR,
          .srcSubresource   = pRegions[r].srcSubresource,
          .srcOffsets       = {
             pRegions[r].srcOffsets[0],
@@ -218,8 +218,8 @@ vk_common_CmdBlitImage(VkCommandBuffer commandBuffer,
       };
    }
 
-   VkBlitImageInfo2 info = {
-      .sType            = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2,
+   VkBlitImageInfo2KHR info = {
+      .sType            = VK_STRUCTURE_TYPE_BLIT_IMAGE_INFO_2_KHR,
       .srcImage         = srcImage,
       .srcImageLayout   = srcImageLayout,
       .dstImage         = dstImage,
@@ -248,11 +248,11 @@ vk_common_CmdResolveImage(VkCommandBuffer commandBuffer,
     */
    struct vk_object_base *disp = (struct vk_object_base *)commandBuffer;
 
-   STACK_ARRAY(VkImageResolve2, region2s, regionCount);
+   STACK_ARRAY(VkImageResolve2KHR, region2s, regionCount);
 
    for (uint32_t r = 0; r < regionCount; r++) {
-      region2s[r] = (VkImageResolve2) {
-         .sType            = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2,
+      region2s[r] = (VkImageResolve2KHR) {
+         .sType            = VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2_KHR,
          .srcSubresource   = pRegions[r].srcSubresource,
          .srcOffset        = pRegions[r].srcOffset,
          .dstSubresource   = pRegions[r].dstSubresource,
@@ -261,8 +261,8 @@ vk_common_CmdResolveImage(VkCommandBuffer commandBuffer,
       };
    }
 
-   VkResolveImageInfo2 info = {
-      .sType            = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2,
+   VkResolveImageInfo2KHR info = {
+      .sType            = VK_STRUCTURE_TYPE_RESOLVE_IMAGE_INFO_2_KHR,
       .srcImage         = srcImage,
       .srcImageLayout   = srcImageLayout,
       .dstImage         = dstImage,

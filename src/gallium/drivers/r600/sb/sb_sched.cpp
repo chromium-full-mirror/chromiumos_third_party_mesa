@@ -1205,13 +1205,15 @@ bool post_scheduler::schedule_alu(container_node *c) {
 	if (!ready.empty()) {
 		sblog << "##post_scheduler: unscheduled ready instructions :";
 		dump::dump_op_list(&ready);
+		assert(!"unscheduled ready instructions");
 	}
 
 	if (!pending.empty()) {
 		sblog << "##post_scheduler: unscheduled pending instructions :";
 		dump::dump_op_list(&pending);
+		assert(!"unscheduled pending instructions");
 	}
-	return pending.empty() && ready.empty() && improving != 0;
+	return improving;
 }
 
 void post_scheduler::add_interferences(value *v, sb_bitset &rb, val_set &vs) {

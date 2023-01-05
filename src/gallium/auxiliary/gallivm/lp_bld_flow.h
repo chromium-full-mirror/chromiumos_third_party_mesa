@@ -73,8 +73,7 @@ struct lp_build_mask_context
    struct lp_build_skip_context skip;
 
    LLVMTypeRef reg_type;
-   LLVMTypeRef var_type;
-   /* 'var' is a pointer (alloca) pointing to 'var_type' */
+
    LLVMValueRef var;
 };
 
@@ -108,7 +107,7 @@ lp_build_mask_end(struct lp_build_mask_context *mask);
 
 /**
  * LLVM's IR doesn't represent for-loops directly. Furthermore it
- * requires creating code blocks, branches, phi variables, so it
+ * it requires creating code blocks, branches, phi variables, so it
  * requires a fair amount of code.
  *
  * @sa http://www.llvm.org/docs/tutorial/LangImpl5.html#for
@@ -118,7 +117,6 @@ struct lp_build_loop_state
    LLVMBasicBlockRef block;
    LLVMValueRef counter_var;
    LLVMValueRef counter;
-   LLVMTypeRef counter_type;
    struct gallivm_state *gallivm;
 };
 
@@ -156,7 +154,6 @@ struct lp_build_for_loop_state
    LLVMBasicBlockRef exit;
    LLVMValueRef counter_var;
    LLVMValueRef counter;
-   LLVMTypeRef counter_type;
    LLVMValueRef step;
    LLVMIntPredicate cond;
    LLVMValueRef end;

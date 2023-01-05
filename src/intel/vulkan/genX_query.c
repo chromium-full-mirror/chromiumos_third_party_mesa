@@ -159,10 +159,6 @@ VkResult genX(CreateQueryPool)(
       break;
    }
 #endif
-   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
-      /* Query has two values: begin and end. */
-      uint64s_per_slot = 1 + 2;
-      break;
    default:
       assert(!"Invalid query type");
    }
@@ -452,8 +448,7 @@ VkResult genX(GetQueryPoolResults)(
           pool->type == VK_QUERY_TYPE_TIMESTAMP ||
           pool->type == VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT ||
           pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR ||
-          pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL ||
-          pool->type == VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT);
+          pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL);
 
    if (vk_device_is_lost(&device->vk))
       return VK_ERROR_DEVICE_LOST;
@@ -495,8 +490,7 @@ VkResult genX(GetQueryPoolResults)(
 
       uint32_t idx = 0;
       switch (pool->type) {
-      case VK_QUERY_TYPE_OCCLUSION:
-      case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT: {
+      case VK_QUERY_TYPE_OCCLUSION: {
          uint64_t *slot = query_slot(pool, firstQuery + i);
          if (write_results) {
             /* From the Vulkan 1.2.132 spec:
@@ -562,7 +556,7 @@ VkResult genX(GetQueryPoolResults)(
             const struct intel_perf_query_info *query = pool->pass_query[p];
             struct intel_perf_query_result result;
             intel_perf_query_result_clear(&result);
-            intel_perf_query_result_accumulate_fields(&result, query,
+            intel_perf_query_result_accumulate_fields(&result, query, &device->info,
                                                       pool->bo->map + khr_perf_query_data_offset(pool, firstQuery + i, p, false),
                                                       pool->bo->map + khr_perf_query_data_offset(pool, firstQuery + i, p, true),
                                                       false /* no_oa_accumulate */);
@@ -579,7 +573,7 @@ VkResult genX(GetQueryPoolResults)(
          const struct intel_perf_query_info *query = &device->physical->perf->queries[0];
          struct intel_perf_query_result result;
          intel_perf_query_result_clear(&result);
-         intel_perf_query_result_accumulate_fields(&result, query,
+         intel_perf_query_result_accumulate_fields(&result, query, &device->info,
                                                    query_data + intel_perf_query_data_offset(pool, false),
                                                    query_data + intel_perf_query_data_offset(pool, true),
                                                    false /* no_oa_accumulate */);
@@ -681,7 +675,6 @@ emit_zero_queries(struct anv_cmd_buffer *cmd_buffer,
       }
       break;
 
-   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
       for (uint32_t i = 0; i < num_queries; i++) {
@@ -757,8 +750,7 @@ void genX(CmdResetQueryPool)(
    }
 
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
-   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT:
-   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT: {
+   case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT: {
       struct mi_builder b;
       mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
@@ -884,7 +876,6 @@ emit_perf_intel_query(struct anv_cmd_buffer *cmd_buffer,
 
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
-      case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_A:
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_C: {
          struct anv_address addr = anv_address_add(data_addr, field->location);
@@ -930,15 +921,6 @@ void genX(CmdBeginQueryIndexedEXT)(
    switch (pool->type) {
    case VK_QUERY_TYPE_OCCLUSION:
       emit_ps_depth_count(cmd_buffer, anv_address_add(query_addr, 8));
-      break;
-
-   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
-      anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
-         pc.CommandStreamerStallEnable = true;
-         pc.StallAtPixelScoreboard = true;
-      }
-      mi_store(&b, mi_mem64(anv_address_add(query_addr, 8)),
-                   mi_reg64(GENX(CL_INVOCATION_COUNT_num)));
       break;
 
    case VK_QUERY_TYPE_PIPELINE_STATISTICS: {
@@ -1043,7 +1025,6 @@ void genX(CmdBeginQueryIndexedEXT)(
 
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
-         case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_A:
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
             dws =
@@ -1120,20 +1101,6 @@ void genX(CmdEndQueryIndexedEXT)(
       emit_query_pc_availability(cmd_buffer, query_addr, true);
       break;
 
-   case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
-      /* Ensure previous commands have completed before capturing the register
-       * value.
-       */
-      anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
-         pc.CommandStreamerStallEnable = true;
-         pc.StallAtPixelScoreboard = true;
-      }
-
-      mi_store(&b, mi_mem64(anv_address_add(query_addr, 16)),
-                   mi_reg64(GENX(CL_INVOCATION_COUNT_num)));
-      emit_query_mi_availability(&b, query_addr, true);
-      break;
-
    case VK_QUERY_TYPE_PIPELINE_STATISTICS: {
       /* TODO: This might only be necessary for certain stats */
       anv_batch_emit(&cmd_buffer->batch, GENX(PIPE_CONTROL), pc) {
@@ -1195,7 +1162,6 @@ void genX(CmdEndQueryIndexedEXT)(
 
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
-         case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_A:
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
          case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
             dws =
@@ -1293,7 +1259,7 @@ void genX(CmdWriteTimestamp2)(
    struct mi_builder b;
    mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
-   if (stage == VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT) {
+   if (stage == VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT_KHR) {
       mi_store(&b, mi_mem64(anv_address_add(query_addr, 8)),
                    mi_reg64(TIMESTAMP));
       emit_query_mi_availability(&b, query_addr, true);
@@ -1446,7 +1412,6 @@ void genX(CmdCopyQueryPoolResults)(
       uint32_t idx = 0;
       switch (pool->type) {
       case VK_QUERY_TYPE_OCCLUSION:
-      case VK_QUERY_TYPE_PRIMITIVES_GENERATED_EXT:
          result = compute_query_result(&b, anv_address_add(query_addr, 8));
          /* Like in the case of vkGetQueryPoolResults, if the query is
           * unavailable and the VK_QUERY_RESULT_PARTIAL_BIT flag is set,

@@ -124,7 +124,7 @@ agx_print_instr(agx_instr *I, FILE *fp)
       agx_print_index(I->dest[d], fp);
    }
 
-   for (unsigned s = 0; s < I->nr_srcs; ++s) {
+   for (unsigned s = 0; s < info.nr_srcs; ++s) {
       if (print_comma)
          fprintf(fp, ", ");
       else
@@ -194,7 +194,7 @@ agx_print_instr(agx_instr *I, FILE *fp)
 void
 agx_print_block(agx_block *block, FILE *fp)
 {
-   fprintf(fp, "block%u {\n", block->index);
+   fprintf(fp, "block%u {\n", block->name);
 
    agx_foreach_instr_in_block(block, ins)
       agx_print_instr(ins, fp);
@@ -205,14 +205,14 @@ agx_print_block(agx_block *block, FILE *fp)
       fprintf(fp, " -> ");
 
       agx_foreach_successor(block, succ)
-         fprintf(fp, "block%u ", succ->index);
+         fprintf(fp, "block%u ", succ->name);
    }
 
-   if (block->predecessors.size) {
+   if (block->predecessors->entries) {
       fprintf(fp, " from");
 
       agx_foreach_predecessor(block, pred)
-         fprintf(fp, " block%u", (*pred)->index);
+         fprintf(fp, " block%u", pred->name);
    }
 
    fprintf(fp, "\n\n");

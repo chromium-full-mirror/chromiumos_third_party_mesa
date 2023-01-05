@@ -28,8 +28,8 @@
 #include "util/u_framebuffer.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/reallocarray.h"
 #include "util/u_inlines.h"
+#include "util/simple_list.h"
 #include "util/format/u_format.h"
 #include "lp_scene.h"
 #include "lp_fence.h"
@@ -62,7 +62,7 @@ struct shader_ref {
  * \param queue  the queue to put newly rendered/emptied scenes into
  */
 struct lp_scene *
-lp_scene_create(struct lp_setup_context *setup)
+lp_scene_create( struct lp_setup_context *setup )
 {
    struct lp_scene *scene = slab_alloc_st(&setup->scene_slab);
    if (!scene)
@@ -102,7 +102,6 @@ lp_scene_destroy(struct lp_scene *scene)
 {
    lp_scene_end_rasterization(scene);
    mtx_destroy(&scene->mutex);
-   free(scene->tiles);
    assert(scene->data.head == &scene->data.first);
    slab_free_st(&scene->setup->scene_slab, scene);
 }
@@ -215,6 +214,8 @@ lp_scene_begin_rasterization(struct lp_scene *scene)
 }
 
 
+
+
 /**
  * Free all the temporary data in a scene.
  */
@@ -247,57 +248,62 @@ lp_scene_end_rasterization(struct lp_scene *scene )
 
    /* Reset all command lists:
     */
-   memset(scene->tiles, 0, sizeof(struct cmd_bin) * scene->num_alloced_tiles);
+   memset(scene->tile, 0, sizeof scene->tile);
 
    /* Decrement texture ref counts
     */
-   int j = 0;
-   for (struct resource_ref *ref = scene->resources; ref; ref = ref->next) {
-      for (int i = 0; i < ref->count; i++) {
-         if (LP_DEBUG & DEBUG_SETUP)
-            debug_printf("resource %d: %p %dx%d sz %d\n",
-                         j,
-                         (void *) ref->resource[i],
-                         ref->resource[i]->width0,
-                         ref->resource[i]->height0,
-                         llvmpipe_resource_size(ref->resource[i]));
-         j++;
-         llvmpipe_resource_unmap(ref->resource[i], 0, 0);
-         pipe_resource_reference(&ref->resource[i], NULL);
-      }
-   }
+   {
+      struct resource_ref *ref;
+      int i, j = 0;
 
-   for (struct resource_ref *ref = scene->writeable_resources; ref;
-        ref = ref->next) {
-      for (int i = 0; i < ref->count; i++) {
-         if (LP_DEBUG & DEBUG_SETUP)
-            debug_printf("resource %d: %p %dx%d sz %d\n",
-                         j,
-                         (void *) ref->resource[i],
-                         ref->resource[i]->width0,
+      for (ref = scene->resources; ref; ref = ref->next) {
+         for (i = 0; i < ref->count; i++) {
+            if (LP_DEBUG & DEBUG_SETUP)
+               debug_printf("resource %d: %p %dx%d sz %d\n",
+                            j,
+                            (void *) ref->resource[i],
+                            ref->resource[i]->width0,
                             ref->resource[i]->height0,
-                         llvmpipe_resource_size(ref->resource[i]));
-         j++;
-         llvmpipe_resource_unmap(ref->resource[i], 0, 0);
-         pipe_resource_reference(&ref->resource[i], NULL);
+                            llvmpipe_resource_size(ref->resource[i]));
+            j++;
+            llvmpipe_resource_unmap(ref->resource[i], 0, 0);
+            pipe_resource_reference(&ref->resource[i], NULL);
+         }
       }
-   }
 
-   if (LP_DEBUG & DEBUG_SETUP) {
-      debug_printf("scene %d resources, sz %d\n",
-                   j, scene->resource_reference_size);
+      for (ref = scene->writeable_resources; ref; ref = ref->next) {
+         for (i = 0; i < ref->count; i++) {
+            if (LP_DEBUG & DEBUG_SETUP)
+               debug_printf("resource %d: %p %dx%d sz %d\n",
+                            j,
+                            (void *) ref->resource[i],
+                            ref->resource[i]->width0,
+                            ref->resource[i]->height0,
+                            llvmpipe_resource_size(ref->resource[i]));
+            j++;
+            llvmpipe_resource_unmap(ref->resource[i], 0, 0);
+            pipe_resource_reference(&ref->resource[i], NULL);
+         }
+      }
+
+      if (LP_DEBUG & DEBUG_SETUP)
+         debug_printf("scene %d resources, sz %d\n",
+                      j, scene->resource_reference_size);
    }
 
    /* Decrement shader variant ref counts
     */
-   j = 0;
-   for (struct shader_ref *ref = scene->frag_shaders; ref; ref = ref->next) {
-      for (i = 0; i < ref->count; i++) {
-         if (LP_DEBUG & DEBUG_SETUP)
-            debug_printf("shader %d: %p\n", j, (void *) ref->variant[i]);
-         j++;
-         lp_fs_variant_reference(llvmpipe_context(scene->pipe),
-                                 &ref->variant[i], NULL);
+   {
+      struct shader_ref *ref;
+      int i, j = 0;
+
+      for (ref = scene->frag_shaders; ref; ref = ref->next) {
+         for (i = 0; i < ref->count; i++) {
+            if (LP_DEBUG & DEBUG_SETUP)
+               debug_printf("shader %d: %p\n", j, (void *) ref->variant[i]);
+            j++;
+            lp_fs_variant_reference(llvmpipe_context(scene->pipe), &ref->variant[i], NULL);
+         }
       }
    }
 
@@ -369,7 +375,7 @@ lp_scene_new_data_block( struct lp_scene *scene )
       struct data_block *block = MALLOC_STRUCT(data_block);
       if (!block)
          return NULL;
-
+      
       scene->scene_size += sizeof *block;
 
       block->used = 0;
@@ -468,13 +474,13 @@ lp_scene_add_resource_reference(struct lp_scene *scene,
 
 /**
  * Add a reference to a fragment shader variant
- * Return FALSE if out of memory, TRUE otherwise.
  */
 boolean
 lp_scene_add_frag_shader_reference(struct lp_scene *scene,
                                    struct lp_fragment_shader_variant *variant)
 {
    struct shader_ref *ref, **last = &scene->frag_shaders;
+   int i;
 
    /* Look at existing resource blocks:
     */
@@ -483,7 +489,7 @@ lp_scene_add_frag_shader_reference(struct lp_scene *scene,
 
       /* Search for this resource:
        */
-      for (int i = 0; i < ref->count; i++)
+      for (i = 0; i < ref->count; i++)
          if (ref->variant[i] == variant)
             return TRUE;
 
@@ -613,15 +619,6 @@ void lp_scene_begin_binning(struct lp_scene *scene,
    scene->tiles_y = align(fb->height, TILE_SIZE) / TILE_SIZE;
    assert(scene->tiles_x <= TILES_X);
    assert(scene->tiles_y <= TILES_Y);
-
-   unsigned num_required_tiles = scene->tiles_x * scene->tiles_y;
-   if (scene->num_alloced_tiles < num_required_tiles) {
-      scene->tiles = reallocarray(scene->tiles, num_required_tiles, sizeof(struct cmd_bin));
-      if (!scene->tiles)
-         return;
-      memset(scene->tiles, 0, sizeof(struct cmd_bin) * num_required_tiles);
-      scene->num_alloced_tiles = num_required_tiles;
-   }
 
    /*
     * Determine how many layers the fb has (used for clamping layer value).

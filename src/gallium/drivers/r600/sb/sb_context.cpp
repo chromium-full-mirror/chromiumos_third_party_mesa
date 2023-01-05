@@ -101,7 +101,7 @@ const char* sb_context::get_hw_class_name() {
 		TRANSLATE_HW_CLASS(CAYMAN);
 #undef TRANSLATE_HW_CLASS
 		default:
-			assert(!"unknown gfx level");
+			assert(!"unknown chip class");
 			return "INVALID_CHIP_CLASS";
 	}
 }

@@ -114,8 +114,8 @@ emit_load_store_deref(nir_builder *b, nir_intrinsic_instr *orig_instr,
 static bool
 lower_indirect_derefs_block(nir_block *block, nir_builder *b,
                             nir_variable_mode modes,
-                            const struct set *vars,
-                            uint32_t max_lower_array_len)
+                            uint32_t max_lower_array_len,
+                            bool builtins_only)
 {
    bool progress = false;
 
@@ -159,7 +159,8 @@ lower_indirect_derefs_block(nir_block *block, nir_builder *b,
       if (!(modes & base->var->data.mode) && !base->var->data.compact)
          continue;
 
-      if (vars && !_mesa_set_search(vars, base->var))
+      /* built-in's will always start with "gl_" */
+      if (builtins_only && strncmp(base->var->name, "gl_", 3))
          continue;
 
       b->cursor = nir_instr_remove(&intrin->instr);
@@ -189,15 +190,15 @@ lower_indirect_derefs_block(nir_block *block, nir_builder *b,
 
 static bool
 lower_indirects_impl(nir_function_impl *impl, nir_variable_mode modes,
-                     const struct set *vars, uint32_t max_lower_array_len)
+                     uint32_t max_lower_array_len, bool builtins_only)
 {
    nir_builder builder;
    nir_builder_init(&builder, impl);
    bool progress = false;
 
    nir_foreach_block_safe(block, impl) {
-      progress |= lower_indirect_derefs_block(block, &builder, modes, vars,
-                                              max_lower_array_len);
+      progress |= lower_indirect_derefs_block(block, &builder, modes,
+                                              max_lower_array_len, builtins_only);
    }
 
    if (progress)
@@ -221,24 +222,29 @@ nir_lower_indirect_derefs(nir_shader *shader, nir_variable_mode modes,
 
    nir_foreach_function(function, shader) {
       if (function->impl) {
-         progress = lower_indirects_impl(function->impl, modes, NULL,
-                                         max_lower_array_len) || progress;
+         progress = lower_indirects_impl(function->impl, modes,
+                                         max_lower_array_len, false) || progress;
       }
    }
 
    return progress;
 }
 
-/** Lowers indirects on any variables in the given set */
+/** Lowers indirect variable loads/stores to direct loads/stores.
+ *
+ * The pass works by replacing any indirect load or store with an if-ladder
+ * that does a binary search on the array index. It only changes uniform variable builtins,
+ * e.g., gl_LightSource
+ */
 bool
-nir_lower_indirect_var_derefs(nir_shader *shader, const struct set *vars)
+nir_lower_indirect_builtin_uniform_derefs(nir_shader *shader)
 {
    bool progress = false;
 
    nir_foreach_function(function, shader) {
       if (function->impl) {
          progress = lower_indirects_impl(function->impl, nir_var_uniform,
-                                         vars, UINT_MAX) || progress;
+                                         UINT_MAX, true) || progress;
       }
    }
 

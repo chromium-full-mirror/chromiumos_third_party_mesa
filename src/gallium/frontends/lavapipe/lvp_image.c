@@ -178,8 +178,7 @@ lvp_CreateImageView(VkDevice _device,
    LVP_FROM_HANDLE(lvp_image, image, pCreateInfo->image);
    struct lvp_image_view *view;
 
-   view = vk_image_view_create(&device->vk, false, pCreateInfo,
-                               pAllocator, sizeof(*view));
+   view = vk_image_view_create(&device->vk, pCreateInfo, pAllocator, sizeof(*view));
    if (view == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -344,7 +343,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyBuffer(
 
 VKAPI_ATTR VkDeviceAddress VKAPI_CALL lvp_GetBufferDeviceAddress(
    VkDevice                                    device,
-   const VkBufferDeviceAddressInfo*            pInfo)
+   const VkBufferDeviceAddressInfoKHR*         pInfo)
 {
    LVP_FROM_HANDLE(lvp_buffer, buffer, pInfo->buffer);
 
@@ -353,14 +352,14 @@ VKAPI_ATTR VkDeviceAddress VKAPI_CALL lvp_GetBufferDeviceAddress(
 
 VKAPI_ATTR uint64_t VKAPI_CALL lvp_GetBufferOpaqueCaptureAddress(
     VkDevice                                    device,
-    const VkBufferDeviceAddressInfo*            pInfo)
+    const VkBufferDeviceAddressInfoKHR*         pInfo)
 {
    return 0;
 }
 
 VKAPI_ATTR uint64_t VKAPI_CALL lvp_GetDeviceMemoryOpaqueCaptureAddress(
     VkDevice                                    device,
-    const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo)
+    const VkDeviceMemoryOpaqueCaptureAddressInfoKHR* pInfo)
 {
    return 0;
 }

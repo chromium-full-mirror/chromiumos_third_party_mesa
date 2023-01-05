@@ -29,28 +29,20 @@
 
 #include "kopper_interface.h"
 
-struct kopper_swapchain_image {
-   bool init;
-   bool acquired;
-   bool dt_has_data;
-   int age;
-   VkImage image;
-   VkSemaphore acquire;
-};
-
 struct kopper_swapchain {
    struct kopper_swapchain *next;
    VkSwapchainKHR swapchain;
-
+   VkImage *images;
+   bool *inits;
    unsigned last_present;
    unsigned num_images;
+   VkSemaphore *acquires;
    uint32_t last_present_prune;
    struct hash_table *presents;
    VkSwapchainCreateInfoKHR scci;
    unsigned num_acquires;
    unsigned max_acquires;
    unsigned async_presents;
-   struct kopper_swapchain_image *images;
 };
 
 enum kopper_type {
@@ -77,7 +69,7 @@ struct kopper_displaytarget
    struct util_queue_fence present_fence;
 
    VkSurfaceCapabilitiesKHR caps;
-   VkImageFormatListCreateInfo format_list;
+   VkImageFormatListCreateInfoKHR format_list;
    enum kopper_type type;
    bool is_kill;
    VkPresentModeKHR present_mode;
@@ -97,12 +89,6 @@ static inline bool
 zink_kopper_last_present_eq(const struct kopper_displaytarget *cdt, uint32_t idx)
 {
    return cdt->swapchain->last_present == idx;
-}
-
-static inline bool
-zink_kopper_acquired(const struct kopper_displaytarget *cdt, uint32_t idx)
-{
-   return idx != UINT32_MAX && cdt->swapchain->images[idx].acquired;
 }
 
 struct kopper_displaytarget *
@@ -138,6 +124,4 @@ bool
 zink_kopper_check(struct pipe_resource *pres);
 void
 zink_kopper_set_swap_interval(struct pipe_screen *pscreen, struct pipe_resource *pres, int interval);
-int
-zink_kopper_query_buffer_age(struct pipe_context *pctx, struct pipe_resource *pres);
 #endif

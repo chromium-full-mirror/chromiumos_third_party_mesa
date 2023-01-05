@@ -42,6 +42,7 @@
 #include "fd6_context.h"
 #include "fd6_draw.h"
 #include "fd6_emit.h"
+#include "fd6_format.h"
 #include "fd6_gmem.h"
 #include "fd6_pack.h"
 #include "fd6_program.h"
@@ -121,7 +122,7 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
 
       max_layer_index = psurf->u.tex.last_layer - psurf->u.tex.first_layer;
 
-      assert((offset + slice->size0) <= fd_bo_size(rsc->bo));
+      debug_assert((offset + slice->size0) <= fd_bo_size(rsc->bo));
 
       OUT_REG(
          ring,
@@ -199,7 +200,7 @@ emit_zs(struct fd_ringbuffer *ring, struct pipe_surface *zsbuf,
        * plus this CP_EVENT_WRITE at the end in it's own IB..
        */
       OUT_PKT7(ring, CP_EVENT_WRITE, 1);
-      OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(LRZ_CLEAR));
+      OUT_RING(ring, CP_EVENT_WRITE_0_EVENT(UNK_25));
 
       if (rsc->stencil) {
          stride = fd_resource_pitch(rsc->stencil, zsbuf->u.tex.level);
@@ -269,7 +270,7 @@ patch_fb_read_gmem(struct fd_batch *batch)
    enum pipe_format format = psurf->format;
 
    uint8_t swiz[4];
-   fdl6_format_swiz(psurf->format, false, swiz);
+   fd6_tex_swiz(psurf->format, swiz, PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W);
 
    /* always TILE6_2 mode in GMEM, which also means no swap: */
    uint32_t texconst0 = A6XX_TEX_CONST_0_FMT(fd6_texture_format(format, rsc->layout.tile_mode)) |
@@ -277,10 +278,10 @@ patch_fb_read_gmem(struct fd_batch *batch)
           A6XX_TEX_CONST_0_SWAP(WZYX) |
           A6XX_TEX_CONST_0_TILE_MODE(TILE6_2) |
           COND(util_format_is_srgb(format), A6XX_TEX_CONST_0_SRGB) |
-          A6XX_TEX_CONST_0_SWIZ_X(fdl6_swiz(swiz[0])) |
-          A6XX_TEX_CONST_0_SWIZ_Y(fdl6_swiz(swiz[1])) |
-          A6XX_TEX_CONST_0_SWIZ_Z(fdl6_swiz(swiz[2])) |
-          A6XX_TEX_CONST_0_SWIZ_W(fdl6_swiz(swiz[3]));
+          A6XX_TEX_CONST_0_SWIZ_X(fd6_pipe2swiz(swiz[0])) |
+          A6XX_TEX_CONST_0_SWIZ_Y(fd6_pipe2swiz(swiz[1])) |
+          A6XX_TEX_CONST_0_SWIZ_Z(fd6_pipe2swiz(swiz[2])) |
+          A6XX_TEX_CONST_0_SWIZ_W(fd6_pipe2swiz(swiz[3]));
 
    for (unsigned i = 0; i < num_patches; i++) {
       struct fd_cs_patch *patch = fd_patch_element(&batch->fb_read_patches, i);
@@ -481,8 +482,8 @@ emit_vsc_overflow_test(struct fd_batch *batch)
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    struct fd6_context *fd6_ctx = fd6_context(batch->ctx);
 
-   assert((fd6_ctx->vsc_draw_strm_pitch & 0x3) == 0);
-   assert((fd6_ctx->vsc_prim_strm_pitch & 0x3) == 0);
+   debug_assert((fd6_ctx->vsc_draw_strm_pitch & 0x3) == 0);
+   debug_assert((fd6_ctx->vsc_prim_strm_pitch & 0x3) == 0);
 
    /* Check for overflow, write vsc_scratch if detected: */
    for (int i = 0; i < gmem->num_vsc_pipes; i++) {
@@ -686,7 +687,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
    struct fd_screen *screen = batch->ctx->screen;
 
-   assert(!batch->tessellation);
+   debug_assert(!batch->tessellation);
 
    set_scissor(ring, 0, 0, gmem->width - 1, gmem->height - 1);
 
@@ -761,7 +762,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
    OUT_REG(ring,
            A6XX_RB_CCU_CNTL(.color_offset = screen->ccu_offset_gmem,
                             .gmem = true,
-                            .concurrent_resolve = screen->info->a6xx.concurrent_resolve));
+                            .unk2 = screen->info->a6xx.ccu_cntl_gmem_unk2));
 }
 
 static void
@@ -829,7 +830,7 @@ fd6_emit_tile_init(struct fd_batch *batch) assert_dt
    OUT_REG(ring,
            A6XX_RB_CCU_CNTL(.color_offset = screen->ccu_offset_gmem,
                             .gmem = true,
-                            .concurrent_resolve = screen->info->a6xx.concurrent_resolve));
+                            .unk2 = screen->info->a6xx.ccu_cntl_gmem_unk2));
 
    emit_zs(ring, pfb->zsbuf, batch->gmem_state);
    emit_mrt(ring, pfb, batch->gmem_state);
@@ -987,7 +988,7 @@ emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring, uint32_t base,
    uint32_t offset;
    bool ubwc_enabled;
 
-   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    /* separate stencil case: */
    if (stencil) {
@@ -999,7 +1000,7 @@ emit_blit(struct fd_batch *batch, struct fd_ringbuffer *ring, uint32_t base,
       fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
    ubwc_enabled = fd_resource_ubwc_enabled(rsc, psurf->u.tex.level);
 
-   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    uint32_t tile_mode = fd_resource_tile_mode(&rsc->b.b, psurf->u.tex.level);
    enum a6xx_format format = fd6_color_format(pfmt, tile_mode);

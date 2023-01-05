@@ -163,7 +163,7 @@ struct fd_screen {
     * internal RECTLIST primtype, if available, used for blits/
     * clears.
     */
-   const enum pc_di_primtype *primtypes;
+   const uint8_t *primtypes;
    uint32_t primtypes_mask;
 };
 

@@ -129,8 +129,6 @@ struct glthread_attrib_node {
    GLbitfield Mask;
    int ActiveTexture;
    GLenum MatrixMode;
-   bool CullFace;
-   bool DepthTest;
 };
 
 typedef enum {
@@ -232,7 +230,6 @@ struct glthread_state
    int MatrixStackDepth[M_NUM_MATRIX_STACKS];
 
    /** Enable states. */
-   bool DepthTest;
    bool CullFace;
 
    GLuint CurrentDrawFramebuffer;

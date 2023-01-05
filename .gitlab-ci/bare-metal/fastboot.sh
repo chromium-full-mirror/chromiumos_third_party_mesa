@@ -133,7 +133,6 @@ fi
 set +e
 $BM/fastboot_run.py \
   --dev="$BM_SERIAL" \
-  --test-timeout ${TEST_PHASE_TIMEOUT:-20} \
   --fbserial="$BM_FASTBOOT_SERIAL" \
   --powerup="$BM_POWERUP" \
   --powerdown="$BM_POWERDOWN"

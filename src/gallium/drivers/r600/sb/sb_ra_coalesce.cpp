@@ -273,7 +273,7 @@ void coalescer::build_constraint_queue() {
 	}
 }
 
-int coalescer::color_chunks() {
+void coalescer::color_chunks() {
 
 	for (chunk_queue::iterator I = chunks.begin(), E = chunks.end();
 			I != E; ++I) {
@@ -333,13 +333,9 @@ int coalescer::color_chunks() {
 			++pass;
 		}
 
-		if (!color) {
-			fprintf(stderr, "r600/SB: unable to color registers\n");
-			return -1;
-		}
+		assert(color);
 		color_chunk(c, color);
 	}
-	return 0;
 }
 
 void coalescer::init_reg_bitset(sb_bitset &bs, val_set &vs) {
@@ -435,7 +431,9 @@ int coalescer::run() {
 		return r;
 
 	build_chunk_queue();
-	return color_chunks();
+	color_chunks();
+
+	return 0;
 }
 
 void coalescer::color_phi_constraint(ra_constraint* c) {

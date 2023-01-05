@@ -143,7 +143,8 @@ reference.
 .. code-block:: c
    :caption: TLS ``GET_DISPATCH`` Implementation
 
-   extern __THREAD_INITIAL_EXEC struct _glapi_table *_glapi_tls_Dispatch;
+   extern __thread struct _glapi_table *_glapi_tls_Dispatch
+       __attribute__((tls_model("initial-exec")));
 
    #define GET_DISPATCH() _glapi_tls_Dispatch
 

@@ -32,8 +32,7 @@
 
 
 static nir_ssa_def *
-r600_legalize_image_load_store_impl(nir_builder *b, nir_instr *instr,
-                                    UNUSED void *_options)
+r600_legalize_image_load_store_impl(nir_builder *b, nir_instr *instr, void *_options)
 {
    b->cursor = nir_before_instr(instr);
    auto ir = nir_instr_as_intrinsic(instr);
@@ -144,8 +143,7 @@ r600_legalize_image_load_store_impl(nir_builder *b, nir_instr *instr,
 }
 
 static bool
-r600_legalize_image_load_store_filter(const nir_instr *instr,
-                                      UNUSED const void *_options)
+r600_legalize_image_load_store_filter(const nir_instr *instr, const void *_options)
 {
    if (instr->type != nir_instr_type_intrinsic)
       return false;

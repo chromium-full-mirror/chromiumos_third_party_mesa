@@ -26,7 +26,6 @@
 #include "vk_cmd_enqueue_entrypoints.h"
 #include "vk_command_buffer.h"
 #include "vk_device.h"
-#include "vk_pipeline_layout.h"
 #include "vk_util.h"
 
 VKAPI_ATTR void VKAPI_CALL
@@ -203,12 +202,11 @@ unref_pipeline_layout(struct vk_cmd_queue *queue,
 {
    struct vk_command_buffer *cmd_buffer =
       container_of(queue, struct vk_command_buffer, cmd_queue);
-   VK_FROM_HANDLE(vk_pipeline_layout, layout,
-                  cmd->u.bind_descriptor_sets.layout);
+   struct vk_device *device = cmd_buffer->base.device;
 
    assert(cmd->type == VK_CMD_BIND_DESCRIPTOR_SETS);
 
-   vk_pipeline_layout_unref(cmd_buffer->base.device, layout);
+   device->unref_pipeline_layout(device, cmd->u.bind_descriptor_sets.layout);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -222,6 +220,7 @@ vk_cmd_enqueue_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
                                      const uint32_t *pDynamicOffsets)
 {
    VK_FROM_HANDLE(vk_command_buffer, cmd_buffer, commandBuffer);
+   struct vk_device *device = cmd_buffer->base.device;
 
    struct vk_cmd_queue_entry *cmd =
       vk_zalloc(cmd_buffer->cmd_queue.alloc, sizeof(*cmd), 8,
@@ -236,7 +235,7 @@ vk_cmd_enqueue_CmdBindDescriptorSets(VkCommandBuffer commandBuffer,
     * command is in the queue.  Otherwise, it may get deleted out from under
     * us before the command is replayed.
     */
-   vk_pipeline_layout_ref(vk_pipeline_layout_from_handle(layout));
+   device->ref_pipeline_layout(device, layout);
    cmd->u.bind_descriptor_sets.layout = layout;
    cmd->driver_free_cb = unref_pipeline_layout;
 

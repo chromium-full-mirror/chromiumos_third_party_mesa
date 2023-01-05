@@ -1,3 +1,4 @@
+import argparse
 import copy
 import re
 import xml.etree.ElementTree as et
@@ -46,7 +47,7 @@ class VkVersion:
         # VK_MAKE_VERSION macro
         assert self.major < 1024 and self.minor < 1024
         assert self.patch is None or self.patch < 4096
-        assert str(self) == string
+        assert(str(self) == string)
 
     def __str__(self):
         ver_list = [str(self.major), str(self.minor)]
@@ -55,12 +56,14 @@ class VkVersion:
         return '.'.join(ver_list)
 
     def c_vk_version(self):
-        ver_list = [str(self.major), str(self.minor), str(self.patch or 0)]
+        patch = self.patch if self.patch is not None else 0
+        ver_list = [str(self.major), str(self.minor), str(patch)]
         return 'VK_MAKE_VERSION(' + ', '.join(ver_list) + ')'
 
     def __int_ver(self):
         # This is just an expansion of VK_VERSION
-        return (self.major << 22) | (self.minor << 12) | (self.patch or 0)
+        patch = self.patch if self.patch is not None else 0
+        return (self.major << 22) | (self.minor << 12) | patch
 
     def __gt__(self, other):
         # If only one of them has a patch version, "ignore" it by making
@@ -105,6 +108,7 @@ def get_all_exts_from_xml(xml):
                 if 'value' in enum_elem.attrib:
                     assert version is None
                     version = int(enum_elem.attrib['value'])
+        ext = Extension(name, version, True)
         extensions.append(Extension(name, version, True))
 
     return sorted(extensions, key=extension_order)

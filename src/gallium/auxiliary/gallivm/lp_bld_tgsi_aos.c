@@ -206,8 +206,7 @@ emit_fetch_temporary(
    struct lp_build_tgsi_aos_context * bld = lp_aos_context(bld_base);
    LLVMBuilderRef builder = bld_base->base.gallivm->builder;
    LLVMValueRef temp_ptr = bld->temps[reg->Register.Index];
-   LLVMTypeRef vec_type = lp_build_vec_type(bld->bld_base.base.gallivm, bld->bld_base.base.type);
-   LLVMValueRef res = LLVMBuildLoad2(builder, vec_type, temp_ptr, "");
+   LLVMValueRef res = LLVMBuildLoad(builder, temp_ptr, "");
    assert(!reg->Register.Indirect);
    if (!res)
       return bld->bld_base.base.undef;
@@ -287,8 +286,8 @@ lp_emit_store_aos(
 
    if (mask) {
       LLVMValueRef orig_value;
-      LLVMTypeRef vec_type = lp_build_vec_type(bld->bld_base.base.gallivm, bld->bld_base.base.type);
-      orig_value = LLVMBuildLoad2(builder, vec_type, ptr, "");
+
+      orig_value = LLVMBuildLoad(builder, ptr, "");
       value = lp_build_select(&bld->bld_base.base,
                               mask, value, orig_value);
    }

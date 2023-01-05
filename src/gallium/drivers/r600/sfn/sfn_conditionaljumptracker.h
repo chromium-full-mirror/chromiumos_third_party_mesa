@@ -38,7 +38,10 @@ enum JumpType {
 
 /**
   Class to link the jump locations
+
 */
+
+
 class ConditionalJumpTracker
 {
 public:
@@ -46,6 +49,7 @@ public:
    ~ConditionalJumpTracker();
 
    /* Mark the start of a loop or a if/else */
+
    void push(r600_bytecode_cf *start, JumpType type);
 
    /* Mark the end of a loop or a if/else and fixup the jump sites */

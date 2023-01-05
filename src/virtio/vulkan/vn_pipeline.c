@@ -125,7 +125,6 @@ vn_CreatePipelineCache(VkDevice device,
                        const VkAllocationCallbacks *pAllocator,
                        VkPipelineCache *pPipelineCache)
 {
-   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
@@ -164,7 +163,6 @@ vn_DestroyPipelineCache(VkDevice device,
                         VkPipelineCache pipelineCache,
                         const VkAllocationCallbacks *pAllocator)
 {
-   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_pipeline_cache *cache =
       vn_pipeline_cache_from_handle(pipelineCache);
@@ -187,7 +185,6 @@ vn_GetPipelineCacheData(VkDevice device,
                         size_t *pDataSize,
                         void *pData)
 {
-   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_physical_device *physical_dev = dev->physical_device;
 
@@ -234,7 +231,6 @@ vn_MergePipelineCaches(VkDevice device,
                        uint32_t srcCacheCount,
                        const VkPipelineCache *pSrcCaches)
 {
-   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
 
    vn_async_vkMergePipelineCaches(dev->instance, device, dstCache,
@@ -245,18 +241,6 @@ vn_MergePipelineCaches(VkDevice device,
 
 /* pipeline commands */
 
-struct vn_graphics_pipeline_create_info_fix {
-   bool ignore_tessellation_state;
-
-   /* Ignore the following:
-    *    pViewportState
-    *    pMultisampleState
-    *    pDepthStencilState
-    *    pColorBlendState
-    */
-   bool ignore_raster_dedicated_states;
-};
-
 static const VkGraphicsPipelineCreateInfo *
 vn_fix_graphics_pipeline_create_info(
    struct vn_device *dev,
@@ -265,98 +249,42 @@ vn_fix_graphics_pipeline_create_info(
    const VkAllocationCallbacks *alloc,
    VkGraphicsPipelineCreateInfo **out)
 {
-   VN_TRACE_FUNC();
    VkGraphicsPipelineCreateInfo *infos = NULL;
-
-   /* Defer allocation until we find a needed fix. */
-   struct vn_graphics_pipeline_create_info_fix *fixes = NULL;
+   bool has_ignored_state = false;
 
    for (uint32_t i = 0; i < create_info_count; i++) {
-      const VkGraphicsPipelineCreateInfo *info = &create_infos[i];
-      struct vn_graphics_pipeline_create_info_fix fix = { 0 };
-      bool any_fix = false;
+      if (create_infos[i].pRasterizationState->rasterizerDiscardEnable ==
+          VK_FALSE)
+         continue;
 
-      VkShaderStageFlags stages = 0;
-      for (uint32_t j = 0; j < info->stageCount; j++) {
-         stages |= info->pStages[j].stage;
-      }
-
-      /* Fix pTessellationState?
-       *    VUID-VkGraphicsPipelineCreateInfo-pStages-00731
-       */
-      if (info->pTessellationState &&
-          (!(stages & VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT) ||
-           !(stages & VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT))) {
-         fix.ignore_tessellation_state = true;
-         any_fix = true;
-      }
-
-      bool ignore_raster_dedicated_states =
-         !info->pRasterizationState ||
-         info->pRasterizationState->rasterizerDiscardEnable == VK_TRUE;
-      if (ignore_raster_dedicated_states && info->pDynamicState) {
-         for (uint32_t j = 0; j < info->pDynamicState->dynamicStateCount;
-              j++) {
-            if (info->pDynamicState->pDynamicStates[j] ==
-                VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE) {
-               ignore_raster_dedicated_states = false;
-               break;
-            }
-         }
-      }
-
-      /* FIXME: Conditions for ignoring pDepthStencilState and
-       * pColorBlendState miss some cases that depend on the render pass. Make
-       * them agree with the VUIDs.
-       */
-      if (ignore_raster_dedicated_states &&
-          (info->pViewportState || info->pMultisampleState ||
-           info->pDepthStencilState || info->pColorBlendState)) {
-         fix.ignore_raster_dedicated_states = true;
-         any_fix = true;
-      }
-
-      if (any_fix) {
-         if (!fixes) {
-            fixes = vk_zalloc(alloc, create_info_count * sizeof(fixes[0]),
-                              VN_DEFAULT_ALIGN,
-                              VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-            if (!fixes)
-               return NULL;
-         }
-
-         fixes[i] = fix;
+      if (create_infos[i].pViewportState ||
+          create_infos[i].pMultisampleState ||
+          create_infos[i].pDepthStencilState ||
+          create_infos[i].pColorBlendState) {
+         has_ignored_state = true;
+         break;
       }
    }
 
-   if (!fixes)
+   if (!has_ignored_state)
       return create_infos;
 
    infos = vk_alloc(alloc, sizeof(*infos) * create_info_count,
                     VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
-   if (!infos) {
-      vk_free(alloc, fixes);
+   if (!infos)
       return NULL;
-   }
 
    memcpy(infos, create_infos, sizeof(*infos) * create_info_count);
 
    for (uint32_t i = 0; i < create_info_count; i++) {
-      VkGraphicsPipelineCreateInfo *info = &infos[i];
-      struct vn_graphics_pipeline_create_info_fix fix = fixes[i];
+      if (infos[i].pRasterizationState->rasterizerDiscardEnable == VK_FALSE)
+         continue;
 
-      if (fix.ignore_tessellation_state)
-         info->pTessellationState = NULL;
-
-      if (fix.ignore_raster_dedicated_states) {
-         info->pViewportState = NULL;
-         info->pMultisampleState = NULL;
-         info->pDepthStencilState = NULL;
-         info->pColorBlendState = NULL;
-      }
+      infos[i].pViewportState = NULL;
+      infos[i].pMultisampleState = NULL;
+      infos[i].pDepthStencilState = NULL;
+      infos[i].pColorBlendState = NULL;
    }
-
-   vk_free(alloc, fixes);
 
    *out = infos;
    return infos;
@@ -370,7 +298,6 @@ vn_CreateGraphicsPipelines(VkDevice device,
                            const VkAllocationCallbacks *pAllocator,
                            VkPipeline *pPipelines)
 {
-   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
@@ -421,7 +348,6 @@ vn_CreateComputePipelines(VkDevice device,
                           const VkAllocationCallbacks *pAllocator,
                           VkPipeline *pPipelines)
 {
-   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
@@ -456,7 +382,6 @@ vn_DestroyPipeline(VkDevice device,
                    VkPipeline _pipeline,
                    const VkAllocationCallbacks *pAllocator)
 {
-   VN_TRACE_FUNC();
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_pipeline *pipeline = vn_pipeline_from_handle(_pipeline);
    const VkAllocationCallbacks *alloc =

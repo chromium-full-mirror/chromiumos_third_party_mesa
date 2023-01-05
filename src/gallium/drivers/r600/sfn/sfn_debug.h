@@ -64,12 +64,8 @@ public:
       merge = 1 << 10,
       tex = 1 << 11,
       trans = 1 << 12,
-      schedule = 1 << 13,
-      opt = 1 << 14,
-      all = (1 << 15) - 1,
+      all = (1 << 13) - 1,
       nomerge = 1 << 16,
-      steps = 1 << 17,
-      noopt = 1 << 18
    };
 
    SfnLog();

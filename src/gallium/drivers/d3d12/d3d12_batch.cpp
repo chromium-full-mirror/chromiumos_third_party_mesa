@@ -27,7 +27,6 @@
 #include "d3d12_query.h"
 #include "d3d12_residency.h"
 #include "d3d12_resource.h"
-#include "d3d12_resource_state.h"
 #include "d3d12_screen.h"
 #include "d3d12_surface.h"
 
@@ -213,16 +212,8 @@ d3d12_end_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
 
    d3d12_process_batch_residency(screen, batch);
 
-   bool has_state_fixup = d3d12_context_state_resolve_submission(ctx, batch);
-
-   ID3D12CommandList *cmdlists[] = { ctx->state_fixup_cmdlist, ctx->cmdlist };
-   ID3D12CommandList **to_execute = cmdlists;
-   UINT count_to_execute = ARRAY_SIZE(cmdlists);
-   if (!has_state_fixup) {
-      to_execute++;
-      count_to_execute--;
-   }
-   screen->cmdqueue->ExecuteCommandLists(count_to_execute, to_execute);
+   ID3D12CommandList* cmdlists[] = { ctx->cmdlist };
+   screen->cmdqueue->ExecuteCommandLists(1, cmdlists);
    batch->fence = d3d12_create_fence(screen);
 
    mtx_unlock(&screen->submit_mutex);

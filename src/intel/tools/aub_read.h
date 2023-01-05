@@ -42,8 +42,6 @@ struct aub_read {
 
    void (*info)(void *user_data, int pci_id, const char *app_name);
 
-   void (*comment)(void *user_data, const char *msg);
-
    void (*local_write)(void *user_data, uint64_t phys_addr, const void *data, uint32_t data_len);
    void (*phys_write)(void *user_data, uint64_t phys_addr, const void *data, uint32_t data_len);
    void (*ggtt_write)(void *user_data, uint64_t phys_addr, const void *data, uint32_t data_len);

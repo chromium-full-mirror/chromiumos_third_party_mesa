@@ -23,6 +23,7 @@
  *
  **************************************************************************/
 #include "util/u_memory.h"
+#include "util/simple_list.h"
 #include "util/os_time.h"
 #include "util/u_dump.h"
 #include "util/u_string.h"
@@ -180,9 +181,7 @@ generate_compute(struct llvmpipe_context *lp,
    builder = gallivm->builder;
    assert(builder);
    LLVMPositionBuilderAtEnd(builder, block);
-   sampler = lp_llvm_sampler_soa_create(lp_cs_variant_key_samplers(key),
-                                        MAX2(key->nr_samplers,
-                                             key->nr_sampler_views));
+   sampler = lp_llvm_sampler_soa_create(lp_cs_variant_key_samplers(key), key->nr_samplers);
    image = lp_llvm_image_soa_create(lp_cs_variant_key_images(key), key->nr_images);
 
    struct lp_build_loop_state loop_state[4];
@@ -516,7 +515,7 @@ llvmpipe_create_compute_state(struct pipe_context *pipe,
       nir_tgsi_scan_shader(shader->base.ir.nir, &shader->info.base, false);
    }
 
-   list_inithead(&shader->variants.list);
+   make_empty_list(&shader->variants);
 
    nr_samplers = shader->info.base.file_max[TGSI_FILE_SAMPLER] + 1;
    nr_sampler_views = shader->info.base.file_max[TGSI_FILE_SAMPLER_VIEW] + 1;
@@ -559,11 +558,11 @@ llvmpipe_remove_cs_shader_variant(struct llvmpipe_context *lp,
    gallivm_destroy(variant->gallivm);
 
    /* remove from shader's list */
-   list_del(&variant->list_item_local.list);
+   remove_from_list(&variant->list_item_local);
    variant->shader->variants_cached--;
 
    /* remove from context's list */
-   list_del(&variant->list_item_global.list);
+   remove_from_list(&variant->list_item_global);
    lp->nr_cs_variants--;
    lp->nr_cs_instrs -= variant->nr_instrs;
 
@@ -576,7 +575,7 @@ llvmpipe_delete_compute_state(struct pipe_context *pipe,
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
    struct lp_compute_shader *shader = cs;
-   struct lp_cs_variant_list_item *li, *next;
+   struct lp_cs_variant_list_item *li;
 
    if (llvmpipe->cs == cs)
       llvmpipe->cs = NULL;
@@ -585,8 +584,11 @@ llvmpipe_delete_compute_state(struct pipe_context *pipe,
    FREE(shader->global_buffers);
 
    /* Delete all the variants */
-   LIST_FOR_EACH_ENTRY_SAFE(li, next, &shader->variants.list, list) {
+   li = first_elem(&shader->variants);
+   while(!at_end(&shader->variants, li)) {
+      struct lp_cs_variant_list_item *next = next_elem(li);
       llvmpipe_remove_cs_shader_variant(llvmpipe, li->base);
+      li = next;
    }
    if (shader->base.ir.nir)
       ralloc_free(shader->base.ir.nir);
@@ -841,18 +843,20 @@ llvmpipe_update_cs(struct llvmpipe_context *lp)
    key = make_variant_key(lp, shader, store);
 
    /* Search the variants for one which matches the key */
-   LIST_FOR_EACH_ENTRY(li, &shader->variants.list, list) {
+   li = first_elem(&shader->variants);
+   while(!at_end(&shader->variants, li)) {
       if(memcmp(&li->base->key, key, shader->variant_key_size) == 0) {
          variant = li->base;
          break;
       }
+      li = next_elem(li);
    }
 
    if (variant) {
       /* Move this variant to the head of the list to implement LRU
        * deletion of shader's when we have too many.
        */
-      list_move_to(&variant->list_item_global.list, &lp->cs_variants_list.list);
+      move_to_head(&lp->cs_variants_list, &variant->list_item_global);
    }
    else {
       /* variant not found, create it now */
@@ -890,11 +894,10 @@ llvmpipe_update_cs(struct llvmpipe_context *lp)
 
          for (i = 0; i < variants_to_cull || lp->nr_cs_instrs >= LP_MAX_SHADER_INSTRUCTIONS; i++) {
             struct lp_cs_variant_list_item *item;
-            if (list_is_empty(&lp->cs_variants_list.list)) {
+            if (is_empty_list(&lp->cs_variants_list)) {
                break;
             }
-            item = list_last_entry(&lp->cs_variants_list.list,
-                                   struct lp_cs_variant_list_item, list);
+            item = last_elem(&lp->cs_variants_list);
             assert(item);
             assert(item->base);
             llvmpipe_remove_cs_shader_variant(lp, item->base);
@@ -912,8 +915,8 @@ llvmpipe_update_cs(struct llvmpipe_context *lp)
 
       /* Put the new variant into the list */
       if (variant) {
-         list_add(&variant->list_item_local.list, &shader->variants.list);
-         list_add(&variant->list_item_global.list, &lp->cs_variants_list.list);
+         insert_at_head(&shader->variants, &variant->list_item_local);
+         insert_at_head(&lp->cs_variants_list, &variant->list_item_global);
          lp->nr_cs_variants++;
          lp->nr_cs_instrs += variant->nr_instrs;
          shader->variants_cached++;

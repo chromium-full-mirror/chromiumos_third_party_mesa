@@ -244,7 +244,7 @@ fd_resource_set_usage(struct pipe_resource *prsc, enum fd_dirty_3d_state usage)
    if (likely(rsc->dirty & usage))
       return;
    fd_resource_lock(rsc);
-   or_mask(rsc->dirty, usage);
+   rsc->dirty |= usage;
    fd_resource_unlock(rsc);
 }
 
@@ -295,7 +295,7 @@ static inline uint32_t
 fd_resource_offset(struct fd_resource *rsc, unsigned level, unsigned layer)
 {
    uint32_t offset = fdl_surface_offset(&rsc->layout, level, layer);
-   assert(offset < fd_bo_size(rsc->bo));
+   debug_assert(offset < fd_bo_size(rsc->bo));
    return offset;
 }
 
@@ -303,7 +303,7 @@ static inline uint32_t
 fd_resource_ubwc_offset(struct fd_resource *rsc, unsigned level, unsigned layer)
 {
    uint32_t offset = fdl_ubwc_offset(&rsc->layout, level, layer);
-   assert(offset < fd_bo_size(rsc->bo));
+   debug_assert(offset < fd_bo_size(rsc->bo));
    return offset;
 }
 
@@ -312,7 +312,7 @@ static inline bool
 fd_resource_level_linear(const struct pipe_resource *prsc, int level)
 {
    struct fd_screen *screen = fd_screen(prsc->screen);
-   assert(!is_a3xx(screen));
+   debug_assert(!is_a3xx(screen));
 
    return fdl_level_linear(&fd_resource_const(prsc)->layout, level);
 }

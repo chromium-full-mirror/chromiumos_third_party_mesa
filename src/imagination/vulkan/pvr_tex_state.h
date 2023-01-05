@@ -29,7 +29,6 @@
 
 #include "hwdef/rogue_hw_defs.h"
 #include "pvr_private.h"
-#include "pvr_types.h"
 #include "util/macros.h"
 
 /**

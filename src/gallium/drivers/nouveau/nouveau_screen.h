@@ -74,7 +74,6 @@ struct nouveau_screen {
    bool prefer_nir;
    bool force_enable_cl;
    bool has_svm;
-   bool disable_fences;
    void *svm_cutout;
    size_t svm_cutout_size;
 

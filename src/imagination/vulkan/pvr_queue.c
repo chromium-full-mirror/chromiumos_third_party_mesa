@@ -39,19 +39,14 @@
 #include "pvr_job_compute.h"
 #include "pvr_job_context.h"
 #include "pvr_job_render.h"
-#include "pvr_job_transfer.h"
 #include "pvr_limits.h"
 #include "pvr_private.h"
 #include "util/macros.h"
 #include "util/u_atomic.h"
 #include "vk_alloc.h"
-#include "vk_fence.h"
 #include "vk_log.h"
 #include "vk_object.h"
 #include "vk_queue.h"
-#include "vk_semaphore.h"
-#include "vk_sync.h"
-#include "vk_sync_dummy.h"
 #include "vk_util.h"
 
 static VkResult pvr_queue_init(struct pvr_device *device,
@@ -59,7 +54,6 @@ static VkResult pvr_queue_init(struct pvr_device *device,
                                const VkDeviceQueueCreateInfo *pCreateInfo,
                                uint32_t index_in_family)
 {
-   struct pvr_transfer_ctx *transfer_ctx;
    struct pvr_compute_ctx *compute_ctx;
    struct pvr_render_ctx *gfx_ctx;
    VkResult result;
@@ -69,17 +63,11 @@ static VkResult pvr_queue_init(struct pvr_device *device,
    if (result != VK_SUCCESS)
       return result;
 
-   result = pvr_transfer_ctx_create(device,
-                                    PVR_WINSYS_CTX_PRIORITY_MEDIUM,
-                                    &transfer_ctx);
-   if (result != VK_SUCCESS)
-      goto err_vk_queue_finish;
-
    result = pvr_compute_ctx_create(device,
                                    PVR_WINSYS_CTX_PRIORITY_MEDIUM,
                                    &compute_ctx);
    if (result != VK_SUCCESS)
-      goto err_transfer_ctx_destroy;
+      goto err_vk_queue_finish;
 
    result =
       pvr_render_ctx_create(device, PVR_WINSYS_CTX_PRIORITY_MEDIUM, &gfx_ctx);
@@ -89,7 +77,6 @@ static VkResult pvr_queue_init(struct pvr_device *device,
    queue->device = device;
    queue->gfx_ctx = gfx_ctx;
    queue->compute_ctx = compute_ctx;
-   queue->transfer_ctx = transfer_ctx;
 
    for (uint32_t i = 0; i < ARRAY_SIZE(queue->completion); i++)
       queue->completion[i] = NULL;
@@ -98,9 +85,6 @@ static VkResult pvr_queue_init(struct pvr_device *device,
 
 err_compute_ctx_destroy:
    pvr_compute_ctx_destroy(compute_ctx);
-
-err_transfer_ctx_destroy:
-   pvr_transfer_ctx_destroy(transfer_ctx);
 
 err_vk_queue_finish:
    vk_queue_finish(&queue->vk);
@@ -149,12 +133,11 @@ static void pvr_queue_finish(struct pvr_queue *queue)
 {
    for (uint32_t i = 0; i < ARRAY_SIZE(queue->completion); i++) {
       if (queue->completion[i])
-         vk_sync_destroy(&queue->device->vk, queue->completion[i]);
+         queue->device->ws->ops->syncobj_destroy(queue->completion[i]);
    }
 
    pvr_render_ctx_destroy(queue->gfx_ctx);
    pvr_compute_ctx_destroy(queue->compute_ctx);
-   pvr_transfer_ctx_destroy(queue->transfer_ctx);
 
    vk_queue_finish(&queue->vk);
 }
@@ -171,37 +154,203 @@ VkResult pvr_QueueWaitIdle(VkQueue _queue)
 {
    PVR_FROM_HANDLE(pvr_queue, queue, _queue);
 
-   for (int i = 0U; i < ARRAY_SIZE(queue->completion); i++) {
-      VkResult result;
+   return queue->device->ws->ops->syncobjs_wait(queue->device->ws,
+                                                queue->completion,
+                                                ARRAY_SIZE(queue->completion),
+                                                true,
+                                                UINT64_MAX);
+}
 
-      if (!queue->completion[i])
-         continue;
+VkResult pvr_CreateFence(VkDevice _device,
+                         const VkFenceCreateInfo *pCreateInfo,
+                         const VkAllocationCallbacks *pAllocator,
+                         VkFence *pFence)
+{
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   struct pvr_fence *fence;
+   VkResult result;
 
-      result = vk_sync_wait(&queue->device->vk,
-                            queue->completion[i],
-                            0U,
-                            VK_SYNC_WAIT_COMPLETE,
-                            UINT64_MAX);
-      if (result != VK_SUCCESS)
+   fence = vk_object_alloc(&device->vk,
+                           pAllocator,
+                           sizeof(*fence),
+                           VK_OBJECT_TYPE_FENCE);
+   if (!fence)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   /* We don't really need to create a syncobj here unless it's a signaled
+    * fence.
+    */
+   if (pCreateInfo->flags & VK_FENCE_CREATE_SIGNALED_BIT) {
+      result =
+         device->ws->ops->syncobj_create(device->ws, true, &fence->syncobj);
+      if (result != VK_SUCCESS) {
+         vk_object_free(&device->vk, pAllocator, fence);
          return result;
+      }
+   } else {
+      fence->syncobj = NULL;
    }
+
+   *pFence = pvr_fence_to_handle(fence);
 
    return VK_SUCCESS;
 }
 
-static VkResult
-pvr_process_graphics_cmd(struct pvr_device *device,
-                         struct pvr_queue *queue,
-                         struct pvr_cmd_buffer *cmd_buffer,
-                         struct pvr_sub_cmd_gfx *sub_cmd,
-                         struct vk_sync **waits,
-                         uint32_t wait_count,
-                         uint32_t *stage_flags,
-                         struct vk_sync *completions[static PVR_JOB_TYPE_MAX])
+void pvr_DestroyFence(VkDevice _device,
+                      VkFence _fence,
+                      const VkAllocationCallbacks *pAllocator)
 {
-   const struct pvr_framebuffer *framebuffer = sub_cmd->framebuffer;
-   struct vk_sync *sync_geom;
-   struct vk_sync *sync_frag;
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   PVR_FROM_HANDLE(pvr_fence, fence, _fence);
+
+   if (!fence)
+      return;
+
+   if (fence->syncobj)
+      device->ws->ops->syncobj_destroy(fence->syncobj);
+
+   vk_object_free(&device->vk, pAllocator, fence);
+}
+
+VkResult
+pvr_ResetFences(VkDevice _device, uint32_t fenceCount, const VkFence *pFences)
+{
+   struct pvr_winsys_syncobj *syncobjs[fenceCount];
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+
+   for (uint32_t i = 0; i < fenceCount; i++) {
+      PVR_FROM_HANDLE(pvr_fence, fence, pFences[i]);
+
+      syncobjs[i] = fence->syncobj;
+   }
+
+   return device->ws->ops->syncobjs_reset(device->ws, syncobjs, fenceCount);
+}
+
+VkResult pvr_GetFenceStatus(VkDevice _device, VkFence _fence)
+{
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   PVR_FROM_HANDLE(pvr_fence, fence, _fence);
+   VkResult result;
+
+   result =
+      device->ws->ops->syncobjs_wait(device->ws, &fence->syncobj, 1U, true, 0U);
+   if (result == VK_TIMEOUT)
+      return VK_NOT_READY;
+
+   return result;
+}
+
+VkResult pvr_WaitForFences(VkDevice _device,
+                           uint32_t fenceCount,
+                           const VkFence *pFences,
+                           VkBool32 waitAll,
+                           uint64_t timeout)
+{
+   struct pvr_winsys_syncobj *syncobjs[fenceCount];
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+
+   for (uint32_t i = 0; i < fenceCount; i++) {
+      PVR_FROM_HANDLE(pvr_fence, fence, pFences[i]);
+
+      syncobjs[i] = fence->syncobj;
+   }
+
+   return device->ws->ops->syncobjs_wait(device->ws,
+                                         syncobjs,
+                                         fenceCount,
+                                         !!waitAll,
+                                         timeout);
+}
+
+VkResult pvr_CreateSemaphore(VkDevice _device,
+                             const VkSemaphoreCreateInfo *pCreateInfo,
+                             const VkAllocationCallbacks *pAllocator,
+                             VkSemaphore *pSemaphore)
+{
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   struct pvr_semaphore *semaphore;
+
+   semaphore = vk_object_alloc(&device->vk,
+                               pAllocator,
+                               sizeof(*semaphore),
+                               VK_OBJECT_TYPE_SEMAPHORE);
+   if (!semaphore)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   semaphore->syncobj = NULL;
+
+   *pSemaphore = pvr_semaphore_to_handle(semaphore);
+
+   return VK_SUCCESS;
+}
+
+void pvr_DestroySemaphore(VkDevice _device,
+                          VkSemaphore _semaphore,
+                          const VkAllocationCallbacks *pAllocator)
+{
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   PVR_FROM_HANDLE(pvr_semaphore, semaphore, _semaphore);
+
+   if (semaphore->syncobj)
+      device->ws->ops->syncobj_destroy(semaphore->syncobj);
+
+   vk_object_free(&device->vk, pAllocator, semaphore);
+}
+
+static enum pvr_pipeline_stage_bits
+pvr_convert_stage_mask(VkPipelineStageFlags stage_mask)
+{
+   enum pvr_pipeline_stage_bits stages = 0;
+
+   if (stage_mask & VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT ||
+       stage_mask & VK_PIPELINE_STAGE_ALL_COMMANDS_BIT) {
+      return PVR_PIPELINE_STAGE_ALL_BITS;
+   }
+
+   if (stage_mask & (VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT))
+      stages |= PVR_PIPELINE_STAGE_ALL_GRAPHICS_BITS;
+
+   if (stage_mask & (VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+                     VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
+                     VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                     VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT |
+                     VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+                     VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT)) {
+      stages |= PVR_PIPELINE_STAGE_GEOM_BIT;
+   }
+
+   if (stage_mask & (VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                     VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT)) {
+      stages |= PVR_PIPELINE_STAGE_FRAG_BIT;
+   }
+
+   if (stage_mask & (VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
+                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT)) {
+      assert(!"Unimplemented");
+   }
+
+   if (stage_mask & (VK_PIPELINE_STAGE_TRANSFER_BIT))
+      stages |= PVR_PIPELINE_STAGE_TRANSFER_BIT;
+
+   return stages;
+}
+
+static VkResult pvr_process_graphics_cmd(
+   struct pvr_device *device,
+   struct pvr_queue *queue,
+   struct pvr_cmd_buffer *cmd_buffer,
+   struct pvr_sub_cmd *sub_cmd,
+   const VkSemaphore *semaphores,
+   uint32_t semaphore_count,
+   uint32_t *stage_flags,
+   struct pvr_winsys_syncobj *completions[static PVR_JOB_TYPE_MAX])
+{
+   const struct pvr_framebuffer *framebuffer = sub_cmd->gfx.framebuffer;
+   struct pvr_winsys_syncobj *syncobj_geom = NULL;
+   struct pvr_winsys_syncobj *syncobj_frag = NULL;
    uint32_t bo_count = 0;
    VkResult result;
 
@@ -209,30 +358,12 @@ pvr_process_graphics_cmd(struct pvr_device *device,
    if (!bos)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   result = vk_sync_create(&device->vk,
-                           &device->pdevice->ws->syncobj_type,
-                           0U,
-                           0UL,
-                           &sync_geom);
-   if (result != VK_SUCCESS)
-      return result;
-
-   result = vk_sync_create(&device->vk,
-                           &device->pdevice->ws->syncobj_type,
-                           0U,
-                           0UL,
-                           &sync_frag);
-   if (result != VK_SUCCESS) {
-      vk_sync_destroy(&device->vk, sync_geom);
-      return result;
-   }
-
    /* FIXME: DoShadowLoadOrStore() */
 
    /* FIXME: If the framebuffer being rendered to has multiple layers then we
     * need to split submissions that run a fragment job into two.
     */
-   if (sub_cmd->job.run_frag && framebuffer->layers > 1)
+   if (sub_cmd->gfx.job.run_frag && framebuffer->layers > 1)
       pvr_finishme("Split job submission for framebuffers with > 1 layers");
 
    /* Get any imported buffers used in framebuffer attachments. */
@@ -247,220 +378,231 @@ pvr_process_graphics_cmd(struct pvr_device *device,
 
    /* This passes ownership of the wait fences to pvr_render_job_submit(). */
    result = pvr_render_job_submit(queue->gfx_ctx,
-                                  &sub_cmd->job,
+                                  &sub_cmd->gfx.job,
                                   bos,
                                   bo_count,
-                                  waits,
-                                  wait_count,
+                                  semaphores,
+                                  semaphore_count,
                                   stage_flags,
-                                  sync_geom,
-                                  sync_frag);
+                                  &syncobj_geom,
+                                  &syncobj_frag);
    STACK_ARRAY_FINISH(bos);
-   if (result != VK_SUCCESS) {
-      vk_sync_destroy(&device->vk, sync_geom);
-      vk_sync_destroy(&device->vk, sync_frag);
+   if (result != VK_SUCCESS)
       return result;
-   }
 
    /* Replace the completion fences. */
-   if (completions[PVR_JOB_TYPE_GEOM])
-      vk_sync_destroy(&device->vk, completions[PVR_JOB_TYPE_GEOM]);
+   if (syncobj_geom) {
+      if (completions[PVR_JOB_TYPE_GEOM])
+         device->ws->ops->syncobj_destroy(completions[PVR_JOB_TYPE_GEOM]);
 
-   completions[PVR_JOB_TYPE_GEOM] = sync_geom;
+      completions[PVR_JOB_TYPE_GEOM] = syncobj_geom;
+   }
 
-   if (completions[PVR_JOB_TYPE_FRAG])
-      vk_sync_destroy(&device->vk, completions[PVR_JOB_TYPE_FRAG]);
+   if (syncobj_frag) {
+      if (completions[PVR_JOB_TYPE_FRAG])
+         device->ws->ops->syncobj_destroy(completions[PVR_JOB_TYPE_FRAG]);
 
-   completions[PVR_JOB_TYPE_FRAG] = sync_frag;
+      completions[PVR_JOB_TYPE_FRAG] = syncobj_frag;
+   }
 
    /* FIXME: DoShadowLoadOrStore() */
 
    return result;
 }
 
-static VkResult
-pvr_process_compute_cmd(struct pvr_device *device,
-                        struct pvr_queue *queue,
-                        struct pvr_sub_cmd_compute *sub_cmd,
-                        struct vk_sync **waits,
-                        uint32_t wait_count,
-                        uint32_t *stage_flags,
-                        struct vk_sync *completions[static PVR_JOB_TYPE_MAX])
+static VkResult pvr_process_compute_cmd(
+   struct pvr_device *device,
+   struct pvr_queue *queue,
+   struct pvr_sub_cmd *sub_cmd,
+   const VkSemaphore *semaphores,
+   uint32_t semaphore_count,
+   uint32_t *stage_flags,
+   struct pvr_winsys_syncobj *completions[static PVR_JOB_TYPE_MAX])
 {
-   struct vk_sync *sync;
+   struct pvr_winsys_syncobj *syncobj = NULL;
    VkResult result;
-
-   result = vk_sync_create(&device->vk,
-                           &device->pdevice->ws->syncobj_type,
-                           0U,
-                           0UL,
-                           &sync);
-   if (result != VK_SUCCESS)
-      return result;
 
    /* This passes ownership of the wait fences to pvr_compute_job_submit(). */
    result = pvr_compute_job_submit(queue->compute_ctx,
                                    sub_cmd,
-                                   waits,
-                                   wait_count,
+                                   semaphores,
+                                   semaphore_count,
                                    stage_flags,
-                                   sync);
-   if (result != VK_SUCCESS) {
-      vk_sync_destroy(&device->vk, sync);
+                                   &syncobj);
+   if (result != VK_SUCCESS)
       return result;
-   }
 
    /* Replace the completion fences. */
-   if (completions[PVR_JOB_TYPE_COMPUTE])
-      vk_sync_destroy(&device->vk, completions[PVR_JOB_TYPE_COMPUTE]);
+   if (syncobj) {
+      if (completions[PVR_JOB_TYPE_COMPUTE])
+         device->ws->ops->syncobj_destroy(completions[PVR_JOB_TYPE_COMPUTE]);
 
-   completions[PVR_JOB_TYPE_COMPUTE] = sync;
+      completions[PVR_JOB_TYPE_COMPUTE] = syncobj;
+   }
 
    return result;
 }
 
-static VkResult
-pvr_process_transfer_cmds(struct pvr_device *device,
-                          struct pvr_queue *queue,
-                          struct pvr_sub_cmd_transfer *sub_cmd,
-                          struct vk_sync **waits,
-                          uint32_t wait_count,
-                          uint32_t *stage_flags,
-                          struct vk_sync *completions[static PVR_JOB_TYPE_MAX])
+/* FIXME: Implement gpu based transfer support. */
+static VkResult pvr_process_transfer_cmds(
+   struct pvr_device *device,
+   struct pvr_sub_cmd *sub_cmd,
+   const VkSemaphore *semaphores,
+   uint32_t semaphore_count,
+   uint32_t *stage_flags,
+   struct pvr_winsys_syncobj *completions[static PVR_JOB_TYPE_MAX])
 {
-   struct vk_sync *sync;
-   VkResult result;
+   /* Wait for transfer semaphores here before doing any transfers. */
+   for (uint32_t i = 0; i < semaphore_count; i++) {
+      PVR_FROM_HANDLE(pvr_semaphore, sem, semaphores[i]);
 
-   result = vk_sync_create(&device->vk,
-                           &device->pdevice->ws->syncobj_type,
-                           0U,
-                           0UL,
-                           &sync);
-   if (result != VK_SUCCESS)
-      return result;
+      if (sem->syncobj && stage_flags[i] & PVR_PIPELINE_STAGE_TRANSFER_BIT) {
+         VkResult result = device->ws->ops->syncobjs_wait(device->ws,
+                                                          &sem->syncobj,
+                                                          1,
+                                                          true,
+                                                          UINT64_MAX);
+         if (result != VK_SUCCESS)
+            return result;
 
-   /* This passes ownership of the wait fences to pvr_transfer_job_submit(). */
-   result = pvr_transfer_job_submit(device,
-                                    queue->transfer_ctx,
-                                    sub_cmd,
-                                    waits,
-                                    wait_count,
-                                    stage_flags,
-                                    sync);
-   if (result != VK_SUCCESS) {
-      vk_sync_destroy(&device->vk, sync);
-      return result;
+         stage_flags[i] &= ~PVR_PIPELINE_STAGE_TRANSFER_BIT;
+         if (stage_flags[i] == 0) {
+            device->ws->ops->syncobj_destroy(sem->syncobj);
+            sem->syncobj = NULL;
+         }
+      }
    }
 
-   /* Replace the completion fences. */
-   if (completions[PVR_JOB_TYPE_TRANSFER])
-      vk_sync_destroy(&device->vk, completions[PVR_JOB_TYPE_TRANSFER]);
+   list_for_each_entry_safe (struct pvr_transfer_cmd,
+                             transfer_cmd,
+                             &sub_cmd->transfer.transfer_cmds,
+                             link) {
+      bool src_mapped = false;
+      bool dst_mapped = false;
+      void *src_addr;
+      void *dst_addr;
+      void *ret_ptr;
 
-   completions[PVR_JOB_TYPE_TRANSFER] = sync;
+      /* Map if bo is not mapped. */
+      if (!transfer_cmd->src->vma->bo->map) {
+         src_mapped = true;
+         ret_ptr = device->ws->ops->buffer_map(transfer_cmd->src->vma->bo);
+         if (!ret_ptr)
+            return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+      }
 
-   return result;
-}
+      if (!transfer_cmd->dst->vma->bo->map) {
+         dst_mapped = true;
+         ret_ptr = device->ws->ops->buffer_map(transfer_cmd->dst->vma->bo);
+         if (!ret_ptr)
+            return vk_error(device, VK_ERROR_MEMORY_MAP_FAILED);
+      }
 
-static VkResult
-pvr_set_semaphore_payloads(struct pvr_device *device,
-                           struct vk_sync *completions[static PVR_JOB_TYPE_MAX],
-                           const VkSemaphore *signals,
-                           uint32_t signal_count)
-{
-   struct vk_sync *sync;
-   VkResult result;
-   int fd = -1;
+      src_addr =
+         transfer_cmd->src->vma->bo->map + transfer_cmd->src->vma->bo_offset;
+      dst_addr =
+         transfer_cmd->dst->vma->bo->map + transfer_cmd->dst->vma->bo_offset;
 
-   result = vk_sync_create(&device->vk,
-                           &device->pdevice->ws->syncobj_type,
-                           0U,
-                           0UL,
-                           &sync);
-   if (result != VK_SUCCESS)
-      return result;
+      for (uint32_t i = 0; i < transfer_cmd->region_count; i++) {
+         VkBufferCopy2 *region = &transfer_cmd->regions[i];
 
-   result = device->ws->ops->null_job_submit(device->ws,
-                                             completions,
-                                             PVR_JOB_TYPE_MAX,
-                                             sync);
-   if (result != VK_SUCCESS)
-      goto end_set_semaphore_payloads;
+         memcpy(dst_addr + region->dstOffset,
+                src_addr + region->srcOffset,
+                region->size);
+      }
 
-   /* If we have a single signal semaphore, we can simply move merged sync's
-    * payload to the signal semahpore's payload.
+      if (src_mapped)
+         device->ws->ops->buffer_unmap(transfer_cmd->src->vma->bo);
+
+      if (dst_mapped)
+         device->ws->ops->buffer_unmap(transfer_cmd->dst->vma->bo);
+   }
+
+   /* Given we are doing CPU based copy, completion fence should always be -1.
+    * This should be fixed when GPU based copy is implemented.
     */
-   if (signal_count == 1U) {
-      VK_FROM_HANDLE(vk_semaphore, sem, signals[0]);
-      struct vk_sync *sem_sync = vk_semaphore_get_active_sync(sem);
+   assert(!completions[PVR_JOB_TYPE_TRANSFER]);
 
-      result = vk_sync_move(&device->vk, sem_sync, sync);
-      goto end_set_semaphore_payloads;
-   }
-
-   result = vk_sync_export_sync_file(&device->vk, sync, &fd);
-   if (result != VK_SUCCESS)
-      goto end_set_semaphore_payloads;
-
-   for (uint32_t i = 0U; i < signal_count; i++) {
-      VK_FROM_HANDLE(vk_semaphore, sem, signals[i]);
-      struct vk_sync *sem_sync = vk_semaphore_get_active_sync(sem);
-
-      result = vk_sync_import_sync_file(&device->vk, sem_sync, fd);
-      if (result != VK_SUCCESS)
-         goto end_set_semaphore_payloads;
-   }
-
-end_set_semaphore_payloads:
-   if (fd != -1)
-      close(fd);
-
-   vk_sync_destroy(&device->vk, sync);
-
-   return result;
+   return VK_SUCCESS;
 }
 
-static VkResult
-pvr_set_fence_payload(struct pvr_device *device,
-                      struct vk_sync *completions[static PVR_JOB_TYPE_MAX],
-                      VkFence _fence)
+static VkResult pvr_set_semaphore_payloads(
+   struct pvr_device *device,
+   struct pvr_winsys_syncobj *completions[static PVR_JOB_TYPE_MAX],
+   const VkSemaphore *semaphores,
+   uint32_t semaphore_count)
 {
-   VK_FROM_HANDLE(vk_fence, fence, _fence);
-   struct vk_sync *fence_sync;
-   struct vk_sync *sync;
+   struct pvr_winsys_syncobj *syncobj = NULL;
    VkResult result;
 
-   result = vk_sync_create(&device->vk,
-                           &device->pdevice->ws->syncobj_type,
-                           0U,
-                           0UL,
-                           &sync);
-   if (result != VK_SUCCESS)
-      return result;
+   if (!semaphore_count)
+      return VK_SUCCESS;
 
-   result = device->ws->ops->null_job_submit(device->ws,
-                                             completions,
-                                             PVR_JOB_TYPE_MAX,
-                                             sync);
-   if (result != VK_SUCCESS) {
-      vk_sync_destroy(&device->vk, sync);
-      return result;
+   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
+      if (completions[i]) {
+         result =
+            device->ws->ops->syncobjs_merge(completions[i], syncobj, &syncobj);
+         if (result != VK_SUCCESS)
+            goto err_destroy_syncobj;
+      }
    }
 
-   fence_sync = vk_fence_get_active_sync(fence);
-   result = vk_sync_move(&device->vk, fence_sync, sync);
-   vk_sync_destroy(&device->vk, sync);
+   for (uint32_t i = 0; i < semaphore_count; i++) {
+      PVR_FROM_HANDLE(pvr_semaphore, semaphore, semaphores[i]);
+      struct pvr_winsys_syncobj *dup_signal_fence;
+
+      /* Duplicate signal_fence and store it in each signal semaphore. */
+      result =
+         device->ws->ops->syncobjs_merge(syncobj, NULL, &dup_signal_fence);
+      if (result != VK_SUCCESS)
+         goto err_destroy_syncobj;
+
+      if (semaphore->syncobj)
+         device->ws->ops->syncobj_destroy(semaphore->syncobj);
+      semaphore->syncobj = dup_signal_fence;
+   }
+
+err_destroy_syncobj:
+   if (syncobj)
+      device->ws->ops->syncobj_destroy(syncobj);
 
    return result;
 }
 
-static VkResult
-pvr_process_cmd_buffer(struct pvr_device *device,
-                       struct pvr_queue *queue,
-                       VkCommandBuffer commandBuffer,
-                       struct vk_sync **waits,
-                       uint32_t wait_count,
-                       uint32_t *stage_flags,
-                       struct vk_sync *completions[static PVR_JOB_TYPE_MAX])
+static VkResult pvr_set_fence_payload(
+   struct pvr_device *device,
+   struct pvr_winsys_syncobj *completions[static PVR_JOB_TYPE_MAX],
+   VkFence _fence)
+{
+   PVR_FROM_HANDLE(pvr_fence, fence, _fence);
+   struct pvr_winsys_syncobj *syncobj = NULL;
+
+   for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
+      if (completions[i]) {
+         VkResult result =
+            device->ws->ops->syncobjs_merge(completions[i], syncobj, &syncobj);
+         if (result != VK_SUCCESS) {
+            device->ws->ops->syncobj_destroy(syncobj);
+            return result;
+         }
+      }
+   }
+
+   if (fence->syncobj)
+      device->ws->ops->syncobj_destroy(fence->syncobj);
+   fence->syncobj = syncobj;
+
+   return VK_SUCCESS;
+}
+
+static VkResult pvr_process_cmd_buffer(
+   struct pvr_device *device,
+   struct pvr_queue *queue,
+   VkCommandBuffer commandBuffer,
+   const VkSemaphore *semaphores,
+   uint32_t semaphore_count,
+   uint32_t *stage_flags,
+   struct pvr_winsys_syncobj *completions[static PVR_JOB_TYPE_MAX])
 {
    PVR_FROM_HANDLE(pvr_cmd_buffer, cmd_buffer, commandBuffer);
    VkResult result;
@@ -476,9 +618,9 @@ pvr_process_cmd_buffer(struct pvr_device *device,
          result = pvr_process_graphics_cmd(device,
                                            queue,
                                            cmd_buffer,
-                                           &sub_cmd->gfx,
-                                           waits,
-                                           wait_count,
+                                           sub_cmd,
+                                           semaphores,
+                                           semaphore_count,
                                            stage_flags,
                                            completions);
          break;
@@ -486,19 +628,18 @@ pvr_process_cmd_buffer(struct pvr_device *device,
       case PVR_SUB_CMD_TYPE_COMPUTE:
          result = pvr_process_compute_cmd(device,
                                           queue,
-                                          &sub_cmd->compute,
-                                          waits,
-                                          wait_count,
+                                          sub_cmd,
+                                          semaphores,
+                                          semaphore_count,
                                           stage_flags,
                                           completions);
          break;
 
       case PVR_SUB_CMD_TYPE_TRANSFER:
          result = pvr_process_transfer_cmds(device,
-                                            queue,
-                                            &sub_cmd->transfer,
-                                            waits,
-                                            wait_count,
+                                            sub_cmd,
+                                            semaphores,
+                                            semaphore_count,
                                             stage_flags,
                                             completions);
          break;
@@ -519,68 +660,46 @@ pvr_process_cmd_buffer(struct pvr_device *device,
    return VK_SUCCESS;
 }
 
-static VkResult
-pvr_submit_null_job(struct pvr_device *device,
-                    struct vk_sync **waits,
-                    uint32_t wait_count,
-                    uint32_t *stage_flags,
-                    struct vk_sync *completions[static PVR_JOB_TYPE_MAX])
+static VkResult pvr_process_empty_job(
+   struct pvr_device *device,
+   const VkSemaphore *semaphores,
+   uint32_t semaphore_count,
+   uint32_t *stage_flags,
+   struct pvr_winsys_syncobj *completions[static PVR_JOB_TYPE_MAX])
 {
-   VkResult result;
+   for (uint32_t i = 0; i < semaphore_count; i++) {
+      PVR_FROM_HANDLE(pvr_semaphore, semaphore, semaphores[i]);
 
-   STATIC_ASSERT(PVR_JOB_TYPE_MAX >= PVR_NUM_SYNC_PIPELINE_STAGES);
-   for (uint32_t i = 0U; i < PVR_JOB_TYPE_MAX; i++) {
-      struct vk_sync *per_job_waits[wait_count];
-      uint32_t per_job_waits_count = 0;
+      if (!semaphore->syncobj)
+         continue;
 
-      /* Get the waits specific to the job type. */
-      for (uint32_t j = 0U; j < wait_count; j++) {
-         if (stage_flags[j] & (1U << i)) {
-            per_job_waits[per_job_waits_count] = waits[j];
-            per_job_waits_count++;
+      for (uint32_t j = 0; j < PVR_NUM_SYNC_PIPELINE_STAGES; j++) {
+         if (stage_flags[i] & (1U << j)) {
+            VkResult result =
+               device->ws->ops->syncobjs_merge(semaphore->syncobj,
+                                               completions[j],
+                                               &completions[j]);
+            if (result != VK_SUCCESS)
+               return result;
          }
       }
 
-      if (per_job_waits_count == 0U)
-         continue;
-
-      result = vk_sync_create(&device->vk,
-                              &device->pdevice->ws->syncobj_type,
-                              0U,
-                              0UL,
-                              &completions[i]);
-      if (result != VK_SUCCESS)
-         goto err_destroy_completion_syncs;
-
-      result = device->ws->ops->null_job_submit(device->ws,
-                                                per_job_waits,
-                                                per_job_waits_count,
-                                                completions[i]);
-      if (result != VK_SUCCESS)
-         goto err_destroy_completion_syncs;
+      device->ws->ops->syncobj_destroy(semaphore->syncobj);
+      semaphore->syncobj = NULL;
    }
 
    return VK_SUCCESS;
-
-err_destroy_completion_syncs:
-   for (uint32_t i = 0U; i < PVR_JOB_TYPE_MAX; i++) {
-      if (completions[i]) {
-         vk_sync_destroy(&device->vk, completions[i]);
-         completions[i] = NULL;
-      }
-   }
-
-   return result;
 }
 
-static void pvr_update_syncobjs(struct pvr_device *device,
-                                struct vk_sync *src[static PVR_JOB_TYPE_MAX],
-                                struct vk_sync *dst[static PVR_JOB_TYPE_MAX])
+static void
+pvr_update_syncobjs(struct pvr_device *device,
+                    struct pvr_winsys_syncobj *src[static PVR_JOB_TYPE_MAX],
+                    struct pvr_winsys_syncobj *dst[static PVR_JOB_TYPE_MAX])
 {
    for (uint32_t i = 0; i < PVR_JOB_TYPE_MAX; i++) {
       if (src[i]) {
          if (dst[i])
-            vk_sync_destroy(&device->vk, dst[i]);
+            device->ws->ops->syncobj_destroy(dst[i]);
 
          dst[i] = src[i];
       }
@@ -593,51 +712,37 @@ VkResult pvr_QueueSubmit(VkQueue _queue,
                          VkFence fence)
 {
    PVR_FROM_HANDLE(pvr_queue, queue, _queue);
-   struct vk_sync *completion_syncobjs[PVR_JOB_TYPE_MAX] = {};
+   struct pvr_winsys_syncobj *completion_syncobjs[PVR_JOB_TYPE_MAX] = {};
    struct pvr_device *device = queue->device;
    VkResult result;
 
-   for (uint32_t i = 0U; i < submitCount; i++) {
-      struct vk_sync *per_submit_completion_syncobjs[PVR_JOB_TYPE_MAX] = {};
+   for (uint32_t i = 0; i < submitCount; i++) {
+      struct pvr_winsys_syncobj
+         *per_submit_completion_syncobjs[PVR_JOB_TYPE_MAX] = {};
       const VkSubmitInfo *desc = &pSubmits[i];
-      struct vk_sync *waits[desc->waitSemaphoreCount];
       uint32_t stage_flags[desc->waitSemaphoreCount];
-      uint32_t wait_count = 0;
 
-      for (uint32_t j = 0U; j < desc->waitSemaphoreCount; j++) {
-         VK_FROM_HANDLE(vk_semaphore, semaphore, desc->pWaitSemaphores[j]);
-         struct vk_sync *sync = vk_semaphore_get_active_sync(semaphore);
-
-         if (sync->type == &vk_sync_dummy_type)
-            continue;
-
-         /* We don't currently support timeline semaphores. */
-         assert(!(sync->flags & VK_SYNC_IS_TIMELINE));
-
-         stage_flags[wait_count] =
-            pvr_stage_mask_dst(desc->pWaitDstStageMask[j]);
-         waits[wait_count] = vk_semaphore_get_active_sync(semaphore);
-         wait_count++;
-      }
+      for (uint32_t j = 0; j < desc->waitSemaphoreCount; j++)
+         stage_flags[j] = pvr_convert_stage_mask(desc->pWaitDstStageMask[j]);
 
       if (desc->commandBufferCount > 0U) {
          for (uint32_t j = 0U; j < desc->commandBufferCount; j++) {
             result = pvr_process_cmd_buffer(device,
                                             queue,
                                             desc->pCommandBuffers[j],
-                                            waits,
-                                            wait_count,
+                                            desc->pWaitSemaphores,
+                                            desc->waitSemaphoreCount,
                                             stage_flags,
                                             per_submit_completion_syncobjs);
             if (result != VK_SUCCESS)
                return result;
          }
       } else {
-         result = pvr_submit_null_job(device,
-                                      waits,
-                                      wait_count,
-                                      stage_flags,
-                                      per_submit_completion_syncobjs);
+         result = pvr_process_empty_job(device,
+                                        desc->pWaitSemaphores,
+                                        desc->waitSemaphoreCount,
+                                        stage_flags,
+                                        per_submit_completion_syncobjs);
          if (result != VK_SUCCESS)
             return result;
       }

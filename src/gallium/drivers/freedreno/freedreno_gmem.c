@@ -427,19 +427,6 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
       yoff += bh;
    }
 
-   /* Swap the order of alternating rows to form an 'S' pattern, to improve
-    * cache access patterns (ie. adjacent bins are likely to access adjacent
-    * portions of textures)
-    */
-   if (!FD_DBG(NOSBIN)) {
-      for (i = 0; i < gmem->nbins_y; i+=2) {
-         unsigned col0 = gmem->nbins_x * i;
-         for (j = 0; j < gmem->nbins_x/2; j++) {
-            swap(gmem->tile[col0 + j], gmem->tile[col0 + gmem->nbins_x - j - 1]);
-         }
-      }
-   }
-
    if (BIN_DEBUG) {
       t = 0;
       for (i = 0; i < gmem->nbins_y; i++) {
@@ -729,7 +716,7 @@ fd_gmem_render_tiles(struct fd_batch *batch)
     * bypass.
     */
    if (batch->tessellation) {
-      assert(ctx->emit_sysmem_prep);
+      debug_assert(ctx->emit_sysmem_prep);
       sysmem = true;
    }
 

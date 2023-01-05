@@ -293,7 +293,6 @@ typedef struct {
       struct pipe_av1_picture_desc av1;
       struct pipe_h264_enc_picture_desc h264enc;
       struct pipe_h265_enc_picture_desc h265enc;
-      struct pipe_vpp_desc vidproc;
    } desc;
 
    struct {
@@ -318,7 +317,6 @@ typedef struct {
    bool first_single_submitted;
    int gop_coeff;
    bool needs_begin_frame;
-   bool vpp_needs_flush_on_endpic;
    void *blit_cs;
    int packed_header_type;
 } vlVaContext;

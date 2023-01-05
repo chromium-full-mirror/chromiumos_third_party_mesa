@@ -14,7 +14,7 @@ ContinuationIndentWidth: 3
 Cpp11BracedListStyle: false
 IncludeBlocks: Regroup
 IncludeCategories:
-  - Regex:           '^"tu_common.h"$'
+  - Regex:           '^"tu_private.h"$'
     Priority:        0
   - Regex:           '^"(drm/|ir3/|tu_)'
     Priority:        4

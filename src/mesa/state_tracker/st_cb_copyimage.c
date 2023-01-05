@@ -54,8 +54,7 @@
  * formats are not supported. (same as ARB_copy_image)
  */
 static enum pipe_format
-get_canonical_format(struct pipe_screen *screen,
-                     enum pipe_format format)
+get_canonical_format(enum pipe_format format)
 {
    const struct util_format_description *desc =
       util_format_description(format);
@@ -63,7 +62,7 @@ get_canonical_format(struct pipe_screen *screen,
    /* Packed formats. Return the equivalent array format. */
    if (format == PIPE_FORMAT_R11G11B10_FLOAT ||
        format == PIPE_FORMAT_R9G9B9E5_FLOAT)
-      return get_canonical_format(screen, PIPE_FORMAT_R8G8B8A8_UINT);
+      return get_canonical_format(PIPE_FORMAT_R8G8B8A8_UINT);
 
    if (desc->nr_channels == 4 &&
        desc->channel[0].size == 10 &&
@@ -73,40 +72,32 @@ get_canonical_format(struct pipe_screen *screen,
       if (desc->swizzle[0] == PIPE_SWIZZLE_X &&
           desc->swizzle[1] == PIPE_SWIZZLE_Y &&
           desc->swizzle[2] == PIPE_SWIZZLE_Z)
-         return get_canonical_format(screen, PIPE_FORMAT_R8G8B8A8_UINT);
+         return get_canonical_format(PIPE_FORMAT_R8G8B8A8_UINT);
 
       return PIPE_FORMAT_NONE;
    }
 
 #define RETURN_FOR_SWIZZLE1(x, format) \
    if (desc->swizzle[0] == PIPE_SWIZZLE_##x) \
-      return (screen->get_canonical_format ? \
-              screen->get_canonical_format(screen, format) : \
-              format)
+      return format
 
 #define RETURN_FOR_SWIZZLE2(x, y, format) \
    if (desc->swizzle[0] == PIPE_SWIZZLE_##x && \
        desc->swizzle[1] == PIPE_SWIZZLE_##y) \
-      return (screen->get_canonical_format ? \
-              screen->get_canonical_format(screen, format) : \
-              format)
+      return format
 
 #define RETURN_FOR_SWIZZLE3(x, y, z, format) \
    if (desc->swizzle[0] == PIPE_SWIZZLE_##x && \
        desc->swizzle[1] == PIPE_SWIZZLE_##y && \
        desc->swizzle[2] == PIPE_SWIZZLE_##z) \
-      return (screen->get_canonical_format ? \
-              screen->get_canonical_format(screen, format) : \
-              format)
+      return format
 
 #define RETURN_FOR_SWIZZLE4(x, y, z, w, format) \
    if (desc->swizzle[0] == PIPE_SWIZZLE_##x && \
        desc->swizzle[1] == PIPE_SWIZZLE_##y && \
        desc->swizzle[2] == PIPE_SWIZZLE_##z && \
        desc->swizzle[3] == PIPE_SWIZZLE_##w) \
-      return (screen->get_canonical_format ? \
-              screen->get_canonical_format(screen, format) : \
-              format)
+      return format
 
    /* Array formats. */
    if (desc->is_array) {
@@ -217,42 +208,40 @@ has_identity_swizzle(const struct util_format_description *desc)
  * Return a canonical format for the given bits and channel size.
  */
 static enum pipe_format
-canonical_format_from_bits(struct pipe_screen *screen,
-                           unsigned bits,
-                           unsigned channel_size)
+canonical_format_from_bits(unsigned bits, unsigned channel_size)
 {
    switch (bits) {
    case 8:
       if (channel_size == 8)
-         return get_canonical_format(screen, PIPE_FORMAT_R8_UINT);
+         return get_canonical_format(PIPE_FORMAT_R8_UINT);
       break;
 
    case 16:
       if (channel_size == 8)
-         return get_canonical_format(screen, PIPE_FORMAT_R8G8_UINT);
+         return get_canonical_format(PIPE_FORMAT_R8G8_UINT);
       if (channel_size == 16)
-         return get_canonical_format(screen, PIPE_FORMAT_R16_UINT);
+         return get_canonical_format(PIPE_FORMAT_R16_UINT);
       break;
 
    case 32:
       if (channel_size == 8)
-         return get_canonical_format(screen, PIPE_FORMAT_R8G8B8A8_UINT);
+         return get_canonical_format(PIPE_FORMAT_R8G8B8A8_UINT);
       if (channel_size == 16)
-         return get_canonical_format(screen, PIPE_FORMAT_R16G16_UINT);
+         return get_canonical_format(PIPE_FORMAT_R16G16_UINT);
       if (channel_size == 32)
-         return get_canonical_format(screen, PIPE_FORMAT_R32_UINT);
+         return get_canonical_format(PIPE_FORMAT_R32_UINT);
       break;
 
    case 64:
       if (channel_size == 16)
-         return get_canonical_format(screen, PIPE_FORMAT_R16G16B16A16_UINT);
+         return get_canonical_format(PIPE_FORMAT_R16G16B16A16_UINT);
       if (channel_size == 32)
-         return get_canonical_format(screen, PIPE_FORMAT_R32G32_UINT);
+         return get_canonical_format(PIPE_FORMAT_R32G32_UINT);
       break;
 
    case 128:
       if (channel_size == 32)
-         return get_canonical_format(screen, PIPE_FORMAT_R32G32B32A32_UINT);
+         return get_canonical_format(PIPE_FORMAT_R32G32B32A32_UINT);
       break;
    }
 
@@ -307,8 +296,8 @@ swizzled_copy(struct pipe_context *pipe,
     * about the channel type from this point on.
     * Only the swizzle and channel size.
     */
-   blit_src_format = get_canonical_format(pipe->screen, src->format);
-   blit_dst_format = get_canonical_format(pipe->screen, dst->format);
+   blit_src_format = get_canonical_format(src->format);
+   blit_dst_format = get_canonical_format(dst->format);
 
    assert(blit_src_format != PIPE_FORMAT_NONE);
    assert(blit_dst_format != PIPE_FORMAT_NONE);
@@ -329,14 +318,14 @@ swizzled_copy(struct pipe_context *pipe,
        * e.g. R32 -> BGRA8 is realized as RGBA8 -> BGRA8
        */
       blit_src_format =
-         canonical_format_from_bits(pipe->screen, bits, dst_desc->channel[0].size);
+         canonical_format_from_bits(bits, dst_desc->channel[0].size);
    } else if (has_identity_swizzle(dst_desc)) {
       /* Dst is unswizzled and src can be swizzled, so dst is typecast
        * to an equivalent src-compatible format.
        * e.g. BGRA8 -> R32 is realized as BGRA8 -> RGBA8
        */
       blit_dst_format =
-         canonical_format_from_bits(pipe->screen, bits, src_desc->channel[0].size);
+         canonical_format_from_bits(bits, src_desc->channel[0].size);
    } else {
       assert(!"This should have been handled by handle_complex_copy.");
       return;

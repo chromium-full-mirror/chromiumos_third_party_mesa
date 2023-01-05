@@ -38,7 +38,7 @@ PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(
 }
 
 ac_shader_config config;
-aco_shader_info info;
+radv_shader_info info;
 std::unique_ptr<Program> program;
 Builder bld(NULL);
 Temp inputs[16];
@@ -72,13 +72,13 @@ static std::mutex create_device_mutex;
 FUNCTION_LIST
 #undef ITEM
 
-void create_program(enum amd_gfx_level gfx_level, Stage stage, unsigned wave_size, enum radeon_family family)
+void create_program(enum chip_class chip_class, Stage stage, unsigned wave_size, enum radeon_family family)
 {
    memset(&config, 0, sizeof(config));
    info.wave_size = wave_size;
 
    program.reset(new Program);
-   aco::init_program(program.get(), stage, &info, gfx_level, family, false, &config);
+   aco::init_program(program.get(), stage, &info, chip_class, family, false, &config);
    program->workgroup_size = UINT_MAX;
    calc_min_waves(program.get());
 
@@ -98,15 +98,19 @@ void create_program(enum amd_gfx_level gfx_level, Stage stage, unsigned wave_siz
    config.float_mode = program->blocks[0].fp_mode.val;
 }
 
-bool setup_cs(const char *input_spec, enum amd_gfx_level gfx_level,
+bool setup_cs(const char *input_spec, enum chip_class chip_class,
               enum radeon_family family, const char* subvariant,
               unsigned wave_size)
 {
-   if (!set_variant(gfx_level, subvariant))
+   if (!set_variant(chip_class, subvariant))
       return false;
 
    memset(&info, 0, sizeof(info));
-   create_program(gfx_level, compute_cs, wave_size, family);
+   info.cs.block_size[0] = 1;
+   info.cs.block_size[1] = 1;
+   info.cs.block_size[2] = 1;
+
+   create_program(chip_class, compute_cs, wave_size, family);
 
    if (input_spec) {
       std::vector<RegClass> input_classes;
@@ -236,7 +240,7 @@ void finish_assembler_test()
 
    /* we could use CLRX for disassembly but that would require it to be
     * installed */
-   if (program->gfx_level >= GFX8) {
+   if (program->chip_class >= GFX8) {
       print_asm(program.get(), binary, exec_size / 4u, output);
    } else {
       //TODO: maybe we should use CLRX and skip this test if it's not available?
@@ -350,10 +354,10 @@ Temp ext_ubyte(Temp src, unsigned idx, Builder b)
                    Operand::c32(8u), Operand::c32(false));
 }
 
-VkDevice get_vk_device(enum amd_gfx_level gfx_level)
+VkDevice get_vk_device(enum chip_class chip_class)
 {
    enum radeon_family family;
-   switch (gfx_level) {
+   switch (chip_class) {
    case GFX6:
       family = CHIP_TAHITI;
       break;
@@ -370,10 +374,7 @@ VkDevice get_vk_device(enum amd_gfx_level gfx_level)
       family = CHIP_NAVI10;
       break;
    case GFX10_3:
-      family = CHIP_NAVI21;
-      break;
-   case GFX11:
-      family = CHIP_GFX1100;
+      family = CHIP_SIENNA_CICHLID;
       break;
    default:
       family = CHIP_UNKNOWN;

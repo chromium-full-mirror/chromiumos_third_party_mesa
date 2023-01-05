@@ -32,7 +32,6 @@
 #include "brw_cfg.h"
 #include "brw_fs.h"
 #include "brw_nir.h"
-#include "brw_prim.h"
 #include "dev/intel_debug.h"
 
 namespace brw {
@@ -257,7 +256,7 @@ vec4_gs_visitor::emit_urb_write_opcode(bool complete)
     */
    (void) complete;
 
-   vec4_instruction *inst = emit(VEC4_GS_OPCODE_URB_WRITE);
+   vec4_instruction *inst = emit(GS_OPCODE_URB_WRITE);
    inst->offset = gs_prog_data->control_data_header_size_hwords;
 
    inst->urb_write_flags = BRW_URB_WRITE_PER_SLOT_OFFSET;
@@ -371,7 +370,7 @@ vec4_gs_visitor::emit_control_data_bits()
    dst_reg mrf_reg2(MRF, base_mrf + 1);
    inst = emit(MOV(mrf_reg2, this->control_data_bits));
    inst->force_writemask_all = true;
-   inst = emit(VEC4_GS_OPCODE_URB_WRITE);
+   inst = emit(GS_OPCODE_URB_WRITE);
    inst->urb_write_flags = urb_write_flags;
    inst->base_mrf = base_mrf;
    inst->mlen = 2;

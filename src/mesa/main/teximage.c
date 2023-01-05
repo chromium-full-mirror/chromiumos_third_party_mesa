@@ -497,8 +497,7 @@ _mesa_max_texture_levels(const struct gl_context *ctx, GLenum target)
       return ffs(util_next_power_of_two(ctx->Const.MaxTextureSize));
    case GL_TEXTURE_3D:
    case GL_PROXY_TEXTURE_3D:
-      return !(ctx->API == API_OPENGLES2 && !ctx->Extensions.OES_texture_3D)
-         ? ctx->Const.Max3DTextureLevels : 0;
+      return ctx->Const.Max3DTextureLevels;
    case GL_TEXTURE_CUBE_MAP:
    case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
    case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
@@ -2824,7 +2823,7 @@ _mesa_choose_texture_format(struct gl_context *ctx,
                             GLenum target, GLint level,
                             GLenum internalFormat, GLenum format, GLenum type)
 {
-   mesa_format f = MESA_FORMAT_NONE;
+   mesa_format f;
 
    /* see if we've already chosen a format for the previous level */
    if (level > 0) {

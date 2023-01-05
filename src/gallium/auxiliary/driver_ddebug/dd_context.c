@@ -959,7 +959,8 @@ dd_context_create(struct dd_screen *dscreen, struct pipe_context *pipe)
    list_inithead(&dctx->records);
    (void) mtx_init(&dctx->mutex, mtx_plain);
    (void) cnd_init(&dctx->cond);
-   if (thrd_success != u_thread_create(&dctx->thread,dd_thread_main, dctx)) {
+   dctx->thread = u_thread_create(dd_thread_main, dctx);
+   if (!dctx->thread) {
       mtx_destroy(&dctx->mutex);
       goto fail;
    }

@@ -27,6 +27,7 @@
 
 #include "pipe_loader_priv.h"
 
+#include "util/u_cpu_detect.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_string.h"
@@ -164,6 +165,7 @@ pipe_loader_create_screen_vk(struct pipe_loader_device *dev, bool sw_vk)
 {
    struct pipe_screen_config config;
 
+   util_cpu_detect();
    pipe_loader_load_options(dev);
    config.options_info = &dev->option_info;
    config.options = &dev->option_cache;

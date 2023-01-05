@@ -55,11 +55,12 @@ block_full_16(struct lp_rasterizer_task *task,
               const struct lp_rast_triangle *tri,
               int x, int y)
 {
+   unsigned ix, iy;
    assert(x % 16 == 0);
    assert(y % 16 == 0);
-   for (unsigned iy = 0; iy < 16; iy += 4)
-      for (unsigned ix = 0; ix < 16; ix += 4)
-         block_full_4(task, tri, x + ix, y + iy);
+   for (iy = 0; iy < 16; iy += 4)
+      for (ix = 0; ix < 16; ix += 4)
+	 block_full_4(task, tri, x + ix, y + iy);
 }
 
 static inline unsigned
@@ -88,7 +89,7 @@ build_mask_linear(int32_t c, int32_t dcdx, int32_t dcdy)
    mask |= ((c3 + 1 * dcdx) >> 31) & (1 << 13);
    mask |= ((c3 + 2 * dcdx) >> 31) & (1 << 14);
    mask |= ((c3 + 3 * dcdx) >> 31) & (1 << 15);
-
+  
    return mask;
 }
 
@@ -271,14 +272,14 @@ sign_bits4(const __m128i *cstep, int cdiff)
 #define ROW3 ((1<<12)|(1<<13)|(1<<14)|(1<<15))
 
 #define STAMP_SIZE 4
-static unsigned bottom_mask_tab[STAMP_SIZE] = {
+static unsigned bottom_mask_tab[STAMP_SIZE] = { 
    ROW3,
    ROW3 | ROW2,
    ROW3 | ROW2 | ROW1,
    ROW3 | ROW2 | ROW1 | ROW0,
 };
 
-static unsigned right_mask_tab[STAMP_SIZE] = {
+static unsigned right_mask_tab[STAMP_SIZE] = { 
    COLUMN3,
    COLUMN3 | COLUMN2,
    COLUMN3 | COLUMN2 | COLUMN1,
@@ -294,8 +295,9 @@ lp_rast_triangle_32_3_16(struct lp_rasterizer_task *task,
 {
    const struct lp_rast_triangle *tri = arg.triangle.tri;
    const struct lp_rast_plane *plane = GET_PLANES(tri);
-   const int x = (arg.triangle.plane_mask & 0xff) + task->x;
-   const int y = (arg.triangle.plane_mask >> 8) + task->y;
+   int x = (arg.triangle.plane_mask & 0xff) + task->x;
+   int y = (arg.triangle.plane_mask >> 8) + task->y;
+   unsigned i, j;
 
    struct { unsigned mask:16; unsigned i:8; unsigned j:8; } out[16];
    unsigned nr = 0;
@@ -309,7 +311,7 @@ lp_rast_triangle_32_3_16(struct lp_rasterizer_task *task,
    __m128i c, dcdx, dcdy, rej4;
    __m128i dcdx_neg_mask, dcdy_neg_mask;
    __m128i dcdx2, dcdx3;
-
+   
    __m128i span_0;                /* 0,dcdx,2dcdx,3dcdx for plane 0 */
    __m128i span_1;                /* 0,dcdx,2dcdx,3dcdx for plane 1 */
    __m128i span_2;                /* 0,dcdx,2dcdx,3dcdx for plane 2 */
@@ -342,10 +344,10 @@ lp_rast_triangle_32_3_16(struct lp_rasterizer_task *task,
    transpose4_epi32(&zero, &dcdx, &dcdx2, &dcdx3,
                     &span_0, &span_1, &span_2, &unused);
 
-   for (unsigned i = 0; i < 4; i++) {
+   for (i = 0; i < 4; i++) {
       __m128i cx = c;
 
-      for (unsigned j = 0; j < 4; j++) {
+      for (j = 0; j < 4; j++) {
          __m128i c4rej = _mm_add_epi32(cx, rej4);
          __m128i rej_masks = _mm_srai_epi32(c4rej, 31);
 
@@ -392,7 +394,7 @@ lp_rast_triangle_32_3_16(struct lp_rasterizer_task *task,
       c = _mm_add_epi32(c, _mm_slli_epi32(dcdy, 2));
    }
 
-   for (unsigned i = 0; i < nr; i++)
+   for (i = 0; i < nr; i++)
       lp_rast_shade_quads_mask(task,
                                &tri->inputs,
                                x + 4 * out[i].j,
@@ -406,8 +408,8 @@ lp_rast_triangle_32_3_4(struct lp_rasterizer_task *task,
 {
    const struct lp_rast_triangle *tri = arg.triangle.tri;
    const struct lp_rast_plane *plane = GET_PLANES(tri);
-   const unsigned x = (arg.triangle.plane_mask & 0xff) + task->x;
-   const unsigned y = (arg.triangle.plane_mask >> 8) + task->y;
+   unsigned x = (arg.triangle.plane_mask & 0xff) + task->x;
+   unsigned y = (arg.triangle.plane_mask >> 8) + task->y;
 
    /* p0 and p2 are aligned, p1 is not (plane size 24 bytes). */
    __m128i p0 = _mm_load_si128((__m128i *)&plane[0]); /* clo, chi, dcdx, dcdy */
@@ -447,7 +449,7 @@ lp_rast_triangle_32_3_4(struct lp_rasterizer_task *task,
       __m128i c0_0 = _mm_add_epi32(SCALAR_EPI32(c, 0), span_0);
       __m128i c1_0 = _mm_add_epi32(SCALAR_EPI32(c, 1), span_1);
       __m128i c2_0 = _mm_add_epi32(SCALAR_EPI32(c, 2), span_2);
-
+      
       __m128i c_0 = _mm_or_si128(_mm_or_si128(c0_0, c1_0), c2_0);
 
       __m128i c0_1 = _mm_add_epi32(c0_0, SCALAR_EPI32(dcdy, 0));
@@ -577,8 +579,9 @@ lp_rast_triangle_32_3_16(struct lp_rasterizer_task *task,
 {
    const struct lp_rast_triangle *tri = arg.triangle.tri;
    const struct lp_rast_plane *plane = GET_PLANES(tri);
-   const int x = (arg.triangle.plane_mask & 0xff) + task->x;
-   const int y = (arg.triangle.plane_mask >> 8) + task->y;
+   int x = (arg.triangle.plane_mask & 0xff) + task->x;
+   int y = (arg.triangle.plane_mask >> 8) + task->y;
+   unsigned i, j;
 
    struct { unsigned mask:16; unsigned i:8; unsigned j:8; } out[16];
    unsigned nr = 0;
@@ -639,10 +642,10 @@ lp_rast_triangle_32_3_16(struct lp_rasterizer_task *task,
    transpose4_epi32(&zero, &dcdx, &dcdx2, &dcdx3,
                     &span_0, &span_1, &span_2, &unused);
 
-   for (unsigned i = 0; i < 4; i++) {
+   for (i = 0; i < 4; i++) {
       __m128i cx = c;
 
-      for (unsigned j = 0; j < 4; j++) {
+      for (j = 0; j < 4; j++) {
          __m128i c4rej = vec_add_epi32(cx, rej4);
          __m128i rej_masks = vec_srai_epi32(c4rej, 31);
 
@@ -689,7 +692,7 @@ lp_rast_triangle_32_3_16(struct lp_rasterizer_task *task,
       c = vec_add_epi32(c, vec_slli_epi32(dcdy, 2));
    }
 
-   for (unsigned i = 0; i < nr; i++)
+   for (i = 0; i < nr; i++)
       lp_rast_shade_quads_mask(task,
                                &tri->inputs,
                                x + 4 * out[i].j,

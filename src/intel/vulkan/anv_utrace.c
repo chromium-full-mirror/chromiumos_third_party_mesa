@@ -119,16 +119,19 @@ anv_device_utrace_flush_cmd_buffers(struct anv_queue *queue,
       goto error_sync;
 
    if (utrace_copies > 0) {
-      result = anv_bo_pool_alloc(&device->utrace_bo_pool,
-                                 utrace_copies * 4096,
-                                 &flush->trace_bo);
+      result =
+         anv_device_alloc_bo(device, "utrace-copy-buf", utrace_copies * 4096,
+                             ANV_BO_ALLOC_MAPPED, 0 /* explicit_address */,
+                             &flush->trace_bo);
       if (result != VK_SUCCESS)
          goto error_trace_buf;
 
-      result = anv_bo_pool_alloc(&device->utrace_bo_pool,
-                                 /* 128 dwords of setup + 64 dwords per copy */
-                                 align_u32(512 + 64 * utrace_copies, 4096),
-                                 &flush->batch_bo);
+      result =
+         anv_device_alloc_bo(device, "utrace-copy-batch",
+                             /* 128 dwords of setup + 64 dwords per copy */
+                             align_u32(512 + 64 * utrace_copies, 4096),
+                             ANV_BO_ALLOC_MAPPED, 0 /* explicit_address */,
+                             &flush->batch_bo);
       if (result != VK_SUCCESS)
          goto error_batch_buf;
 
@@ -181,9 +184,9 @@ anv_device_utrace_flush_cmd_buffers(struct anv_queue *queue,
  error_batch:
    anv_reloc_list_finish(&flush->relocs, &device->vk.alloc);
  error_reloc_list:
-   anv_bo_pool_free(&device->utrace_bo_pool, flush->batch_bo);
+   anv_device_release_bo(device, flush->batch_bo);
  error_batch_buf:
-   anv_bo_pool_free(&device->utrace_bo_pool, flush->trace_bo);
+   anv_device_release_bo(device, flush->trace_bo);
  error_trace_buf:
    vk_sync_destroy(&device->vk, flush->sync);
  error_sync:
@@ -199,9 +202,8 @@ anv_utrace_create_ts_buffer(struct u_trace_context *utctx, uint32_t size_b)
 
    struct anv_bo *bo = NULL;
    UNUSED VkResult result =
-      anv_bo_pool_alloc(&device->utrace_bo_pool,
-                        align_u32(size_b, 4096),
-                        &bo);
+      anv_device_alloc_bo(device, "utrace-ts", align_u32(size_b, 4096),
+                          ANV_BO_ALLOC_MAPPED, 0, &bo);
    assert(result == VK_SUCCESS);
 
    return bo;
@@ -214,16 +216,14 @@ anv_utrace_destroy_ts_buffer(struct u_trace_context *utctx, void *timestamps)
       container_of(utctx, struct anv_device, ds.trace_context);
    struct anv_bo *bo = timestamps;
 
-   anv_bo_pool_free(&device->utrace_bo_pool, bo);
+   anv_device_release_bo(device, bo);
 }
 
 static void
-anv_utrace_record_ts(struct u_trace *ut, void *cs,
-                     void *timestamps, unsigned idx,
+anv_utrace_record_ts(struct u_trace *ut, void *cs, void *timestamps, unsigned idx,
                      bool end_of_pipe)
 {
-   struct anv_cmd_buffer *cmd_buffer =
-      container_of(ut, struct anv_cmd_buffer, trace);
+   struct anv_cmd_buffer *cmd_buffer = cs;
    struct anv_device *device = cmd_buffer->device;
    struct anv_bo *bo = timestamps;
 
@@ -283,7 +283,6 @@ queue_family_to_name(const struct anv_queue_family *family)
 void
 anv_device_utrace_init(struct anv_device *device)
 {
-   anv_bo_pool_init(&device->utrace_bo_pool, device, "utrace");
    intel_ds_device_init(&device->ds, &device->info, device->fd,
                         device->physical->local_minor - 128,
                         INTEL_DS_API_VULKAN);
@@ -310,7 +309,6 @@ anv_device_utrace_finish(struct anv_device *device)
 {
    u_trace_context_process(&device->ds.trace_context, true);
    intel_ds_device_fini(&device->ds);
-   anv_bo_pool_finish(&device->utrace_bo_pool);
 }
 
 enum intel_ds_stall_flag

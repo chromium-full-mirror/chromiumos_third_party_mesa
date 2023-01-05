@@ -64,7 +64,6 @@ struct zink_shader_info {
    bool last_vertex;
    bool have_xfb;
    bool have_sparse;
-   bool have_vulkan_memory_model;
 };
 
 

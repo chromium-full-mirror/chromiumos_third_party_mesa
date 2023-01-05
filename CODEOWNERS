@@ -28,11 +28,11 @@ meson.build @dbaker @eric
 /android/ @roman.stratiienko
 
 # Compatibility headers
-/include/c99* @xexaxo
-/src/c11/ @eric @lygstate
+/include/c99* @evelikov
+/include/c11* @eric
 
 # Documentation
-/docs/ @eric @xexaxo
+/docs/ @eric @evelikov
 
 
 ##########
@@ -52,21 +52,21 @@ meson.build @dbaker @eric
 #############
 
 # EGL
-/src/egl/ @eric @xexaxo
-/include/EGL/ @eric @xexaxo
+/src/egl/ @eric @evelikov
+/include/EGL/ @eric @evelikov
 
 # EGL - Android support
 /src/egl/drivers/dri2/platform_android.c @robh @tfiga
 
 # EGL - Device support
-/src/egl/drivers/dri2/platform_device.c @xexaxo
+/src/egl/drivers/dri2/platform_device.c @evelikov
 
 # EGL - Wayland support
 /src/egl/wayland/ @daniels @eric
 /src/egl/drivers/dri2/platform_wayland.c @daniels @eric
 
 # Gallium targets
-/src/gallium/targets/ @xexaxo
+/src/gallium/targets/ @evelikov
 
 # GLX
 /src/glx/ @ajax
@@ -87,11 +87,11 @@ meson.build @dbaker @eric
 /src/hgl/ @kallisti5
 
 # Loader - DRI/classic
-/src/loader/ @xexaxo
+/src/loader/ @evelikov
 
 # Loader - Gallium
-/src/gallium/auxiliary/pipe-loader/ @xexaxo
-/src/gallium/auxiliary/target-helpers/ @xexaxo
+/src/gallium/auxiliary/pipe-loader/ @evelikov
+/src/gallium/auxiliary/target-helpers/ @evelikov
 
 # Vulkan WSI - Display
 /src/vulkan/wsi/wsi_common_display.* @keithp
