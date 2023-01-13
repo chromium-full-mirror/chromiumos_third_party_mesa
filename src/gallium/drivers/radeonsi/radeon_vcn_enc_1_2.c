@@ -1210,18 +1210,9 @@ static void radeon_enc_op_init_rc_vbv(struct radeon_encoder *enc)
    RADEON_ENC_END();
 }
 
-static void radeon_enc_op_preset(struct radeon_encoder *enc)
+static void radeon_enc_op_speed(struct radeon_encoder *enc)
 {
-   uint32_t preset_mode;
-
-   if (enc->enc_pic.quality_modes.preset_mode == RENCODE_PRESET_MODE_QUALITY)
-      preset_mode = RENCODE_IB_OP_SET_QUALITY_ENCODING_MODE;
-   else if (enc->enc_pic.quality_modes.preset_mode == RENCODE_PRESET_MODE_BALANCE)
-      preset_mode = RENCODE_IB_OP_SET_BALANCE_ENCODING_MODE;
-   else
-      preset_mode = RENCODE_IB_OP_SET_SPEED_ENCODING_MODE;
-
-   RADEON_ENC_BEGIN(preset_mode);
+   RADEON_ENC_BEGIN(RENCODE_IB_OP_SET_SPEED_ENCODING_MODE);
    RADEON_ENC_END();
 }
 
@@ -1396,7 +1387,7 @@ void radeon_enc_1_2_init(struct radeon_encoder *enc)
    enc->op_enc = radeon_enc_op_enc;
    enc->op_init_rc = radeon_enc_op_init_rc;
    enc->op_init_rc_vbv = radeon_enc_op_init_rc_vbv;
-   enc->op_preset = radeon_enc_op_preset;
+   enc->op_preset = radeon_enc_op_speed;
    enc->encode_params = radeon_enc_encode_params;
    enc->session_init = radeon_enc_session_init;
    enc->nalu_aud = radeon_enc_nalu_aud;
