@@ -461,7 +461,9 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
 #endif
       .KHR_dedicated_allocation = true,
       .KHR_deferred_host_operations = true,
+#if !defined(ANDROID)
       .KHR_depth_stencil_resolve = true,
+#endif
       .KHR_descriptor_update_template = true,
       .KHR_device_group = true,
       .KHR_draw_indirect_count = true,
