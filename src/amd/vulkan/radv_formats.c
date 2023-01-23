@@ -693,8 +693,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
       return;
    }
 
-   const bool multiplanar = vk_format_get_plane_count(format) > 1;
-   if (multiplanar || desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
+   if (vk_format_get_plane_count(format) > 1 || desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
       uint64_t tiling = VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
                         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
                         VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
@@ -705,9 +704,6 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
       if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
          tiling |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
       }
-
-      if (multiplanar)
-         tiling |= VK_FORMAT_FEATURE_2_DISJOINT_BIT;
 
       /* Fails for unknown reasons with linear tiling & subsampled formats. */
       out_properties->linearTilingFeatures =
@@ -1192,9 +1188,6 @@ radv_get_modifier_flags(struct radv_physical_device *dev, VkFormat format, uint6
       features = props->linearTilingFeatures;
    else
       features = props->optimalTilingFeatures;
-
-   /* Unconditionally disable DISJOINT support for modifiers for now */
-   features &= ~VK_FORMAT_FEATURE_2_DISJOINT_BIT;
 
    if (ac_modifier_has_dcc(modifier)) {
       /* Only disable support for STORAGE_IMAGE on modifiers that
