@@ -873,10 +873,8 @@ vn_physical_device_init_external_fence_handles(
    physical_dev->external_fence_handles = 0;
 
 #ifdef ANDROID
-   if (physical_dev->instance->experimental.globalFencing) {
-      physical_dev->external_fence_handles =
-         VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
-   }
+   physical_dev->external_fence_handles =
+      VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
 #endif
 }
 
@@ -922,10 +920,8 @@ vn_physical_device_init_external_semaphore_handles(
    physical_dev->external_timeline_semaphore_handles = 0;
 
 #ifdef ANDROID
-   if (physical_dev->instance->experimental.globalFencing) {
-      physical_dev->external_binary_semaphore_handles =
-         VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-   }
+   physical_dev->external_binary_semaphore_handles =
+      VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
 #endif
 }
 
@@ -951,18 +947,16 @@ vn_physical_device_get_native_extensions(
       exts->ANDROID_native_buffer = true;
    }
 
-   /* we have a very poor implementation */
-   if (instance->experimental.globalFencing) {
-      if ((physical_dev->renderer_sync_fd_fence_features &
-           VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT))
-         exts->KHR_external_fence_fd = true;
+   if ((physical_dev->renderer_sync_fd_fence_features &
+        VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT))
+      exts->KHR_external_fence_fd = true;
 
-      if ((physical_dev->renderer_sync_fd_semaphore_features &
-           VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) &&
-          (physical_dev->renderer_sync_fd_semaphore_features &
-           VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT))
-         exts->KHR_external_semaphore_fd = true;
-   }
+   if ((physical_dev->renderer_sync_fd_semaphore_features &
+        VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) &&
+       (physical_dev->renderer_sync_fd_semaphore_features &
+        VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT))
+      exts->KHR_external_semaphore_fd = true;
+
 #else  /* ANDROID */
    if (can_external_mem) {
       exts->KHR_external_memory_fd = true;
