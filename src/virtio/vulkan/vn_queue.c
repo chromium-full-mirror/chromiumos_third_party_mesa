@@ -872,7 +872,10 @@ vn_remove_signaled_fences(VkDevice device, VkFence *fences, uint32_t *count)
 }
 
 static VkResult
-vn_update_sync_result(VkResult result, int64_t abs_timeout, uint32_t *iter)
+vn_update_sync_result(struct vn_device *dev,
+                      VkResult result,
+                      int64_t abs_timeout,
+                      uint32_t *iter)
 {
    switch (result) {
    case VK_NOT_READY:
@@ -880,7 +883,7 @@ vn_update_sync_result(VkResult result, int64_t abs_timeout, uint32_t *iter)
           os_time_get_nano() >= abs_timeout)
          result = VK_TIMEOUT;
       else
-         vn_relax(iter, "client");
+         vn_relax(&dev->instance->ring.ring, iter, "client");
       break;
    default:
       assert(result == VK_SUCCESS || result < 0);
@@ -918,7 +921,7 @@ vn_WaitForFences(VkDevice device,
 
       while (result == VK_NOT_READY) {
          result = vn_remove_signaled_fences(device, fences, &fenceCount);
-         result = vn_update_sync_result(result, abs_timeout, &iter);
+         result = vn_update_sync_result(dev, result, abs_timeout, &iter);
       }
 
       if (fences != local_fences)
@@ -926,7 +929,7 @@ vn_WaitForFences(VkDevice device,
    } else {
       while (result == VK_NOT_READY) {
          result = vn_find_first_signaled_fence(device, pFences, fenceCount);
-         result = vn_update_sync_result(result, abs_timeout, &iter);
+         result = vn_update_sync_result(dev, result, abs_timeout, &iter);
       }
    }
 
@@ -1262,7 +1265,7 @@ vn_WaitSemaphores(VkDevice device,
       while (result == VK_NOT_READY) {
          result = vn_remove_signaled_semaphores(device, semaphores, values,
                                                 &semaphore_count);
-         result = vn_update_sync_result(result, abs_timeout, &iter);
+         result = vn_update_sync_result(dev, result, abs_timeout, &iter);
       }
 
       if (semaphores != local_semaphores)
@@ -1272,7 +1275,7 @@ vn_WaitSemaphores(VkDevice device,
          result = vn_find_first_signaled_semaphore(
             device, pWaitInfo->pSemaphores, pWaitInfo->pValues,
             pWaitInfo->semaphoreCount);
-         result = vn_update_sync_result(result, abs_timeout, &iter);
+         result = vn_update_sync_result(dev, result, abs_timeout, &iter);
       }
    }
 
