@@ -1438,6 +1438,7 @@ functions_to_detect = {
   'getrandom': '',
   'qsort_r': '',
   'qsort_s': '',
+  'posix_fallocate': '',
 }
 
 foreach f, prefix: functions_to_detect
