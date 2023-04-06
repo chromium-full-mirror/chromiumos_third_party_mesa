@@ -51,10 +51,6 @@ struct radv_shader_args {
    struct ac_arg ngg_viewport_scale[2];
    struct ac_arg ngg_viewport_translate[2];
 
-   /* Task shaders */
-   struct ac_arg task_ib_addr;
-   struct ac_arg task_ib_stride;
-
    /* Fragment shaders */
    struct ac_arg ps_epilog_pc;
    struct ac_arg ps_num_samples;
@@ -73,6 +69,9 @@ struct radv_shader_args {
 
    /* TES */
    struct ac_arg tes_num_patches;
+
+   /* NGG VS streamout */
+   struct ac_arg num_verts_per_prim;
 
    struct radv_userdata_locations user_sgprs_locs;
    unsigned num_user_sgprs;
@@ -93,12 +92,14 @@ radv_shader_args_from_ac(struct ac_shader_args *args)
 struct radv_pipeline_key;
 struct radv_shader_info;
 
-void radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipeline_key *key,
+void radv_declare_shader_args(const struct radv_device *device, const struct radv_pipeline_key *key,
                               const struct radv_shader_info *info, gl_shader_stage stage,
                               bool has_previous_stage, gl_shader_stage previous_stage,
                               struct radv_shader_args *args);
 
-void radv_declare_ps_epilog_args(enum amd_gfx_level gfx_level, const struct radv_ps_epilog_key *key,
+void radv_declare_ps_epilog_args(const struct radv_device *device,
+                                 const struct radv_ps_epilog_key *key,
                                  struct radv_shader_args *args);
 
+void radv_declare_rt_shader_args(enum amd_gfx_level gfx_level, struct radv_shader_args *args);
 #endif

@@ -908,7 +908,6 @@ struct gl_constants
    GLuint MaxTessGenLevel;
    GLuint MaxTessPatchComponents;
    GLuint MaxTessControlTotalOutputComponents;
-   bool LowerTessLevel; /**< Lower gl_TessLevel* from float[n] to vecn? */
    bool PrimitiveRestartForPatches;
 
    /** GL_OES_primitive_bounding_box */
@@ -928,6 +927,9 @@ struct gl_constants
 
    /** GL_ARB_get_program_binary */
    GLuint NumProgramBinaryFormats;
+
+   /** GL_ARB_gl_spirv */
+   GLuint NumShaderBinaryFormats;
 
    /** GL_NV_conservative_raster */
    GLuint MaxSubpixelPrecisionBiasBits;

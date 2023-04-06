@@ -184,19 +184,6 @@ panvk_pipeline_builder_upload_shaders(struct panvk_pipeline_builder *builder,
    return VK_SUCCESS;
 }
 
-static bool
-panvk_pipeline_static_sysval(struct panvk_pipeline *pipeline,
-                             unsigned id)
-{
-   switch (id) {
-   case PAN_SYSVAL_VIEWPORT_SCALE:
-   case PAN_SYSVAL_VIEWPORT_OFFSET:
-      return panvk_pipeline_static_state(pipeline, VK_DYNAMIC_STATE_VIEWPORT);
-   default:
-      return false;
-   }
-}
-
 static void
 panvk_pipeline_builder_alloc_static_state_bo(struct panvk_pipeline_builder *builder,
                                              struct panvk_pipeline *pipeline)
@@ -242,7 +229,6 @@ panvk_pipeline_builder_init_sysvals(struct panvk_pipeline_builder *builder,
 {
    const struct panvk_shader *shader = builder->shaders[stage];
 
-   pipeline->sysvals[stage].ids = shader->info.sysvals;
    pipeline->sysvals[stage].ubo_idx = shader->sysval_ubo;
 }
 
@@ -771,6 +757,14 @@ panvk_pipeline_update_varying_slot(struct panvk_varyings_info *varyings,
 
    if (old_size < new_size)
       varyings->varying[loc].format = new_fmt;
+
+   /* Type (float or not) information is only known in the fragment shader, so
+    * override for that
+    */
+   if (input) {
+      assert(stage == MESA_SHADER_FRAGMENT && "no geom/tess on Bifrost");
+      varyings->varying[loc].format = new_fmt;
+   }
 
    varyings->buf_mask |= 1 << buf_id;
 }

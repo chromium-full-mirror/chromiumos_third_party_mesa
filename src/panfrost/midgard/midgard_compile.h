@@ -29,6 +29,8 @@
 #include "panfrost/util/pan_ir.h"
 #include "util/u_dynarray.h"
 
+void midgard_preprocess_nir(nir_shader *nir, unsigned gpu_id);
+
 void midgard_compile_shader_nir(nir_shader *nir,
                                 const struct panfrost_compile_inputs *inputs,
                                 struct util_dynarray *binary,
@@ -101,6 +103,8 @@ static const nir_shader_compiler_options midgard_nir_options = {
    .force_indirect_unrolling =
       (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
    .force_indirect_unrolling_sampler = true,
+
+   .use_scoped_barrier = true,
 };
 
 #endif

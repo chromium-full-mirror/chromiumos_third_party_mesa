@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright 2021 Alyssa Rosenzweig
+ * SPDX-License-Identifier: MIT
  */
 
 #include "agx_builder.h"
@@ -58,6 +40,7 @@ agx_write_registers(agx_instr *I, unsigned d)
       return 4 * size;
 
    case AGX_OPCODE_DEVICE_LOAD:
+   case AGX_OPCODE_LOCAL_LOAD:
    case AGX_OPCODE_LD_TILE:
       return util_bitcount(I->mask) * size;
 
@@ -98,6 +81,7 @@ agx_read_registers(agx_instr *I, unsigned s)
       return I->nr_dests * agx_size_align_16(agx_split_width(I));
 
    case AGX_OPCODE_DEVICE_STORE:
+   case AGX_OPCODE_LOCAL_STORE:
    case AGX_OPCODE_ST_TILE:
       if (s == 0)
          return util_bitcount(I->mask) * size;
@@ -117,7 +101,9 @@ agx_read_registers(agx_instr *I, unsigned s)
    case AGX_OPCODE_TEXTURE_LOAD:
    case AGX_OPCODE_TEXTURE_SAMPLE:
       if (s == 0) {
-         /* Coordinates. We internally handle sample index as 32-bit */
+         /* Coordinates. We handle layer + sample index as 32-bit even when only
+          * the lower 16-bits are present.
+          */
          switch (I->dim) {
          case AGX_DIM_1D:
             return 2 * 1;
@@ -136,7 +122,7 @@ agx_read_registers(agx_instr *I, unsigned s)
          case AGX_DIM_CUBE_ARRAY:
             return 2 * 4;
          case AGX_DIM_2D_MS_ARRAY:
-            return 2 * 4;
+            return 2 * 3;
          }
 
          unreachable("Invalid texture dimension");
@@ -168,6 +154,13 @@ agx_read_registers(agx_instr *I, unsigned s)
       } else {
          return size;
       }
+
+   case AGX_OPCODE_ATOMIC:
+   case AGX_OPCODE_LOCAL_ATOMIC:
+      if (s == 0 && I->atomic_opc == AGX_ATOMIC_OPC_CMPXCHG)
+         return size * 2;
+      else
+         return size;
 
    default:
       return size;

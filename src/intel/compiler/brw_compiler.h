@@ -1600,6 +1600,7 @@ struct brw_tue_map {
 
 struct brw_mue_map {
    int32_t start_dw[VARYING_SLOT_MAX];
+   uint32_t per_primitive_indices_dw;
 
    uint32_t size_dw;
 
@@ -1624,6 +1625,7 @@ struct brw_task_prog_data {
 
 enum brw_mesh_index_format {
    BRW_INDEX_FORMAT_U32,
+   BRW_INDEX_FORMAT_U888X,
 };
 
 struct brw_mesh_prog_data {
@@ -1694,12 +1696,14 @@ DEFINE_PROG_DATA_DOWNCAST(sf,    true)
 
 struct brw_compile_stats {
    uint32_t dispatch_width; /**< 0 for vec4 */
+   uint32_t max_dispatch_width;
    uint32_t instructions;
    uint32_t sends;
    uint32_t loops;
    uint32_t cycles;
    uint32_t spills;
    uint32_t fills;
+   uint32_t max_live_registers;
 };
 
 /** @} */

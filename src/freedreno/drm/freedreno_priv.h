@@ -49,6 +49,7 @@
 #include "util/u_math.h"
 #include "util/vma.h"
 
+#include "freedreno_common.h"
 #include "freedreno_dev_info.h"
 #include "freedreno_drmif.h"
 #include "freedreno_ringbuffer.h"
@@ -270,6 +271,12 @@ struct fd_device {
    struct util_queue submit_queue;
 };
 
+static inline bool
+fd_device_threaded_submit(struct fd_device *dev)
+{
+   return util_queue_is_initialized(&dev->submit_queue);
+}
+
 #define foreach_submit(name, list) \
    list_for_each_entry(struct fd_submit, name, list, node)
 #define foreach_submit_safe(name, list) \
@@ -347,6 +354,11 @@ struct fd_pipe {
    uint32_t last_submit_fence;
 
    uint32_t last_enqueue_fence;   /* just for debugging */
+
+   /**
+    * Counter for assigning each submit a unique seqno.
+    */
+   seqno_t submit_seqno;
 
    /**
     * If we *ever* see an in-fence-fd, assume that userspace is

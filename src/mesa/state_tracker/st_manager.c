@@ -62,6 +62,7 @@
 #include "util/u_surface.h"
 #include "util/list.h"
 #include "util/u_memory.h"
+#include "util/perf/cpu_trace.h"
 
 struct hash_table;
 
@@ -221,6 +222,7 @@ st_framebuffer_validate(struct gl_framebuffer *stfb,
                         struct st_context *st)
 {
    struct pipe_resource *textures[ST_ATTACHMENT_COUNT];
+   struct pipe_resource *resolve = NULL;
    uint width, height;
    unsigned i;
    bool changed = false;
@@ -235,7 +237,7 @@ st_framebuffer_validate(struct gl_framebuffer *stfb,
    /* validate the fb */
    do {
       if (!stfb->drawable->validate(st, stfb->drawable, stfb->statts,
-                                 stfb->num_statts, textures))
+                                 stfb->num_statts, textures, &resolve))
          return;
 
       stfb->drawable_stamp = new_stamp;
@@ -282,6 +284,12 @@ st_framebuffer_validate(struct gl_framebuffer *stfb,
 
       pipe_resource_reference(&textures[i], NULL);
    }
+
+   changed |= resolve != stfb->resolve;
+   /* ref is removed here */
+   pipe_resource_reference(&stfb->resolve, NULL);
+   /* ref is taken here */
+   stfb->resolve = resolve;
 
    if (changed) {
       ++stfb->stamp;
@@ -793,6 +801,8 @@ st_context_flush(struct st_context *st, unsigned flags,
                  void (*before_flush_cb) (void*), void* args)
 {
    unsigned pipe_flags = 0;
+
+   MESA_TRACE_FUNC();
 
    if (flags & ST_FLUSH_END_OF_FRAME)
       pipe_flags |= PIPE_FLUSH_END_OF_FRAME;
@@ -1319,7 +1329,7 @@ get_version(struct pipe_screen *screen,
    _mesa_init_constants(&consts, api);
    _mesa_init_extensions(&extensions);
 
-   st_init_limits(screen, &consts, &extensions);
+   st_init_limits(screen, &consts, &extensions, api);
    st_init_extensions(screen, &consts, &extensions, options, api);
    version = _mesa_get_version(&extensions, &consts, api);
    free(consts.SpirVExtensions);

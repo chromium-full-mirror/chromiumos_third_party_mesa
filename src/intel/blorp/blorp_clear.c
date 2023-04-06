@@ -80,8 +80,7 @@ blorp_params_get_clear_kernel_fs(struct blorp_batch *batch,
 
    if (clear_rgb_as_red) {
       nir_ssa_def *pos = nir_f2i32(&b, nir_load_frag_coord(&b));
-      nir_ssa_def *comp = nir_umod(&b, nir_channel(&b, pos, 0),
-                                       nir_imm_int(&b, 3));
+      nir_ssa_def *comp = nir_umod_imm(&b, nir_channel(&b, pos, 0), 3);
       color = nir_pad_vec4(&b, nir_vector_extract(&b, color, comp));
    }
 
@@ -150,8 +149,7 @@ blorp_params_get_clear_kernel_cs(struct blorp_batch *batch,
    nir_ssa_def *in_bounds = blorp_check_in_bounds(&b, bounds_rect, dst_pos);
 
    if (clear_rgb_as_red) {
-      nir_ssa_def *comp = nir_umod(&b, nir_channel(&b, dst_pos, 0),
-                                       nir_imm_int(&b, 3));
+      nir_ssa_def *comp = nir_umod_imm(&b, nir_channel(&b, dst_pos, 0), 3);
       color = nir_pad_vec4(&b, nir_vector_extract(&b, color, comp));
    }
 
@@ -605,6 +603,17 @@ blorp_clear(struct blorp_batch *batch,
 
    /* Replicated clears don't work yet before gfx6 */
    if (batch->blorp->isl_dev->info->ver < 6)
+      use_simd16_replicated_data = false;
+
+   /* From the BSpec: 47719 Replicate Data:
+    *
+    * "Replicate Data Render Target Write message should not be used
+    *  on all projects TGL+."
+    *
+    *  See 14017879046, 14017880152 for additional information.
+    */
+   if (batch->blorp->isl_dev->info->ver >= 12 &&
+       format == ISL_FORMAT_R10G10B10_FLOAT_A2_UNORM)
       use_simd16_replicated_data = false;
 
    if (compute)

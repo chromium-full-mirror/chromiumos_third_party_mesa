@@ -34,7 +34,6 @@
 #ifdef VK_USE_PLATFORM_METAL_EXT
 #include "QuartzCore/CAMetalLayer.h"
 #endif
-#include "vulkan/wsi/wsi_common.h"
 
 #include "vk_format.h"
 #include "util/u_blitter.h"
@@ -105,6 +104,9 @@ zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_ob
       while (util_dynarray_contains(&obj->views, VkImageView))
          VKSCR(DestroyImageView)(screen->dev, util_dynarray_pop(&obj->views, VkImageView), NULL);
    }
+   util_dynarray_fini(&obj->views);
+   for (unsigned i = 0; i < ARRAY_SIZE(obj->copies); i++)
+      util_dynarray_fini(&obj->copies[i]);
    if (obj->is_buffer) {
       VKSCR(DestroyBuffer)(screen->dev, obj->buffer, NULL);
       VKSCR(DestroyBuffer)(screen->dev, obj->storage_buffer, NULL);
@@ -180,7 +182,6 @@ create_bci(struct zink_screen *screen, const struct pipe_resource *templ, unsign
 
    if (bind & ZINK_BIND_DESCRIPTOR) {
       /* gallium sizes are all uint32_t, while the total size of this buffer may exceed that limit */
-      bci.size *= ZINK_DESCRIPTOR_BUFFER_MULTIPLIER;
       bci.usage = 0;
       if (bind & ZINK_BIND_SAMPLER_DESCRIPTOR)
          bci.usage |= VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
@@ -469,6 +470,10 @@ create_ici(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe
    ici->usage = 0;
    ici->queueFamilyIndexCount = 0;
 
+   /* assume we're going to be doing some CompressedTexSubImage */
+   if (util_format_is_compressed(templ->format) && (ici->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT))
+      ici->flags |= VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT;
+
    if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
       ici->flags |= VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT;
 
@@ -600,6 +605,7 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
                        uint64_t *modifiers, int modifiers_count, const void *loader_private)
 {
    struct zink_resource_object *obj = CALLOC_STRUCT(zink_resource_object);
+   unsigned max_level = 0;
    if (!obj)
       return NULL;
    simple_mtx_init(&obj->view_lock, mtx_plain);
@@ -696,7 +702,9 @@ resource_object_create(struct zink_screen *screen, const struct pipe_resource *t
       obj->transfer_dst = true;
       obj->vkflags = bci.flags;
       obj->vkusage = bci.usage;
+      max_level = 1;
    } else {
+      max_level = templ->last_level + 1;
       bool winsys_modifier = (export_types & VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) && whandle && whandle->modifier != DRM_FORMAT_MOD_INVALID;
       uint64_t mods[10];
       bool try_modifiers = false;
@@ -1132,6 +1140,8 @@ retry:
             }
       }
    }
+   for (unsigned i = 0; i < max_level; i++)
+      util_dynarray_init(&obj->copies[i], NULL);
    return obj;
 
 fail3:
@@ -1192,6 +1202,7 @@ resource_create(struct pipe_screen *pscreen,
       return NULL;
    }
 
+   res->queue = VK_QUEUE_FAMILY_IGNORED;
    res->internal_format = templ->format;
    if (templ->target == PIPE_BUFFER) {
       util_range_init(&res->valid_buffer_range);
@@ -1221,9 +1232,10 @@ resource_create(struct pipe_screen *pscreen,
          res->need_2D = (screen->need_2D_zs && util_format_is_depth_or_stencil(templ->format)) ||
                         (screen->need_2D_sparse && (templ->flags & PIPE_RESOURCE_FLAG_SPARSE));
       }
-      res->dmabuf_acquire = whandle && whandle->type == WINSYS_HANDLE_TYPE_FD;
-      res->dmabuf = res->dmabuf_acquire = whandle && whandle->type == WINSYS_HANDLE_TYPE_FD;
-      res->layout = res->dmabuf_acquire ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
+      res->dmabuf = whandle && whandle->type == WINSYS_HANDLE_TYPE_FD;
+      if (res->dmabuf)
+         res->queue = VK_QUEUE_FAMILY_FOREIGN_EXT;
+      res->layout = res->dmabuf ? VK_IMAGE_LAYOUT_PREINITIALIZED : VK_IMAGE_LAYOUT_UNDEFINED;
       res->linear = linear;
       res->aspect = aspect_from_format(templ->format);
    }
@@ -1238,7 +1250,13 @@ resource_create(struct pipe_screen *pscreen,
                                                          templ->height0,
                                                          64, loader_private,
                                                          &res->dt_stride);
-         assert(res->obj->dt);
+         if (!res->obj->dt) {
+            mesa_loge("zink: could not create swapchain");
+            FREE(res->obj);
+            free(res->modifiers);
+            FREE_CL(res);
+            return NULL;
+         }
       } else {
          /* frontbuffer */
          struct zink_resource *back = (void*)loader_private;
@@ -1257,6 +1275,7 @@ resource_create(struct pipe_screen *pscreen,
       res->linear = false;
       res->swapchain = true;
    }
+
    if (!res->obj->host_visible)
       res->base.b.flags |= PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY;
    if (res->obj->is_buffer) {
@@ -1299,7 +1318,6 @@ add_resource_bind(struct zink_context *ctx, struct zink_resource *res, unsigned 
 {
    struct zink_screen *screen = zink_screen(ctx->base.screen);
    assert((res->base.b.bind & bind) == 0);
-   zink_screen(ctx->base.screen)->image_barrier(ctx, res, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0);
    res->base.b.bind |= bind;
    struct zink_resource_object *old_obj = res->obj;
    if (bind & ZINK_BIND_DMABUF && !res->modifiers_count && screen->info.have_EXT_image_drm_format_modifier) {
@@ -1309,7 +1327,7 @@ add_resource_bind(struct zink_context *ctx, struct zink_resource *res, unsigned 
    }
    struct zink_resource_object *new_obj = resource_object_create(screen, &res->base.b, NULL, &res->linear, res->modifiers, res->modifiers_count, NULL);
    if (!new_obj) {
-      debug_printf("new backing resource alloc failed!");
+      debug_printf("new backing resource alloc failed!\n");
       res->base.b.bind &= ~bind;
       return false;
    }
@@ -1317,9 +1335,8 @@ add_resource_bind(struct zink_context *ctx, struct zink_resource *res, unsigned 
    staging.obj = old_obj;
    staging.all_binds = 0;
    res->layout = VK_IMAGE_LAYOUT_UNDEFINED;
-   res->obj->access = 0;
-   res->obj->access_stage = 0;
    res->obj = new_obj;
+   res->queue = VK_QUEUE_FAMILY_IGNORED;
    for (unsigned i = 0; i <= res->base.b.last_level; i++) {
       struct pipe_box box = {0, 0, 0,
                              u_minify(res->base.b.width0, i),
@@ -1476,10 +1493,14 @@ zink_resource_get_handle(struct pipe_screen *pscreen,
             unsigned bind = ZINK_BIND_DMABUF;
             if (!(res->base.b.bind & PIPE_BIND_SHARED))
                bind |= PIPE_BIND_SHARED;
-            if (!add_resource_bind(screen->copy_context, res, bind))
+            zink_screen_lock_context(screen);
+            if (!add_resource_bind(screen->copy_context, res, bind)) {
+               zink_screen_unlock_context(screen);
                return false;
+            }
             p_atomic_inc(&screen->image_rebind_counter);
             screen->copy_context->base.flush(&screen->copy_context->base, NULL, 0);
+            zink_screen_unlock_context(screen);
             obj = res->obj;
          }
 
@@ -1644,7 +1665,9 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
    if (res->base.b.flags & PIPE_RESOURCE_FLAG_SPARSE)
       return false;
 
-   if (res->valid_buffer_range.start > res->valid_buffer_range.end)
+   struct pipe_box box = {0, 0, 0, res->base.b.width0, 0, 0};
+   if (res->valid_buffer_range.start > res->valid_buffer_range.end &&
+       !zink_resource_copy_box_intersects(res, 0, &box))
       return false;
 
    if (res->so_valid)
@@ -1658,12 +1681,13 @@ invalidate_buffer(struct zink_context *ctx, struct zink_resource *res)
 
    struct zink_resource_object *new_obj = resource_object_create(screen, &res->base.b, NULL, NULL, NULL, 0, NULL);
    if (!new_obj) {
-      debug_printf("new backing resource alloc failed!");
+      debug_printf("new backing resource alloc failed!\n");
       return false;
    }
    /* this ref must be transferred before rebind or else BOOM */
    zink_batch_reference_resource_move(&ctx->batch, res);
    res->obj = new_obj;
+   res->queue = VK_QUEUE_FAMILY_IGNORED;
    zink_resource_rebind(ctx, res);
    return true;
 }
@@ -1809,7 +1833,8 @@ zink_buffer_map(struct pipe_context *pctx,
     * in which case it can be mapped unsynchronized. */
    if (!(usage & (PIPE_MAP_UNSYNCHRONIZED | TC_TRANSFER_MAP_NO_INFER_UNSYNCHRONIZED)) &&
        usage & PIPE_MAP_WRITE && !res->base.is_shared &&
-       !util_ranges_intersect(&res->valid_buffer_range, box->x, box->x + box->width)) {
+       !util_ranges_intersect(&res->valid_buffer_range, box->x, box->x + box->width) &&
+       !zink_resource_copy_box_intersects(res, 0, box)) {
       usage |= PIPE_MAP_UNSYNCHRONIZED;
    }
 
@@ -1884,15 +1909,22 @@ zink_buffer_map(struct pipe_context *pctx,
          goto success;
       usage |= PIPE_MAP_UNSYNCHRONIZED;
    } else if (!(usage & PIPE_MAP_UNSYNCHRONIZED) &&
-              (((usage & PIPE_MAP_READ) && !(usage & PIPE_MAP_PERSISTENT) && res->base.b.usage != PIPE_USAGE_STAGING) || !res->obj->host_visible)) {
-      assert(!(usage & (TC_TRANSFER_MAP_THREADED_UNSYNC | PIPE_MAP_THREAD_SAFE)));
-      if (!res->obj->host_visible || !(usage & PIPE_MAP_ONCE)) {
+              (((usage & PIPE_MAP_READ) && !(usage & PIPE_MAP_PERSISTENT) &&
+               ((res->obj->bo->base.placement & VK_STAGING_RAM) != VK_STAGING_RAM)) ||
+              !res->obj->host_visible)) {
+      assert(!(usage & (TC_TRANSFER_MAP_THREADED_UNSYNC)));
+      if (!res->obj->host_visible || res->base.b.flags & PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY) {
 overwrite:
          trans->offset = box->x % screen->info.props.limits.minMemoryMapAlignment;
          trans->staging_res = pipe_buffer_create(&screen->base, PIPE_BIND_LINEAR, PIPE_USAGE_STAGING, box->width + trans->offset);
          if (!trans->staging_res)
             goto fail;
          struct zink_resource *staging_res = zink_resource(trans->staging_res);
+         if (usage & PIPE_MAP_THREAD_SAFE) {
+            /* this map can't access the passed context: use the copy context */
+            zink_screen_lock_context(screen);
+            ctx = screen->copy_context;
+         }
          zink_copy_buffer(ctx, staging_res, res, trans->offset, box->x, box->width);
          res = staging_res;
          usage &= ~PIPE_MAP_UNSYNCHRONIZED;
@@ -1920,6 +1952,8 @@ overwrite:
          zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_WRITE);
       res->obj->access = 0;
       res->obj->access_stage = 0;
+      res->obj->last_write = 0;
+      zink_resource_copies_reset(res);
    }
 
    if (!ptr) {
@@ -1961,10 +1995,15 @@ overwrite:
       res->obj->persistent_maps++;
 
 success:
+   /* ensure the copy context gets unlocked */
+   if (ctx == screen->copy_context)
+      zink_screen_unlock_context(screen);
    *transfer = &trans->base.b;
    return ptr;
 
 fail:
+   if (ctx == screen->copy_context)
+      zink_screen_unlock_context(screen);
    destroy_transfer(ctx, trans);
    return NULL;
 }
@@ -2136,6 +2175,226 @@ zink_transfer_flush_region(struct pipe_context *pctx,
             zink_transfer_copy_bufimage(ctx, res, staging_res, trans);
       }
    }
+}
+
+/* used to determine whether to emit a TRANSFER_DST barrier on copies */
+bool
+zink_resource_copy_box_intersects(struct zink_resource *res, unsigned level, const struct pipe_box *box)
+{
+   /* if there are no valid copy rects tracked, this needs a barrier */
+   if (!res->obj->copies_valid)
+      return true;
+   /* untracked huge miplevel */
+   if (level >= ARRAY_SIZE(res->obj->copies))
+      return true;
+   struct pipe_box *b = res->obj->copies[level].data;
+   unsigned num_boxes = util_dynarray_num_elements(&res->obj->copies[level], struct pipe_box);
+   boolean (*intersect)(const struct pipe_box *, const struct pipe_box *);
+   /* determine intersection function based on dimensionality */
+   switch (res->base.b.target) {
+   case PIPE_BUFFER:
+   case PIPE_TEXTURE_1D:
+      intersect = u_box_test_intersection_1d;
+      break;
+
+   case PIPE_TEXTURE_1D_ARRAY:
+   case PIPE_TEXTURE_2D:
+      intersect = u_box_test_intersection_2d;
+      break;
+
+   default:
+      intersect = u_box_test_intersection_3d;
+      break;
+   }
+   /* if any of the tracked boxes intersect with this one, a barrier is needed */
+   for (unsigned i = 0; i < num_boxes; i++) {
+      if (intersect(box, b + i))
+         return true;
+   }
+   /* no intersection = no barrier */
+   return false;
+}
+
+/* track a new region for TRANSFER_DST barrier emission */
+void
+zink_resource_copy_box_add(struct zink_resource *res, unsigned level, const struct pipe_box *box)
+{
+   if (res->obj->copies_valid) {
+      struct pipe_box *b = res->obj->copies[level].data;
+      unsigned num_boxes = util_dynarray_num_elements(&res->obj->copies[level], struct pipe_box);
+      for (unsigned i = 0; i < num_boxes; i++) {
+         switch (res->base.b.target) {
+         case PIPE_BUFFER:
+         case PIPE_TEXTURE_1D:
+            /* no-op included region */
+            if (b[i].x <= box->x && b[i].x + b[i].width >= box->x + box->width)
+               return;
+
+            /* try to merge adjacent regions */
+            if (b[i].x == box->x + box->width) {
+               b[i].x -= box->width;
+               b[i].width += box->width;
+               return;
+            }
+            if (b[i].x + b[i].width == box->x) {
+               b[i].width += box->width;
+               return;
+            }
+
+            /* try to merge into region */
+            if (box->x <= b[i].x && box->x + box->width >= b[i].x + b[i].width) {
+               *b = *box;
+               return;
+            }
+            break;
+
+         case PIPE_TEXTURE_1D_ARRAY:
+         case PIPE_TEXTURE_2D:
+            /* no-op included region */
+            if (b[i].x <= box->x && b[i].x + b[i].width >= box->x + box->width &&
+                b[i].y <= box->y && b[i].y + b[i].height >= box->y + box->height)
+               return;
+
+            /* try to merge adjacent regions */
+            if (b[i].y == box->y && b[i].height == box->height) {
+               if (b[i].x == box->x + box->width) {
+                  b[i].x -= box->width;
+                  b[i].width += box->width;
+                  return;
+               }
+               if (b[i].x + b[i].width == box->x) {
+                  b[i].width += box->width;
+                  return;
+               }
+            } else if (b[i].x == box->x && b[i].width == box->width) {
+               if (b[i].y == box->y + box->height) {
+                  b[i].y -= box->height;
+                  b[i].height += box->height;
+                  return;
+               }
+               if (b[i].y + b[i].height == box->y) {
+                  b[i].height += box->height;
+                  return;
+               }
+            }
+
+            /* try to merge into region */
+            if (box->x <= b[i].x && box->x + box->width >= b[i].x + b[i].width &&
+                box->y <= b[i].y && box->y + box->height >= b[i].y + b[i].height) {
+               *b = *box;
+               return;
+            }
+            break;
+
+         default:
+            /* no-op included region */
+            if (b[i].x <= box->x && b[i].x + b[i].width >= box->x + box->width &&
+                b[i].y <= box->y && b[i].y + b[i].height >= box->y + box->height &&
+                b[i].z <= box->z && b[i].z + b[i].depth >= box->z + box->depth)
+               return;
+
+               /* try to merge adjacent regions */
+            if (b[i].z == box->z && b[i].depth == box->depth) {
+               if (b[i].y == box->y && b[i].height == box->height) {
+                  if (b[i].x == box->x + box->width) {
+                     b[i].x -= box->width;
+                     b[i].width += box->width;
+                     return;
+                  }
+                  if (b[i].x + b[i].width == box->x) {
+                     b[i].width += box->width;
+                     return;
+                  }
+               } else if (b[i].x == box->x && b[i].width == box->width) {
+                  if (b[i].y == box->y + box->height) {
+                     b[i].y -= box->height;
+                     b[i].height += box->height;
+                     return;
+                  }
+                  if (b[i].y + b[i].height == box->y) {
+                     b[i].height += box->height;
+                     return;
+                  }
+               }
+            } else if (b[i].x == box->x && b[i].width == box->width) {
+               if (b[i].y == box->y && b[i].height == box->height) {
+                  if (b[i].z == box->z + box->depth) {
+                     b[i].z -= box->depth;
+                     b[i].depth += box->depth;
+                     return;
+                  }
+                  if (b[i].z + b[i].depth == box->z) {
+                     b[i].depth += box->depth;
+                     return;
+                  }
+               } else if (b[i].z == box->z && b[i].depth == box->depth) {
+                  if (b[i].y == box->y + box->height) {
+                     b[i].y -= box->height;
+                     b[i].height += box->height;
+                     return;
+                  }
+                  if (b[i].y + b[i].height == box->y) {
+                     b[i].height += box->height;
+                     return;
+                  }
+               }
+            } else if (b[i].y == box->y && b[i].height == box->height) {
+               if (b[i].z == box->z && b[i].depth == box->depth) {
+                  if (b[i].x == box->x + box->width) {
+                     b[i].x -= box->width;
+                     b[i].width += box->width;
+                     return;
+                  }
+                  if (b[i].x + b[i].width == box->x) {
+                     b[i].width += box->width;
+                     return;
+                  }
+               } else if (b[i].x == box->x && b[i].width == box->width) {
+                  if (b[i].z == box->z + box->depth) {
+                     b[i].z -= box->depth;
+                     b[i].depth += box->depth;
+                     return;
+                  }
+                  if (b[i].z + b[i].depth == box->z) {
+                     b[i].depth += box->depth;
+                     return;
+                  }
+               }
+            }
+
+            /* try to merge into region */
+            if (box->x <= b[i].x && box->x + box->width >= b[i].x + b[i].width &&
+                box->y <= b[i].y && box->y + box->height >= b[i].y + b[i].height &&
+                box->z <= b[i].z && box->z + box->depth >= b[i].z + b[i].depth)
+               return;
+
+            break;
+         }
+      }
+   }
+   util_dynarray_append(&res->obj->copies[level], struct pipe_box, *box);
+   if (util_dynarray_num_elements(&res->obj->copies[level], struct pipe_box) > 100)
+      mesa_logw("zink: PERF WARNING! > 100 copy boxes detected for %p\n", res);
+   res->obj->copies_valid = true;
+}
+
+void
+zink_resource_copies_reset(struct zink_resource *res)
+{
+   if (!res->obj->copies_valid)
+      return;
+   unsigned max_level = res->base.b.target == PIPE_BUFFER ? 1 : (res->base.b.last_level + 1);
+   if (res->base.b.target == PIPE_BUFFER) {
+      /* flush transfer regions back to valid range on reset */
+      struct pipe_box *b = res->obj->copies[0].data;
+      unsigned num_boxes = util_dynarray_num_elements(&res->obj->copies[0], struct pipe_box);
+      for (unsigned i = 0; i < num_boxes; i++)
+         util_range_add(&res->base.b, &res->valid_buffer_range, b[i].x, b[i].x + b[i].width);
+   }
+   for (unsigned i = 0; i < max_level; i++)
+      util_dynarray_clear(&res->obj->copies[i]);
+   res->obj->copies_valid = false;
+   res->obj->copies_need_reset = false;
 }
 
 static void

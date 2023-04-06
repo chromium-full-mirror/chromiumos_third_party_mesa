@@ -1,34 +1,18 @@
 /*
  * Copyright 2010 Red Hat Inc.
- * Copyright © 2014-2017 Broadcom
- * Copyright (C) 2019-2020 Collabora, Ltd.
+ * Copyright 2014-2017 Broadcom
+ * Copyright 2019-2020 Collabora, Ltd.
  * Copyright 2006 VMware, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 #include <errno.h>
 #include <stdio.h>
+#include <xf86drm.h>
 #include "asahi/compiler/agx_compile.h"
 #include "asahi/layout/layout.h"
 #include "asahi/lib/agx_formats.h"
 #include "asahi/lib/decode.h"
+#include "drm-uapi/drm_fourcc.h"
 #include "frontend/sw_winsys.h"
 #include "frontend/winsys_handle.h"
 #include "gallium/auxiliary/renderonly/renderonly.h"
@@ -50,27 +34,20 @@
 #include "util/u_upload_mgr.h"
 #include "agx_device.h"
 #include "agx_disk_cache.h"
+#include "agx_fence.h"
 #include "agx_public.h"
 #include "agx_state.h"
-#include "magic.h"
 
-/* drm_fourcc cannot be built on macOS */
-#ifndef __APPLE__
-#include "drm-uapi/drm_fourcc.h"
-#endif
-
-/* In case of macOS, pick some fake modifier values so we still build */
+/* Fake values, pending UAPI upstreaming */
 #ifndef DRM_FORMAT_MOD_LINEAR
 #define DRM_FORMAT_MOD_LINEAR 1
 #endif
 #ifndef DRM_FORMAT_MOD_INVALID
 #define DRM_FORMAT_MOD_INVALID ((1ULL << 56) - 1)
 #endif
-
 #ifndef DRM_FORMAT_MOD_APPLE_TWIDDLED
 #define DRM_FORMAT_MOD_APPLE_TWIDDLED (2)
 #endif
-
 #ifndef DRM_FORMAT_MOD_APPLE_TWIDDLED_COMPRESSED
 #define DRM_FORMAT_MOD_APPLE_TWIDDLED_COMPRESSED (3)
 #endif
@@ -86,6 +63,9 @@ static const struct debug_named_value agx_debug_options[] = {
 #endif
    {"precompile",AGX_DBG_PRECOMPILE,"Precompile shaders for shader-db"},
    {"nocompress",AGX_DBG_NOCOMPRESS,"Disable lossless compression"},
+   {"nocluster", AGX_DBG_NOCLUSTER,"Disable vertex clustering"},
+   {"sync",      AGX_DBG_SYNC,     "Synchronously wait for all submissions"},
+   {"stats",     AGX_DBG_STATS,    "Show command execution statistics"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -190,13 +170,11 @@ agx_resource_from_handle(struct pipe_screen *pscreen,
 
    ail_make_miptree(&rsc->layout);
 
-#ifndef __APPLE__
    if (dev->ro) {
       rsc->scanout =
          renderonly_create_gpu_import_for_resource(prsc, dev->ro, NULL);
       /* failure is expected in some cases.. */
    }
-#endif
 
    return prsc;
 }
@@ -293,6 +271,10 @@ agx_linear_allowed(const struct agx_resource *pres)
 {
    /* Mipmapping not allowed with linear */
    if (pres->base.last_level != 0)
+      return false;
+
+   /* Depth/stencil buffers must not be linear */
+   if (pres->base.bind & PIPE_BIND_DEPTH_STENCIL)
       return false;
 
    switch (pres->base.target) {
@@ -547,6 +529,10 @@ agx_resource_create_with_modifiers(struct pipe_screen *screen,
       create_flags |= AGX_BO_WRITEBACK;
    }
 
+   /* Create buffers that might be shared with the SHAREABLE flag */
+   if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SHARED))
+      create_flags |= AGX_BO_SHAREABLE;
+
    nresource->bo =
       agx_bo_create(dev, nresource->layout.size_B, create_flags, label);
 
@@ -577,10 +563,8 @@ agx_resource_destroy(struct pipe_screen *screen, struct pipe_resource *prsrc)
       winsys->displaytarget_destroy(winsys, rsrc->dt);
    }
 
-#ifndef __APPLE__
    if (rsrc->scanout)
       renderonly_scanout_destroy(rsrc->scanout, agx_screen->dev.ro);
-#endif
 
    agx_bo_unreference(rsrc->bo);
    FREE(rsrc);
@@ -620,7 +604,7 @@ agx_shadow(struct agx_context *ctx, struct agx_resource *rsrc)
 
 /*
  * Perform the required synchronization before a transfer_map operation can
- * complete. This may require flushing batches.
+ * complete. This may require syncing batches.
  */
 static void
 agx_prepare_for_map(struct agx_context *ctx, struct agx_resource *rsrc,
@@ -648,10 +632,10 @@ agx_prepare_for_map(struct agx_context *ctx, struct agx_resource *rsrc,
    if (usage & PIPE_MAP_UNSYNCHRONIZED)
       return;
 
-   /* Both writing and reading need writers flushed */
-   agx_flush_writer(ctx, rsrc, "Unsynchronized transfer");
+   /* Both writing and reading need writers synced */
+   agx_sync_writer(ctx, rsrc, "Unsynchronized transfer");
 
-   /* Additionally, writing needs readers flushed */
+   /* Additionally, writing needs readers synced */
    if (!(usage & PIPE_MAP_WRITE))
       return;
 
@@ -661,12 +645,12 @@ agx_prepare_for_map(struct agx_context *ctx, struct agx_resource *rsrc,
    if (!agx_any_batch_uses_resource(ctx, rsrc))
       return;
 
-   /* There are readers. Try to shadow the resource to avoid a flush */
+   /* There are readers. Try to shadow the resource to avoid a sync */
    if ((usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE) && agx_shadow(ctx, rsrc))
       return;
 
-   /* Otherwise, we need to flush */
-   agx_flush_readers(ctx, rsrc, "Unsynchronized write");
+   /* Otherwise, we need to sync */
+   agx_sync_readers(ctx, rsrc, "Unsynchronized write");
 }
 
 /* Most of the time we can do CPU-side transfers, but sometimes we need to use
@@ -798,11 +782,14 @@ agx_transfer_map(struct pipe_context *pctx, struct pipe_resource *resource,
 
       if ((usage & PIPE_MAP_READ) && agx_resource_valid(rsrc, level)) {
          agx_blit_to_staging(pctx, transfer);
-         agx_flush_writer(ctx, staging, "GPU read staging blit");
+         agx_sync_writer(ctx, staging, "GPU read staging blit");
       }
 
+      agx_bo_mmap(staging->bo);
       return staging->bo->ptr.cpu;
    }
+
+   agx_bo_mmap(rsrc->bo);
 
    if (rsrc->modifier == DRM_FORMAT_MOD_APPLE_TWIDDLED) {
       transfer->base.stride =
@@ -937,9 +924,63 @@ agx_clear(struct pipe_context *pctx, unsigned buffers,
 }
 
 static void
-agx_flush_resource(struct pipe_context *ctx, struct pipe_resource *resource)
+agx_flush_resource(struct pipe_context *pctx, struct pipe_resource *pres)
 {
-   agx_flush_writer(agx_context(ctx), agx_resource(resource), "flush_resource");
+   struct agx_resource *rsrc = agx_resource(pres);
+
+   /* flush_resource is used to prepare resources for sharing, so if this is not
+    * already a shareabe resource, make it so
+    */
+   struct agx_bo *old = rsrc->bo;
+   if (!(old->flags & AGX_BO_SHAREABLE)) {
+      assert(rsrc->layout.levels == 1 &&
+             "Shared resources must not be mipmapped");
+      assert(rsrc->layout.sample_count_sa == 1 &&
+             "Shared resources must not be multisampled");
+      assert(rsrc->bo);
+      assert(!(pres->bind & PIPE_BIND_SHARED));
+
+      struct pipe_resource templ = *pres;
+      templ.bind |= PIPE_BIND_SHARED;
+
+      /* Create a new shareable resource */
+      struct agx_resource *new_res =
+         agx_resource(pctx->screen->resource_create(pctx->screen, &templ));
+
+      assert(new_res);
+
+      /* Blit it over */
+      struct pipe_blit_info blit = {0};
+
+      u_box_3d(0, 0, 0, rsrc->layout.width_px, rsrc->layout.height_px,
+               rsrc->layout.depth_px, &blit.dst.box);
+      blit.src.box = blit.dst.box;
+
+      blit.dst.resource = &new_res->base;
+      blit.dst.format = new_res->base.format;
+      blit.dst.level = 0;
+      blit.src.resource = pres;
+      blit.src.format = pres->format;
+      blit.src.level = 0;
+      blit.mask = util_format_get_mask(blit.src.format);
+      blit.filter = PIPE_TEX_FILTER_NEAREST;
+      agx_blit(pctx, &blit);
+
+      /* Flush the blit out, to make sure the old resource is no longer used */
+      agx_flush_writer(agx_context(pctx), new_res, "flush_resource");
+
+      /* Copy the bind flags and swap the BOs */
+      rsrc->base.bind = new_res->base.bind;
+      rsrc->bo = new_res->bo;
+      new_res->bo = old;
+
+      /* Free the new resource, which now owns the old BO */
+      pipe_resource_reference((struct pipe_resource **)&new_res, NULL);
+   } else {
+      /* Otherwise just claim it's already shared */
+      pres->bind |= PIPE_BIND_SHARED;
+      agx_flush_writer(agx_context(pctx), rsrc, "flush_resource");
+   }
 }
 
 /*
@@ -951,10 +992,24 @@ agx_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
 {
    struct agx_context *ctx = agx_context(pctx);
 
-   if (fence)
-      *fence = NULL;
-
    agx_flush_all(ctx, "Gallium flush");
+
+   /* At this point all pending work has been submitted. Since jobs are
+    * started and completed sequentially from a UAPI perspective, and since
+    * we submit all jobs with compute+render barriers on the prior job,
+    * waiting on the last submitted job is sufficient to guarantee completion
+    * of all GPU work thus far, so we can create a fence out of the latest
+    * syncobj.
+    *
+    * See this page for more info on how the GPU/UAPI queueing works:
+    * https://github.com/AsahiLinux/docs/wiki/SW:AGX-driver-notes#queues
+    */
+
+   if (fence) {
+      struct pipe_fence_handle *f = agx_fence_create(ctx);
+      pctx->screen->fence_reference(pctx->screen, fence, NULL);
+      *fence = f;
+   }
 }
 
 void
@@ -963,10 +1018,11 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    struct agx_device *dev = agx_device(ctx->base.screen);
 
    assert(agx_batch_is_active(batch));
+   assert(!agx_batch_is_submitted(batch));
 
-   /* Nothing to do */
-   if (!(batch->draw | batch->clear)) {
-      agx_batch_cleanup(ctx, batch);
+   /* Make sure there's something to submit. */
+   if (!batch->clear && !batch->any_draws) {
+      agx_batch_reset(ctx, batch);
       return;
    }
 
@@ -1053,30 +1109,6 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    /* Size calculation should've been exact */
    assert(handle_i == handle_count);
 
-#ifdef __APPLE__
-   unsigned cmdbuf_id = agx_get_global_id(dev);
-   unsigned encoder_id = agx_get_global_id(dev);
-
-   unsigned cmdbuf_size = demo_cmdbuf(
-      dev->cmdbuf.ptr.cpu, dev->cmdbuf.size, &batch->pool, &batch->key,
-      batch->encoder->ptr.gpu, encoder_id, scissor, zbias,
-      batch->occlusion_buffer.gpu, pipeline_background,
-      pipeline_background_partial, pipeline_store, clear_pipeline_textures,
-      batch->clear, batch->clear_depth, batch->clear_stencil);
-
-   /* Generate the mapping table from the BO list */
-   demo_mem_map(dev->memmap.ptr.cpu, dev->memmap.size, handles, handle_count,
-                cmdbuf_id, encoder_id, cmdbuf_size);
-
-   free(handles);
-
-   agx_wait_queue(dev->queue);
-
-   if (dev->debug & AGX_DBG_TRACE) {
-      agxdecode_cmdstream(dev->cmdbuf.handle, dev->memmap.handle, true);
-      agxdecode_next_frame();
-   }
-#else
    /* TODO: Linux UAPI submission */
    (void)dev;
    (void)zbias;
@@ -1085,15 +1117,23 @@ agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch)
    (void)pipeline_store;
    (void)pipeline_background;
    (void)pipeline_background_partial;
-#endif
 
-   agx_batch_cleanup(ctx, batch);
+   unreachable("Linux UAPI not yet upstream");
+   agx_batch_submit(ctx, batch, 0, 0, NULL);
 }
 
 static void
 agx_destroy_context(struct pipe_context *pctx)
 {
+   struct agx_device *dev = agx_device(pctx->screen);
    struct agx_context *ctx = agx_context(pctx);
+
+   /* Batch state needs to be freed on completion, and we don't want to yank
+    * buffers out from in-progress GPU jobs to avoid faults, so just wait until
+    * everything in progress is actually done on context destroy. This will
+    * ensure everything is cleaned up properly.
+    */
+   agx_sync_all(ctx, "destroy context");
 
    if (pctx->stream_uploader)
       u_upload_destroy(pctx->stream_uploader);
@@ -1102,6 +1142,20 @@ agx_destroy_context(struct pipe_context *pctx)
       util_blitter_destroy(ctx->blitter);
 
    util_unreference_framebuffer_state(&ctx->framebuffer);
+
+   agx_meta_cleanup(&ctx->meta);
+
+   agx_bo_unreference(ctx->result_buf);
+
+   drmSyncobjDestroy(dev->fd, ctx->in_sync_obj);
+   drmSyncobjDestroy(dev->fd, ctx->dummy_syncobj);
+   if (ctx->in_sync_fd != -1)
+      close(ctx->in_sync_fd);
+
+   for (unsigned i = 0; i < AGX_MAX_BATCHES; ++i) {
+      if (ctx->batches.slots[i].syncobj)
+         drmSyncobjDestroy(dev->fd, ctx->batches.slots[i].syncobj);
+   }
 
    ralloc_free(ctx);
 }
@@ -1130,6 +1184,7 @@ agx_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 {
    struct agx_context *ctx = rzalloc(NULL, struct agx_context);
    struct pipe_context *pctx = &ctx->base;
+   int ret;
 
    if (!ctx)
       return NULL;
@@ -1137,7 +1192,7 @@ agx_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    pctx->screen = screen;
    pctx->priv = priv;
 
-   ctx->writer = _mesa_pointer_hash_table_create(ctx);
+   util_dynarray_init(&ctx->writer, ctx);
 
    pctx->stream_uploader = u_upload_create_default(pctx);
    if (!pctx->stream_uploader) {
@@ -1167,9 +1222,25 @@ agx_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    agx_init_state_functions(pctx);
    agx_init_query_functions(pctx);
 
-   agx_meta_init(&ctx->meta, agx_device(screen), ctx);
+   agx_meta_init(&ctx->meta, agx_device(screen));
 
    ctx->blitter = util_blitter_create(pctx);
+
+   ctx->result_buf = agx_bo_create(
+      agx_device(screen), sizeof(union agx_batch_result) * AGX_MAX_BATCHES,
+      AGX_BO_WRITEBACK, "Batch result buffer");
+   assert(ctx->result_buf);
+
+   /* Sync object/FD used for NATIVE_FENCE_FD. */
+   ctx->in_sync_fd = -1;
+   ret = drmSyncobjCreate(agx_device(screen)->fd, 0, &ctx->in_sync_obj);
+   assert(!ret);
+
+   /* Dummy sync object used before any work has been submitted. */
+   ret = drmSyncobjCreate(agx_device(screen)->fd, DRM_SYNCOBJ_CREATE_SIGNALED,
+                          &ctx->dummy_syncobj);
+   assert(!ret);
+   ctx->syncobj = ctx->dummy_syncobj;
 
    return pctx;
 }
@@ -1215,7 +1286,9 @@ agx_get_device_vendor(struct pipe_screen *pscreen)
 static const char *
 agx_get_name(struct pipe_screen *pscreen)
 {
-   return "Apple M1 (G13G B0)";
+   struct agx_device *dev = agx_device(pscreen);
+
+   return dev->name;
 }
 
 static int
@@ -1234,6 +1307,8 @@ agx_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_SHADER_PACK_HALF_FLOAT:
+   case PIPE_CAP_FS_FINE_DERIVATIVE:
+   case PIPE_CAP_TEXTURE_BARRIER:
       return 1;
 
    /* We could support ARB_clip_control by toggling the clip control bit for
@@ -1256,14 +1331,14 @@ agx_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FBFETCH:
    case PIPE_CAP_FBFETCH_COHERENT:
       return 8;
-
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
-      return 0;
+      return 1;
 
    case PIPE_CAP_OCCLUSION_QUERY:
    case PIPE_CAP_PRIMITIVE_RESTART:
    case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_ANISOTROPIC_FILTER:
+   case PIPE_CAP_NATIVE_FENCE_FD:
       return true;
 
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
@@ -1285,13 +1360,12 @@ agx_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
    case PIPE_CAP_SEAMLESS_CUBE_MAP:
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
+   case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
       return 1;
 
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
    case PIPE_CAP_SURFACE_SAMPLE_COUNT:
    case PIPE_CAP_SAMPLE_SHADING:
-   case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
-   case PIPE_CAP_TEXTURE_BUFFER_SAMPLER:
    case PIPE_CAP_IMAGE_LOAD_FORMATTED:
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
    case PIPE_CAP_COMPUTE:
@@ -1324,8 +1398,9 @@ agx_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 16;
 
+   /* Texel buffers lowered to (at most) 1024x16384 2D textures */
    case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
-      return 65536;
+      return 1024 * 16384;
 
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 64;
@@ -1360,13 +1435,13 @@ agx_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return PIPE_ENDIAN_LITTLE;
 
    case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
-      return is_deqp ? 4 : 0;
+      return 4;
    case PIPE_CAP_MIN_TEXTURE_GATHER_OFFSET:
-      return is_deqp ? -8 : 0;
+      return -8;
    case PIPE_CAP_MAX_TEXTURE_GATHER_OFFSET:
-      return is_deqp ? 7 : 0;
+      return 7;
    case PIPE_CAP_DRAW_INDIRECT:
-      return is_deqp;
+      return true;
 
    case PIPE_CAP_VIDEO_MEMORY: {
       uint64_t system_memory;
@@ -1531,7 +1606,7 @@ agx_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_type shader,
       return (1 << PIPE_SHADER_IR_NIR);
 
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
-      return (is_deqp && allow_side_effects) ? 16 : 0;
+      return (is_deqp && allow_side_effects) ? PIPE_MAX_SHADER_BUFFERS : 0;
 
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
       return (is_deqp && allow_side_effects) ? PIPE_MAX_SHADER_IMAGES : 0;
@@ -1634,6 +1709,13 @@ agx_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
    if (MAX2(sample_count, 1) != MAX2(storage_sample_count, 1))
       return false;
 
+   if ((usage & PIPE_BIND_VERTEX_BUFFER) && !agx_vbo_supports_format(format))
+      return false;
+
+   /* For framebuffer_no_attachments, fake support for "none" images */
+   if (format == PIPE_FORMAT_NONE)
+      return true;
+
    if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) {
       enum pipe_format tex_format = format;
 
@@ -1649,12 +1731,14 @@ agx_is_format_supported(struct pipe_screen *pscreen, enum pipe_format format,
       if (!agx_is_valid_pixel_format(tex_format))
          return false;
 
+      /* RGB32 is emulated for texture buffers only */
+      if (ent.channels == AGX_CHANNELS_R32G32B32_EMULATED &&
+          target != PIPE_BUFFER)
+         return false;
+
       if ((usage & PIPE_BIND_RENDER_TARGET) && !ent.renderable)
          return false;
    }
-
-   if ((usage & PIPE_BIND_VERTEX_BUFFER) && !agx_vbo_supports_format(format))
-      return false;
 
    if (usage & PIPE_BIND_DEPTH_STENCIL) {
       switch (format) {
@@ -1720,23 +1804,13 @@ agx_destroy_screen(struct pipe_screen *pscreen)
 {
    struct agx_screen *screen = agx_screen(pscreen);
 
+   if (screen->dev.ro)
+      screen->dev.ro->destroy(screen->dev.ro);
+
    u_transfer_helper_destroy(pscreen->transfer_helper);
    agx_close_device(&screen->dev);
    disk_cache_destroy(screen->disk_cache);
    ralloc_free(screen);
-}
-
-static void
-agx_fence_reference(struct pipe_screen *screen, struct pipe_fence_handle **ptr,
-                    struct pipe_fence_handle *fence)
-{
-}
-
-static bool
-agx_fence_finish(struct pipe_screen *screen, struct pipe_context *ctx,
-                 struct pipe_fence_handle *fence, uint64_t timeout)
-{
-   return true;
 }
 
 static const void *
@@ -1782,6 +1856,12 @@ static const struct u_transfer_vtbl transfer_vtbl = {
    .get_stencil = agx_resource_get_stencil,
 };
 
+static int
+agx_screen_get_fd(struct pipe_screen *pscreen)
+{
+   return agx_device(pscreen)->fd;
+}
+
 struct pipe_screen *
 agx_screen_create(int fd, struct renderonly *ro, struct sw_winsys *winsys)
 {
@@ -1822,6 +1902,7 @@ agx_screen_create(int fd, struct renderonly *ro, struct sw_winsys *winsys)
    }
 
    screen->destroy = agx_destroy_screen;
+   screen->get_screen_fd = agx_screen_get_fd;
    screen->get_name = agx_get_name;
    screen->get_vendor = agx_get_vendor;
    screen->get_device_vendor = agx_get_device_vendor;
@@ -1841,6 +1922,7 @@ agx_screen_create(int fd, struct renderonly *ro, struct sw_winsys *winsys)
    screen->get_timestamp = u_default_get_timestamp;
    screen->fence_reference = agx_fence_reference;
    screen->fence_finish = agx_fence_finish;
+   screen->fence_get_fd = agx_fence_get_fd;
    screen->get_compiler_options = agx_get_compiler_options;
    screen->get_disk_shader_cache = agx_get_disk_shader_cache;
 

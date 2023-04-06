@@ -162,6 +162,12 @@ The integer capabilities:
 * ``PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT``: Describes the required
   alignment for pipe_sampler_view::u.buf.offset, in bytes.
   If a driver does not support offset/size, it should return 0.
+* ``PIPE_CAP_LINEAR_IMAGE_PITCH_ALIGNMENT``: Describes the row pitch alignment
+  size that pipe_sampler_view::u.tex2d_from_buf must be multiple of, in pixels.
+  If a driver does not support images created from buffers, it should return 0.
+* ``PIPE_CAP_LINEAR_IMAGE_BASE_ADDRESS_ALIGNMENT``: Describes the minimum alignment
+  in pixels of the offset of a host pointer for images created from buffers.
+  If a driver does not support images created from buffers, it should return 0.
 * ``PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY``: Whether the driver only
   supports R, RG, RGB and RGBA formats for PIPE_BUFFER sampler views.
   When this is the case it should be assumed that the swizzle parameters
@@ -361,7 +367,7 @@ The integer capabilities:
 * ``PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT``:
   If non-zero, rendering to framebuffers with no surface attachments
   is supported. The context->is_format_supported function will be expected
-  to be implemented with PIPE_FORMAT_NONE yeilding the MSAA modes the hardware
+  to be implemented with PIPE_FORMAT_NONE yielding the MSAA modes the hardware
   supports. N.B., The maximum number of layers supported for rasterizing a
   primitive on a layer is obtained from ``PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS``
   even though it can be larger than the number of layers supported by either
@@ -559,6 +565,11 @@ The integer capabilities:
   execution. 0 = throttling is disabled.
 * ``PIPE_CAP_DMABUF``: Whether Linux DMABUF handles are supported by
   resource_from_handle and resource_get_handle.
+  Possible bit field values:
+
+    1. ``DRM_PRIME_CAP_IMPORT``: resource_from_handle is supported
+    2. ``DRM_PRIME_CAP_EXPORT``: resource_get_handle is supported
+
 * ``PIPE_CAP_PREFER_COMPUTE_FOR_MULTIMEDIA``: Whether VDPAU, VAAPI, and
   OpenMAX should use a compute-based blit instead of pipe_context::blit and compute pipeline for compositing images.
 * ``PIPE_CAP_FRAGMENT_SHADER_INTERLOCK``: True if fragment shader interlock
@@ -641,6 +652,7 @@ The integer capabilities:
 * ``PIPE_CAP_ALLOW_GLTHREAD_BUFFER_SUBDATA_OPT``: Whether to allow glthread to convert glBufferSubData to glCopyBufferSubData. This may improve or worsen performance depending on your driver.
 * ``PIPE_CAP_VALIDATE_ALL_DIRTY_STATES`` : Whether state validation must also validate the state changes for resources types used in the previous shader but not in the current shader.
 * ``PIPE_CAP_NULL_TEXTURES`` : Whether the driver supports sampling from NULL textures.
+* ``PIPE_CAP_ASTC_VOID_EXTENTS_NEED_DENORM_FLUSH`` : True if the driver/hardware needs denormalized values in ASTC void extent blocks flushed to zero.
 
 .. _pipe_capf:
 

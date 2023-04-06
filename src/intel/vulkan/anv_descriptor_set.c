@@ -696,8 +696,7 @@ sha1_update_immutable_sampler(struct mesa_sha1 *ctx,
       return;
 
    /* The only thing that affects the shader is ycbcr conversion */
-   _mesa_sha1_update(ctx, sampler->conversion,
-                     sizeof(*sampler->conversion));
+   SHA1_UPDATE_VALUE(ctx, sampler->conversion->state);
 }
 
 static void
@@ -974,6 +973,8 @@ void anv_DestroyDescriptorPool(
                             &pool->desc_sets, pool_link) {
       anv_descriptor_set_layout_unref(device, set->layout);
    }
+
+   util_vma_heap_finish(&pool->host_heap);
 
    if (pool->bo_mem_size) {
       if (pool->host_bo)
@@ -1403,6 +1404,10 @@ anv_descriptor_set_write_image_view(struct anv_device *device,
    void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset +
                     element * bind_layout->descriptor_stride;
    memset(desc_map, 0, bind_layout->descriptor_stride);
+
+   if (image_view == NULL && sampler == NULL)
+      return;
+
    enum anv_descriptor_data data =
       bind_layout->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT ?
       anv_descriptor_data_for_type(device->physical, type) :
@@ -1622,7 +1627,7 @@ anv_descriptor_set_write_inline_uniform_data(struct anv_device *device,
 void
 anv_descriptor_set_write_acceleration_structure(struct anv_device *device,
                                                 struct anv_descriptor_set *set,
-                                                struct anv_acceleration_structure *accel,
+                                                struct vk_acceleration_structure *accel,
                                                 uint32_t binding,
                                                 uint32_t element)
 {
@@ -1639,7 +1644,7 @@ anv_descriptor_set_write_acceleration_structure(struct anv_device *device,
 
    struct anv_address_range_descriptor desc_data = { };
    if (accel != NULL) {
-      desc_data.address = anv_address_physical(accel->address);
+      desc_data.address = vk_acceleration_structure_get_va(accel);
       desc_data.range = accel->size;
    }
    assert(sizeof(desc_data) <= bind_layout->descriptor_stride);
@@ -1727,7 +1732,7 @@ void anv_UpdateDescriptorSets(
          assert(accel_write->accelerationStructureCount ==
                 write->descriptorCount);
          for (uint32_t j = 0; j < write->descriptorCount; j++) {
-            ANV_FROM_HANDLE(anv_acceleration_structure, accel,
+            ANV_FROM_HANDLE(vk_acceleration_structure, accel,
                             accel_write->pAccelerationStructures[j]);
             anv_descriptor_set_write_acceleration_structure(device, set, accel,
                                                             write->dstBinding,
@@ -1890,7 +1895,7 @@ anv_descriptor_set_write_template(struct anv_device *device,
          for (uint32_t j = 0; j < entry->array_count; j++) {
             VkAccelerationStructureKHR *accel_obj =
                (VkAccelerationStructureKHR *)(data + entry->offset + j * entry->stride);
-            ANV_FROM_HANDLE(anv_acceleration_structure, accel, *accel_obj);
+            ANV_FROM_HANDLE(vk_acceleration_structure, accel, *accel_obj);
 
             anv_descriptor_set_write_acceleration_structure(device, set,
                                                             accel,

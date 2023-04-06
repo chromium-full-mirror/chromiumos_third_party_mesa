@@ -159,6 +159,9 @@ nir_if_phi(nir_builder *build, nir_ssa_def *then_def, nir_ssa_def *else_def);
 nir_loop *
 nir_push_loop(nir_builder *build);
 
+nir_loop *
+nir_push_continue(nir_builder *build, nir_loop *loop);
+
 void nir_pop_loop(nir_builder *build, nir_loop *loop);
 
 static inline nir_ssa_def *
@@ -838,9 +841,8 @@ nir_ishl_imm(nir_builder *build, nir_ssa_def *x, uint32_t y)
 {
    if (y == 0) {
       return x;
-   } else if (y >= x->bit_size) {
-      return nir_imm_intN_t(build, 0, x->bit_size);
    } else {
+      assert (y < x->bit_size);
       return nir_ishl(build, x, nir_imm_int(build, y));
    }
 }
@@ -877,6 +879,18 @@ nir_udiv_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
       return nir_ushr_imm(build, x, ffsll(y) - 1);
    } else {
       return nir_udiv(build, x, nir_imm_intN_t(build, y, x->bit_size));
+   }
+}
+
+static inline nir_ssa_def *
+nir_umod_imm(nir_builder *build, nir_ssa_def *x, uint64_t y)
+{
+   assert(y > 0 && y <= u_uintN_max(x->bit_size));
+
+   if (util_is_power_of_two_nonzero(y)) {
+      return nir_iand_imm(build, x, y - 1);
+   } else {
+      return nir_umod(build, x, nir_imm_intN_t(build, y, x->bit_size));
    }
 }
 

@@ -189,9 +189,6 @@ remap_patch_urb_offsets(nir_block *block, nir_builder *b,
                         const struct brw_vue_map *vue_map,
                         enum tess_primitive_mode tes_primitive_mode)
 {
-   const bool is_passthrough_tcs = b->shader->info.name &&
-      strcmp(b->shader->info.name, "passthrough TCS") == 0;
-
    nir_foreach_instr_safe(instr, block) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
@@ -203,8 +200,7 @@ remap_patch_urb_offsets(nir_block *block, nir_builder *b,
       if ((stage == MESA_SHADER_TESS_CTRL && is_output(intrin)) ||
           (stage == MESA_SHADER_TESS_EVAL && is_input(intrin))) {
 
-         if (!is_passthrough_tcs &&
-             remap_tess_levels(b, intrin, tes_primitive_mode))
+         if (remap_tess_levels(b, intrin, tes_primitive_mode))
             continue;
 
          int vue_slot = vue_map->varying_to_slot[intrin->const_index[0]];
@@ -960,8 +956,9 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
       .lower_txf_offset = true,
       .lower_rect_offset = true,
       .lower_txd_cube_map = true,
-      .lower_txd_3d = devinfo->verx10 >= 125,    /* Wa_1209978020 */
-      .lower_txd_array = devinfo->verx10 >= 125, /* Wa_1209978020 */
+      /* For below, See bspec 45942, "Enable new message layout for cube array" */
+      .lower_txd_3d = devinfo->verx10 >= 125,
+      .lower_txd_array = devinfo->verx10 >= 125,
       .lower_txb_shadow_clamp = true,
       .lower_txd_shadow_clamp = true,
       .lower_txd_offset_clamp = true,
@@ -1057,17 +1054,133 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
    brw_nir_optimize(nir, compiler, is_scalar);
 }
 
+static bool
+brw_nir_zero_inputs_instr(struct nir_builder *b, nir_instr *instr, void *data)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+   if (intrin->intrinsic != nir_intrinsic_load_deref)
+      return false;
+
+   nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
+   if (!nir_deref_mode_is(deref, nir_var_shader_in))
+      return false;
+
+   if (deref->deref_type != nir_deref_type_var)
+      return false;
+
+   nir_variable *var = deref->var;
+
+   uint64_t zero_inputs = *(uint64_t *)data;
+   if (!(BITFIELD64_BIT(var->data.location) & zero_inputs))
+      return false;
+
+   b->cursor = nir_before_instr(instr);
+
+   nir_ssa_def *zero = nir_imm_zero(b, 1, 32);
+
+   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, zero);
+
+   nir_instr_remove(instr);
+
+   return true;
+}
+
+static bool
+brw_nir_zero_inputs(nir_shader *shader, uint64_t *zero_inputs)
+{
+   return nir_shader_instructions_pass(shader, brw_nir_zero_inputs_instr,
+         nir_metadata_block_index | nir_metadata_dominance, zero_inputs);
+}
+
+/* Code for Wa_14015590813 may have created input/output variables beyond
+ * VARYING_SLOT_MAX and removed uses of variables below VARYING_SLOT_MAX.
+ * Clean it up, so they all stay below VARYING_SLOT_MAX.
+ */
+static void
+brw_mesh_compact_io(nir_shader *mesh, nir_shader *frag)
+{
+   gl_varying_slot mapping[VARYING_SLOT_MAX] = {0, };
+   gl_varying_slot cur = VARYING_SLOT_VAR0;
+   bool compact = false;
+
+   nir_foreach_shader_out_variable(var, mesh) {
+      gl_varying_slot location = var->data.location;
+      if (location < VARYING_SLOT_VAR0)
+         continue;
+      assert(location < ARRAY_SIZE(mapping));
+
+      const struct glsl_type *type = var->type;
+      if (nir_is_arrayed_io(var, MESA_SHADER_MESH) || var->data.per_view) {
+         assert(glsl_type_is_array(type));
+         type = glsl_get_array_element(type);
+      }
+
+      if (mapping[location])
+         continue;
+
+      unsigned num_slots = glsl_count_attribute_slots(type, false);
+
+      compact |= location + num_slots > VARYING_SLOT_MAX;
+
+      mapping[location] = cur;
+      cur += num_slots;
+   }
+
+   if (!compact)
+      return;
+
+   /* The rest of this function should be hit only for Wa_14015590813. */
+
+   nir_foreach_shader_out_variable(var, mesh) {
+      gl_varying_slot location = var->data.location;
+      if (location < VARYING_SLOT_VAR0)
+         continue;
+      location = mapping[location];
+      if (location == 0)
+         continue;
+      var->data.location = location;
+   }
+
+   nir_foreach_shader_in_variable(var, frag) {
+      gl_varying_slot location = var->data.location;
+      if (location < VARYING_SLOT_VAR0)
+         continue;
+      location = mapping[location];
+      if (location == 0)
+         continue;
+      var->data.location = location;
+   }
+
+   nir_shader_gather_info(mesh, nir_shader_get_entrypoint(mesh));
+   nir_shader_gather_info(frag, nir_shader_get_entrypoint(frag));
+
+   if (should_print_nir(mesh)) {
+      printf("%s\n", __func__);
+      nir_print_shader(mesh, stdout);
+   }
+   if (should_print_nir(frag)) {
+      printf("%s\n", __func__);
+      nir_print_shader(frag, stdout);
+   }
+}
+
 void
 brw_nir_link_shaders(const struct brw_compiler *compiler,
                      nir_shader *producer, nir_shader *consumer)
 {
    if (producer->info.stage == MESA_SHADER_MESH &&
        consumer->info.stage == MESA_SHADER_FRAGMENT) {
+      uint64_t fs_inputs = 0, ms_outputs = 0;
       /* gl_MeshPerPrimitiveNV[].gl_ViewportIndex, gl_PrimitiveID and gl_Layer
        * are per primitive, but fragment shader does not have them marked as
        * such. Add the annotation here.
        */
       nir_foreach_shader_in_variable(var, consumer) {
+         fs_inputs |= BITFIELD64_BIT(var->data.location);
+
          switch (var->data.location) {
             case VARYING_SLOT_LAYER:
             case VARYING_SLOT_PRIMITIVE_ID:
@@ -1078,6 +1191,16 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
                continue;
          }
       }
+
+      nir_foreach_shader_out_variable(var, producer)
+         ms_outputs |= BITFIELD64_BIT(var->data.location);
+
+      uint64_t zero_inputs = ~ms_outputs & fs_inputs;
+      zero_inputs &= BITFIELD64_BIT(VARYING_SLOT_LAYER) |
+                     BITFIELD64_BIT(VARYING_SLOT_VIEWPORT);
+
+      if (zero_inputs)
+         NIR_PASS(_, consumer, brw_nir_zero_inputs, &zero_inputs);
    }
 
    nir_lower_io_arrays_to_elements(producer, consumer);
@@ -1126,6 +1249,11 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
 
       brw_nir_optimize(producer, compiler, p_is_scalar);
       brw_nir_optimize(consumer, compiler, c_is_scalar);
+
+      if (producer->info.stage == MESA_SHADER_MESH &&
+            consumer->info.stage == MESA_SHADER_FRAGMENT) {
+         brw_mesh_compact_io(producer, consumer);
+      }
    }
 
    NIR_PASS(_, producer, nir_lower_io_to_vector, nir_var_shader_out);
@@ -1173,11 +1301,26 @@ brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
    if (bit_size > 32)
       return false;
 
-   /* We can handle at most a vec4 right now.  Anything bigger would get
-    * immediately split by brw_nir_lower_mem_access_bit_sizes anyway.
-    */
-   if (num_components > 4)
-      return false;
+   if (low->intrinsic == nir_intrinsic_load_global_const_block_intel ||
+       low->intrinsic == nir_intrinsic_load_ssbo_uniform_block_intel ||
+       low->intrinsic == nir_intrinsic_load_shared_uniform_block_intel) {
+      if (num_components > 4) {
+         if (!util_is_power_of_two_nonzero(num_components))
+            return false;
+
+         if (bit_size != 32)
+            return false;
+
+         if (num_components > 32)
+            return false;
+      }
+   } else {
+      /* We can handle at most a vec4 right now.  Anything bigger would get
+       * immediately split by brw_nir_lower_mem_access_bit_sizes anyway.
+       */
+      if (num_components > 4)
+         return false;
+   }
 
 
    uint32_t align;
@@ -1193,10 +1336,15 @@ brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
 }
 
 static
-bool combine_all_barriers(nir_intrinsic_instr *a,
-                          nir_intrinsic_instr *b,
-                          void *data)
+bool combine_all_memory_barriers(nir_intrinsic_instr *a,
+                                 nir_intrinsic_instr *b,
+                                 void *data)
 {
+   /* Only combine pure memory barriers */
+   if ((nir_intrinsic_execution_scope(a) != NIR_SCOPE_NONE) ||
+       (nir_intrinsic_execution_scope(b) != NIR_SCOPE_NONE))
+      return false;
+
    /* Translation to backend IR will get rid of modes we don't care about, so
     * no harm in always combining them.
     *
@@ -1212,13 +1360,91 @@ bool combine_all_barriers(nir_intrinsic_instr *a,
    return true;
 }
 
+static nir_mem_access_size_align
+get_mem_access_size_align(nir_intrinsic_op intrin, uint8_t bytes,
+                          uint32_t align_mul, uint32_t align_offset,
+                          bool offset_is_const, const void *cb_data)
+{
+   const uint32_t align = nir_combined_align(align_mul, align_offset);
+
+   switch (intrin) {
+   case nir_intrinsic_load_ssbo:
+   case nir_intrinsic_load_shared:
+   case nir_intrinsic_load_scratch:
+      /* The offset is constant so we can use a 32-bit load and just shift it
+       * around as needed.
+       */
+      if (align < 4 && offset_is_const) {
+         assert(util_is_power_of_two_nonzero(align_mul) && align_mul >= 4);
+         const unsigned pad = align_offset % 4;
+         const unsigned comps32 = MIN2(DIV_ROUND_UP(bytes + pad, 4), 4);
+         return (nir_mem_access_size_align) {
+            .bit_size = 32,
+            .num_components = comps32,
+            .align = 4,
+         };
+      }
+      break;
+
+   case nir_intrinsic_load_task_payload:
+      if (bytes < 4 || align < 4) {
+         return (nir_mem_access_size_align) {
+            .bit_size = 32,
+            .num_components = 1,
+            .align = 4,
+         };
+      }
+      break;
+
+   default:
+      break;
+   }
+
+   const bool is_load = nir_intrinsic_infos[intrin].has_dest;
+   const bool is_scratch = intrin == nir_intrinsic_load_scratch ||
+                           intrin == nir_intrinsic_store_scratch;
+
+   if (align < 4 || bytes < 4) {
+      /* Choose a byte, word, or dword */
+      bytes = MIN2(bytes, 4);
+      if (bytes == 3)
+         bytes = is_load ? 4 : 2;
+
+      if (is_scratch) {
+         /* The way scratch address swizzling works in the back-end, it
+          * happens at a DWORD granularity so we can't have a single load
+          * or store cross a DWORD boundary.
+          */
+         if ((align_offset % 4) + bytes > MIN2(align_mul, 4))
+            bytes = MIN2(align_mul, 4) - (align_offset % 4);
+
+         /* Must be a power of two */
+         if (bytes == 3)
+            bytes = 2;
+      }
+
+      return (nir_mem_access_size_align) {
+         .bit_size = bytes * 8,
+         .num_components = 1,
+         .align = 1,
+      };
+   } else {
+      bytes = MIN2(bytes, 16);
+      return (nir_mem_access_size_align) {
+         .bit_size = 32,
+         .num_components = is_scratch ? 1 :
+                           is_load ? DIV_ROUND_UP(bytes, 4) : bytes / 4,
+         .align = 4,
+      };
+   }
+}
+
 static void
 brw_vectorize_lower_mem_access(nir_shader *nir,
                                const struct brw_compiler *compiler,
                                bool is_scalar,
                                bool robust_buffer_access)
 {
-   const struct intel_device_info *devinfo = compiler->devinfo;
    bool progress = false;
 
    if (is_scalar) {
@@ -1236,9 +1462,42 @@ brw_vectorize_lower_mem_access(nir_shader *nir,
       }
 
       OPT(nir_opt_load_store_vectorize, &options);
+
+      /* Only run the blockify optimization on Gfx9+ because although prior HW
+       * versions have support for block loads, they do have limitations on
+       * alignment as well as requiring split sends which are not supported
+       * there.
+       */
+      if (compiler->devinfo->ver >= 9) {
+         /* Required for nir_divergence_analysis() */
+         OPT(nir_convert_to_lcssa, true, true);
+
+         /* When HW supports block loads, using the divergence analysis, try
+          * to find uniform SSBO loads and turn them into block loads.
+          *
+          * Rerun the vectorizer after that to make the largest possible block
+          * loads.
+          *
+          * This is a win on 2 fronts :
+          *   - fewer send messages
+          *   - reduced register pressure
+          */
+         nir_divergence_analysis(nir);
+         if (OPT(brw_nir_blockify_uniform_loads, compiler->devinfo))
+            OPT(nir_opt_load_store_vectorize, &options);
+         OPT(nir_opt_remove_phis);
+      }
    }
 
-   OPT(brw_nir_lower_mem_access_bit_sizes, devinfo);
+   OPT(nir_lower_mem_access_bit_sizes,
+       nir_var_mem_ssbo |
+       nir_var_mem_constant |
+       nir_var_mem_task_payload |
+       nir_var_shader_temp |
+       nir_var_function_temp |
+       nir_var_mem_global |
+       nir_var_mem_shared,
+       get_mem_access_size_align, NULL);
 
    while (progress) {
       progress = false;
@@ -1281,8 +1540,7 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    OPT(nir_lower_bit_size, lower_bit_size_callback, (void *)compiler);
 
-   OPT(brw_nir_lower_scoped_barriers);
-   OPT(nir_opt_combine_memory_barriers, combine_all_barriers, NULL);
+   OPT(nir_opt_combine_barriers, combine_all_memory_barriers, NULL);
 
    do {
       progress = false;
@@ -1318,8 +1576,19 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       brw_nir_optimize(nir, compiler, is_scalar);
 
    if (devinfo->ver >= 6) {
-      /* Try and fuse multiply-adds */
-      OPT(brw_nir_opt_peephole_ffma);
+      /* Try and fuse multiply-adds, if successful, run shrink_vectors to
+       * avoid peephole_ffma to generate things like this :
+       *    vec16 ssa_0 = ...
+       *    vec16 ssa_1 = fneg ssa_0
+       *    vec1  ssa_2 = ffma ssa_1, ...
+       *
+       * We want this instead :
+       *    vec16 ssa_0 = ...
+       *    vec1  ssa_1 = fneg ssa_0.x
+       *    vec1  ssa_2 = ffma ssa_1, ...
+       */
+      if (OPT(brw_nir_opt_peephole_ffma))
+         OPT(nir_opt_shrink_vectors);
    }
 
    if (is_scalar)
@@ -1467,6 +1736,7 @@ brw_nir_apply_sampler_key(nir_shader *nir,
       .lower_txd_clamp_bindless_sampler = true,
       .lower_txd_clamp_if_sampler_index_not_lt_16 = true,
       .lower_invalid_implicit_lod = true,
+      .lower_index_to_offset = true,
    };
 
    /* Iron Lake and prior require lowering of all rectangle textures */
@@ -1535,6 +1805,13 @@ get_subgroup_size(const struct shader_info *info, unsigned max_subgroup_size)
    }
 
    unreachable("Invalid subgroup size type");
+}
+
+unsigned
+brw_nir_api_subgroup_size(const nir_shader *nir,
+                          unsigned hw_subgroup_size)
+{
+   return get_subgroup_size(&nir->info, hw_subgroup_size);
 }
 
 void
@@ -1724,50 +2001,24 @@ brw_nir_create_passthrough_tcs(void *mem_ctx, const struct brw_compiler *compile
 {
    const nir_shader_compiler_options *options =
       compiler->nir_options[MESA_SHADER_TESS_CTRL];
-   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_TESS_CTRL,
-                                                  options, "passthrough TCS");
-   ralloc_steal(mem_ctx, b.shader);
-   nir_shader *nir = b.shader;
-   nir_variable *var;
-   nir_ssa_def *load;
-   nir_ssa_def *zero = nir_imm_int(&b, 0);
-   nir_ssa_def *invoc_id = nir_load_invocation_id(&b);
 
-   nir->info.inputs_read = key->outputs_written &
+   uint64_t inputs_read = key->outputs_written &
       ~(VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER);
-   nir->info.outputs_written = key->outputs_written;
-   nir->info.tess.tcs_vertices_out = key->input_vertices;
-   nir->num_uniforms = 8 * sizeof(uint32_t);
 
-   var = nir_variable_create(nir, nir_var_uniform, glsl_vec4_type(), "hdr_0");
-   var->data.location = 0;
-   var = nir_variable_create(nir, nir_var_uniform, glsl_vec4_type(), "hdr_1");
-   var->data.location = 1;
+   unsigned locations[64];
+   unsigned num_locations = 0;
 
-   /* Write the patch URB header. */
-   for (int i = 0; i <= 1; i++) {
-      load = nir_load_uniform(&b, 4, 32, zero, .base = i * 4 * sizeof(uint32_t));
+   u_foreach_bit64(varying, inputs_read)
+      locations[num_locations++] = varying;
 
-      nir_store_output(&b, load, zero,
-                       .base = VARYING_SLOT_TESS_LEVEL_INNER - i,
-                       .write_mask = WRITEMASK_XYZW);
-   }
+   nir_shader *nir =
+      nir_create_passthrough_tcs_impl(options, locations, num_locations,
+                                      key->input_vertices);
 
-   /* Copy inputs to outputs. */
-   uint64_t varyings = nir->info.inputs_read;
+   ralloc_steal(mem_ctx, nir);
 
-   while (varyings != 0) {
-      const int varying = ffsll(varyings) - 1;
-
-      load = nir_load_per_vertex_input(&b, 4, 32, invoc_id, zero, .base = varying);
-
-      nir_store_per_vertex_output(&b, load, invoc_id, zero,
-                                  .base = varying,
-                                  .write_mask = WRITEMASK_XYZW);
-
-      varyings &= ~BITFIELD64_BIT(varying);
-   }
-
+   nir->info.inputs_read = inputs_read;
+   nir->info.tess._primitive_mode = key->_tes_primitive_mode;
    nir_validate_shader(nir, "in brw_nir_create_passthrough_tcs");
 
    struct brw_nir_compiler_opts opts = {};

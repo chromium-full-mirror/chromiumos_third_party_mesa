@@ -275,6 +275,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_SHADER_PACK_HALF_FLOAT:
    case PIPE_CAP_MULTI_DRAW_INDIRECT:
+   case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
    case PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL:
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
@@ -383,7 +384,6 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE:
    case PIPE_CAP_NIR_SAMPLERS_AS_DEREF:
-   case PIPE_CAP_MEMOBJ:
    case PIPE_CAP_LOAD_CONSTBUF:
    case PIPE_CAP_TILE_RASTER_ORDER:
    case PIPE_CAP_MAX_COMBINED_SHADER_OUTPUT_RESOURCES:
@@ -1479,6 +1479,7 @@ nvc0_screen_create(struct nouveau_device *dev)
       MK_MACRO(NVC0_3D_MACRO_DRAW_ELEMENTS_INDIRECT_COUNT, mmec597_draw_elts_indirect_count);
       MK_MACRO(NVC0_3D_MACRO_QUERY_BUFFER_WRITE, mmec597_query_buffer_write);
       MK_MACRO(NVC0_3D_MACRO_CONSERVATIVE_RASTER_STATE, mmec597_conservative_raster_state);
+      MK_MACRO(NVC0_3D_MACRO_SET_PRIV_REG, mmec597_set_priv_reg);
       MK_MACRO(NVC0_3D_MACRO_COMPUTE_COUNTER, mmec597_compute_counter);
       MK_MACRO(NVC0_3D_MACRO_COMPUTE_COUNTER_TO_QUERY, mmec597_compute_counter_to_query);
    }
@@ -1554,6 +1555,13 @@ nvc0_screen_create(struct nouveau_device *dev)
    }
    BEGIN_NVC0(push, NVC0_3D(LINKED_TSC), 1);
    PUSH_DATA (push, 0);
+
+   if (screen->eng3d->oclass >= TU102_3D_CLASS) {
+      BEGIN_1IC0(push, NVC0_3D(MACRO_SET_PRIV_REG), 3);
+      PUSH_DATA (push, 0x419ba4);
+      PUSH_DATA (push, 0x00000000);
+      PUSH_DATA (push, 0x00000008);
+   }
 
    PUSH_KICK (push);
 

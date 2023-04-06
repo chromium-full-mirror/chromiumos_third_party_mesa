@@ -19,10 +19,6 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
- *
- * Authors:
- *    Jason Ekstrand (jason@jlekstrand.net)
- *
  */
 
 #ifndef _NIR_SPIRV_H_
@@ -64,11 +60,6 @@ struct spirv_to_nir_options {
 
    /* Create a nir library. */
    bool create_library;
-
-   /* Whether to use nir_intrinsic_deref_buffer_array_length intrinsic instead
-    * of nir_intrinsic_get_ssbo_size to lower OpArrayLength.
-    */
-   bool use_deref_buffer_array_length;
 
    /* Initial value for shader_info::float_controls_execution_mode,
     * indicates hardware requirements rather than shader author intent
@@ -125,6 +116,12 @@ struct spirv_to_nir_options {
 
    /* Force texture sampling to be non-uniform. */
    bool force_tex_non_uniform;
+
+   /* In Debug Builds, instead of emitting an OS break on failure, just return NULL from
+    * spirv_to_nir().  This is useful for the unit tests that want to report a test failed
+    * but continue executing other tests.
+    */
+   bool skip_os_break_in_debug_build;
 };
 
 bool gl_spirv_validation(const uint32_t *words, size_t word_count,

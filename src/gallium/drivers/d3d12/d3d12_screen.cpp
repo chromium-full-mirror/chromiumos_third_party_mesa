@@ -149,6 +149,9 @@ d3d12_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
 
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
+      return 1 << D3D12_REQ_BUFFER_RESOURCE_TEXEL_COUNT_2_TO_EXP;
+
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
       return D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 
@@ -745,6 +748,8 @@ d3d12_destroy_screen(struct d3d12_screen *screen)
    slab_destroy_parent(&screen->transfer_pool);
    mtx_destroy(&screen->submit_mutex);
    mtx_destroy(&screen->descriptor_pool_mutex);
+   d3d12_varying_cache_destroy(screen);
+   mtx_destroy(&screen->varying_info_mutex);
    if (screen->d3d12_mod)
       util_dl_close(screen->d3d12_mod);
    glsl_type_singleton_decref();
@@ -1226,6 +1231,18 @@ d3d12_interop_export_object(struct pipe_screen *pscreen, struct pipe_resource *r
    return sizeof(*info);
 }
 
+static int
+d3d12_screen_get_fd(struct pipe_screen *pscreen)
+{
+   struct d3d12_screen *screen = d3d12_screen(pscreen);
+   struct sw_winsys *winsys = screen->winsys;
+
+   if (winsys->get_fd)
+      return winsys->get_fd(winsys);
+   else
+      return -1;
+}
+
 bool
 d3d12_init_screen_base(struct d3d12_screen *screen, struct sw_winsys *winsys, LUID *adapter_luid)
 {
@@ -1239,10 +1256,20 @@ d3d12_init_screen_base(struct d3d12_screen *screen, struct sw_winsys *winsys, LU
    mtx_init(&screen->submit_mutex, mtx_plain);
 
    list_inithead(&screen->context_list);
+   screen->context_id_count = 16;
+
+   // Fill the array backwards, because we'll pop off the back to assign ids
+   for (unsigned i = 0; i < 16; ++i)
+      screen->context_id_list[i] = 15 - i;
+
+   d3d12_varying_cache_init(screen);
+   mtx_init(&screen->varying_info_mutex, mtx_plain);
+
    slab_create_parent(&screen->transfer_pool, sizeof(struct d3d12_transfer), 16);
 
    screen->base.get_vendor = d3d12_get_vendor;
    screen->base.get_device_vendor = d3d12_get_device_vendor;
+   screen->base.get_screen_fd = d3d12_screen_get_fd;
    screen->base.get_param = d3d12_get_param;
    screen->base.get_paramf = d3d12_get_paramf;
    screen->base.get_shader_param = d3d12_get_shader_param;

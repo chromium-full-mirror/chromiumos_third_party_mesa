@@ -206,7 +206,7 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return sscreen->info.has_graphics;
 
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
-      return !SI_BIG_ENDIAN && sscreen->info.has_userptr;
+      return !UTIL_ARCH_BIG_ENDIAN && sscreen->info.has_userptr;
 
    case PIPE_CAP_DEVICE_PROTECTED_SURFACE:
       return sscreen->info.has_tmz_support;
@@ -415,6 +415,8 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
 static float si_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 {
+   struct si_screen *sscreen = (struct si_screen *)pscreen;
+
    switch (param) {
    case PIPE_CAPF_MIN_LINE_WIDTH:
    case PIPE_CAPF_MIN_LINE_WIDTH_AA:
@@ -435,7 +437,8 @@ static float si_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0f;
    case PIPE_CAPF_MAX_TEXTURE_LOD_BIAS:
-      return 16.0f;
+      /* This is the maximum value of the LOD_BIAS sampler field. */
+      return sscreen->info.gfx_level >= GFX10 ? 31 : 16;
    case PIPE_CAPF_MIN_CONSERVATIVE_RASTER_DILATE:
    case PIPE_CAPF_MAX_CONSERVATIVE_RASTER_DILATE:
    case PIPE_CAPF_CONSERVATIVE_RASTER_DILATE_GRANULARITY:
@@ -871,8 +874,9 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen, enum pipe_for
    if (profile == PIPE_VIDEO_PROFILE_VP9_PROFILE2)
       return (format == PIPE_FORMAT_P010) || (format == PIPE_FORMAT_P016);
 
-   if (profile == PIPE_VIDEO_PROFILE_AV1_MAIN)
-      return (format == PIPE_FORMAT_P010) || (format == PIPE_FORMAT_P016);
+   if (profile == PIPE_VIDEO_PROFILE_AV1_MAIN && entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM)
+      return (format == PIPE_FORMAT_P010) || (format == PIPE_FORMAT_P016) ||
+             (format == PIPE_FORMAT_NV12);
 
    /* JPEG supports YUV400 and YUV444 */
    if (profile == PIPE_VIDEO_PROFILE_JPEG_BASELINE) {
@@ -1132,11 +1136,20 @@ static void si_init_renderer_string(struct si_screen *sscreen)
             sscreen->info.drm_major, sscreen->info.drm_minor, kernel_version);
 }
 
+static int si_get_screen_fd(struct pipe_screen *screen)
+{
+   struct si_screen *sscreen = (struct si_screen *)screen;
+   struct radeon_winsys *ws = sscreen->ws;
+
+   return ws->get_fd(ws);
+}
+
 void si_init_screen_get_functions(struct si_screen *sscreen)
 {
    sscreen->b.get_name = si_get_name;
    sscreen->b.get_vendor = si_get_vendor;
    sscreen->b.get_device_vendor = si_get_device_vendor;
+   sscreen->b.get_screen_fd = si_get_screen_fd;
    sscreen->b.get_param = si_get_param;
    sscreen->b.get_paramf = si_get_paramf;
    sscreen->b.get_compute_param = si_get_compute_param;

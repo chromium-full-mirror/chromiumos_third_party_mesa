@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2018-2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright 2018-2021 Alyssa Rosenzweig
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef __AGX_PUBLIC_H_
@@ -26,9 +8,6 @@
 
 #include "compiler/nir/nir.h"
 #include "util/u_dynarray.h"
-
-/* Arbitrary */
-#define AGX_MAX_VARYINGS (32)
 
 struct agx_varyings_vs {
    /* The first index used for FP16 varyings. Indices less than this are treated
@@ -52,8 +31,10 @@ struct agx_varyings_vs {
    unsigned slots[VARYING_SLOT_MAX];
 };
 
-/* Conservative bound */
-#define AGX_MAX_CF_BINDINGS (VARYING_SLOT_MAX)
+/* Conservative bound, * 4 due to offsets (TODO: maybe worth eliminating
+ * coefficient register aliasing?)
+ */
+#define AGX_MAX_CF_BINDINGS (VARYING_SLOT_MAX * 4)
 
 struct agx_varyings_fs {
    /* Number of coefficient registers used */
@@ -125,6 +106,9 @@ struct agx_shader_info {
    /* Shader is incompatible with triangle merging */
    bool disable_tri_merging;
 
+   /* Shader needs a dummy sampler (for txf reads) */
+   bool needs_dummy_sampler;
+
    /* Number of 16-bit registers used by the main shader and preamble
     * respectively.
     */
@@ -174,7 +158,7 @@ struct agx_shader_key {
    };
 };
 
-void agx_preprocess_nir(nir_shader *nir);
+void agx_preprocess_nir(nir_shader *nir, bool support_lod_bias);
 
 void agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
                             struct util_debug_callback *debug,
@@ -202,10 +186,9 @@ static const nir_shader_compiler_options agx_nir_options = {
    .lower_fdph = true,
    .lower_ffract = true,
    .lower_pack_half_2x16 = true,
+   .lower_pack_64_2x32 = true,
    .lower_unpack_half_2x16 = true,
-   .lower_pack_split = true,
    .lower_extract_byte = true,
-   .lower_extract_word = true,
    .lower_insert_byte = true,
    .lower_insert_word = true,
    .lower_cs_local_index_to_id = true,
@@ -215,6 +198,7 @@ static const nir_shader_compiler_options agx_nir_options = {
    .lower_rotate = true,
    .has_fsub = true,
    .has_isub = true,
+   .use_scoped_barrier = true,
    .max_unroll_iterations = 32,
    .lower_uniforms_to_ubo = true,
    .force_indirect_unrolling_sampler = true,

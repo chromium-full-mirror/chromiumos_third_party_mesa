@@ -37,8 +37,6 @@
 
 #include "util/perf/u_trace.h"
 
-#include "i915/anv_batch_chain.h"
-
 /** \file anv_batch_chain.c
  *
  * This file contains functions related to anv_cmd_buffer as a data
@@ -1214,7 +1212,7 @@ anv_cmd_buffer_exec_batch_debug(struct anv_queue *queue,
  * pool resize only rarely happen, this will almost never be contended so
  * taking a lock isn't really an expensive operation in this case.
  */
-static VkResult
+static inline VkResult
 anv_queue_exec_locked(struct anv_queue *queue,
                       uint32_t wait_count,
                       const struct vk_sync_wait *waits,
@@ -1225,10 +1223,12 @@ anv_queue_exec_locked(struct anv_queue *queue,
                       struct anv_query_pool *perf_query_pool,
                       uint32_t perf_query_pass)
 {
-   return anv_i915_queue_exec_locked(queue, wait_count, waits,
-                                     cmd_buffer_count, cmd_buffers,
-                                     signal_count, signals,
-                                     perf_query_pool, perf_query_pass);
+   struct anv_device *device = queue->device;
+   return device->kmd_backend->queue_exec_locked(queue, wait_count, waits,
+                                                 cmd_buffer_count,
+                                                 cmd_buffers, signal_count,
+                                                 signals, perf_query_pool,
+                                                 perf_query_pass);
 }
 
 static inline bool
@@ -1342,14 +1342,16 @@ anv_queue_submit(struct vk_queue *vk_queue,
       return VK_SUCCESS;
    }
 
-   uint64_t start_ts = intel_ds_begin_submit(&queue->ds);
-
    pthread_mutex_lock(&device->mutex);
+
+   uint64_t start_ts = intel_ds_begin_submit(&queue->ds);
    result = anv_queue_submit_locked(queue, submit);
    /* Take submission ID under lock */
-   pthread_mutex_unlock(&device->mutex);
-
    intel_ds_end_submit(&queue->ds, start_ts);
+
+   u_trace_context_process(&device->ds.trace_context, true);
+
+   pthread_mutex_unlock(&device->mutex);
 
    return result;
 }
@@ -1389,9 +1391,28 @@ anv_queue_submit_simple_batch(struct anv_queue *queue,
                         batch_bo->offset, false);
    }
 
-   result = anv_i915_execute_simple_batch(queue, batch_bo, batch_size);
+   result = device->kmd_backend->execute_simple_batch(queue, batch_bo,
+                                                      batch_size);
 
    anv_bo_pool_free(&device->batch_bo_pool, batch_bo);
 
    return result;
+}
+
+void
+anv_cmd_buffer_clflush(struct anv_cmd_buffer **cmd_buffers,
+                       uint32_t num_cmd_buffers)
+{
+#ifdef SUPPORT_INTEL_INTEGRATED_GPUS
+   struct anv_batch_bo **bbo;
+
+   __builtin_ia32_mfence();
+
+   for (uint32_t i = 0; i < num_cmd_buffers; i++) {
+      u_vector_foreach(bbo, &cmd_buffers[i]->seen_bbos) {
+         for (uint32_t l = 0; l < (*bbo)->length; l += CACHELINE_SIZE)
+            __builtin_ia32_clflush((*bbo)->bo->map + l);
+      }
+   }
+#endif
 }

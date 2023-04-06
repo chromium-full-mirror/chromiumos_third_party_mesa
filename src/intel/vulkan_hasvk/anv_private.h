@@ -858,14 +858,6 @@ struct anv_physical_device {
     struct anv_instance *                       instance;
     char                                        path[20];
     struct intel_device_info                      info;
-    /** Amount of "GPU memory" we want to advertise
-     *
-     * Clearly, this value is bogus since Intel is a UMA architecture.  On
-     * gfx7 platforms, we are limited by GTT size unless we want to implement
-     * fine-grained tracking and GTT splitting.  On Broadwell and above we are
-     * practically unlimited.  However, we will never report more than 3/4 of
-     * the total system ram to try and avoid running out of RAM.
-     */
     bool                                        supports_48bit_addresses;
     struct brw_compiler *                       compiler;
     struct isl_device                           isl_dev;
@@ -955,6 +947,9 @@ struct anv_instance {
     bool                                        limit_trig_input_range;
     bool                                        sample_mask_out_opengl_behaviour;
     float                                       lower_depth_range_rate;
+
+    /* HW workarounds */
+    bool                                        no_16bit;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
@@ -1024,7 +1019,6 @@ struct anv_device {
     uint32_t                                    context_id;
     int                                         fd;
     bool                                        can_chain_batches;
-    bool                                        robust_buffer_access;
 
     pthread_mutex_t                             vma_mutex;
     struct util_vma_heap                        vma_lo;
@@ -1287,8 +1281,6 @@ int anv_gem_context_get_reset_stats(int fd, int context,
 int anv_gem_handle_to_fd(struct anv_device *device, uint32_t gem_handle);
 uint32_t anv_gem_fd_to_handle(struct anv_device *device, int fd);
 int anv_gem_set_caching(struct anv_device *device, uint32_t gem_handle, uint32_t caching);
-int anv_i915_query(int fd, uint64_t query_id, void *buffer,
-                   int32_t *buffer_len);
 
 uint64_t anv_vma_alloc(struct anv_device *device,
                        uint64_t size, uint64_t align,
@@ -2201,13 +2193,24 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
             pipe_bits |= ANV_PIPE_UNTYPED_DATAPORT_CACHE_FLUSH_BIT;
          }
          break;
-      case VK_ACCESS_2_SHADER_READ_BIT:
       case VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT:
       case VK_ACCESS_2_TRANSFER_READ_BIT:
+      case VK_ACCESS_2_SHADER_SAMPLED_READ_BIT:
          /* Transitioning a buffer to be read through the sampler, so
           * invalidate the texture cache, we don't want any stale data.
           */
          pipe_bits |= ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT;
+         break;
+      case VK_ACCESS_2_SHADER_READ_BIT:
+         /* Same as VK_ACCESS_2_UNIFORM_READ_BIT and
+          * VK_ACCESS_2_SHADER_SAMPLED_READ_BIT cases above
+          */
+         pipe_bits |= ANV_PIPE_CONSTANT_CACHE_INVALIDATE_BIT |
+                      ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT;
+         if (!device->physical->compiler->indirect_ubos_use_sampler) {
+            pipe_bits |= ANV_PIPE_HDC_PIPELINE_FLUSH_BIT;
+            pipe_bits |= ANV_PIPE_UNTYPED_DATAPORT_CACHE_FLUSH_BIT;
+         }
          break;
       case VK_ACCESS_2_MEMORY_READ_BIT:
          /* Transitioning a buffer for generic read, invalidate all the
@@ -2247,6 +2250,7 @@ anv_pipe_invalidate_bits_for_access_flags(struct anv_device *device,
           */
          pipe_bits |= ANV_PIPE_TILE_CACHE_FLUSH_BIT;
          break;
+      case VK_ACCESS_2_SHADER_STORAGE_READ_BIT:
       default:
          break; /* Nothing to do */
       }
@@ -2358,6 +2362,18 @@ struct anv_vb_cache_range {
    uint64_t end;
 };
 
+static inline void
+anv_merge_vb_cache_range(struct anv_vb_cache_range *dirty,
+                         const struct anv_vb_cache_range *bound)
+{
+   if (dirty->start == dirty->end) {
+      *dirty = *bound;
+   } else if (bound->start != bound->end) {
+      dirty->start = MIN2(dirty->start, bound->start);
+      dirty->end = MAX2(dirty->end, bound->end);
+   }
+}
+
 /* Check whether we need to apply the Gfx8-9 vertex buffer workaround*/
 static inline bool
 anv_gfx8_9_vb_cache_range_needs_workaround(struct anv_vb_cache_range *bound,
@@ -2380,9 +2396,7 @@ anv_gfx8_9_vb_cache_range_needs_workaround(struct anv_vb_cache_range *bound,
    bound->start &= ~(64ull - 1ull);
    bound->end = align64(bound->end, 64);
 
-   /* Compute the dirty range */
-   dirty->start = MIN2(dirty->start, bound->start);
-   dirty->end = MAX2(dirty->end, bound->end);
+   anv_merge_vb_cache_range(dirty, bound);
 
    /* If our range is larger than 32 bits, we have to flush */
    assert(bound->end - bound->start <= (1ull << 32));
@@ -3116,6 +3130,8 @@ anv_get_isl_format(const struct intel_device_info *devinfo, VkFormat vk_format,
 
 extern VkFormat
 vk_format_from_android(unsigned android_format, unsigned android_usage);
+
+unsigned anv_ahb_format_for_vk_format(VkFormat vk_format);
 
 static inline struct isl_swizzle
 anv_swizzle_for_render(struct isl_swizzle swizzle)

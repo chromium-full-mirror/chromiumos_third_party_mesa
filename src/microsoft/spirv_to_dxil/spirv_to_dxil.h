@@ -165,7 +165,11 @@ struct dxil_spirv_runtime_conf {
 
    // The caller supports read-only images to be turned into SRV accesses,
    // which allows us to run the nir_opt_access() pass
-   bool read_only_images_as_srvs;
+   bool declared_read_only_images_as_srvs;
+
+   // The caller supports read-write images to be turned into SRV accesses,
+   // if they are found not to be written
+   bool inferred_read_only_images_as_srvs;
 
    // Force sample rate shading on a fragment shader
    bool force_sample_rate_shading;
@@ -174,6 +178,9 @@ struct dxil_spirv_runtime_conf {
    bool lower_view_index;
    // View index also needs to be forwarded to RT layer output
    bool lower_view_index_to_rt_layer;
+
+   // Affects which features can be used by the shader
+   enum dxil_shader_model shader_model_max;
 };
 
 struct dxil_spirv_debug_options {
@@ -204,7 +211,6 @@ spirv_to_dxil(const uint32_t *words, size_t word_count,
               struct dxil_spirv_specialization *specializations,
               unsigned int num_specializations, dxil_spirv_shader_stage stage,
               const char *entry_point_name,
-              enum dxil_shader_model shader_model_max,
               enum dxil_validator_version validator_version_max,
               const struct dxil_spirv_debug_options *debug_options,
               const struct dxil_spirv_runtime_conf *conf,

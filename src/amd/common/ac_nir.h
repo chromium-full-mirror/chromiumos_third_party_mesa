@@ -67,11 +67,24 @@ typedef struct nir_builder nir_builder;
 typedef void (*ac_nir_cull_accepted)(nir_builder *b, void *state);
 
 nir_ssa_def *
-ac_nir_load_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg);
+ac_nir_load_arg_at_offset(nir_builder *b, const struct ac_shader_args *ac_args,
+                          struct ac_arg arg, unsigned relative_index);
+
+static inline nir_ssa_def *
+ac_nir_load_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg)
+{
+   return ac_nir_load_arg_at_offset(b, ac_args, arg, 0);
+}
 
 nir_ssa_def *
 ac_nir_unpack_arg(nir_builder *b, const struct ac_shader_args *ac_args, struct ac_arg arg,
                   unsigned rshift, unsigned bitwidth);
+
+bool ac_nir_lower_sin_cos(nir_shader *shader);
+
+void
+ac_nir_store_var_components(nir_builder *b, nir_variable *var, nir_ssa_def *value,
+                            unsigned component, unsigned writemask);
 
 void
 ac_nir_export_primitive(nir_builder *b, nir_ssa_def *prim);
@@ -86,13 +99,13 @@ ac_nir_export_position(nir_builder *b,
                        nir_ssa_def *(*outputs)[4]);
 
 void
-ac_nir_export_parameter(nir_builder *b,
-                        const uint8_t *param_offsets,
-                        uint64_t outputs_written,
-                        uint16_t outputs_written_16bit,
-                        nir_ssa_def *(*outputs)[4],
-                        nir_ssa_def *(*outputs_16bit_lo)[4],
-                        nir_ssa_def *(*outputs_16bit_hi)[4]);
+ac_nir_export_parameters(nir_builder *b,
+                         const uint8_t *param_offsets,
+                         uint64_t outputs_written,
+                         uint16_t outputs_written_16bit,
+                         nir_ssa_def *(*outputs)[4],
+                         nir_ssa_def *(*outputs_16bit_lo)[4],
+                         nir_ssa_def *(*outputs_16bit_hi)[4]);
 
 nir_ssa_def *
 ac_nir_calc_io_offset(nir_builder *b,
@@ -196,9 +209,6 @@ ac_nir_lower_ngg_ms(nir_shader *shader,
                     bool multiview);
 
 void
-ac_nir_apply_first_task_to_task_shader(nir_shader *shader);
-
-void
 ac_nir_lower_task_outputs_to_mem(nir_shader *shader,
                                  unsigned task_payload_entry_bytes,
                                  unsigned task_num_entries);
@@ -271,6 +281,40 @@ ac_nir_lower_legacy_gs(nir_shader *nir,
                        bool has_gen_prim_query,
                        bool has_pipeline_stats_query,
                        ac_nir_gs_output_info *output_info);
+
+typedef struct {
+   /* Which load instructions to lower depending on whether the number of
+    * components being loaded is 1 or more than 1.
+    */
+   nir_variable_mode modes_1_comp;  /* lower 1-component loads for these */
+   nir_variable_mode modes_N_comps; /* lower multi-component loads for these */
+} ac_nir_lower_subdword_options;
+
+bool ac_nir_lower_subdword_loads(nir_shader *nir, ac_nir_lower_subdword_options options);
+
+typedef struct {
+   enum radeon_family family;
+   enum amd_gfx_level gfx_level;
+
+   bool uses_discard;
+   bool alpha_to_coverage_via_mrtz;
+   bool dual_src_blend_swizzle;
+   unsigned spi_shader_col_format;
+   unsigned color_is_int8;
+   unsigned color_is_int10;
+
+   /* OpenGL only */
+   bool clamp_color;
+   bool alpha_to_one;
+   enum pipe_compare_func alpha_func;
+   unsigned broadcast_last_cbuf;
+
+   /* Vulkan only */
+   unsigned enable_mrt_output_nan_fixup;
+} ac_nir_lower_ps_options;
+
+void
+ac_nir_lower_ps(nir_shader *nir, const ac_nir_lower_ps_options *options);
 
 #ifdef __cplusplus
 }

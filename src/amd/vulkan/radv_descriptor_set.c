@@ -27,9 +27,9 @@
 #include <string.h>
 
 #include "util/mesa-sha1.h"
-#include "radv_acceleration_structure.h"
 #include "radv_private.h"
 #include "sid.h"
+#include "vk_acceleration_structure.h"
 #include "vk_descriptors.h"
 #include "vk_format.h"
 #include "vk_util.h"
@@ -183,7 +183,6 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    set_layout->flags = pCreateInfo->flags;
-   set_layout->layout_size = size;
 
    /* We just allocate all the samplers at the end of the struct */
    uint32_t *samplers = (uint32_t *)&set_layout->binding[num_bindings];
@@ -390,6 +389,14 @@ radv_CreateDescriptorSetLayout(VkDevice _device, const VkDescriptorSetLayoutCrea
    set_layout->buffer_count = buffer_count;
    set_layout->dynamic_offset_count = dynamic_offset_count;
 
+   /* Hash the entire set layout except vk_descriptor_set_layout. The rest of the set layout is
+    * carefully constructed to not have pointers so a full hash instead of a per-field hash
+    * should be ok.
+    */
+   uint32_t hash_offset =
+      offsetof(struct radv_descriptor_set_layout, hash) + sizeof(set_layout->hash);
+   _mesa_sha1_compute((const char *)set_layout + hash_offset, size - hash_offset, set_layout->hash);
+
    *pSetLayout = radv_descriptor_set_layout_to_handle(set_layout);
 
    return VK_SUCCESS;
@@ -567,13 +574,7 @@ radv_pipeline_layout_hash(struct radv_pipeline_layout *layout)
       if (!set_layout)
          continue;
 
-      /* Hash the entire set layout except vk_descriptor_set_layout. The rest of the set layout is
-       * carefully constructed to not have pointers so a full hash instead of a per-field hash
-       * should be ok.
-       */
-      uint32_t hash_offset = sizeof(struct vk_descriptor_set_layout);
-      _mesa_sha1_update(&ctx, (const char *)set_layout + hash_offset,
-                        set_layout->layout_size - hash_offset);
+      _mesa_sha1_update(&ctx, set_layout->hash, sizeof(set_layout->hash));
    }
    _mesa_sha1_update(&ctx, &layout->push_constant_size, sizeof(layout->push_constant_size));
    _mesa_sha1_final(&ctx, layout->sha1);
@@ -1110,6 +1111,9 @@ write_texel_buffer_descriptor(struct radv_device *device, struct radv_cmd_buffer
 
    memcpy(dst, buffer_view->state, 4 * 4);
 
+   if (device->use_global_bo_list)
+      return;
+
    if (cmd_buffer)
       radv_cs_add_buffer(device->ws, cmd_buffer->cs, buffer_view->bo);
    else
@@ -1167,6 +1171,9 @@ write_buffer_descriptor_impl(struct radv_device *device, struct radv_cmd_buffer 
    }
 
    write_buffer_descriptor(device, dst, va, range);
+
+   if (device->use_global_bo_list)
+      return;
 
    if (!buffer) {
       if (!cmd_buffer)
@@ -1257,6 +1264,9 @@ write_image_descriptor_impl(struct radv_device *device, struct radv_cmd_buffer *
 
    write_image_descriptor(dst, size, descriptor_type, image_info);
 
+   if (device->use_global_bo_list)
+      return;
+
    if (!iview) {
       if (!cmd_buffer)
          *buffer_list = NULL;
@@ -1303,9 +1313,9 @@ static ALWAYS_INLINE void
 write_accel_struct(struct radv_device *device, void *ptr, VkDeviceAddress va)
 {
    if (!va) {
-      RADV_FROM_HANDLE(radv_acceleration_structure, accel_struct,
+      RADV_FROM_HANDLE(vk_acceleration_structure, accel_struct,
                        device->meta_state.accel_struct_build.null.accel_struct);
-      va = radv_acceleration_structure_get_va(accel_struct);
+      va = vk_acceleration_structure_get_va(accel_struct);
    }
 
    memcpy(ptr, &va, sizeof(va));
@@ -1403,11 +1413,11 @@ radv_update_descriptor_sets_impl(struct radv_device *device, struct radv_cmd_buf
             }
             break;
          case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {
-            RADV_FROM_HANDLE(radv_acceleration_structure, accel_struct,
+            RADV_FROM_HANDLE(vk_acceleration_structure, accel_struct,
                              accel_structs->pAccelerationStructures[j]);
 
             write_accel_struct(device, ptr,
-                               accel_struct ? radv_acceleration_structure_get_va(accel_struct) : 0);
+                               accel_struct ? vk_acceleration_structure_get_va(accel_struct) : 0);
             break;
          }
          default:
@@ -1701,10 +1711,10 @@ radv_update_descriptor_set_with_template_impl(struct radv_device *device,
                memcpy(pDst, templ->entry[i].immutable_samplers + 4 * j, 16);
             break;
          case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR: {
-            RADV_FROM_HANDLE(radv_acceleration_structure, accel_struct,
+            RADV_FROM_HANDLE(vk_acceleration_structure, accel_struct,
                              *(const VkAccelerationStructureKHR *)pSrc);
             write_accel_struct(device, pDst,
-                               accel_struct ? radv_acceleration_structure_get_va(accel_struct) : 0);
+                               accel_struct ? vk_acceleration_structure_get_va(accel_struct) : 0);
             break;
          }
          default:
@@ -1853,44 +1863,4 @@ radv_GetDescriptorEXT(VkDevice _device, const VkDescriptorGetInfoEXT *pDescripto
    default:
       unreachable("invalid descriptor type");
    }
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-radv_GetBufferOpaqueCaptureDescriptorDataEXT(VkDevice device,
-                                             const VkBufferCaptureDescriptorDataInfoEXT *pInfo,
-                                             void *pData)
-{
-   return VK_SUCCESS;
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-radv_GetImageOpaqueCaptureDescriptorDataEXT(VkDevice device,
-                                            const VkImageCaptureDescriptorDataInfoEXT *pInfo,
-                                            void *pData)
-{
-   return VK_SUCCESS;
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-radv_GetImageViewOpaqueCaptureDescriptorDataEXT(VkDevice device,
-                                                const VkImageViewCaptureDescriptorDataInfoEXT *pInfo,
-                                                void *pData)
-{
-   return VK_SUCCESS;
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-radv_GetSamplerOpaqueCaptureDescriptorDataEXT(VkDevice _device,
-                                              const VkSamplerCaptureDescriptorDataInfoEXT *pInfo,
-                                              void *pData)
-{
-   return VK_SUCCESS;
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-radv_GetAccelerationStructureOpaqueCaptureDescriptorDataEXT(VkDevice device,
-                                                            const VkAccelerationStructureCaptureDescriptorDataInfoEXT *pInfo,
-                                                            void *pData)
-{
-   return VK_SUCCESS;
 }
