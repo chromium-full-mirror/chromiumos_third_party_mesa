@@ -26,7 +26,6 @@
 #ifndef LP_STATE_CS_H
 #define LP_STATE_CS_H
 
-#include "os/os_thread.h"
 #include "util/u_thread.h"
 #include "pipe/p_state.h"
 
@@ -80,7 +79,9 @@ struct lp_compute_shader_variant
 {
    struct gallivm_state *gallivm;
 
+   LLVMTypeRef jit_cs_context_type;
    LLVMTypeRef jit_cs_context_ptr_type;
+   LLVMTypeRef jit_cs_thread_data_type;
    LLVMTypeRef jit_cs_thread_data_ptr_type;
 
    LLVMValueRef function;
@@ -150,7 +151,7 @@ struct lp_cs_context {
       struct pipe_image_view current;
    } images[LP_MAX_TGSI_SHADER_IMAGES];
 
-   void *input;
+   const void *input;
 };
 
 struct lp_cs_context *lp_csctx_create(struct pipe_context *pipe);

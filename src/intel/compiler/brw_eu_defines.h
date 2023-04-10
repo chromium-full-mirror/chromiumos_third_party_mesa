@@ -394,7 +394,6 @@ enum opcode {
    VEC4_OPCODE_UNTYPED_SURFACE_WRITE,
    SHADER_OPCODE_UNTYPED_SURFACE_WRITE_LOGICAL,
 
-   SHADER_OPCODE_OWORD_BLOCK_READ_LOGICAL,
    SHADER_OPCODE_UNALIGNED_OWORD_BLOCK_READ_LOGICAL,
    SHADER_OPCODE_OWORD_BLOCK_WRITE_LOGICAL,
 
@@ -1237,15 +1236,13 @@ tgl_swsb_encode(const struct intel_device_info *devinfo, struct tgl_swsb swsb)
  * tgl_swsb.
  */
 static inline struct tgl_swsb
-tgl_swsb_decode(const struct intel_device_info *devinfo, const enum opcode opcode,
-                const uint8_t x)
+tgl_swsb_decode(const struct intel_device_info *devinfo,
+                const bool is_unordered, const uint8_t x)
 {
    if (x & 0x80) {
       const struct tgl_swsb swsb = { (x & 0x70u) >> 4, TGL_PIPE_NONE,
                                      x & 0xfu,
-                                     (opcode == BRW_OPCODE_SEND ||
-                                      opcode == BRW_OPCODE_SENDC ||
-                                      opcode == BRW_OPCODE_MATH) ?
+                                     is_unordered ?
                                      TGL_SBID_SET : TGL_SBID_DST };
       return swsb;
    } else if ((x & 0x70) == 0x20) {
@@ -1567,6 +1564,11 @@ enum brw_message_target {
 #define GFX8_BTI_STATELESS_IA_COHERENT   255
 #define GFX8_BTI_STATELESS_NON_COHERENT  253
 #define GFX9_BTI_BINDLESS                252
+
+/* This ID doesn't map anything HW related value. It exists to inform the
+ * lowering code to not use the bindless heap.
+ */
+#define GFX125_NON_BINDLESS              (1u << 16)
 
 /* Dataport atomic operations for Untyped Atomic Integer Operation message
  * (and others).

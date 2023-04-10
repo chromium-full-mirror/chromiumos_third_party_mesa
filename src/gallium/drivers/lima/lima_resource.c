@@ -59,7 +59,10 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
    struct lima_screen *screen = lima_screen(pscreen);
    struct renderonly_scanout *scanout;
    struct winsys_handle handle;
-   struct pipe_resource *pres;
+
+   struct lima_resource *res = CALLOC_STRUCT(lima_resource);
+   if (!res)
+      return NULL;
 
    struct pipe_resource scanout_templat = *templat;
    scanout_templat.width0 = width;
@@ -71,20 +74,31 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
    if (!scanout)
       return NULL;
 
-   assert(handle.type == WINSYS_HANDLE_TYPE_FD);
-   pres = pscreen->resource_from_handle(pscreen, templat, &handle,
-                                        PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
+   res->base = *templat;
+   res->base.screen = pscreen;
+   pipe_reference_init(&res->base.reference, 1);
+   res->levels[0].offset = handle.offset;
+   res->levels[0].stride = handle.stride;
 
-   close(handle.handle);
-   if (!pres) {
-      renderonly_scanout_destroy(scanout, screen->ro);
+   assert(handle.type == WINSYS_HANDLE_TYPE_FD);
+   res->bo = lima_bo_import(screen, &handle);
+   if (!res->bo) {
+      FREE(res);
       return NULL;
    }
 
-   struct lima_resource *res = lima_resource(pres);
+   res->modifier_constant = true;
+
+   close(handle.handle);
+   if (!res->bo) {
+      renderonly_scanout_destroy(scanout, screen->ro);
+      FREE(res);
+      return NULL;
+   }
+
    res->scanout = scanout;
 
-   return pres;
+   return &res->base;
 }
 
 static uint32_t
@@ -119,7 +133,6 @@ setup_miptree(struct lima_resource *res,
          util_format_get_nblocksy(pres->format, aligned_height) *
          pres->array_size * depth;
 
-      res->levels[level].width = aligned_width;
       res->levels[level].stride = stride;
       res->levels[level].offset = size;
       res->levels[level].layer_stride = util_format_get_stride(pres->format, align(width, 16)) * align(height, 16);
@@ -205,15 +218,17 @@ _lima_resource_create_with_modifiers(struct pipe_screen *pscreen,
                          modifiers, count))
       should_tile = false;
 
+   width = templat->width0;
+   height = templat->height0;
+
    /* Don't align index, vertex or constant buffers */
-   if (templat->bind & (PIPE_BIND_INDEX_BUFFER |
-                        PIPE_BIND_VERTEX_BUFFER |
-                        PIPE_BIND_CONSTANT_BUFFER)) {
-      width = templat->width0;
-      height = templat->height0;
-   } else {
-      width = align(templat->width0, 16);
-      height = align(templat->height0, 16);
+   if (!(templat->bind & (PIPE_BIND_INDEX_BUFFER |
+                          PIPE_BIND_VERTEX_BUFFER |
+                          PIPE_BIND_CONSTANT_BUFFER))) {
+      if (templat->bind & PIPE_BIND_SHARED) {
+         width = align(width, 16);
+         height = align(height, 16);
+      }
       align_to_tile = true;
    }
 
@@ -376,11 +391,7 @@ lima_resource_from_handle(struct pipe_screen *pscreen,
                  (res->bo->size - res->levels[0].offset), size);
          goto err_out;
       }
-
-      res->levels[0].width = width;
    }
-   else
-      res->levels[0].width = pres->width0;
 
    if (screen->ro) {
       /* Make sure that renderonly has a handle to our buffer in the
@@ -934,9 +945,7 @@ lima_resource_screen_init(struct lima_screen *screen)
    screen->base.resource_get_param = lima_resource_get_param;
    screen->base.set_damage_region = lima_resource_set_damage_region;
    screen->base.transfer_helper = u_transfer_helper_create(&transfer_vtbl,
-                                                           false, false,
-                                                           false, true,
-                                                           false);
+                                                           U_TRANSFER_HELPER_MSAA_MAP);
 }
 
 void

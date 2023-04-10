@@ -60,6 +60,7 @@
 #include <xcb/sync.h>
 
 #include "loader_dri3_helper.h"
+#include "GL/internal/mesa_interface.h"
 
 struct dri3_display
 {
@@ -92,6 +93,7 @@ struct dri3_screen {
    const __DRIimageExtension *image;
    const __DRIimageDriverExtension *image_driver;
    const __DRIcoreExtension *core;
+   const __DRImesaCoreExtension *mesa;
    const __DRI2flushExtension *f;
    const __DRI2configQueryExtension *config;
    const __DRItexBufferExtension *texBuffer;
@@ -107,15 +109,7 @@ struct dri3_screen {
    /* fd for display GPU in case of prime */
    int fd_display_gpu;
 
-   int show_fps_interval;
-
    struct loader_dri3_extensions loader_dri3_ext;
-};
-
-struct dri3_context
-{
-   struct glx_context base;
-   __DRIcontext *driContext;
 };
 
 struct dri3_drawable {
@@ -144,3 +138,8 @@ _X_HIDDEN int
 dri3_interop_export_object(struct glx_context *ctx,
                            struct mesa_glinterop_export_in *in,
                            struct mesa_glinterop_export_out *out);
+
+_X_HIDDEN int
+dri3_interop_flush_objects(struct glx_context *ctx,
+                           unsigned count, struct mesa_glinterop_export_in *objects,
+                           GLsync *sync);

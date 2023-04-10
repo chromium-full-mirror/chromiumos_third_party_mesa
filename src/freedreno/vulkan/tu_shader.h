@@ -12,19 +12,43 @@
 
 #include "tu_common.h"
 
+struct tu_inline_ubo
+{
+   /* Push the data at BINDLESS_BASE[base] + offset */
+   unsigned base;
+   unsigned offset;
+
+   /* If true, push the base address instead */
+   bool push_address;
+
+   /* Push it to this location in the const file, in vec4s */
+   unsigned const_offset_vec4;
+
+   /* How much to push */
+   unsigned size_vec4;
+};
+
 struct tu_push_constant_range
 {
    uint32_t lo;
    uint32_t dwords;
 };
 
+struct tu_const_state
+{
+   struct tu_push_constant_range push_consts;
+   uint32_t dynamic_offset_loc;
+   unsigned num_inline_ubos;
+   struct tu_inline_ubo ubos[MAX_INLINE_UBOS];
+};
+
 struct tu_shader
 {
    struct ir3_shader *ir3_shader;
 
-   struct tu_push_constant_range push_consts;
+   struct tu_const_state const_state;
+   unsigned reserved_user_consts_vec4;
    uint8_t active_desc_sets;
-   bool multi_pos_output;
 };
 
 struct tu_shader_key {
@@ -34,8 +58,7 @@ struct tu_shader_key {
 };
 
 bool
-tu_nir_lower_multiview(nir_shader *nir, uint32_t mask, bool *multi_pos_output,
-                       struct tu_device *dev);
+tu_nir_lower_multiview(nir_shader *nir, uint32_t mask, struct tu_device *dev);
 
 nir_shader *
 tu_spirv_to_nir(struct tu_device *dev,

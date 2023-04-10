@@ -25,6 +25,8 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
+#define FD_BO_NO_HARDPIN 1
+
 #include "pipe/p_state.h"
 #include "util/bitset.h"
 #include "util/format/u_format.h"
@@ -281,7 +283,7 @@ setup_stream_out(struct fd_context *ctx, struct fd6_program_state *state,
        * tess + xfb fails some tests if we don't emit this.
        */
       OUT_RING(ring, REG_A6XX_PC_SO_STREAM_CNTL);
-      OUT_RING(ring, A6XX_PC_SO_STREAM_CNTL_STREAM_ENABLE);
+      OUT_RING(ring, A6XX_PC_SO_STREAM_CNTL_STREAM_ENABLE(0x1));
    }
 
    state->streamout_stateobj = ring;
@@ -386,6 +388,17 @@ fd6_emit_tess_bos(struct fd_screen *screen, struct fd_ringbuffer *ring,
    OUT_RELOC(ring, screen->tess_bo, 0, 0, 0);
 }
 
+static enum a6xx_tex_prefetch_cmd
+tex_opc_to_prefetch_cmd(opc_t tex_opc)
+{
+   switch (tex_opc) {
+   case OPC_SAM:
+      return TEX_PREFETCH_SAM;
+   default:
+      unreachable("Unknown tex opc for prefeth cmd");
+   }
+}
+
 static void
 setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
                struct fd6_program_state *state,
@@ -398,23 +411,31 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    uint32_t face_regid, coord_regid, zwcoord_regid, samp_id_regid;
    uint32_t smask_in_regid, smask_regid;
    uint32_t stencilref_regid;
-   uint32_t vertex_regid, instance_regid, layer_regid, vs_primitive_regid;
+   uint32_t vertex_regid, instance_regid, layer_regid, view_regid, vs_primitive_regid;
    uint32_t hs_invocation_regid;
    uint32_t tess_coord_x_regid, tess_coord_y_regid, hs_rel_patch_regid,
       ds_rel_patch_regid, ds_primitive_regid;
    uint32_t ij_regid[IJ_COUNT];
    uint32_t gs_header_regid;
    enum a6xx_threadsize fssz;
-   uint8_t psize_loc = ~0, pos_loc = ~0, layer_loc = ~0;
+   uint8_t psize_loc = ~0, pos_loc = ~0, layer_loc = ~0, view_loc =~0;
    uint8_t clip0_loc, clip1_loc;
    int i, j;
 
-   static const struct ir3_shader_variant dummy_fs = {0};
+   static const struct ir3_shader_variant dummy_fs = {
+         .info = {
+               .max_half_reg = -1,
+               .max_reg = -1,
+               .max_const = -1,
+         },
+   };
    const struct ir3_shader_variant *vs = binning_pass ? state->bs : state->vs;
    const struct ir3_shader_variant *hs = state->hs;
    const struct ir3_shader_variant *ds = state->ds;
    const struct ir3_shader_variant *gs = state->gs;
    const struct ir3_shader_variant *fs = binning_pass ? &dummy_fs : state->fs;
+   const struct ir3_shader_variant *last_shader = binning_pass ? state->bs :
+         fd6_last_shader(state);
 
    /* binning VS is wrong when GS is present, so use nonbinning VS
     * TODO: compile both binning VS/GS variants correctly
@@ -426,11 +447,12 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
    fssz = fs->info.double_threadsize ? THREAD128 : THREAD64;
 
-   pos_regid = ir3_find_output_regid(vs, VARYING_SLOT_POS);
-   psize_regid = ir3_find_output_regid(vs, VARYING_SLOT_PSIZ);
-   clip0_regid = ir3_find_output_regid(vs, VARYING_SLOT_CLIP_DIST0);
-   clip1_regid = ir3_find_output_regid(vs, VARYING_SLOT_CLIP_DIST1);
-   layer_regid = ir3_find_output_regid(vs, VARYING_SLOT_LAYER);
+   pos_regid = ir3_find_output_regid(last_shader, VARYING_SLOT_POS);
+   psize_regid = ir3_find_output_regid(last_shader, VARYING_SLOT_PSIZ);
+   clip0_regid = ir3_find_output_regid(last_shader, VARYING_SLOT_CLIP_DIST0);
+   clip1_regid = ir3_find_output_regid(last_shader, VARYING_SLOT_CLIP_DIST1);
+   layer_regid = ir3_find_output_regid(last_shader, VARYING_SLOT_LAYER);
+   view_regid = ir3_find_output_regid(last_shader, VARYING_SLOT_VIEWPORT);
    vertex_regid = ir3_find_sysval_regid(vs, SYSTEM_VALUE_VERTEX_ID);
    instance_regid = ir3_find_sysval_regid(vs, SYSTEM_VALUE_INSTANCE_ID);
    if (hs)
@@ -473,7 +495,6 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
       psize_regid = ir3_find_output_regid(gs, VARYING_SLOT_PSIZ);
       clip0_regid = ir3_find_output_regid(gs, VARYING_SLOT_CLIP_DIST0);
       clip1_regid = ir3_find_output_regid(gs, VARYING_SLOT_CLIP_DIST1);
-      layer_regid = ir3_find_output_regid(gs, VARYING_SLOT_LAYER);
    } else {
       gs_header_regid = regid(63, 0);
    }
@@ -505,13 +526,10 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
       ij_regid[i] =
          ir3_find_sysval_regid(fs, SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL + i);
 
-   /* If we have pre-dispatch texture fetches, then ij_pix should not
-    * be DCE'd, even if not actually used in the shader itself:
-    */
    if (fs->num_sampler_prefetch > 0) {
-      assert(VALIDREG(ij_regid[IJ_PERSP_PIXEL]));
-      /* also, it seems like ij_pix is *required* to be r0.x */
-      assert(ij_regid[IJ_PERSP_PIXEL] == regid(0, 0));
+      /* It seems like ij_pix is *required* to be r0.x */
+      assert(!VALIDREG(ij_regid[IJ_PERSP_PIXEL]) ||
+             ij_regid[IJ_PERSP_PIXEL] == regid(0, 0));
    }
 
    /* we can't write gl_SampleMask for !msaa..  if b0 is zero then we
@@ -520,14 +538,17 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    if (!key->msaa)
       smask_regid = regid(63, 0);
 
+   if (!binning_pass)
+      state->num_viewports = VALIDREG(view_regid) ? PIPE_MAX_VIEWPORTS : 1;
+
    /* we could probably divide this up into things that need to be
     * emitted if frag-prog is dirty vs if vert-prog is dirty..
     */
 
    OUT_PKT4(ring, REG_A6XX_SP_FS_PREFETCH_CNTL, 1 + fs->num_sampler_prefetch);
    OUT_RING(ring, A6XX_SP_FS_PREFETCH_CNTL_COUNT(fs->num_sampler_prefetch) |
-                     A6XX_SP_FS_PREFETCH_CNTL_UNK4(regid(63, 0)) |
-                     0x7000); // XXX
+                     COND(!VALIDREG(ij_regid[IJ_PERSP_PIXEL]),
+                          A6XX_SP_FS_PREFETCH_CNTL_IJ_WRITE_DISABLE));
    for (int i = 0; i < fs->num_sampler_prefetch; i++) {
       const struct ir3_sampler_prefetch *prefetch = &fs->sampler_prefetch[i];
       OUT_RING(ring,
@@ -537,7 +558,9 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
                   A6XX_SP_FS_PREFETCH_CMD_DST(prefetch->dst) |
                   A6XX_SP_FS_PREFETCH_CMD_WRMASK(prefetch->wrmask) |
                   COND(prefetch->half_precision, A6XX_SP_FS_PREFETCH_CMD_HALF) |
-                  A6XX_SP_FS_PREFETCH_CMD_CMD(prefetch->cmd));
+                  COND(prefetch->bindless, A6XX_SP_FS_PREFETCH_CMD_BINDLESS) |
+                  A6XX_SP_FS_PREFETCH_CMD_CMD(
+                     tex_opc_to_prefetch_cmd(prefetch->tex_opc)));
    }
 
    OUT_PKT4(ring, REG_A6XX_SP_UNKNOWN_A9A8, 1);
@@ -573,7 +596,6 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    }
 
    struct ir3_shader_linkage l = {0};
-   const struct ir3_shader_variant *last_shader = fd6_last_shader(state);
 
    bool do_streamout = (last_shader->stream_output.num_outputs > 0);
    uint8_t clip_mask = last_shader->clip_mask,
@@ -607,6 +629,11 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    if (VALIDREG(layer_regid)) {
       layer_loc = l.max_loc;
       ir3_link_add(&l, VARYING_SLOT_LAYER, layer_regid, 0x1, l.max_loc);
+   }
+
+   if (VALIDREG(view_regid)) {
+      view_loc = l.max_loc;
+      ir3_link_add(&l, VARYING_SLOT_VIEWPORT, view_regid, 0x1, l.max_loc);
    }
 
    if (VALIDREG(pos_regid)) {
@@ -828,6 +855,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
    OUT_RING(ring, A6XX_PC_VS_OUT_CNTL_STRIDE_IN_VPC(l.max_loc) |
                      CONDREG(psize_regid, A6XX_PC_VS_OUT_CNTL_PSIZE) |
                      CONDREG(layer_regid, A6XX_PC_VS_OUT_CNTL_LAYER) |
+                     CONDREG(view_regid, A6XX_PC_VS_OUT_CNTL_VIEW) |
                      A6XX_PC_VS_OUT_CNTL_CLIP_MASK(clip_cull_mask));
 
    OUT_PKT4(ring, REG_A6XX_HLSQ_CONTROL_1_REG, 5);
@@ -861,6 +889,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
       ring,
       A6XX_SP_FS_CTRL_REG0_THREADSIZE(fssz) |
          COND(enable_varyings, A6XX_SP_FS_CTRL_REG0_VARYING) | 0x1000000 |
+         COND(fs->need_fine_derivatives, A6XX_SP_FS_CTRL_REG0_DIFF_FINE) |
          A6XX_SP_FS_CTRL_REG0_FULLREGFOOTPRINT(fs->info.max_reg + 1) |
          A6XX_SP_FS_CTRL_REG0_HALFREGFOOTPRINT(fs->info.max_half_reg + 1) |
          COND(fs->mergedregs, A6XX_SP_FS_CTRL_REG0_MERGEDREGS) |
@@ -869,7 +898,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
    OUT_PKT4(ring, REG_A6XX_VPC_VS_LAYER_CNTL, 1);
    OUT_RING(ring, A6XX_VPC_VS_LAYER_CNTL_LAYERLOC(layer_loc) |
-                     A6XX_VPC_VS_LAYER_CNTL_VIEWLOC(0xff));
+                     A6XX_VPC_VS_LAYER_CNTL_VIEWLOC(view_loc));
 
    bool need_size = fs->frag_face || fs->fragcoord_compmask != 0;
    bool need_size_persamp = false;
@@ -977,11 +1006,13 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
                         A6XX_VPC_GS_PACK_STRIDE_IN_VPC(l.max_loc));
 
       OUT_PKT4(ring, REG_A6XX_VPC_GS_LAYER_CNTL, 1);
-      OUT_RING(ring, A6XX_VPC_GS_LAYER_CNTL_LAYERLOC(layer_loc) | 0xff00);
+      OUT_RING(ring, A6XX_VPC_GS_LAYER_CNTL_LAYERLOC(layer_loc) |
+                     A6XX_VPC_GS_LAYER_CNTL_VIEWLOC(view_loc));
 
       OUT_PKT4(ring, REG_A6XX_GRAS_GS_LAYER_CNTL, 1);
       OUT_RING(ring,
-               CONDREG(layer_regid, A6XX_GRAS_GS_LAYER_CNTL_WRITES_LAYER));
+               CONDREG(layer_regid, A6XX_GRAS_GS_LAYER_CNTL_WRITES_LAYER) |
+               CONDREG(view_regid, A6XX_GRAS_GS_LAYER_CNTL_WRITES_VIEW));
 
       uint32_t flags_regid =
          ir3_find_output_regid(gs, VARYING_SLOT_GS_VERTEX_FLAGS_IR3);
@@ -998,6 +1029,7 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
                A6XX_PC_GS_OUT_CNTL_STRIDE_IN_VPC(l.max_loc) |
                   CONDREG(psize_regid, A6XX_PC_GS_OUT_CNTL_PSIZE) |
                   CONDREG(layer_regid, A6XX_PC_GS_OUT_CNTL_LAYER) |
+                  CONDREG(view_regid, A6XX_PC_GS_OUT_CNTL_VIEW) |
                   COND(gs_reads_primid, A6XX_PC_GS_OUT_CNTL_PRIMITIVE_ID) |
                   A6XX_PC_GS_OUT_CNTL_CLIP_MASK(clip_cull_mask));
 
@@ -1060,7 +1092,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 
       OUT_PKT4(ring, REG_A6XX_GRAS_VS_LAYER_CNTL, 1);
       OUT_RING(ring,
-               CONDREG(layer_regid, A6XX_GRAS_VS_LAYER_CNTL_WRITES_LAYER));
+               CONDREG(layer_regid, A6XX_GRAS_VS_LAYER_CNTL_WRITES_LAYER) |
+               CONDREG(view_regid, A6XX_GRAS_VS_LAYER_CNTL_WRITES_VIEW));
    }
 
    OUT_PKT4(ring, REG_A6XX_VPC_VS_CLIP_CNTL, 1);
@@ -1120,7 +1153,8 @@ setup_stateobj(struct fd_ringbuffer *ring, struct fd_context *ctx,
 }
 
 static void emit_interp_state(struct fd_ringbuffer *ring,
-                              struct ir3_shader_variant *fs, bool rasterflat,
+                              const struct fd6_program_state *state,
+                              bool rasterflat,
                               bool sprite_coord_mode,
                               uint32_t sprite_coord_enable);
 
@@ -1129,7 +1163,7 @@ create_interp_stateobj(struct fd_context *ctx, struct fd6_program_state *state)
 {
    struct fd_ringbuffer *ring = fd_ringbuffer_new_object(ctx->pipe, 18 * 4);
 
-   emit_interp_state(ring, state->fs, false, false, 0);
+   emit_interp_state(ring, state, false, false, 0);
 
    return ring;
 }
@@ -1150,7 +1184,7 @@ fd6_program_interp_state(struct fd6_emit *emit)
       struct fd_ringbuffer *ring = fd_submit_new_ringbuffer(
          emit->ctx->batch->submit, 18 * 4, FD_RINGBUFFER_STREAMING);
 
-      emit_interp_state(ring, state->fs, emit->rasterflat,
+      emit_interp_state(ring, state, emit->rasterflat,
                         emit->sprite_coord_mode, emit->sprite_coord_enable);
 
       return ring;
@@ -1158,10 +1192,18 @@ fd6_program_interp_state(struct fd6_emit *emit)
 }
 
 static void
-emit_interp_state(struct fd_ringbuffer *ring, struct ir3_shader_variant *fs,
+emit_interp_state(struct fd_ringbuffer *ring, const struct fd6_program_state *state,
                   bool rasterflat, bool sprite_coord_mode,
                   uint32_t sprite_coord_enable)
 {
+   enum {
+      INTERP_SMOOTH = 0,
+      INTERP_FLAT = 1,
+      INTERP_ZERO = 2,
+      INTERP_ONE = 3,
+   };
+
+   const struct ir3_shader_variant *fs = state->fs;
    uint32_t vinterp[8], vpsrepl[8];
 
    memset(vinterp, 0, sizeof(vinterp));
@@ -1176,17 +1218,6 @@ emit_interp_state(struct fd_ringbuffer *ring, struct ir3_shader_variant *fs,
       unsigned compmask = fs->inputs[j].compmask;
 
       uint32_t inloc = fs->inputs[j].inloc;
-
-      if (fs->inputs[j].flat || (fs->inputs[j].rasterflat && rasterflat)) {
-         uint32_t loc = inloc;
-
-         for (int i = 0; i < 4; i++) {
-            if (compmask & (1 << i)) {
-               vinterp[loc / 16] |= 1 << ((loc % 16) * 2);
-               loc++;
-            }
-         }
-      }
 
       bool coord_mode = sprite_coord_mode;
       if (ir3_point_sprite(fs, j, sprite_coord_enable, &coord_mode)) {
@@ -1207,13 +1238,36 @@ emit_interp_state(struct fd_ringbuffer *ring, struct ir3_shader_variant *fs,
          }
          if (compmask & 0x4) {
             /* .z <- 0.0f */
-            vinterp[loc / 16] |= 0b10 << ((loc % 16) * 2);
+            vinterp[loc / 16] |= INTERP_ZERO << ((loc % 16) * 2);
             loc++;
          }
          if (compmask & 0x8) {
             /* .w <- 1.0f */
-            vinterp[loc / 16] |= 0b11 << ((loc % 16) * 2);
+            vinterp[loc / 16] |= INTERP_ONE << ((loc % 16) * 2);
             loc++;
+         }
+      } else if (fs->inputs[j].slot == VARYING_SLOT_LAYER ||
+                 fs->inputs[j].slot == VARYING_SLOT_VIEWPORT) {
+         const struct ir3_shader_variant *last_shader = fd6_last_shader(state);
+         uint32_t loc = inloc;
+
+         /* If the last geometry shader doesn't statically write these, they're
+          * implicitly zero and the FS is supposed to read zero.
+          */
+         if (ir3_find_output(last_shader, fs->inputs[j].slot) < 0 &&
+             (compmask & 0x1)) {
+            vinterp[loc / 16] |= INTERP_ZERO << ((loc % 16) * 2);
+         } else {
+            vinterp[loc / 16] |= INTERP_FLAT << ((loc % 16) * 2);
+         }
+      } else if (fs->inputs[j].flat || (fs->inputs[j].rasterflat && rasterflat)) {
+         uint32_t loc = inloc;
+
+         for (int i = 0; i < 4; i++) {
+            if (compmask & (1 << i)) {
+               vinterp[loc / 16] |= INTERP_FLAT << ((loc % 16) * 2);
+               loc++;
+            }
          }
       }
    }
@@ -1285,6 +1339,14 @@ fd6_program_create(void *data, struct ir3_shader_variant *bs,
       &fd6_last_shader(state)->stream_output;
    if (stream_output->num_outputs > 0)
       state->stream_output = stream_output;
+
+   /* Note that binning pass uses same const state as draw pass: */
+   state->user_consts_cmdstream_size =
+         fd6_user_consts_cmdstream_size(state->vs) +
+         fd6_user_consts_cmdstream_size(state->hs) +
+         fd6_user_consts_cmdstream_size(state->ds) +
+         fd6_user_consts_cmdstream_size(state->gs) +
+         fd6_user_consts_cmdstream_size(state->fs);
 
    return &state->base;
 }

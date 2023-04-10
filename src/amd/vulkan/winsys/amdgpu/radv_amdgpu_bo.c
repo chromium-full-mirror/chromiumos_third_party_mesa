@@ -486,7 +486,7 @@ radv_amdgpu_winsys_bo_create(struct radeon_winsys *_ws, uint64_t size, unsigned 
       request.flags |= AMDGPU_GEM_CREATE_CPU_GTT_USWC;
    if (!(flags & RADEON_FLAG_IMPLICIT_SYNC))
       request.flags |= AMDGPU_GEM_CREATE_EXPLICIT_SYNC;
-   if (flags & RADEON_FLAG_NO_INTERPROCESS_SHARING &&
+   if ((initial_domain & RADEON_DOMAIN_VRAM_GTT) && (flags & RADEON_FLAG_NO_INTERPROCESS_SHARING) &&
        ((ws->perftest & RADV_PERFTEST_LOCAL_BOS) || (flags & RADEON_FLAG_PREFER_LOCAL_BO))) {
       bo->base.is_local = true;
       request.flags |= AMDGPU_GEM_CREATE_VM_ALWAYS_VALID;
@@ -496,6 +496,9 @@ radv_amdgpu_winsys_bo_create(struct radeon_winsys *_ws, uint64_t size, unsigned 
       if (ws->zero_all_vram_allocs || (flags & RADEON_FLAG_ZERO_VRAM))
          request.flags |= AMDGPU_GEM_CREATE_VRAM_CLEARED;
    }
+
+   if (flags & RADEON_FLAG_DISCARDABLE && ws->info.drm_minor >= 47)
+      request.flags |= AMDGPU_GEM_CREATE_DISCARDABLE;
 
    r = amdgpu_bo_alloc(ws->dev, &request, &buf_handle);
    if (r) {
@@ -622,7 +625,7 @@ radv_amdgpu_winsys_bo_from_ptr(struct radeon_winsys *_ws, void *pointer, uint64_
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    if (amdgpu_create_bo_from_user_mem(ws->dev, pointer, size, &buf_handle)) {
-      result = VK_ERROR_OUT_OF_DEVICE_MEMORY;
+      result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
       goto error;
    }
 

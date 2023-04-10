@@ -31,7 +31,7 @@
 #ifndef __CONSTS_EXTS_H__
 #define __CONSTS_EXTS_H__
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "compiler/shader_enums.h"
 #include "compiler/shader_info.h"
 
@@ -97,7 +97,6 @@ struct gl_extensions
    GLboolean ARB_occlusion_query;
    GLboolean ARB_occlusion_query2;
    GLboolean ARB_pipeline_statistics_query;
-   GLboolean ARB_point_sprite;
    GLboolean ARB_polygon_offset_clamp;
    GLboolean ARB_post_depth_coverage;
    GLboolean ARB_query_buffer_object;
@@ -179,7 +178,6 @@ struct gl_extensions
    GLboolean EXT_memory_object_win32;
    GLboolean EXT_multisampled_render_to_texture;
    GLboolean EXT_packed_float;
-   GLboolean EXT_pixel_buffer_object;
    GLboolean EXT_provoking_vertex;
    GLboolean EXT_render_snorm;
    GLboolean EXT_semaphore;
@@ -686,19 +684,16 @@ struct gl_constants
    GLboolean ForceIntegerTexNearest;
 
    /**
+    * Treat 32-bit floating-point textures using GL_LINEAR filters as
+    * GL_NEAREST.
+    */
+   GLboolean ForceFloat32TexNearest;
+
+   /**
     * Does the driver support real 32-bit integers?  (Otherwise, integers are
     * simulated via floats.)
     */
    GLboolean NativeIntegers;
-
-   /**
-    * Does VertexID count from zero or from base vertex?
-    *
-    * \note
-    * If desktop GLSL 1.30 or GLSL ES 3.00 are not supported, this field is
-    * ignored and need not be set.
-    */
-   bool VertexID_is_zero_based;
 
    /**
     * If the driver supports real 32-bit integers, what integer value should be
@@ -798,6 +793,11 @@ struct gl_constants
     * This variable is mutually exlusive with DisableVaryingPacking.
     */
    GLboolean DisableTransformFeedbackPacking;
+
+   /**
+    * Disable the glsl optimisation that resizes uniform arrays.
+    */
+   bool DisableUniformArrayResize;
 
    /**
     * Align varyings to POT in a slot
@@ -910,9 +910,6 @@ struct gl_constants
    GLuint MaxTessControlTotalOutputComponents;
    bool LowerTessLevel; /**< Lower gl_TessLevel* from float[n] to vecn? */
    bool PrimitiveRestartForPatches;
-   bool LowerCsDerivedVariables;    /**< Lower gl_GlobalInvocationID and
-                                     *   gl_LocalInvocationIndex based on
-                                     *   other builtin variables. */
 
    /** GL_OES_primitive_bounding_box */
    bool NoPrimitiveBoundingBoxOutput;
@@ -937,6 +934,9 @@ struct gl_constants
 
    /** GL_ARB_get_program_binary */
    GLuint NumProgramBinaryFormats;
+
+   /** GL_ARB_gl_spirv */
+   GLuint NumShaderBinaryFormats;
 
    /** GL_NV_conservative_raster */
    GLuint MaxSubpixelPrecisionBiasBits;
@@ -1001,7 +1001,7 @@ struct gl_constants
    /** Use hardware accelerated GL_SELECT */
    bool HardwareAcceleratedSelect;
 
-   /** Origin of point coordinates. True if upper left, false if lower left. */
-   bool PointCoordOriginUpperLeft;
+   /** Allow GLThread to convert glBuffer */
+   bool AllowGLThreadBufferSubDataOpt;
 };
 #endif

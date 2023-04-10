@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2008-2009 VMware, Inc.  All rights reserved.
+ * Copyright 2008-2023 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -216,8 +216,6 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return sws->have_vgpu10 ? 1 : 0;
    case PIPE_CAP_ANISOTROPIC_FILTER:
       return 1;
-   case PIPE_CAP_POINT_SPRITE:
-      return 1;
    case PIPE_CAP_MAX_RENDER_TARGETS:
       return svgascreen->max_color_buffers;
    case PIPE_CAP_OCCLUSION_QUERY:
@@ -252,12 +250,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return MIN2(util_logbase2(result.u) + 1, SVGA_MAX_TEXTURE_LEVELS);
 
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
-      /*
-       * No mechanism to query the host, and at least limited to 2048x2048 on
-       * certain hardware.
-       */
-      return MIN2(util_last_bit(screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_SIZE)),
-                  12 /* 2048x2048 */);
+      return util_last_bit(screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_2D_SIZE));
 
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
       return sws->have_sm5 ? SVGA3D_SM5_MAX_SURFACE_ARRAYSIZE :
@@ -277,9 +270,6 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1; /* The color outputs of vertex shaders are not clamped */
    case PIPE_CAP_VERTEX_COLOR_CLAMPED:
       return sws->have_vgpu10;
-
-   case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
-      return 1; /* expected for GL_ARB_framebuffer_object */
 
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
@@ -761,6 +751,7 @@ vgpu10_get_shader_param(struct pipe_screen *screen,
    .lower_rotate = true,                                                      \
    .lower_uniforms_to_ubo = true,                                             \
    .lower_vector_cmp = true,                                                  \
+   .lower_cs_local_index_to_id = true,                                        \
    .max_unroll_iterations = 32,                                               \
    .use_interpolated_input_intrinsics = true
 
@@ -896,7 +887,7 @@ svga_fence_finish(struct pipe_screen *screen,
    }
    else {
       SVGA_DBG(DEBUG_DMA|DEBUG_PERF, "%s fence_ptr %p\n",
-               __FUNCTION__, fence);
+               __func__, fence);
 
       retVal = sws->fence_finish(sws, fence, timeout, 0) == 0;
    }
@@ -1020,7 +1011,7 @@ init_logging(struct pipe_screen *screen)
     */
    if (debug_get_bool_option("SVGA_EXTRA_LOGGING", FALSE)) {
       char cmdline[1000];
-      if (os_get_command_line(cmdline, sizeof(cmdline))) {
+      if (util_get_command_line(cmdline, sizeof(cmdline))) {
          snprintf(host_log, sizeof(host_log) - strlen(log_prefix),
                   "%s%s\n", log_prefix, cmdline);
          svgascreen->sws->host_log(svgascreen->sws, host_log);
@@ -1317,7 +1308,7 @@ svga_screen_create(struct svga_winsys_screen *sws)
    }
 
    (void) mtx_init(&svgascreen->tex_mutex, mtx_plain);
-   (void) mtx_init(&svgascreen->swc_mutex, mtx_recursive);
+   (void) mtx_init(&svgascreen->swc_mutex, mtx_plain | mtx_recursive);
 
    svga_screen_cache_init(svgascreen);
 

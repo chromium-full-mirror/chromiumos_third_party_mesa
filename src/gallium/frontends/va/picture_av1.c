@@ -215,9 +215,12 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
    context->desc.av1.picture_parameter.v_ac_delta_q = av1->v_ac_delta_q;
    context->desc.av1.picture_parameter.qmatrix_fields.using_qmatrix =
       av1->qmatrix_fields.bits.using_qmatrix;
-   context->desc.av1.picture_parameter.qmatrix_fields.qm_y = av1->qmatrix_fields.bits.qm_y | 0xf;
-   context->desc.av1.picture_parameter.qmatrix_fields.qm_u = av1->qmatrix_fields.bits.qm_u | 0xf;
-   context->desc.av1.picture_parameter.qmatrix_fields.qm_v = av1->qmatrix_fields.bits.qm_v | 0xf;
+   context->desc.av1.picture_parameter.qmatrix_fields.qm_y = av1->qmatrix_fields.bits.using_qmatrix
+      ? av1->qmatrix_fields.bits.qm_y : 0xf;
+   context->desc.av1.picture_parameter.qmatrix_fields.qm_u = av1->qmatrix_fields.bits.using_qmatrix
+      ? av1->qmatrix_fields.bits.qm_u : 0xf;
+   context->desc.av1.picture_parameter.qmatrix_fields.qm_v = av1->qmatrix_fields.bits.using_qmatrix
+      ? av1->qmatrix_fields.bits.qm_v : 0xf;
 
    /* Segmentation Params */
    context->desc.av1.picture_parameter.seg_info.segment_info_fields.enabled =
@@ -383,13 +386,20 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
    }
 }
 
-void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned int num)
+void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices)
 {
-   VASliceParameterBufferAV1 *av1 = buf->data;
+   for (uint32_t buffer_idx = 0; buffer_idx < buf->num_elements; buffer_idx++) {
+      uint32_t slice_index =
+               /* slices obtained so far from vaRenderPicture in previous calls*/
+               num_slices +
+               /* current slice index processing this VASliceParameterBufferAV1 */
+               buffer_idx;
 
-   context->desc.av1.slice_parameter.slice_data_size[num] = av1->slice_data_size;
-   context->desc.av1.slice_parameter.slice_data_offset[num] = av1->slice_data_offset;
-   context->desc.av1.slice_parameter.slice_data_row[num] = av1->tile_row;
-   context->desc.av1.slice_parameter.slice_data_col[num] = av1->tile_column;
-   context->desc.av1.slice_parameter.slice_data_anchor_frame_idx[num] = av1->anchor_frame_idx;
+      VASliceParameterBufferAV1 *av1 = &(((VASliceParameterBufferAV1*)buf->data)[buffer_idx]);
+      context->desc.av1.slice_parameter.slice_data_size[slice_index] = av1->slice_data_size;
+      context->desc.av1.slice_parameter.slice_data_offset[slice_index] = av1->slice_data_offset;
+      context->desc.av1.slice_parameter.slice_data_row[slice_index] = av1->tile_row;
+      context->desc.av1.slice_parameter.slice_data_col[slice_index] = av1->tile_column;
+      context->desc.av1.slice_parameter.slice_data_anchor_frame_idx[slice_index] = av1->anchor_frame_idx;
+   }
 }

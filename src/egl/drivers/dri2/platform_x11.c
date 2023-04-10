@@ -35,16 +35,17 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
+#include <vulkan/vulkan.h>
 #ifdef HAVE_LIBDRM
 #include <xf86drm.h>
 #endif
 #include <sys/types.h>
 #include <sys/stat.h>
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/macros.h"
 #include "util/bitscan.h"
 
-#include "egl_dri2.h"
+#include "platform_x11.h"
 #include "loader.h"
 #include "kopper_interface.h"
 
@@ -54,9 +55,6 @@
 
 static EGLBoolean
 dri2_x11_swap_interval(_EGLDisplay *disp, _EGLSurface *surf, EGLint interval);
-
-uint32_t
-dri2_format_for_depth(struct dri2_egl_display *dri2_dpy, uint32_t depth);
 
 static void
 swrastCreateDrawable(struct dri2_egl_display * dri2_dpy,
@@ -1194,6 +1192,86 @@ dri2_x11_get_sync_values(_EGLDisplay *display, _EGLSurface *surface,
    return EGL_TRUE;
 }
 
+static int
+box_intersection_area(int16_t a_x, int16_t a_y,
+                      int16_t a_width, int16_t a_height,
+                      int16_t b_x, int16_t b_y,
+                      int16_t b_width, int16_t b_height)
+{
+   int w = MIN2(a_x + a_width,  b_x + b_width)  - MAX2(a_x, b_x);
+   int h = MIN2(a_y + a_height, b_y + b_height) - MAX2(a_y, b_y);
+
+   return (w < 0 || h < 0) ? 0 : w * h;
+}
+
+EGLBoolean
+dri2_x11_get_msc_rate(_EGLDisplay *display, _EGLSurface *surface,
+                      EGLint *numerator, EGLint *denominator)
+{
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(display);
+
+   loader_dri3_update_screen_resources(&dri2_dpy->screen_resources);
+
+   if (dri2_dpy->screen_resources.num_crtcs == 0) {
+      /* If there's no CRTC active, use the present fake vblank of 1Hz */
+      *numerator = 1;
+      *denominator = 1;
+      return EGL_TRUE;
+   }
+
+   /* Default to the first CRTC in the list */
+   *numerator = dri2_dpy->screen_resources.crtcs[0].refresh_numerator;
+   *denominator = dri2_dpy->screen_resources.crtcs[0].refresh_denominator;
+
+   /* If there's only one active CRTC, we're done */
+   if (dri2_dpy->screen_resources.num_crtcs == 1)
+      return EGL_TRUE;
+
+   /* In a multi-monitor setup, look at each CRTC and perform a box
+    * intersection between the CRTC and surface.  Use the CRTC whose
+    * box intersection has the largest area.
+    */
+   if (surface->Type != EGL_WINDOW_BIT)
+      return EGL_TRUE;
+
+   xcb_window_t window = (uintptr_t) surface->NativeSurface;
+
+   xcb_translate_coordinates_cookie_t cookie =
+      xcb_translate_coordinates_unchecked(dri2_dpy->conn, window,
+                                          dri2_dpy->screen->root, 0, 0);
+   xcb_translate_coordinates_reply_t *reply =
+      xcb_translate_coordinates_reply(dri2_dpy->conn, cookie, NULL);
+
+   if (!reply) {
+      _eglError(EGL_BAD_SURFACE,
+                "eglGetMscRateANGLE failed to translate coordinates");
+      return EGL_FALSE;
+   }
+
+   int area = 0;
+
+   for (unsigned c = 0; c < dri2_dpy->screen_resources.num_crtcs; c++) {
+      struct loader_dri3_crtc_info *crtc =
+         &dri2_dpy->screen_resources.crtcs[c];
+
+      int c_area = box_intersection_area(reply->dst_x, reply->dst_y,
+                                        surface->Width, surface->Height,
+                                        crtc->x, crtc->y,
+                                        crtc->width, crtc->height);
+      if (c_area > area) {
+         *numerator = crtc->refresh_numerator;
+         *denominator = crtc->refresh_denominator;
+         area = c_area;
+      }
+   }
+
+   /* If the window is entirely off-screen, then area will still be 0.
+    * We defaulted to the first CRTC in the list's refresh rate, earlier.
+    */
+
+   return EGL_TRUE;
+}
+
 static EGLBoolean
 dri2_kopper_swap_interval(_EGLDisplay *disp, _EGLSurface *surf, EGLint interval)
 {
@@ -1256,6 +1334,7 @@ static const struct dri2_egl_display_vtbl dri2_x11_swrast_display_vtbl = {
    .copy_buffers = dri2_x11_copy_buffers,
    /* XXX: should really implement this since X11 has pixmaps */
    .query_surface = dri2_query_surface,
+   .get_msc_rate = dri2_x11_get_msc_rate,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -1274,6 +1353,7 @@ static const struct dri2_egl_display_vtbl dri2_x11_kopper_display_vtbl = {
    .query_buffer_age = dri2_kopper_query_buffer_age,
    /* XXX: should really implement this since X11 has pixmaps */
    .query_surface = dri2_query_surface,
+   .get_msc_rate = dri2_x11_get_msc_rate,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -1291,6 +1371,7 @@ static const struct dri2_egl_display_vtbl dri2_x11_display_vtbl = {
    .copy_buffers = dri2_x11_copy_buffers,
    .query_surface = dri2_query_surface,
    .get_sync_values = dri2_x11_get_sync_values,
+   .get_msc_rate = dri2_x11_get_msc_rate,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -1302,19 +1383,22 @@ static const __DRIswrastLoaderExtension swrast_loader_extension = {
    .getImage        = swrastGetImage,
 };
 
+static_assert(sizeof(struct kopper_vk_surface_create_storage) >= sizeof(VkXcbSurfaceCreateInfoKHR), "");
+
 static void
 kopperSetSurfaceCreateInfo(void *_draw, struct kopper_loader_info *ci)
 {
     struct dri2_egl_surface *dri2_surf = _draw;
     struct dri2_egl_display *dri2_dpy = dri2_egl_display(dri2_surf->base.Resource.Display);
+    VkXcbSurfaceCreateInfoKHR *xcb = (VkXcbSurfaceCreateInfoKHR *)&ci->bos;
 
     if (dri2_surf->base.Type != EGL_WINDOW_BIT)
        return;
-    ci->xcb.sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
-    ci->xcb.pNext = NULL;
-    ci->xcb.flags = 0;
-    ci->xcb.connection = dri2_dpy->conn;
-    ci->xcb.window = dri2_surf->drawable;
+    xcb->sType = VK_STRUCTURE_TYPE_XCB_SURFACE_CREATE_INFO_KHR;
+    xcb->pNext = NULL;
+    xcb->flags = 0;
+    xcb->connection = dri2_dpy->conn;
+    xcb->window = dri2_surf->drawable;
     ci->has_alpha = dri2_surf->depth == 32;
 }
 
@@ -1457,6 +1541,7 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
    dri2_setup_screen(disp);
 
    if (disp->Options.Zink) {
+      /* kopper */
 #ifdef HAVE_WAYLAND_PLATFORM
       dri2_dpy->device_name = strdup("zink");
 #endif
@@ -1466,13 +1551,17 @@ dri2_initialize_x11_swrast(_EGLDisplay *disp)
          disp->Extensions.KHR_image_pixmap = EGL_TRUE;
       disp->Extensions.NOK_texture_from_pixmap = EGL_TRUE;
       disp->Extensions.CHROMIUM_sync_control = EGL_TRUE;
+      disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
       disp->Extensions.EXT_buffer_age = EGL_TRUE;
       disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
 
       //dri2_set_WL_bind_wayland_display(disp);
+   } else {
+      /* swrast */
+      disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
    }
 
-   if (!dri2_x11_add_configs_for_visuals(dri2_dpy, disp, true))
+   if (!dri2_x11_add_configs_for_visuals(dri2_dpy, disp, !disp->Options.Zink))
       goto cleanup;
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
@@ -1547,6 +1636,7 @@ dri2_initialize_x11_dri3(_EGLDisplay *disp)
       disp->Extensions.KHR_image_pixmap = EGL_TRUE;
    disp->Extensions.NOK_texture_from_pixmap = EGL_TRUE;
    disp->Extensions.CHROMIUM_sync_control = EGL_TRUE;
+   disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
    disp->Extensions.EXT_buffer_age = EGL_TRUE;
    disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
 
@@ -1554,6 +1644,9 @@ dri2_initialize_x11_dri3(_EGLDisplay *disp)
 
    if (!dri2_x11_add_configs_for_visuals(dri2_dpy, disp, false))
       goto cleanup;
+
+   loader_dri3_init_screen_resources(&dri2_dpy->screen_resources,
+                                     dri2_dpy->conn, dri2_dpy->screen);
 
    dri2_dpy->loader_dri3_ext.core = dri2_dpy->core;
    dri2_dpy->loader_dri3_ext.image_driver = dri2_dpy->image_driver;
@@ -1659,6 +1752,7 @@ dri2_initialize_x11_dri2(_EGLDisplay *disp)
    disp->Extensions.NOK_texture_from_pixmap = EGL_TRUE;
    disp->Extensions.NV_post_sub_buffer = EGL_TRUE;
    disp->Extensions.CHROMIUM_sync_control = EGL_TRUE;
+   disp->Extensions.ANGLE_sync_control_rate = EGL_TRUE;
 
    dri2_set_WL_bind_wayland_display(disp);
 
@@ -1686,12 +1780,12 @@ dri2_initialize_x11(_EGLDisplay *disp)
       return dri2_initialize_x11_swrast(disp);
 
 #ifdef HAVE_DRI3
-   if (!env_var_as_boolean("LIBGL_DRI3_DISABLE", false))
+   if (!debug_get_bool_option("LIBGL_DRI3_DISABLE", false))
       if (dri2_initialize_x11_dri3(disp))
          return EGL_TRUE;
 #endif
 
-   if (!env_var_as_boolean("LIBGL_DRI2_DISABLE", false))
+   if (!debug_get_bool_option("LIBGL_DRI2_DISABLE", false))
       if (dri2_initialize_x11_dri2(disp))
          return EGL_TRUE;
 
@@ -1701,6 +1795,9 @@ dri2_initialize_x11(_EGLDisplay *disp)
 void
 dri2_teardown_x11(struct dri2_egl_display *dri2_dpy)
 {
+   if (dri2_dpy->dri2_major >= 3)
+      loader_dri3_destroy_screen_resources(&dri2_dpy->screen_resources);
+
    if (dri2_dpy->own_device)
       xcb_disconnect(dri2_dpy->conn);
 }

@@ -38,6 +38,7 @@ libv3dv_files = files(
   'v3dv_debug.h',
   'v3dv_descriptor_set.c',
   'v3dv_device.c',
+  'v3dv_event.c',
   'v3dv_formats.c',
   'v3dv_image.c',
   'v3dv_limits.h',
@@ -94,7 +95,7 @@ if with_platform_x11
 endif
 
 if with_platform_wayland
-  v3dv_deps += [dep_wayland_client, dep_wl_protocols]
+  v3dv_deps += dep_wayland_client
   libv3dv_files += [wayland_drm_client_protocol_h, wayland_drm_protocol_c]
 endif
 

@@ -62,7 +62,7 @@ lower_load_input_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
       set_io_semantics(chan_intr, intr, i);
       /* offset and vertex (if needed) */
       for (unsigned j = 0; j < nir_intrinsic_infos[intr->intrinsic].num_srcs; ++j)
-         nir_src_copy(&chan_intr->src[j], &intr->src[j]);
+         nir_src_copy(&chan_intr->src[j], &intr->src[j], &chan_intr->instr);
 
       nir_builder_instr_insert(b, &chan_intr->instr);
 
@@ -82,8 +82,7 @@ lower_load_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
    assert(intr->dest.is_ssa);
 
    nir_ssa_def *loads[NIR_MAX_VEC_COMPONENTS];
-   unsigned offset_idx = intr->intrinsic == nir_intrinsic_load_shared ? 0 : 1;
-   nir_ssa_def *base_offset = intr->src[offset_idx].ssa;
+   nir_ssa_def *base_offset = nir_get_io_offset_src(intr)->ssa;
 
    for (unsigned i = 0; i < intr->num_components; i++) {
       nir_intrinsic_instr *chan_intr =
@@ -105,11 +104,11 @@ lower_load_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
       if (nir_intrinsic_has_base(intr))
          nir_intrinsic_set_base(chan_intr, nir_intrinsic_base(intr));
       for (unsigned j = 0; j < nir_intrinsic_infos[intr->intrinsic].num_srcs - 1; j++)
-         nir_src_copy(&chan_intr->src[j], &intr->src[j]);
+         nir_src_copy(&chan_intr->src[j], &intr->src[j], &chan_intr->instr);
 
       /* increment offset per component */
       nir_ssa_def *offset = nir_iadd_imm(b, base_offset, i * (intr->dest.ssa.bit_size / 8));
-      chan_intr->src[offset_idx] = nir_src_for_ssa(offset);
+      *nir_get_io_offset_src(chan_intr) = nir_src_for_ssa(offset);
 
       nir_builder_instr_insert(b, &chan_intr->instr);
 
@@ -171,7 +170,7 @@ lower_store_output_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
       chan_intr->src[0] = nir_src_for_ssa(nir_channel(b, value, i));
       /* offset and vertex (if needed) */
       for (unsigned j = 1; j < nir_intrinsic_infos[intr->intrinsic].num_srcs; ++j)
-         nir_src_copy(&chan_intr->src[j], &intr->src[j]);
+         nir_src_copy(&chan_intr->src[j], &intr->src[j], &chan_intr->instr);
 
       nir_builder_instr_insert(b, &chan_intr->instr);
    }
@@ -185,8 +184,7 @@ lower_store_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
    b->cursor = nir_before_instr(&intr->instr);
 
    nir_ssa_def *value = nir_ssa_for_src(b, intr->src[0], intr->num_components);
-   unsigned offset_idx = intr->intrinsic == nir_intrinsic_store_shared ? 1 : 2;
-   nir_ssa_def *base_offset = intr->src[offset_idx].ssa;
+   nir_ssa_def *base_offset = nir_get_io_offset_src(intr)->ssa;
 
    /* iterate wrmask instead of num_components to handle split components */
    u_foreach_bit(i, nir_intrinsic_write_mask(intr)) {
@@ -207,11 +205,11 @@ lower_store_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
       /* value */
       chan_intr->src[0] = nir_src_for_ssa(nir_channel(b, value, i));
       for (unsigned j = 1; j < nir_intrinsic_infos[intr->intrinsic].num_srcs - 1; j++)
-         nir_src_copy(&chan_intr->src[j], &intr->src[j]);
+         nir_src_copy(&chan_intr->src[j], &intr->src[j], &chan_intr->instr);
 
       /* increment offset per component */
       nir_ssa_def *offset = nir_iadd_imm(b, base_offset, i * (value->bit_size / 8));
-      chan_intr->src[offset_idx] = nir_src_for_ssa(offset);
+      *nir_get_io_offset_src(chan_intr) = nir_src_for_ssa(offset);
 
       nir_builder_instr_insert(b, &chan_intr->instr);
    }
@@ -247,6 +245,7 @@ nir_lower_io_to_scalar_instr(nir_builder *b, nir_instr *instr, void *data)
 
    if ((intr->intrinsic == nir_intrinsic_load_ubo && (mask & nir_var_mem_ubo)) ||
        (intr->intrinsic == nir_intrinsic_load_ssbo && (mask & nir_var_mem_ssbo)) ||
+       (intr->intrinsic == nir_intrinsic_load_global && (mask & nir_var_mem_global)) ||
        (intr->intrinsic == nir_intrinsic_load_shared && (mask & nir_var_mem_shared))) {
       lower_load_to_scalar(b, intr);
       return true;
@@ -260,6 +259,7 @@ nir_lower_io_to_scalar_instr(nir_builder *b, nir_instr *instr, void *data)
    }
 
    if ((intr->intrinsic == nir_intrinsic_store_ssbo && (mask & nir_var_mem_ssbo)) ||
+       (intr->intrinsic == nir_intrinsic_store_global && (mask & nir_var_mem_global)) ||
        (intr->intrinsic == nir_intrinsic_store_shared && (mask & nir_var_mem_shared))) {
       lower_store_to_scalar(b, intr);
       return true;
@@ -362,7 +362,7 @@ lower_load_to_scalar_early(nir_builder *b, nir_intrinsic_instr *intr,
       if (intr->intrinsic == nir_intrinsic_interp_deref_at_offset ||
           intr->intrinsic == nir_intrinsic_interp_deref_at_sample ||
           intr->intrinsic == nir_intrinsic_interp_deref_at_vertex)
-         nir_src_copy(&chan_intr->src[1], &intr->src[1]);
+         nir_src_copy(&chan_intr->src[1], &intr->src[1], &chan_intr->instr);
 
       nir_builder_instr_insert(b, &chan_intr->instr);
 

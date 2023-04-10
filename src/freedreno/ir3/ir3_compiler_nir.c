@@ -476,16 +476,6 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
       dst[0]->cat2.condition = IR3_COND_NE;
       break;
 
-   case nir_op_i2b1:
-      /* i2b1 will appear when translating from nir_load_ubo or
-       * nir_intrinsic_load_ssbo, where any non-zero value is true.
-       */
-      dst[0] = ir3_CMPS_S(
-         b, src[0], 0,
-         create_immed_typed(b, 0, type_uint_size(bs[0])), 0);
-      dst[0]->cat2.condition = IR3_COND_NE;
-      break;
-
    case nir_op_b2b1:
       /* b2b1 will appear when translating from
        *
@@ -1347,7 +1337,7 @@ struct tex_src_info {
  * to handle with the image_mapping table..
  */
 static struct tex_src_info
-get_image_ssbo_samp_tex_src(struct ir3_context *ctx, nir_src *src)
+get_image_ssbo_samp_tex_src(struct ir3_context *ctx, nir_src *src, bool image)
 {
    struct ir3_block *b = ctx->block;
    struct tex_src_info info = {0};
@@ -1392,8 +1382,12 @@ get_image_ssbo_samp_tex_src(struct ir3_context *ctx, nir_src *src)
    } else {
       info.flags |= IR3_INSTR_S2EN;
       unsigned slot = nir_src_as_uint(*src);
-      unsigned tex_idx = ir3_image_to_tex(&ctx->so->image_mapping, slot);
+      unsigned tex_idx = image ?
+            ir3_image_to_tex(&ctx->so->image_mapping, slot) :
+            ir3_ssbo_to_tex(&ctx->so->image_mapping, slot);
       struct ir3_instruction *texture, *sampler;
+
+      ctx->so->num_samp = MAX2(ctx->so->num_samp, tex_idx + 1);
 
       texture = create_immed_typed(ctx->block, tex_idx, TYPE_U16);
       sampler = create_immed_typed(ctx->block, tex_idx, TYPE_U16);
@@ -1450,7 +1444,7 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    }
 
    struct ir3_block *b = ctx->block;
-   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0], true);
    struct ir3_instruction *sam;
    struct ir3_instruction *const *src0 = ir3_get_src(ctx, &intr->src[1]);
    struct ir3_instruction *coords[4];
@@ -1492,7 +1486,7 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx,
                               struct ir3_instruction **dst)
 {
    struct ir3_block *b = ctx->block;
-   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0], true);
    struct ir3_instruction *sam, *lod;
    unsigned flags, ncoords = ir3_get_image_coords(intr, &flags);
    type_t dst_type = nir_dest_bit_size(intr->dest) == 16 ? TYPE_U16 : TYPE_U32;
@@ -1536,7 +1530,6 @@ emit_intrinsic_load_ssbo(struct ir3_context *ctx,
 {
    /* Note: isam currently can't handle vectorized loads/stores */
    if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER) ||
-       !ir3_bindless_resource(intr->src[0]) ||
        intr->dest.ssa.num_components > 1) {
       ctx->funcs->emit_intrinsic_load_ssbo(ctx, intr, dst);
       return;
@@ -1545,7 +1538,7 @@ emit_intrinsic_load_ssbo(struct ir3_context *ctx,
    struct ir3_block *b = ctx->block;
    struct ir3_instruction *offset = ir3_get_src(ctx, &intr->src[2])[0];
    struct ir3_instruction *coords = ir3_collect(b, offset, create_immed(b, 0));
-   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0], false);
 
    unsigned num_components = intr->dest.ssa.num_components;
    struct ir3_instruction *sam =
@@ -1826,21 +1819,19 @@ emit_intrinsic_barycentric(struct ir3_context *ctx, nir_intrinsic_instr *intr,
 {
    gl_system_value sysval = nir_intrinsic_barycentric_sysval(intr);
 
-   if (!ctx->so->key.msaa) {
+   if (!ctx->so->key.msaa && ctx->compiler->gen < 6) {
       switch (sysval) {
       case SYSTEM_VALUE_BARYCENTRIC_PERSP_SAMPLE:
          sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
          break;
       case SYSTEM_VALUE_BARYCENTRIC_PERSP_CENTROID:
-         if (ctx->compiler->gen < 6)
-            sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
+         sysval = SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL;
          break;
       case SYSTEM_VALUE_BARYCENTRIC_LINEAR_SAMPLE:
          sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
          break;
       case SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID:
-         if (ctx->compiler->gen < 6)
-            sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
+         sysval = SYSTEM_VALUE_BARYCENTRIC_LINEAR_PIXEL;
          break;
       default:
          break;
@@ -2434,6 +2425,16 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       dst[0] = ir3_GETFIBERID(b);
       dst[0]->cat6.type = TYPE_U32;
       __ssa_dst(dst[0]);
+      break;
+   case nir_intrinsic_load_tess_level_outer_default:
+      for (int i = 0; i < dest_components; i++) {
+         dst[i] = create_driver_param(ctx, IR3_DP_HS_DEFAULT_OUTER_LEVEL_X + i);
+      }
+      break;
+   case nir_intrinsic_load_tess_level_inner_default:
+      for (int i = 0; i < dest_components; i++) {
+         dst[i] = create_driver_param(ctx, IR3_DP_HS_DEFAULT_INNER_LEVEL_X + i);
+      }
       break;
    case nir_intrinsic_discard_if:
    case nir_intrinsic_discard:
@@ -4100,6 +4101,8 @@ pack_inlocs(struct ir3_context *ctx)
             unsigned j = inloc % 4;
 
             instr->srcs[0]->iim_val = so->inputs[i].inloc + j;
+            if (instr->opc == OPC_FLAT_B)
+               instr->srcs[1]->iim_val = instr->srcs[0]->iim_val;
          } else if (instr->opc == OPC_META_TEX_PREFETCH) {
             unsigned i = instr->prefetch.input_offset / 4;
             unsigned j = instr->prefetch.input_offset % 4;
@@ -4132,6 +4135,9 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
     */
    unsigned slot = io.location + (io.per_view ? 0 : offset);
 
+   if (io.per_view && offset > 0)
+      so->multi_pos_output = true;
+
    if (ctx->so->type == MESA_SHADER_FRAGMENT) {
       switch (slot) {
       case FRAG_RESULT_DEPTH:
@@ -4142,6 +4148,8 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
             so->color0_mrt = 1;
          } else {
             slot = FRAG_RESULT_DATA0 + io.dual_source_blend_index;
+            if (io.dual_source_blend_index > 0)
+               so->dual_src_blend = true;
          }
          break;
       case FRAG_RESULT_SAMPLE_MASK:
@@ -4152,6 +4160,8 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
          break;
       default:
          slot += io.dual_source_blend_index; /* For dual-src blend */
+         if (io.dual_source_blend_index > 0)
+            so->dual_src_blend = true;
          if (slot >= FRAG_RESULT_DATA0)
             break;
          ir3_context_error(ctx, "unknown FS output name: %s\n",
@@ -4560,18 +4570,18 @@ collect_tex_prefetches(struct ir3_context *ctx, struct ir3 *ir)
                &ctx->so->sampler_prefetch[idx];
             idx++;
 
-            if (instr->flags & IR3_INSTR_B) {
-               fetch->cmd = IR3_SAMPLER_BINDLESS_PREFETCH_CMD;
+            fetch->bindless = instr->flags & IR3_INSTR_B;
+            if (fetch->bindless) {
                /* In bindless mode, the index is actually the base */
                fetch->tex_id = instr->prefetch.tex_base;
                fetch->samp_id = instr->prefetch.samp_base;
                fetch->tex_bindless_id = instr->prefetch.tex;
                fetch->samp_bindless_id = instr->prefetch.samp;
             } else {
-               fetch->cmd = IR3_SAMPLER_PREFETCH_CMD;
                fetch->tex_id = instr->prefetch.tex;
                fetch->samp_id = instr->prefetch.samp;
             }
+            fetch->tex_opc = OPC_SAM;
             fetch->wrmask = instr->dsts[0]->wrmask;
             fetch->dst = instr->dsts[0]->num;
             fetch->src = instr->prefetch.input_offset;
@@ -4988,6 +4998,10 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
    if ((ctx->so->type == MESA_SHADER_FRAGMENT) &&
        !ctx->s->info.fs.early_fragment_tests)
       ctx->so->no_earlyz |= ctx->s->info.writes_memory;
+
+   if ((ctx->so->type == MESA_SHADER_FRAGMENT) &&
+       ctx->s->info.fs.post_depth_coverage)
+      so->post_depth_coverage = true;
 
 out:
    if (ret) {

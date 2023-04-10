@@ -152,11 +152,14 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
 
    /* Get DRM version. */
    version = drmGetVersion(ws->fd);
+   if (!version)
+      return false;
+
    if (version->version_major != 2 ||
        version->version_minor < 50) {
       fprintf(stderr, "%s: DRM version is %d.%d.%d but this driver is "
                       "only compatible with 2.50.0 (kernel 4.12) or later.\n",
-              __FUNCTION__,
+              __func__,
               version->version_major,
               version->version_minor,
               version->version_patchlevel);
@@ -787,6 +790,11 @@ static bool radeon_cs_is_secure(struct radeon_cmdbuf* cs)
     return false;
 }
 
+static bool radeon_cs_set_pstate(struct radeon_cmdbuf* cs, enum radeon_ctx_pstate state)
+{
+    return false;
+}
+
 PUBLIC struct radeon_winsys *
 radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
                          radeon_screen_create_t screen_create)
@@ -859,6 +867,7 @@ radeon_drm_winsys_create(int fd, const struct pipe_screen_config *config,
    ws->base.query_value = radeon_query_value;
    ws->base.read_registers = radeon_read_registers;
    ws->base.cs_is_secure = radeon_cs_is_secure;
+   ws->base.cs_set_pstate = radeon_cs_set_pstate;
 
    radeon_drm_bo_init_functions(ws);
    radeon_drm_cs_init_functions(ws);

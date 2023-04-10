@@ -29,7 +29,7 @@
  */
 
 
-#include "glheader.h"
+#include "util/glheader.h"
 #include "c99_alloca.h"
 #include "context.h"
 #include "enums.h"
@@ -237,7 +237,7 @@ alloc_select_resource(struct gl_context *ctx)
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "Cannot allocate HWSelectModeBeginEnd");
          return;
       }
-      vbo_install_hw_select_begin_end(ctx);
+      vbo_init_dispatch_hw_select_begin_end(ctx);
    }
 
    if (!s->SaveBuffer) {

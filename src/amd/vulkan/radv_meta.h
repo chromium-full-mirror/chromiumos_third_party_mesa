@@ -34,13 +34,12 @@ extern "C" {
 #endif
 
 enum radv_meta_save_flags {
-   RADV_META_SAVE_PASS = (1 << 0),
+   RADV_META_SAVE_RENDER = (1 << 0),
    RADV_META_SAVE_CONSTANTS = (1 << 1),
    RADV_META_SAVE_DESCRIPTORS = (1 << 2),
    RADV_META_SAVE_GRAPHICS_PIPELINE = (1 << 3),
    RADV_META_SAVE_COMPUTE_PIPELINE = (1 << 4),
-   RADV_META_SAVE_SAMPLE_LOCATIONS = (1 << 5),
-   RADV_META_SUSPEND_PREDICATING = (1 << 6),
+   RADV_META_SUSPEND_PREDICATING = (1 << 5),
 };
 
 struct radv_meta_saved_state {
@@ -53,13 +52,11 @@ struct radv_meta_saved_state {
 
    char push_constants[MAX_PUSH_CONSTANTS_SIZE];
 
-   struct radv_render_pass *pass;
-   const struct radv_subpass *subpass;
-   struct radv_attachment_state *attachments;
-   struct vk_framebuffer *framebuffer;
-   VkRect2D render_area;
+   struct radv_rendering_state render;
 
    unsigned active_pipeline_gds_queries;
+   unsigned active_prims_gen_gds_queries;
+   unsigned active_prims_xfb_gds_queries;
 
    bool predicating;
 };
@@ -94,17 +91,16 @@ void radv_device_finish_meta_resolve_compute_state(struct radv_device *device);
 VkResult radv_device_init_meta_resolve_fragment_state(struct radv_device *device, bool on_demand);
 void radv_device_finish_meta_resolve_fragment_state(struct radv_device *device);
 
-VkResult radv_device_init_meta_fmask_copy_state(struct radv_device *device);
+VkResult radv_device_init_meta_fmask_copy_state(struct radv_device *device, bool on_demand);
 void radv_device_finish_meta_fmask_copy_state(struct radv_device *device);
 
-VkResult radv_device_init_meta_fmask_expand_state(struct radv_device *device);
+VkResult radv_device_init_meta_fmask_expand_state(struct radv_device *device, bool on_demand);
 void radv_device_finish_meta_fmask_expand_state(struct radv_device *device);
 
 void radv_device_finish_meta_dcc_retile_state(struct radv_device *device);
 
 void radv_device_finish_meta_copy_vrs_htile_state(struct radv_device *device);
 
-VkResult radv_device_init_accel_struct_build_state(struct radv_device *device);
 void radv_device_finish_accel_struct_build_state(struct radv_device *device);
 
 VkResult radv_device_init_meta_etc_decode_state(struct radv_device *device, bool on_demand);
@@ -193,7 +189,7 @@ void radv_retile_dcc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
 void radv_expand_fmask_image_inplace(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image,
                                      const VkImageSubresourceRange *subresourceRange);
 void radv_copy_vrs_htile(struct radv_cmd_buffer *cmd_buffer, struct radv_image *vrs_image,
-                         VkExtent2D *extent, struct radv_image *dst_image,
+                         const VkRect2D *rect, struct radv_image *dst_image,
                          struct radv_buffer *htile_buffer, bool read_htile_value);
 
 bool radv_can_use_fmask_copy(struct radv_cmd_buffer *cmd_buffer,
@@ -214,7 +210,7 @@ void radv_meta_resolve_fragment_image(struct radv_cmd_buffer *cmd_buffer,
                                       VkImageLayout dest_image_layout,
                                       const VkImageResolve2 *region);
 
-void radv_decompress_resolve_subpass_src(struct radv_cmd_buffer *cmd_buffer);
+void radv_decompress_resolve_rendering_src(struct radv_cmd_buffer *cmd_buffer);
 
 void radv_decompress_resolve_src(struct radv_cmd_buffer *cmd_buffer, struct radv_image *src_image,
                                  VkImageLayout src_image_layout, const VkImageResolve2 *region);
@@ -270,8 +266,8 @@ nir_builder PRINTFLIKE(3, 4)
 nir_shader *radv_meta_build_nir_vs_generate_vertices(struct radv_device *dev);
 nir_shader *radv_meta_build_nir_fs_noop(struct radv_device *dev);
 
-void radv_meta_build_resolve_shader_core(nir_builder *b, bool is_integer, int samples,
-                                         nir_variable *input_img, nir_variable *color,
+void radv_meta_build_resolve_shader_core(struct radv_device *device, nir_builder *b, bool is_integer,
+                                         int samples, nir_variable *input_img, nir_variable *color,
                                          nir_ssa_def *img_coord);
 
 nir_ssa_def *radv_meta_load_descriptor(nir_builder *b, unsigned desc_set, unsigned binding);

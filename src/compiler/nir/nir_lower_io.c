@@ -611,7 +611,7 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
    if (intrin->intrinsic == nir_intrinsic_interp_deref_at_sample ||
        intrin->intrinsic == nir_intrinsic_interp_deref_at_offset ||
        intrin->intrinsic == nir_intrinsic_interp_deref_at_vertex)
-      nir_src_copy(&bary_setup->src[0], &intrin->src[1]);
+      nir_src_copy(&bary_setup->src[0], &intrin->src[1], &bary_setup->instr);
 
    nir_builder_instr_insert(b, &bary_setup->instr);
 
@@ -631,7 +631,8 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
                                   offset,
                                   .base = var->data.driver_location,
                                   .component = component,
-                                  .io_semantics = semantics);
+                                  .io_semantics = semantics,
+                                  .dest_type = nir_type_float | intrin->dest.ssa.bit_size);
 
    return load;
 }
@@ -1183,8 +1184,9 @@ addr_is_in_bounds(nir_builder *b, nir_ssa_def *addr,
 {
    assert(addr_format == nir_address_format_64bit_bounded_global);
    assert(addr->num_components == 4);
-   return nir_ige(b, nir_channel(b, addr, 2),
-                     nir_iadd_imm(b, nir_channel(b, addr, 3), size));
+   assert(size > 0);
+   return nir_ult(b, nir_iadd_imm(b, nir_channel(b, addr, 3), size - 1),
+                     nir_channel(b, addr, 2));
 }
 
 static void
@@ -1497,6 +1499,9 @@ build_explicit_io_load(nir_builder *b, nir_intrinsic_instr *intrin,
    if (op == nir_intrinsic_load_constant) {
       nir_intrinsic_set_base(load, 0);
       nir_intrinsic_set_range(load, b->shader->constant_data_size);
+   } else if (op == nir_intrinsic_load_kernel_input) {
+      nir_intrinsic_set_base(load, 0);
+      nir_intrinsic_set_range(load, b->shader->num_uniforms);
    } else if (mode == nir_var_mem_push_const) {
       /* Push constants are required to be able to be chased back to the
        * variable so we can provide a base/range.
@@ -1698,7 +1703,7 @@ build_explicit_io_store(nir_builder *b, nir_intrinsic_instr *intrin,
           mode == nir_var_function_temp)
          value = nir_b2b32(b, value);
       else
-         value = nir_b2i(b, value, 32);
+         value = nir_b2iN(b, value, 32);
    }
 
    store->src[0] = nir_src_for_ssa(value);
@@ -1878,9 +1883,9 @@ nir_explicit_io_address_from_deref(nir_builder *b, nir_deref_instr *deref,
        */
       if (deref->arr.in_bounds && deref->deref_type == nir_deref_type_array) {
          index = nir_u2u32(b, index);
-         offset = nir_u2u(b, nir_amul_imm(b, index, stride), offset_bit_size);
+         offset = nir_u2uN(b, nir_amul_imm(b, index, stride), offset_bit_size);
       } else {
-         index = nir_i2i(b, index, offset_bit_size);
+         index = nir_i2iN(b, index, offset_bit_size);
          offset = nir_amul_imm(b, index, stride);
       }
 
@@ -2274,6 +2279,24 @@ nir_lower_explicit_io_impl(nir_function_impl *impl, nir_variable_mode modes,
                break;
             }
 
+            case nir_intrinsic_launch_mesh_workgroups_with_payload_deref: {
+               if (modes & nir_var_mem_task_payload) {
+                  /* Get address and size of the payload variable. */
+                  nir_deref_instr *deref = nir_src_as_deref(intrin->src[1]);
+                  assert(deref->deref_type == nir_deref_type_var);
+                  unsigned base = deref->var->data.explicit_location;
+                  unsigned size = glsl_get_explicit_size(deref->var->type, false);
+
+                  /* Replace the current instruction with the explicit intrinsic. */
+                  nir_ssa_def *dispatch_3d = intrin->src[0].ssa;
+                  b.cursor = nir_instr_remove(instr);
+                  nir_launch_mesh_workgroups(&b, dispatch_3d, .base = base, .range = size);
+                  progress = true;
+               }
+
+               break;
+            }
+
             default:
                break;
             }
@@ -2288,8 +2311,7 @@ nir_lower_explicit_io_impl(nir_function_impl *impl, nir_variable_mode modes,
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                  nir_metadata_dominance);
+      nir_metadata_preserve(impl, nir_metadata_none);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }

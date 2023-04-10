@@ -34,7 +34,7 @@ class Tracepoint(object):
     """
     def __init__(self, name, args=[], toggle_name=None,
                  tp_struct=None, tp_print=None, tp_perfetto=None,
-                 end_of_pipe=False):
+                 tp_markers=None, end_of_pipe=False):
         """Parameters:
 
         - name: the tracepoint name, a tracepoint function with the given
@@ -45,6 +45,9 @@ class Tracepoint(object):
         - tp_print: (optional) array of format string followed by expressions
         - tp_perfetto: (optional) driver provided callback which can generate
           perfetto events
+        - tp_markers: (optional) driver provided printf-style callback which can
+          generate CS markers, this requires 'need_cs_param' as the first param
+          is the CS that the label should be emitted into
         """
         assert isinstance(name, str)
         assert isinstance(args, list)
@@ -57,6 +60,7 @@ class Tracepoint(object):
         self.tp_struct = tp_struct
         self.tp_print = tp_print
         self.tp_perfetto = tp_perfetto
+        self.tp_markers = tp_markers
         self.end_of_pipe = end_of_pipe
         self.toggle_name = toggle_name
 
@@ -120,13 +124,14 @@ class TracepointArg(object):
 HEADERS = []
 
 class HeaderScope(IntEnum):
-   HEADER = (1 << 0)
-   SOURCE = (1 << 1)
+    HEADER = (1 << 0)
+    SOURCE = (1 << 1)
+    PERFETTO = (1 << 2)
 
 class Header(object):
     """Class that represents a header file dependency of generated tracepoints
     """
-    def __init__(self, hdr, scope=HeaderScope.HEADER|HeaderScope.SOURCE):
+    def __init__(self, hdr, scope=HeaderScope.HEADER):
         """Parameters:
 
         - hdr: the required header path
@@ -235,6 +240,7 @@ void ${trace.tp_perfetto}(
 %    endif
 void __trace_${trace_name}(
        struct u_trace *ut
+     , enum u_trace_type enabled_traces
 %    if need_cs_param:
      , void *cs
 %    endif
@@ -242,7 +248,7 @@ void __trace_${trace_name}(
      , ${arg.type} ${arg.var}
 %    endfor
 );
-static inline void trace_${trace_name}(
+static ALWAYS_INLINE void trace_${trace_name}(
      struct u_trace *ut
 %    if need_cs_param:
    , void *cs
@@ -251,16 +257,13 @@ static inline void trace_${trace_name}(
    , ${arg.type} ${arg.var}
 %    endfor
 ) {
-%    if trace.tp_perfetto is not None:
-   if (!unlikely((ut->enabled || ut_trace_instrument || ut_perfetto_enabled) &&
+   enum u_trace_type enabled_traces = p_atomic_read_relaxed(&ut->utctx->enabled_traces);
+   if (!unlikely(enabled_traces != 0 &&
                  ${trace.enabled_expr(trace_toggle_name)}))
-%    else:
-   if (!unlikely((ut->enabled || ut_trace_instrument) &&
-                 ${trace.enabled_expr(trace_toggle_name)}))
-%    endif
       return;
    __trace_${trace_name}(
         ut
+      , enabled_traces
 %    if need_cs_param:
       , cs
 %    endif
@@ -301,14 +304,14 @@ src_template = """\
  * IN THE SOFTWARE.
  */
 
+#include "${hdr}"
+
 % for header in HEADERS:
 #include "${header.hdr}"
 % endfor
 
-#include "${hdr}"
-
 #define __NEEDS_TRACE_PRIV
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/perf/u_trace_priv.h"
 
 % if trace_toggle_name is not None:
@@ -406,6 +409,27 @@ static void __print_json_${trace_name}(FILE *out, const void *arg) {
 #define __print_${trace_name} NULL
 #define __print_json_${trace_name} NULL
  % endif
+ % if trace.tp_markers is not None:
+
+__attribute__((format(printf, 2, 3))) void ${trace.tp_markers}(void *, const char *, ...);
+
+static void __emit_label_${trace_name}(void *cs, struct trace_${trace_name} *entry) {
+   ${trace.tp_markers}(cs, "${trace_name}("
+   % for idx,arg in enumerate(trace.tp_struct):
+      "${"," if idx != 0 else ""}${arg.name}=${arg.c_format}"
+   % endfor
+      ")"
+   % for arg in trace.tp_struct:
+    % if arg.to_prim_type:
+      ,${arg.to_prim_type.format('entry->' + arg.name)}
+    % else:
+      ,entry->${arg.name}
+    % endif
+   % endfor
+   );
+}
+
+ % endif
 static const struct u_tracepoint __tp_${trace_name} = {
     ALIGN_POT(sizeof(struct trace_${trace_name}), 8),   /* keep size 64b aligned */
     "${trace_name}",
@@ -420,6 +444,7 @@ static const struct u_tracepoint __tp_${trace_name} = {
 };
 void __trace_${trace_name}(
      struct u_trace *ut
+   , enum u_trace_type enabled_traces
  % if need_cs_param:
    , void *cs
  % endif
@@ -427,14 +452,18 @@ void __trace_${trace_name}(
    , ${arg.type} ${arg.var}
  % endfor
 ) {
-   struct trace_${trace_name} *__entry =
-      (struct trace_${trace_name} *)u_trace_append(ut, ${cs_param_value + ","} &__tp_${trace_name});
- % if len(trace.tp_struct) == 0:
-   (void)__entry;
- % endif
+   struct trace_${trace_name} entry;
+   UNUSED struct trace_${trace_name} *__entry =
+      enabled_traces & U_TRACE_TYPE_REQUIRE_QUEUING ?
+      (struct trace_${trace_name} *)u_trace_append(ut, ${cs_param_value + ","} &__tp_${trace_name}) :
+      &entry;
  % for arg in trace.tp_struct:
    __entry->${arg.name} = ${arg.var};
  % endfor
+ % if trace.tp_markers is not None:
+   if (enabled_traces & U_TRACE_TYPE_MARKERS)
+      __emit_label_${trace_name}(cs, __entry);
+ % endif
 }
 
 % endfor
@@ -514,6 +543,10 @@ perfetto_utils_hdr_template = """\
 
 #include <perfetto.h>
 
+% for header in HEADERS:
+#include "${header.hdr}"
+% endfor
+
 % for trace_name, trace in TRACEPOINTS.items():
 static void UNUSED
 trace_payload_as_extra_${trace_name}(perfetto::protos::pbzero::GpuRenderStageEvent *event,
@@ -550,4 +583,5 @@ def utrace_generate_perfetto_utils(hpath):
         with open(hpath, 'wb') as f:
             f.write(Template(perfetto_utils_hdr_template, output_encoding='utf-8').render(
                 hdrname=hdr.rstrip('.h').upper(),
+                HEADERS=[h for h in HEADERS if h.scope & HeaderScope.PERFETTO],
                 TRACEPOINTS=TRACEPOINTS))

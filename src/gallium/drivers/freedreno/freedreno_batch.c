@@ -84,7 +84,7 @@ batch_init(struct fd_batch *batch)
     * immediately:
     */
    if (ctx->screen->gen < 6)
-      batch->fence = fd_fence_create(batch);
+      batch->fence = fd_pipe_fence_create(batch);
 
    batch->cleared = 0;
    batch->fast_cleared = 0;
@@ -163,6 +163,11 @@ cleanup_submit(struct fd_batch *batch)
       batch->prologue = NULL;
    }
 
+   if (batch->tile_epilogue) {
+      fd_ringbuffer_del(batch->tile_epilogue);
+      batch->tile_epilogue = NULL;
+   }
+
    if (batch->epilogue) {
       fd_ringbuffer_del(batch->epilogue);
       batch->epilogue = NULL;
@@ -194,9 +199,9 @@ batch_fini(struct fd_batch *batch)
 
    /* in case batch wasn't flushed but fence was created: */
    if (batch->fence)
-      fd_fence_set_batch(batch->fence, NULL);
+      fd_pipe_fence_set_batch(batch->fence, NULL);
 
-   fd_fence_ref(&batch->fence, NULL);
+   fd_pipe_fence_ref(&batch->fence, NULL);
 
    cleanup_submit(batch);
 
@@ -363,7 +368,7 @@ batch_flush(struct fd_batch *batch) assert_dt
    fd_screen_unlock(batch->ctx->screen);
 
    if (batch->fence)
-      fd_fence_ref(&batch->ctx->last_fence, batch->fence);
+      fd_pipe_fence_ref(&batch->ctx->last_fence, batch->fence);
 
    fd_gmem_render_tiles(batch);
 
@@ -403,12 +408,18 @@ recursive_dependents_mask(struct fd_batch *batch)
    return dependents_mask;
 }
 
+bool
+fd_batch_has_dep(struct fd_batch *batch, struct fd_batch *dep)
+{
+   return !!(batch->dependents_mask & (1 << dep->idx));
+}
+
 void
 fd_batch_add_dep(struct fd_batch *batch, struct fd_batch *dep)
 {
    fd_screen_assert_locked(batch->ctx->screen);
 
-   if (batch->dependents_mask & (1 << dep->idx))
+   if (fd_batch_has_dep(batch, dep))
       return;
 
    /* a loop should not be possible */
@@ -522,6 +533,11 @@ void
 fd_batch_check_size(struct fd_batch *batch)
 {
    if (FD_DBG(FLUSH)) {
+      fd_batch_flush(batch);
+      return;
+   }
+
+   if (batch->num_draws > 100000) {
       fd_batch_flush(batch);
       return;
    }

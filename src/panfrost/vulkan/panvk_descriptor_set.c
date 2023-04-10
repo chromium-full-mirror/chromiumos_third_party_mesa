@@ -64,7 +64,8 @@ panvk_GetDescriptorSetLayoutSupport(VkDevice _device,
    }
 
    unsigned sampler_idx = 0, tex_idx = 0, ubo_idx = 0;
-   unsigned dynoffset_idx = 0, img_idx = 0;
+   unsigned img_idx = 0;
+   UNUSED unsigned dynoffset_idx = 0;
 
    for (unsigned i = 0; i < pCreateInfo->bindingCount; i++) {
       const VkDescriptorSetLayoutBinding *binding = &bindings[i];
@@ -319,33 +320,6 @@ panvk_FreeDescriptorSets(VkDevice _device,
          panvk_descriptor_set_destroy(device, pool, set);
    }
    return VK_SUCCESS;
-}
-
-VkResult
-panvk_CreateDescriptorUpdateTemplate(VkDevice _device,
-                                     const VkDescriptorUpdateTemplateCreateInfo *pCreateInfo,
-                                     const VkAllocationCallbacks *pAllocator,
-                                     VkDescriptorUpdateTemplate *pDescriptorUpdateTemplate)
-{
-   panvk_stub();
-   return VK_SUCCESS;
-}
-
-void
-panvk_DestroyDescriptorUpdateTemplate(VkDevice _device,
-                                      VkDescriptorUpdateTemplate descriptorUpdateTemplate,
-                                      const VkAllocationCallbacks *pAllocator)
-{
-   panvk_stub();
-}
-
-void
-panvk_UpdateDescriptorSetWithTemplate(VkDevice _device,
-                                      VkDescriptorSet descriptorSet,
-                                      VkDescriptorUpdateTemplate descriptorUpdateTemplate,
-                                      const void *pData)
-{
-   panvk_stub();
 }
 
 VkResult

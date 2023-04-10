@@ -1102,22 +1102,6 @@ nir_visitor::visit(ir_call *ir)
       case ir_intrinsic_image_sparse_load:
          op = nir_intrinsic_image_deref_sparse_load;
          break;
-      case ir_intrinsic_ssbo_store:
-      case ir_intrinsic_ssbo_load:
-      case ir_intrinsic_ssbo_atomic_add:
-      case ir_intrinsic_ssbo_atomic_and:
-      case ir_intrinsic_ssbo_atomic_or:
-      case ir_intrinsic_ssbo_atomic_xor:
-      case ir_intrinsic_ssbo_atomic_min:
-      case ir_intrinsic_ssbo_atomic_max:
-      case ir_intrinsic_ssbo_atomic_exchange:
-      case ir_intrinsic_ssbo_atomic_comp_swap:
-         /* SSBO store/loads should only have been lowered in GLSL IR for
-          * non-nir drivers, NIR drivers make use of gl_nir_lower_buffers()
-          * instead.
-          */
-         unreachable("Invalid operation nir doesn't want lowered ssbo "
-                     "store/loads");
       case ir_intrinsic_shader_clock:
          op = nir_intrinsic_shader_clock;
          break;
@@ -1704,7 +1688,7 @@ nir_visitor::visit(ir_call *ir)
          nir_ssa_def *val = evaluate_rvalue(param_rvalue);
          nir_src src = nir_src_for_ssa(val);
 
-         nir_src_copy(&call->params[i], &src);
+         nir_src_copy(&call->params[i], &src, &call->instr);
       } else if (sig_param->data.mode == ir_var_function_inout) {
          unreachable("unimplemented: inout parameters");
       }
@@ -1886,30 +1870,20 @@ nir_visitor::visit(ir_expression *ir)
 
       deref->accept(this);
 
+      assert(nir_deref_mode_is(this->deref, nir_var_shader_in));
       nir_intrinsic_op op;
-      if (nir_deref_mode_is(this->deref, nir_var_shader_in)) {
-         switch (ir->operation) {
-         case ir_unop_interpolate_at_centroid:
-            op = nir_intrinsic_interp_deref_at_centroid;
-            break;
-         case ir_binop_interpolate_at_offset:
-            op = nir_intrinsic_interp_deref_at_offset;
-            break;
-         case ir_binop_interpolate_at_sample:
-            op = nir_intrinsic_interp_deref_at_sample;
-            break;
-         default:
-            unreachable("Invalid interpolation intrinsic");
-         }
-      } else {
-         /* This case can happen if the vertex shader does not write the
-          * given varying.  In this case, the linker will lower it to a
-          * global variable.  Since interpolating a variable makes no
-          * sense, we'll just turn it into a load which will probably
-          * eventually end up as an SSA definition.
-          */
-         assert(nir_deref_mode_is(this->deref, nir_var_shader_temp));
-         op = nir_intrinsic_load_deref;
+      switch (ir->operation) {
+      case ir_unop_interpolate_at_centroid:
+         op = nir_intrinsic_interp_deref_at_centroid;
+         break;
+      case ir_binop_interpolate_at_offset:
+         op = nir_intrinsic_interp_deref_at_offset;
+         break;
+      case ir_binop_interpolate_at_sample:
+         op = nir_intrinsic_interp_deref_at_sample;
+         break;
+      default:
+         unreachable("Invalid interpolation intrinsic");
       }
 
       nir_intrinsic_instr *intrin = nir_intrinsic_instr_create(shader, op);
@@ -2042,9 +2016,8 @@ nir_visitor::visit(ir_expression *ir)
    case ir_unop_u642i64: {
       nir_alu_type src_type = nir_get_nir_type_for_glsl_base_type(types[0]);
       nir_alu_type dst_type = nir_get_nir_type_for_glsl_base_type(out_type);
-      result = nir_build_alu(&b, nir_type_conversion_op(src_type, dst_type,
-                                 nir_rounding_mode_undef),
-                                 srcs[0], NULL, NULL, NULL);
+      result = nir_type_convert(&b, srcs[0], src_type, dst_type,
+                                nir_rounding_mode_undef);
       /* b2i and b2f don't have fixed bit-size versions so the builder will
        * just assume 32 and we have to fix it up here.
        */
@@ -2371,11 +2344,25 @@ nir_visitor::visit(ir_expression *ir)
       result = ir->type->is_int_16_32() ?
          nir_ibitfield_extract(&b, nir_i2i32(&b, srcs[0]), nir_i2i32(&b, srcs[1]), nir_i2i32(&b, srcs[2])) :
          nir_ubitfield_extract(&b, nir_u2u32(&b, srcs[0]), nir_i2i32(&b, srcs[1]), nir_i2i32(&b, srcs[2]));
+
+      if (ir->type->base_type == GLSL_TYPE_INT16) {
+         result = nir_i2i16(&b, result);
+      } else if (ir->type->base_type == GLSL_TYPE_UINT16) {
+         result = nir_u2u16(&b, result);
+      }
+
       break;
    case ir_quadop_bitfield_insert:
       result = nir_bitfield_insert(&b,
                                    nir_u2u32(&b, srcs[0]), nir_u2u32(&b, srcs[1]),
                                    nir_i2i32(&b, srcs[2]), nir_i2i32(&b, srcs[3]));
+
+      if (ir->type->base_type == GLSL_TYPE_INT16) {
+         result = nir_i2i16(&b, result);
+      } else if (ir->type->base_type == GLSL_TYPE_UINT16) {
+         result = nir_u2u16(&b, result);
+      }
+
       break;
    case ir_quadop_vector:
       result = nir_vec(&b, srcs, ir->type->vector_elements);
@@ -2384,6 +2371,11 @@ nir_visitor::visit(ir_expression *ir)
    default:
       unreachable("not reached");
    }
+
+   /* The bit-size of the NIR SSA value must match the bit-size of the
+    * original GLSL IR expression.
+    */
+   assert(result->bit_size == glsl_base_type_get_bit_size(ir->type->base_type));
 }
 
 void

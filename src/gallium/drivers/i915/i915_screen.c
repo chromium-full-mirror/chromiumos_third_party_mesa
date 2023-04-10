@@ -374,7 +374,7 @@ i915_get_shader_param(struct pipe_screen *screen, enum pipe_shader_type shader,
          return 0;
 
       default:
-         debug_printf("%s: Unknown cap %u.\n", __FUNCTION__, cap);
+         debug_printf("%s: Unknown cap %u.\n", __func__, cap);
          return 0;
       }
       break;
@@ -393,7 +393,6 @@ i915_get_param(struct pipe_screen *screen, enum pipe_cap cap)
    case PIPE_CAP_ANISOTROPIC_FILTER:
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
-   case PIPE_CAP_POINT_SPRITE:
    case PIPE_CAP_PRIMITIVE_RESTART: /* draw module */
    case PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
@@ -533,7 +532,7 @@ i915_get_paramf(struct pipe_screen *screen, enum pipe_capf cap)
       return 0.0f;
 
    default:
-      debug_printf("%s: Unknown cap %u.\n", __FUNCTION__, cap);
+      debug_printf("%s: Unknown cap %u.\n", __func__, cap);
       return 0;
    }
 }
@@ -669,7 +668,7 @@ i915_screen_create(struct i915_winsys *iws)
 
    default:
       debug_printf("%s: unknown pci id 0x%x, cannot create screen\n",
-                   __FUNCTION__, iws->pci_id);
+                   __func__, iws->pci_id);
       FREE(is);
       return NULL;
    }

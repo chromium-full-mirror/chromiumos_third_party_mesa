@@ -24,6 +24,8 @@
 #ifndef V3D_LIMITS_H
 #define V3D_LIMITS_H
 
+#define V3D_CL_MAX_INSTR_SIZE 25
+
 /* Number of channels a QPU thread executes in parallel.  Also known as
  * gl_SubGroupSizeARB.
  */
@@ -45,13 +47,16 @@
 #define V3D_MAX_POINT_SIZE 512.0f
 #define V3D_MAX_LINE_WIDTH 32
 
-#define V3D_MAX_BUFFER_RANGE (1 << 27)
+#define V3D_MAX_BUFFER_RANGE (1 << 30)
 
 /* Sub-pixel precission bits in the rasterizer */
 #define V3D_COORD_SHIFT 6
 
 /* Size of a cache line */
 #define V3D_NON_COHERENT_ATOM_SIZE 256
+
+/* Minimum alignment for texel buffers */
+#define V3D_TMU_TEXEL_ALIGN 64
 
 #define V3D_MAX_IMAGE_DIMENSION 4096
 

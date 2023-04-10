@@ -30,7 +30,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
  *   Keith Whitwell <keithw@vmware.com>
  */
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "main/bufferobj.h"
 #include "main/context.h"
 #include "main/macros.h"
@@ -211,6 +211,9 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
                 i == VBO_ATTRIB_MAT_BACK_SHININESS)
                ctx->NewState |= _NEW_FF_VERT_PROGRAM;
          } else {
+            if (i == VBO_ATTRIB_EDGEFLAG)
+               _mesa_update_edgeflag_state_vao(ctx);
+
             ctx->NewState |= _NEW_CURRENT_ATTRIB;
             ctx->PopAttribState |= GL_CURRENT_BIT;
          }
@@ -222,11 +225,16 @@ vbo_exec_copy_to_current(struct vbo_exec_context *exec)
        * directly.
        */
       /* Size here is in components - not bytes */
-      if (exec->vtx.attr[i].type != vbo->current[i].Format.Type ||
-          (exec->vtx.attr[i].size >> dmul_shift) != vbo->current[i].Format.Size) {
+      if (exec->vtx.attr[i].type != vbo->current[i].Format.User.Type ||
+          (exec->vtx.attr[i].size >> dmul_shift) != vbo->current[i].Format.User.Size) {
          vbo_set_vertex_format(&vbo->current[i].Format,
                                exec->vtx.attr[i].size >> dmul_shift,
                                exec->vtx.attr[i].type);
+         /* The format changed. We need to update gallium vertex elements.
+          * Material attributes don't need this because they don't have formats.
+          */
+         if (i <= VBO_ATTRIB_EDGEFLAG)
+            ctx->NewState |= _NEW_CURRENT_ATTRIB;
       }
    }
 
@@ -855,7 +863,8 @@ _mesa_Begin(GLenum mode)
     * leave dlist.c's dispatch table in place.
     */
    if (ctx->GLThread.enabled) {
-      ctx->CurrentServerDispatch = ctx->Exec;
+      if (ctx->CurrentServerDispatch == ctx->OutsideBeginEnd)
+         ctx->CurrentServerDispatch = ctx->Exec;
    } else if (ctx->CurrentClientDispatch == ctx->OutsideBeginEnd) {
       ctx->CurrentClientDispatch = ctx->CurrentServerDispatch = ctx->Exec;
       _glapi_set_dispatch(ctx->CurrentClientDispatch);
@@ -914,7 +923,10 @@ _mesa_End(void)
    ctx->Exec = ctx->OutsideBeginEnd;
 
    if (ctx->GLThread.enabled) {
-      ctx->CurrentServerDispatch = ctx->Exec;
+      if (ctx->CurrentServerDispatch == ctx->BeginEnd ||
+          ctx->CurrentServerDispatch == ctx->HWSelectModeBeginEnd) {
+         ctx->CurrentServerDispatch = ctx->Exec;
+      }
    } else if (ctx->CurrentClientDispatch == ctx->BeginEnd ||
               ctx->CurrentClientDispatch == ctx->HWSelectModeBeginEnd) {
       ctx->CurrentClientDispatch = ctx->CurrentServerDispatch = ctx->Exec;
@@ -1069,19 +1081,19 @@ _es_VertexAttrib4fvARB(GLuint indx, const GLfloat* values)
 
 
 void
-vbo_install_exec_vtxfmt(struct gl_context *ctx)
+vbo_init_dispatch_begin_end(struct gl_context *ctx)
 {
 #define NAME_AE(x) _mesa_##x
 #define NAME_CALLLIST(x) _mesa_##x
 #define NAME(x) _mesa_##x
 #define NAME_ES(x) _es_##x
 
-   struct _glapi_table *tab = ctx->Exec;
-   #include "api_vtxfmt_init.h"
+   struct _glapi_table *tab = ctx->OutsideBeginEnd;
+   #include "api_beginend_init.h"
 
    if (ctx->BeginEnd) {
       tab = ctx->BeginEnd;
-      #include "api_vtxfmt_init.h"
+      #include "api_beginend_init.h"
    }
 }
 
@@ -1243,7 +1255,7 @@ _es_Materialf(GLenum face, GLenum pname, GLfloat param)
 #include "vbo_attrib_tmp.h"
 
 void
-vbo_install_hw_select_begin_end(struct gl_context *ctx)
+vbo_init_dispatch_hw_select_begin_end(struct gl_context *ctx)
 {
    int numEntries = MAX2(_gloffset_COUNT, _glapi_get_dispatch_table_size());
    memcpy(ctx->HWSelectModeBeginEnd, ctx->BeginEnd, numEntries * sizeof(_glapi_proc));

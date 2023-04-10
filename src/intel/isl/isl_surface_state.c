@@ -158,6 +158,25 @@ void
 isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
                             const struct isl_surf_fill_state_info *restrict info)
 {
+#ifndef NDEBUG
+   isl_surf_usage_flags_t _base_usage =
+      info->view->usage & (ISL_SURF_USAGE_RENDER_TARGET_BIT |
+                           ISL_SURF_USAGE_TEXTURE_BIT |
+                           ISL_SURF_USAGE_STORAGE_BIT);
+   /* They may only specify one of the above bits at a time */
+   assert(__builtin_popcount(_base_usage) == 1);
+   /* The only other allowed bit is ISL_SURF_USAGE_CUBE_BIT */
+   assert((info->view->usage & ~ISL_SURF_USAGE_CUBE_BIT) == _base_usage);
+#endif
+
+   if (info->surf->dim == ISL_SURF_DIM_3D) {
+      assert(info->view->base_array_layer + info->view->array_len <=
+             info->surf->logical_level0_px.depth);
+   } else {
+      assert(info->view->base_array_layer + info->view->array_len <=
+             info->surf->logical_level0_px.array_len);
+   }
+
    struct GENX(RENDER_SURFACE_STATE) s = { 0 };
 
    s.SurfaceType = get_surftype(info->surf->dim, info->view->usage);
@@ -343,9 +362,16 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    }
 
 #if GFX_VER >= 12
-   /* Wa_1806565034: Only set SurfaceArray if arrayed surface is > 1. */
+   /* Wa_1806565034:
+    *
+    *    "Only set SurfaceArray if arrayed surface is > 1."
+    *
+    * Since this is a performance workaround, we only enable it when robust
+    * image access is disabled. Otherwise layered robust access is not
+    * specification compliant.
+    */
    s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D &&
-      info->view->array_len > 1;
+      (info->robust_image_access || info->view->array_len > 1);
 #elif GFX_VER >= 7
    s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D;
 #endif
@@ -374,6 +400,11 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
     */
    s.TiledResourceMode = NONE;
    s.MipTailStartLOD = 15;
+#endif
+
+#if GFX_VERx10 >= 125
+   /* Setting L1 caching policy to Write-back mode. */
+   s.L1CacheControl = L1CC_WB;
 #endif
 
 #if GFX_VER >= 6
@@ -612,6 +643,20 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 #if GFX_VER >= 12
       s.MemoryCompressionEnable = info->aux_usage == ISL_AUX_USAGE_MC;
+
+      /* The Tiger Lake PRM for RENDER_SURFACE_STATE::DecompressInL3 says:
+       *
+       *    When this field is set to 1h, the associated compressible surface,
+       *    when accessed by sampler and data-port, will be uncompressed in
+       *    L3. If the surface is not compressible, this bit field is ignored.
+       *
+       * The sampler's decompressor seems to lack support for some types of
+       * format re-interpretation. Use the more capable decompressor for these
+       * cases.
+       */
+      s.DecompressInL3 =
+         !isl_formats_have_same_bits_per_channel(info->surf->format,
+                                                 info->view->format);
 #endif
 #if GFX_VER >= 9
       /* Some CCS aux usages have format restrictions. The Skylake PRM doc for
@@ -862,7 +907,11 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 #endif
 
-#if GFX_VER >= 7
+#if GFX_VER >= 9
+   s.Height = ((num_elements - 1) >> 7) & 0x3fff;
+   s.Width = (num_elements - 1) & 0x7f;
+   s.Depth = ((num_elements - 1) >> 21) & 0x7ff;
+#elif GFX_VER >= 7
    s.Height = ((num_elements - 1) >> 7) & 0x3fff;
    s.Width = (num_elements - 1) & 0x7f;
    s.Depth = ((num_elements - 1) >> 21) & 0x3ff;
@@ -912,6 +961,11 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    s.MOCS = info->mocs;
 #endif
 
+#if GFX_VERx10 >= 125
+   /* Setting L1 caching policy to Write-back mode. */
+   s.L1CacheControl = L1CC_WB;
+#endif
+
 #if (GFX_VERx10 >= 75)
    s.ShaderChannelSelectRed = (enum GENX(ShaderChannelSelect)) info->swizzle.r;
    s.ShaderChannelSelectGreen = (enum GENX(ShaderChannelSelect)) info->swizzle.g;
@@ -923,8 +977,8 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
 }
 
 void
-isl_genX(null_fill_state)(const struct isl_device *dev, void *state,
-                          const struct isl_null_fill_state_info *restrict info)
+isl_genX(null_fill_state_s)(const struct isl_device *dev, void *state,
+                            const struct isl_null_fill_state_info *restrict info)
 {
    struct GENX(RENDER_SURFACE_STATE) s = {
       .SurfaceType = SURFTYPE_NULL,

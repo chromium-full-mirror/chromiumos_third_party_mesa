@@ -104,7 +104,6 @@ typedef uint32_t xcb_window_t;
    (MAX_DYNAMIC_UNIFORM_BUFFERS + MAX_DYNAMIC_STORAGE_BUFFERS)
 #define MAX_SAMPLES_LOG2 4
 #define NUM_META_FS_KEYS 13
-#define PANVK_MAX_DRM_DEVICES 1
 #define MAX_VIEWS 8
 
 #define NUM_DEPTH_CLEAR_PIPELINES 3
@@ -212,8 +211,6 @@ struct panvk_instance {
    struct vk_instance vk;
 
    uint32_t api_version;
-   int physical_device_count;
-   struct panvk_physical_device physical_devices[PANVK_MAX_DRM_DEVICES];
 
    enum panvk_debug_flags debug_flags;
 };
@@ -235,9 +232,6 @@ struct panvk_pipeline_cache {
    struct vk_object_base base;
    VkAllocationCallbacks alloc;
 };
-
-/* queue types */
-#define PANVK_QUEUE_GENERAL 0
 
 #define PANVK_MAX_QUEUE_FAMILIES 1
 
@@ -733,19 +727,9 @@ struct panvk_cmd_state {
 
 struct panvk_cmd_pool {
    struct vk_command_pool vk;
-   struct list_head active_cmd_buffers;
-   struct list_head free_cmd_buffers;
    struct panvk_bo_pool desc_bo_pool;
    struct panvk_bo_pool varying_bo_pool;
    struct panvk_bo_pool tls_bo_pool;
-};
-
-enum panvk_cmd_buffer_status {
-   PANVK_CMD_BUFFER_STATUS_INVALID,
-   PANVK_CMD_BUFFER_STATUS_INITIAL,
-   PANVK_CMD_BUFFER_STATUS_RECORDING,
-   PANVK_CMD_BUFFER_STATUS_EXECUTABLE,
-   PANVK_CMD_BUFFER_STATUS_PENDING,
 };
 
 struct panvk_cmd_bind_point_state {
@@ -758,26 +742,20 @@ struct panvk_cmd_buffer {
 
    struct panvk_device *device;
 
-   struct panvk_cmd_pool *pool;
-   struct list_head pool_link;
    struct panvk_pool desc_pool;
    struct panvk_pool varying_pool;
    struct panvk_pool tls_pool;
    struct list_head batches;
 
    VkCommandBufferUsageFlags usage_flags;
-   enum panvk_cmd_buffer_status status;
 
    struct panvk_cmd_state state;
-   uint32_t queue_family_index;
 
    uint8_t push_constants[MAX_PUSH_CONSTANTS_SIZE];
    VkShaderStageFlags push_constant_stages;
    struct panvk_descriptor_set meta_push_descriptors;
 
    struct panvk_cmd_bind_point_state bind_points[MAX_BIND_POINTS];
-
-   VkResult record_result;
 };
 
 #define panvk_cmd_get_bind_point_state(cmdbuf, bindpoint) \

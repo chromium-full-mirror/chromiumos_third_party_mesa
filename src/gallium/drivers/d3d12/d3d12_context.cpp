@@ -40,6 +40,7 @@
 #include "d3d12_video_proc.h"
 #include "d3d12_video_buffer.h"
 #endif
+#include "indices/u_primconvert.h"
 #include "util/u_atomic.h"
 #include "util/u_blitter.h"
 #include "util/u_dual_blend.h"
@@ -53,10 +54,6 @@
 #include "nir_to_dxil.h"
 
 #include <dxguids/dxguids.h>
-
-extern "C" {
-#include "indices/u_primconvert.h"
-}
 
 #include <string.h>
 
@@ -78,6 +75,9 @@ d3d12_context_destroy(struct pipe_context *pctx)
    if (ctx->dxil_validator)
       dxil_destroy_validator(ctx->dxil_validator);
 #endif
+
+   if (ctx->dev_config)
+      ctx->dev_config->Release();
 
    if (ctx->timestamp_query)
       pctx->destroy_query(pctx, ctx->timestamp_query);
@@ -102,6 +102,7 @@ d3d12_context_destroy(struct pipe_context *pctx)
    pipe_resource_reference(&ctx->pstipple.texture, nullptr);
    pipe_sampler_view_reference(&ctx->pstipple.sampler_view, nullptr);
    util_dynarray_fini(&ctx->recently_destroyed_bos);
+   util_dynarray_fini(&ctx->ended_queries);
    FREE(ctx->pstipple.sampler_cso);
 
    u_suballocator_destroy(&ctx->query_allocator);
@@ -2509,6 +2510,7 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    // Add d3d12 video functions entrypoints
    ctx->base.create_video_codec = d3d12_video_create_codec;
    ctx->base.create_video_buffer = d3d12_video_buffer_create;
+   ctx->base.video_buffer_from_handle = d3d12_video_buffer_from_handle;
 #endif
    slab_create_child(&ctx->transfer_pool, &d3d12_screen(pscreen)->transfer_pool);
    slab_create_child(&ctx->transfer_pool_unsync, &d3d12_screen(pscreen)->transfer_pool);
@@ -2542,13 +2544,9 @@ d3d12_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    d3d12_compute_transform_cache_init(ctx);
    d3d12_context_state_table_init(ctx);
 
-   util_dl_library *d3d12_mod = util_dl_open(UTIL_DL_PREFIX "d3d12" UTIL_DL_EXT);
-   if (!d3d12_mod) {
-      debug_printf("D3D12: failed to load D3D12.DLL\n");
-      return NULL;
-   }
    ctx->D3D12SerializeVersionedRootSignature =
-      (PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)util_dl_get_proc_address(d3d12_mod, "D3D12SerializeVersionedRootSignature");
+      (PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE)util_dl_get_proc_address(screen->d3d12_mod, "D3D12SerializeVersionedRootSignature");
+   (void)screen->dev->QueryInterface(&ctx->dev_config);
 
    ctx->submit_id = (uint64_t)p_atomic_add_return(&screen->ctx_count, 1) << 32ull;
 

@@ -26,7 +26,7 @@
  **************************************************************************/
 
 
-#include "pipe/p_config.h"
+#include "util/detect.h"
 
 #include "util/u_math.h"
 #include "util/u_cpu_detect.h"
@@ -41,7 +41,7 @@
 #include "lp_linear_priv.h"
 
 
-#if defined(PIPE_ARCH_SSE)
+#if DETECT_ARCH_SSE
 
 
 /* For debugging (LP_DEBUG=linear), shade areas of run-time fallback
@@ -87,7 +87,7 @@ lp_fs_linear_run(const struct lp_rast_state *state,
    const struct lp_tgsi_info *info = &variant->shader->info;
    uint8_t constants[LP_MAX_LINEAR_CONSTANTS * 4];
 
-   LP_DBG(DEBUG_RAST, "%s\n", __FUNCTION__);
+   LP_DBG(DEBUG_RAST, "%s\n", __func__);
 
    /* Require constant w in these rectangles:
     */
@@ -104,10 +104,10 @@ lp_fs_linear_run(const struct lp_rast_state *state,
    if (variant->shader->base.type == PIPE_SHADER_IR_TGSI) {
       nr_consts = (info->base.file_max[TGSI_FILE_CONSTANT] + 1) * 4;
    } else {
-      nr_consts = state->jit_context.num_constants[0];
+      nr_consts = state->jit_context.constants[0].num_elements;
    }
    for (int i = 0; i < nr_consts; i++){
-      float val = state->jit_context.constants[0][i];
+      float val = state->jit_context.constants[0].f[i];
       if (val < 0.0f || val > 1.0f) {
          if (LP_DEBUG & DEBUG_LINEAR2)
             debug_printf("  -- const[%d] out of range %f\n", i, val);
@@ -227,7 +227,7 @@ check_linear_interp_mask_a(struct lp_fragment_shader_variant *variant)
    const int nr_inputs = info->base.file_max[TGSI_FILE_INPUT]+1;
    const int nr_tex = info->num_texs;
 
-   LP_DBG(DEBUG_RAST, "%s\n", __FUNCTION__);
+   LP_DBG(DEBUG_RAST, "%s\n", __func__);
 
    jit.constants = (const uint8_t (*)[4])constants;
 
@@ -267,7 +267,7 @@ check_linear_interp_mask_b(struct lp_fragment_shader_variant *variant)
    unsigned tex_mask = 0;
    int i;
 
-   LP_DBG(DEBUG_RAST, "%s\n", __FUNCTION__);
+   LP_DBG(DEBUG_RAST, "%s\n", __func__);
 
    for (i = 0; i < nr_tex; i++) {
       const struct lp_tgsi_texture_info *tex_info = &info->tex[i];

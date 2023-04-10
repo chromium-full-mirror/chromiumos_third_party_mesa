@@ -117,7 +117,6 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         switch (param) {
                 /* Supported features (boolean caps). */
         case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
-        case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
         case PIPE_CAP_NPOT_TEXTURES:
         case PIPE_CAP_BLEND_EQUATION_SEPARATE:
         case PIPE_CAP_TEXTURE_MULTISAMPLE:
@@ -131,7 +130,6 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_EMULATE_NONFIXED_PRIMITIVE_RESTART:
         case PIPE_CAP_PRIMITIVE_RESTART:
         case PIPE_CAP_OCCLUSION_QUERY:
-        case PIPE_CAP_POINT_SPRITE:
         case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
         case PIPE_CAP_DRAW_INDIRECT:
         case PIPE_CAP_MULTI_DRAW_INDIRECT:
@@ -226,7 +224,6 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
                         return 0;
 
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
-        case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
                 return 1;
 
@@ -298,7 +295,7 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
                 return true;
 
         case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
-                return 256;
+                return V3D_TMU_TEXEL_ALIGN;
 
         case PIPE_CAP_IMAGE_STORE_FORMATTED:
                 return false;
@@ -346,7 +343,7 @@ v3d_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 }
 
 static int
-v3d_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
+v3d_screen_get_shader_param(struct pipe_screen *pscreen, enum pipe_shader_type shader,
                            enum pipe_shader_cap param)
 {
         struct v3d_screen *screen = v3d_screen(pscreen);
@@ -745,7 +742,7 @@ static const nir_shader_compiler_options v3d_nir_options = {
 
 static const void *
 v3d_screen_get_compiler_options(struct pipe_screen *pscreen,
-                                enum pipe_shader_ir ir, unsigned shader)
+                                enum pipe_shader_ir ir, enum pipe_shader_type shader)
 {
         return &v3d_nir_options;
 }
@@ -766,9 +763,25 @@ v3d_screen_query_dmabuf_modifiers(struct pipe_screen *pscreen,
         int i;
         int num_modifiers = ARRAY_SIZE(v3d_available_modifiers);
 
-        /* Expose DRM_FORMAT_MOD_BROADCOM_SAND128 only for PIPE_FORMAT_NV12 */
-        if (format != PIPE_FORMAT_NV12)
+        switch (format) {
+        case PIPE_FORMAT_P030:
+                /* Expose SAND128, but not LINEAR or UIF */
+                *count = 1;
+                if (modifiers && max > 0) {
+                        modifiers[0] = DRM_FORMAT_MOD_BROADCOM_SAND128;
+                        if (external_only)
+                                external_only[0] = true;
+                }
+                return;
+
+        case PIPE_FORMAT_NV12:
+                /* Expose UIF, LINEAR and SAND128 */
+                break;
+
+        default:
+                /* Expose UIF and LINEAR, but not SAND128 */
                 num_modifiers--;
+        }
 
         if (!modifiers) {
                 *count = num_modifiers;
@@ -790,18 +803,21 @@ v3d_screen_is_dmabuf_modifier_supported(struct pipe_screen *pscreen,
                                         bool *external_only)
 {
         int i;
-        bool is_sand_col128 = (format == PIPE_FORMAT_NV12) &&
+        bool is_sand_col128 = (format == PIPE_FORMAT_NV12 || format == PIPE_FORMAT_P030) &&
                 (fourcc_mod_broadcom_mod(modifier) == DRM_FORMAT_MOD_BROADCOM_SAND128);
 
         if (is_sand_col128) {
                 if (external_only)
                         *external_only = true;
                 return true;
+        } else if (format == PIPE_FORMAT_P030) {
+                /* For PIPE_FORMAT_P030 we don't expose LINEAR or UIF. */
+                return false;
         }
 
         /* We don't want to generally allow DRM_FORMAT_MOD_BROADCOM_SAND128
          * modifier, that is the last v3d_available_modifiers. We only accept
-         * it in the case of having a PIPE_FORMAT_NV12.
+         * it in the case of having a PIPE_FORMAT_NV12 or PIPE_FORMAT_P030.
          */
         assert(v3d_available_modifiers[ARRAY_SIZE(v3d_available_modifiers) - 1] ==
                DRM_FORMAT_MOD_BROADCOM_SAND128);

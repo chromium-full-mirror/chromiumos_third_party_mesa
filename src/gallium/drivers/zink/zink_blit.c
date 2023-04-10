@@ -1,4 +1,6 @@
+#include "zink_clear.h"
 #include "zink_context.h"
+#include "zink_format.h"
 #include "zink_kopper.h"
 #include "zink_helpers.h"
 #include "zink_query.h"
@@ -31,9 +33,17 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info, bool *
        info->alpha_blend)
       return false;
 
-   if (info->src.box.width != info->dst.box.width ||
-       info->src.box.height != info->dst.box.height ||
-       info->src.box.depth != info->dst.box.depth)
+   if (info->src.box.width < 0 ||
+       info->dst.box.width < 0 ||
+       info->src.box.height < 0 ||
+       info->dst.box.height < 0 ||
+       info->src.box.depth < 0 ||
+       info->dst.box.depth < 0)
+      return false;
+   /* vulkan resolves can't downscale */
+   if (info->src.box.width > info->dst.box.width ||
+       info->src.box.height > info->dst.box.height ||
+       info->src.box.depth > info->dst.box.depth)
       return false;
 
    if (info->render_condition_enable &&
@@ -109,14 +119,6 @@ blit_resolve(struct zink_context *ctx, const struct pipe_blit_info *info, bool *
    return true;
 }
 
-static VkFormatFeatureFlags
-get_resource_features(struct zink_screen *screen, struct zink_resource *res)
-{
-   VkFormatProperties props = screen->format_props[res->base.b.format];
-   return res->optimal_tiling ? props.optimalTilingFeatures :
-                                props.linearTilingFeatures;
-}
-
 static bool
 blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *needs_present_readback)
 {
@@ -131,7 +133,7 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *n
       return false;
 
    if (util_format_is_depth_or_stencil(info->dst.format) &&
-       info->dst.format != info->src.format)
+       (info->dst.format != info->src.format || info->filter == PIPE_TEX_FILTER_LINEAR))
       return false;
 
    /* vkCmdBlitImage must not be used for multisampled source or destination images. */
@@ -145,9 +147,11 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *n
    if (src->format != zink_get_format(screen, info->src.format) ||
        dst->format != zink_get_format(screen, info->dst.format))
       return false;
+   if (zink_format_is_emulated_alpha(info->src.format))
+      return false;
 
-   if (!(get_resource_features(screen, src) & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
-       !(get_resource_features(screen, dst) & VK_FORMAT_FEATURE_BLIT_DST_BIT))
+   if (!(src->obj->vkfeats & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ||
+       !(dst->obj->vkfeats & VK_FORMAT_FEATURE_BLIT_DST_BIT))
       return false;
 
    if ((util_format_is_pure_sint(info->src.format) !=
@@ -157,8 +161,7 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *n
       return false;
 
    if (info->filter == PIPE_TEX_FILTER_LINEAR &&
-       !(get_resource_features(screen, src) &
-          VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
+       !(src->obj->vkfeats & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
       return false;
 
    apply_dst_clears(ctx, info, false);
@@ -254,7 +257,8 @@ blit_native(struct zink_context *ctx, const struct pipe_blit_info *info, bool *n
    VKCTX(CmdBlitImage)(cmdbuf, src->obj->image, src->layout,
                   dst->obj->image, dst->layout,
                   1, &region,
-                  zink_filter(info->filter));
+                  /* VUID-vkCmdBlitImage-srcImage-00232: zs formats must use NEAREST filtering */
+                  util_format_is_depth_or_stencil(info->src.format) ? VK_FILTER_NEAREST : zink_filter(info->filter));
 
    return true;
 }
@@ -285,10 +289,6 @@ zink_blit(struct pipe_context *pctx,
    struct zink_context *ctx = zink_context(pctx);
    const struct util_format_description *src_desc = util_format_description(info->src.format);
    const struct util_format_description *dst_desc = util_format_description(info->dst.format);
-
-   if (info->render_condition_enable &&
-       unlikely(!zink_screen(pctx->screen)->info.have_EXT_conditional_rendering && !zink_check_conditional_render(ctx)))
-      return;
 
    struct zink_resource *src = zink_resource(info->src.resource);
    struct zink_resource *dst = zink_resource(info->dst.resource);
@@ -350,6 +350,7 @@ zink_blit(struct pipe_context *pctx,
    /* this will draw a full-resource quad, so ignore existing data */
    if (util_blit_covers_whole_resource(info))
       pctx->invalidate_resource(pctx, info->dst.resource);
+   ctx->blitting = true;
    zink_blit_begin(ctx, ZINK_BLIT_SAVE_FB | ZINK_BLIT_SAVE_FS | ZINK_BLIT_SAVE_TEXTURES);
 
    if (stencil_blit) {
@@ -360,7 +361,7 @@ zink_blit(struct pipe_context *pctx,
       util_blitter_clear_depth_stencil(ctx->blitter, dst_view, PIPE_CLEAR_STENCIL,
                                        0, 0, info->dst.box.x, info->dst.box.y,
                                        info->dst.box.width, info->dst.box.height);
-      zink_blit_begin(ctx, ZINK_BLIT_SAVE_FB | ZINK_BLIT_SAVE_FS | ZINK_BLIT_SAVE_TEXTURES);
+      zink_blit_begin(ctx, ZINK_BLIT_SAVE_FB | ZINK_BLIT_SAVE_FS | ZINK_BLIT_SAVE_TEXTURES | ZINK_BLIT_SAVE_FS_CONST_BUF);
       util_blitter_stencil_fallback(ctx->blitter,
                                     info->dst.resource,
                                     info->dst.level,
@@ -374,6 +375,7 @@ zink_blit(struct pipe_context *pctx,
    } else {
       util_blitter_blit(ctx->blitter, info);
    }
+   ctx->blitting = false;
 end:
    if (needs_present_readback)
       zink_kopper_present_readback(ctx, src);
@@ -387,23 +389,25 @@ zink_blit_begin(struct zink_context *ctx, enum zink_blit_flags flags)
    util_blitter_save_viewport(ctx->blitter, ctx->vp_state.viewport_states);
 
    util_blitter_save_vertex_buffer_slot(ctx->blitter, ctx->vertex_buffers);
-   util_blitter_save_vertex_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_VERTEX]);
-   util_blitter_save_tessctrl_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_TESS_CTRL]);
-   util_blitter_save_tesseval_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_TESS_EVAL]);
-   util_blitter_save_geometry_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_GEOMETRY]);
+   util_blitter_save_vertex_shader(ctx->blitter, ctx->gfx_stages[MESA_SHADER_VERTEX]);
+   util_blitter_save_tessctrl_shader(ctx->blitter, ctx->gfx_stages[MESA_SHADER_TESS_CTRL]);
+   util_blitter_save_tesseval_shader(ctx->blitter, ctx->gfx_stages[MESA_SHADER_TESS_EVAL]);
+   util_blitter_save_geometry_shader(ctx->blitter, ctx->gfx_stages[MESA_SHADER_GEOMETRY]);
    util_blitter_save_rasterizer(ctx->blitter, ctx->rast_state);
    util_blitter_save_so_targets(ctx->blitter, ctx->num_so_targets, ctx->so_targets);
 
+   if (flags & ZINK_BLIT_SAVE_FS_CONST_BUF)
+      util_blitter_save_fragment_constant_buffer_slot(ctx->blitter, ctx->ubos[MESA_SHADER_FRAGMENT]);
+
    if (flags & ZINK_BLIT_SAVE_FS) {
-      util_blitter_save_fragment_constant_buffer_slot(ctx->blitter, ctx->ubos[PIPE_SHADER_FRAGMENT]);
       util_blitter_save_blend(ctx->blitter, ctx->gfx_pipeline_state.blend_state);
       util_blitter_save_depth_stencil_alpha(ctx->blitter, ctx->dsa_state);
       util_blitter_save_stencil_ref(ctx->blitter, &ctx->stencil_ref);
-      util_blitter_save_sample_mask(ctx->blitter, ctx->gfx_pipeline_state.sample_mask, 0);
+      util_blitter_save_sample_mask(ctx->blitter, ctx->gfx_pipeline_state.sample_mask, ctx->gfx_pipeline_state.min_samples + 1);
       util_blitter_save_scissor(ctx->blitter, ctx->vp_state.scissor_states);
       /* also util_blitter_save_window_rectangles when we have that? */
 
-      util_blitter_save_fragment_shader(ctx->blitter, ctx->gfx_stages[PIPE_SHADER_FRAGMENT]);
+      util_blitter_save_fragment_shader(ctx->blitter, ctx->gfx_stages[MESA_SHADER_FRAGMENT]);
    }
 
    if (flags & ZINK_BLIT_SAVE_FB)
@@ -412,11 +416,11 @@ zink_blit_begin(struct zink_context *ctx, enum zink_blit_flags flags)
 
    if (flags & ZINK_BLIT_SAVE_TEXTURES) {
       util_blitter_save_fragment_sampler_states(ctx->blitter,
-                                                ctx->di.num_samplers[PIPE_SHADER_FRAGMENT],
-                                                (void**)ctx->sampler_states[PIPE_SHADER_FRAGMENT]);
+                                                ctx->di.num_samplers[MESA_SHADER_FRAGMENT],
+                                                (void**)ctx->sampler_states[MESA_SHADER_FRAGMENT]);
       util_blitter_save_fragment_sampler_views(ctx->blitter,
-                                               ctx->di.num_sampler_views[PIPE_SHADER_FRAGMENT],
-                                               ctx->sampler_views[PIPE_SHADER_FRAGMENT]);
+                                               ctx->di.num_sampler_views[MESA_SHADER_FRAGMENT],
+                                               ctx->sampler_views[MESA_SHADER_FRAGMENT]);
    }
 
    if (flags & ZINK_BLIT_NO_COND_RENDER && ctx->render_condition_active)

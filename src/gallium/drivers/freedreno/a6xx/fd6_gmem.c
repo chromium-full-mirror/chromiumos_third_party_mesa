@@ -25,6 +25,8 @@
  *    Rob Clark <robclark@freedesktop.org>
  */
 
+#define FD_BO_NO_HARDPIN 1
+
 #include <stdio.h>
 
 #include "pipe/p_state.h"
@@ -99,8 +101,6 @@ emit_mrt(struct fd_ringbuffer *ring, struct pipe_framebuffer_state *pfb,
       struct pipe_surface *psurf = pfb->cbufs[i];
       enum pipe_format pformat = psurf->format;
       rsc = fd_resource(psurf->texture);
-      if (!rsc->bo)
-         continue;
 
       uint32_t base = gmem ? gmem->cbuf_base[i] : 0;
       slice = fd_resource_slice(rsc, psurf->u.tex.level);
@@ -272,24 +272,33 @@ patch_fb_read_gmem(struct fd_batch *batch)
    fdl6_format_swiz(psurf->format, false, swiz);
 
    /* always TILE6_2 mode in GMEM, which also means no swap: */
-   uint32_t texconst0 = A6XX_TEX_CONST_0_FMT(fd6_texture_format(format, rsc->layout.tile_mode)) |
-          A6XX_TEX_CONST_0_SAMPLES(fd_msaa_samples(prsc->nr_samples)) |
-          A6XX_TEX_CONST_0_SWAP(WZYX) |
-          A6XX_TEX_CONST_0_TILE_MODE(TILE6_2) |
-          COND(util_format_is_srgb(format), A6XX_TEX_CONST_0_SRGB) |
-          A6XX_TEX_CONST_0_SWIZ_X(fdl6_swiz(swiz[0])) |
-          A6XX_TEX_CONST_0_SWIZ_Y(fdl6_swiz(swiz[1])) |
-          A6XX_TEX_CONST_0_SWIZ_Z(fdl6_swiz(swiz[2])) |
-          A6XX_TEX_CONST_0_SWIZ_W(fdl6_swiz(swiz[3]));
+   uint32_t descriptor[FDL6_TEX_CONST_DWORDS] = {
+         A6XX_TEX_CONST_0_FMT(fd6_texture_format(format, rsc->layout.tile_mode)) |
+         A6XX_TEX_CONST_0_SAMPLES(fd_msaa_samples(prsc->nr_samples)) |
+         A6XX_TEX_CONST_0_SWAP(WZYX) |
+         A6XX_TEX_CONST_0_TILE_MODE(TILE6_2) |
+         COND(util_format_is_srgb(format), A6XX_TEX_CONST_0_SRGB) |
+         A6XX_TEX_CONST_0_SWIZ_X(fdl6_swiz(swiz[0])) |
+         A6XX_TEX_CONST_0_SWIZ_Y(fdl6_swiz(swiz[1])) |
+         A6XX_TEX_CONST_0_SWIZ_Z(fdl6_swiz(swiz[2])) |
+         A6XX_TEX_CONST_0_SWIZ_W(fdl6_swiz(swiz[3])),
+
+         A6XX_TEX_CONST_1_WIDTH(pfb->width) |
+         A6XX_TEX_CONST_1_HEIGHT(pfb->height),
+
+         A6XX_TEX_CONST_2_PITCH(gmem->bin_w * gmem->cbuf_cpp[0]) |
+         A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D),
+
+         A6XX_TEX_CONST_3_ARRAY_PITCH(rsc->layout.layer_size),
+         A6XX_TEX_CONST_4_BASE_LO(screen->gmem_base),
+
+         A6XX_TEX_CONST_5_BASE_HI(screen->gmem_base >> 32) |
+         A6XX_TEX_CONST_5_DEPTH(1)
+   };
 
    for (unsigned i = 0; i < num_patches; i++) {
       struct fd_cs_patch *patch = fd_patch_element(&batch->fb_read_patches, i);
-      patch->cs[0] = texconst0;
-      patch->cs[2] = A6XX_TEX_CONST_2_PITCH(gmem->bin_w * gmem->cbuf_cpp[0]) |
-                     A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D);
-      patch->cs[4] = A6XX_TEX_CONST_4_BASE_LO(screen->gmem_base);
-      patch->cs[5] = A6XX_TEX_CONST_5_BASE_HI(screen->gmem_base >> 32) |
-                     A6XX_TEX_CONST_5_DEPTH(1);
+      memcpy(patch->cs, descriptor, FDL6_TEX_CONST_DWORDS * 4);
    }
    util_dynarray_clear(&batch->fb_read_patches);
 }
@@ -367,8 +376,6 @@ update_render_cntl(struct fd_batch *batch, struct pipe_framebuffer_state *pfb,
 
       struct pipe_surface *psurf = pfb->cbufs[i];
       struct fd_resource *rsc = fd_resource(psurf->texture);
-      if (!rsc->bo)
-         continue;
 
       if (fd_resource_ubwc_enabled(rsc, psurf->u.tex.level))
          mrts_ubwc_enable |= 1 << i;
@@ -787,8 +794,8 @@ emit_msaa(struct fd_ringbuffer *ring, unsigned nr)
             A6XX_RB_DEST_MSAA_CNTL_SAMPLES(samples) |
                COND(samples == MSAA_ONE, A6XX_RB_DEST_MSAA_CNTL_MSAA_DISABLE));
 
-   OUT_PKT4(ring, REG_A6XX_RB_MSAA_CNTL, 1);
-   OUT_RING(ring, A6XX_RB_MSAA_CNTL_SAMPLES(samples));
+   OUT_PKT4(ring, REG_A6XX_RB_BLIT_GMEM_MSAA_CNTL, 1);
+   OUT_RING(ring, A6XX_RB_BLIT_GMEM_MSAA_CNTL_SAMPLES(samples));
 }
 
 static void prepare_tile_setup_ib(struct fd_batch *batch);
@@ -964,12 +971,14 @@ fd6_emit_tile_prep(struct fd_batch *batch, const struct fd_tile *tile)
 static void
 set_blit_scissor(struct fd_batch *batch, struct fd_ringbuffer *ring)
 {
-   struct pipe_scissor_state blit_scissor = batch->max_scissor;
+   const struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
-   blit_scissor.minx = ROUND_DOWN_TO(blit_scissor.minx, 16);
-   blit_scissor.miny = ROUND_DOWN_TO(blit_scissor.miny, 4);
-   blit_scissor.maxx = ALIGN(blit_scissor.maxx, 16);
-   blit_scissor.maxy = ALIGN(blit_scissor.maxy, 4);
+   struct pipe_scissor_state blit_scissor;
+
+   blit_scissor.minx = 0;
+   blit_scissor.miny = 0;
+   blit_scissor.maxx = ALIGN(pfb->width, 16);
+   blit_scissor.maxy = ALIGN(pfb->height, 4);
 
    OUT_PKT4(ring, REG_A6XX_RB_BLIT_SCISSOR_TL, 2);
    OUT_RING(ring, A6XX_RB_BLIT_SCISSOR_TL_X(blit_scissor.minx) |
@@ -1433,14 +1442,17 @@ fd6_emit_tile(struct fd_batch *batch, const struct fd_tile *tile)
       emit_conditional_ib(batch, tile, batch->draw);
    }
 
-   if (batch->epilogue)
-      fd6_emit_ib(batch->gmem, batch->epilogue);
+   if (batch->tile_epilogue)
+      fd6_emit_ib(batch->gmem, batch->tile_epilogue);
 }
 
 static void
 fd6_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
 {
    struct fd_ringbuffer *ring = batch->gmem;
+
+   if (batch->epilogue)
+      fd6_emit_ib(batch->gmem, batch->epilogue);
 
    if (use_hw_binning(batch)) {
       OUT_PKT7(ring, CP_SET_MARKER, 1);
@@ -1501,6 +1513,9 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt
    if (!buffers)
       return;
 
+   struct pipe_box box2d;
+   u_box_2d(0, 0, pfb->width, pfb->height, &box2d);
+
    trace_start_clear_restore(&batch->trace, ring, buffers);
 
    if (buffers & PIPE_CLEAR_COLOR) {
@@ -1513,8 +1528,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt
          if (!(buffers & (PIPE_CLEAR_COLOR0 << i)))
             continue;
 
-         fd6_clear_surface(ctx, ring, pfb->cbufs[i], pfb->width, pfb->height,
-                           &color, 0);
+         fd6_clear_surface(ctx, ring, pfb->cbufs[i], &box2d, &color, 0);
       }
    }
    if (buffers & (PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL)) {
@@ -1529,7 +1543,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt
       if ((buffers & PIPE_CLEAR_DEPTH) || (!separate_stencil && (buffers & PIPE_CLEAR_STENCIL))) {
          value.f[0] = batch->clear_depth;
          value.ui[1] = batch->clear_stencil;
-         fd6_clear_surface(ctx, ring, pfb->zsbuf, pfb->width, pfb->height,
+         fd6_clear_surface(ctx, ring, pfb->zsbuf, &box2d,
                            &value, fd6_unknown_8c01(pfb->zsbuf->format, buffers));
       }
 
@@ -1540,8 +1554,7 @@ emit_sysmem_clears(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt
          stencil_surf.format = PIPE_FORMAT_S8_UINT;
          stencil_surf.texture = separate_stencil;
 
-         fd6_clear_surface(ctx, ring, &stencil_surf, pfb->width, pfb->height,
-                           &value, 0);
+         fd6_clear_surface(ctx, ring, &stencil_surf, &box2d, &value, 0);
       }
    }
 
@@ -1627,6 +1640,9 @@ fd6_emit_sysmem_fini(struct fd_batch *batch) assert_dt
    struct fd_ringbuffer *ring = batch->gmem;
 
    emit_common_fini(batch);
+
+   if (batch->tile_epilogue)
+      fd6_emit_ib(batch->gmem, batch->tile_epilogue);
 
    if (batch->epilogue)
       fd6_emit_ib(batch->gmem, batch->epilogue);

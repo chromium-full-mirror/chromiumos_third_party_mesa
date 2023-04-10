@@ -23,6 +23,7 @@
 // ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 
+#include <filesystem>
 #include <sstream>
 #include <mutex>
 
@@ -38,6 +39,7 @@
 #include <llvm-c/Target.h>
 #include <LLVMSPIRVLib/LLVMSPIRVLib.h>
 
+#include <clang/Driver/Driver.h>
 #include <clang/CodeGen/CodeGenAction.h>
 #include <clang/Lex/PreprocessorOptions.h>
 #include <clang/Frontend/CompilerInstance.h>
@@ -62,6 +64,8 @@
 #endif
 
 #include "clc_helpers.h"
+
+namespace fs = std::filesystem;
 
 /* Use the highest version of SPIRV supported by SPIRV-Tools. */
 constexpr spv_target_env spirv_target = SPV_ENV_UNIVERSAL_1_5;
@@ -764,9 +768,11 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
                                        &c->getDiagnosticOpts())
    };
 
+   const char *triple = args->address_bits == 32 ? "spir-unknown-unknown" : "spir64-unknown-unknown";
+
    std::vector<const char *> clang_opts = {
       args->source.name,
-      "-triple", "spir64-unknown-unknown",
+      "-triple", triple,
       // By default, clang prefers to use modules to pull in the default headers,
       // which doesn't work with our technique of embedding the headers in our binary
 #if LLVM_VERSION_MAJOR >= 15
@@ -785,7 +791,10 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
       // LLVM's optimizations can produce code that the translator can't translate
       "-O0",
       // Ensure inline functions are actually emitted
-      "-fgnu89-inline"
+      "-fgnu89-inline",
+      // Undefine clang added SPIR(V) defines so we don't magically enable extensions
+      "-U__SPIR__",
+      "-U__SPIRV__",
    };
    // We assume there's appropriate defines for __OPENCL_VERSION__ and __IMAGE_SUPPORT__
    // being provided by the caller here.
@@ -840,20 +849,31 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
       ::llvm::sys::path::append(system_header_path, "opencl-c.h");
       c->getPreprocessorOpts().addRemappedFile(system_header_path.str(),
          ::llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(opencl_c_source, ARRAY_SIZE(opencl_c_source) - 1)).release());
+      ::llvm::sys::path::remove_filename(system_header_path);
 #endif
 
-      ::llvm::sys::path::remove_filename(system_header_path);
       ::llvm::sys::path::append(system_header_path, "opencl-c-base.h");
       c->getPreprocessorOpts().addRemappedFile(system_header_path.str(),
          ::llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(opencl_c_base_source, ARRAY_SIZE(opencl_c_base_source) - 1)).release());
+
+#if LLVM_VERSION_MAJOR >= 15
+      c->getPreprocessorOpts().Includes.push_back("opencl-c-base.h");
+#endif
    }
 #else
+   // GetResourcePath is a way to retrive the actual libclang resource dir based on a given binary
+   // or library. The path doesn't even need to exist, we just have to put something in there,
+   // because we might have linked clang statically.
+   auto libclang_path = fs::path(LLVM_LIB_DIR) / "libclang.so";
+   auto clang_res_path =
+      fs::path(clang::driver::Driver::GetResourcesPath(libclang_path.string())) / "include";
+
    c->getHeaderSearchOpts().UseBuiltinIncludes = true;
    c->getHeaderSearchOpts().UseStandardSystemIncludes = true;
-   c->getHeaderSearchOpts().ResourceDir = CLANG_RESOURCE_DIR;
+   c->getHeaderSearchOpts().ResourceDir = clang_res_path.string();
 
    // Add opencl-c generic search path
-   c->getHeaderSearchOpts().AddPath(CLANG_RESOURCE_DIR,
+   c->getHeaderSearchOpts().AddPath(clang_res_path.string(),
                                     clang::frontend::Angled,
                                     false, false);
    // Add opencl include

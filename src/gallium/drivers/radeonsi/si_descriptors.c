@@ -939,54 +939,67 @@ static void si_images_update_needs_color_decompress_mask(struct si_images *image
    }
 }
 
+void si_force_disable_ps_colorbuf0_slot(struct si_context *sctx)
+{
+   if (sctx->ps_uses_fbfetch) {
+      sctx->ps_uses_fbfetch = false;
+      si_update_ps_iter_samples(sctx);
+   }
+}
+
 void si_update_ps_colorbuf0_slot(struct si_context *sctx)
 {
    struct si_buffer_resources *buffers = &sctx->internal_bindings;
    struct si_descriptors *descs = &sctx->descriptors[SI_DESCS_INTERNAL];
    unsigned slot = SI_PS_IMAGE_COLORBUF0;
    struct pipe_surface *surf = NULL;
+   struct si_texture *tex = NULL;
 
-   /* si_texture_disable_dcc can get us here again. */
-   if (sctx->in_update_ps_colorbuf0_slot || sctx->blitter_running) {
-      assert(!sctx->ps_uses_fbfetch || sctx->framebuffer.state.cbufs[0]);
+   /* FBFETCH is always disabled for u_blitter, and will be re-enabled after u_blitter is done. */
+   if (sctx->blitter_running || sctx->suppress_update_ps_colorbuf0_slot) {
+      assert(!sctx->ps_uses_fbfetch);
       return;
    }
-   sctx->in_update_ps_colorbuf0_slot = true;
 
-   /* See whether FBFETCH is used and color buffer 0 is set. */
+   /* Get the color buffer if FBFETCH should be enabled. */
    if (sctx->shader.ps.cso && sctx->shader.ps.cso->info.base.fs.uses_fbfetch_output &&
-       sctx->framebuffer.state.nr_cbufs && sctx->framebuffer.state.cbufs[0])
+       sctx->framebuffer.state.nr_cbufs && sctx->framebuffer.state.cbufs[0]) {
       surf = sctx->framebuffer.state.cbufs[0];
+      if (surf) {
+         tex = (struct si_texture *)surf->texture;
+         assert(tex && !tex->is_depth);
+      }
+   }
 
    /* Return if FBFETCH transitions from disabled to disabled. */
-   if (!buffers->buffers[slot] && !surf) {
-      assert(!sctx->ps_uses_fbfetch);
-      sctx->in_update_ps_colorbuf0_slot = false;
+   if (!sctx->ps_uses_fbfetch && !surf)
       return;
-   }
-
-   sctx->ps_uses_fbfetch = surf != NULL;
-   si_update_ps_iter_samples(sctx);
 
    if (surf) {
-      struct si_texture *tex = (struct si_texture *)surf->texture;
-      struct pipe_image_view view = {0};
+      bool disable_dcc = tex->surface.meta_offset != 0;
+      bool disable_cmask = tex->buffer.b.b.nr_samples <= 1 && tex->cmask_buffer;
 
-      assert(tex);
-      assert(!tex->is_depth);
-
-      /* Disable DCC, because the texture is used as both a sampler
+      /* Disable DCC and eliminate fast clear because the texture is used as both a sampler
        * and color buffer.
        */
-      si_texture_disable_dcc(sctx, tex);
+      if (disable_dcc || disable_cmask) {
+         /* Disable fbfetch only for decompression. */
+         si_force_disable_ps_colorbuf0_slot(sctx);
+         sctx->suppress_update_ps_colorbuf0_slot = true;
 
-      if (tex->buffer.b.b.nr_samples <= 1 && tex->cmask_buffer) {
-         /* Disable CMASK. */
-         assert(tex->cmask_buffer != &tex->buffer);
-         si_eliminate_fast_color_clear(sctx, tex, NULL);
-         si_texture_discard_cmask(sctx->screen, tex);
+         si_texture_disable_dcc(sctx, tex);
+
+         if (disable_cmask) {
+            assert(tex->cmask_buffer != &tex->buffer);
+            si_eliminate_fast_color_clear(sctx, tex, NULL);
+            si_texture_discard_cmask(sctx->screen, tex);
+         }
+
+         sctx->suppress_update_ps_colorbuf0_slot = false;
       }
 
+      /* Bind color buffer 0 as a shader image. */
+      struct pipe_image_view view = {0};
       view.resource = surf->texture;
       view.format = surf->format;
       view.access = PIPE_IMAGE_ACCESS_READ;
@@ -1011,7 +1024,9 @@ void si_update_ps_colorbuf0_slot(struct si_context *sctx)
    }
 
    sctx->descriptors_dirty |= 1u << SI_DESCS_INTERNAL;
-   sctx->in_update_ps_colorbuf0_slot = false;
+   sctx->ps_uses_fbfetch = surf != NULL;
+   si_update_ps_iter_samples(sctx);
+   si_ps_key_update_framebuffer(sctx);
 }
 
 /* SAMPLER STATES */
@@ -1158,32 +1173,6 @@ static void si_get_buffer_from_descriptors(struct si_buffer_resources *buffers,
       assert(va >= res->gpu_address && va + *size <= res->gpu_address + res->bo_size);
       *offset = va - res->gpu_address;
    }
-}
-
-/* VERTEX BUFFERS */
-
-static void si_vertex_buffers_begin_new_cs(struct si_context *sctx)
-{
-   int count = sctx->num_vertex_elements;
-   int i;
-
-   for (i = 0; i < count; i++) {
-      int vb = sctx->vertex_elements->vertex_buffer_index[i];
-
-      if (vb >= ARRAY_SIZE(sctx->vertex_buffer))
-         continue;
-      if (!sctx->vertex_buffer[vb].buffer.resource)
-         continue;
-
-      radeon_add_to_buffer_list(sctx, &sctx->gfx_cs,
-                                si_resource(sctx->vertex_buffer[vb].buffer.resource),
-                                RADEON_USAGE_READ | RADEON_PRIO_VERTEX_BUFFER);
-   }
-
-   if (!sctx->vb_descriptors_buffer)
-      return;
-   radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, sctx->vb_descriptors_buffer,
-                             RADEON_USAGE_READ | RADEON_PRIO_DESCRIPTORS);
 }
 
 /* CONSTANT BUFFERS */
@@ -1497,7 +1486,7 @@ void si_set_ring_buffer(struct si_context *sctx, uint slot, struct pipe_resource
 
       switch (element_size) {
       default:
-         assert(!"Unsupported ring buffer element size");
+         unreachable("Unsupported ring buffer element size");
       case 0:
       case 2:
          element_size = 0;
@@ -1515,7 +1504,7 @@ void si_set_ring_buffer(struct si_context *sctx, uint slot, struct pipe_resource
 
       switch (index_stride) {
       default:
-         assert(!"Unsupported ring buffer index stride");
+         unreachable("Unsupported ring buffer index stride");
       case 0:
       case 8:
          index_stride = 0;
@@ -1702,6 +1691,16 @@ void si_rebind_buffer(struct si_context *sctx, struct pipe_resource *buf)
    /* Vertex buffers. */
    if (!buffer) {
       sctx->vertex_buffers_dirty = num_elems > 0;
+
+      /* We don't know which buffer was invalidated, so we have to add all of them. */
+      for (unsigned i = 0; i < ARRAY_SIZE(sctx->vertex_buffer); i++) {
+         struct si_resource *buf = si_resource(sctx->vertex_buffer[i].buffer.resource);
+         if (buf) {
+            radeon_add_to_gfx_buffer_list_check_mem(sctx, buf,
+                                                    RADEON_USAGE_READ |
+                                                    RADEON_PRIO_VERTEX_BUFFER, true);
+         }
+      }
    } else if (buffer->bind_history & SI_BIND_VERTEX_BUFFER) {
       for (i = 0; i < num_elems; i++) {
          int vb = sctx->vertex_elements->vertex_buffer_index[i];
@@ -1713,6 +1712,9 @@ void si_rebind_buffer(struct si_context *sctx, struct pipe_resource *buf)
 
          if (sctx->vertex_buffer[vb].buffer.resource == buf) {
             sctx->vertex_buffers_dirty = num_elems > 0;
+            radeon_add_to_gfx_buffer_list_check_mem(sctx, buffer,
+                                                    RADEON_USAGE_READ |
+                                                    RADEON_PRIO_VERTEX_BUFFER, true);
             break;
          }
       }
@@ -2046,29 +2048,16 @@ static void si_mark_shader_pointers_dirty(struct si_context *sctx, unsigned shad
    sctx->shader_pointers_dirty |=
       u_bit_consecutive(SI_DESCS_FIRST_SHADER + shader * SI_NUM_SHADER_DESCS, SI_NUM_SHADER_DESCS);
 
-   if (shader == PIPE_SHADER_VERTEX) {
-      unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs(sctx->screen);
-
-      sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL &&
-                                          sctx->num_vertex_elements >
-                                          num_vbos_in_user_sgprs;
-      sctx->vertex_buffer_user_sgprs_dirty =
-         sctx->num_vertex_elements > 0 && num_vbos_in_user_sgprs;
-   }
+   if (shader == PIPE_SHADER_VERTEX)
+      sctx->vertex_buffers_dirty = sctx->num_vertex_elements > 0;
 
    si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
 }
 
 void si_shader_pointers_mark_dirty(struct si_context *sctx)
 {
-   unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs(sctx->screen);
-
    sctx->shader_pointers_dirty = u_bit_consecutive(0, SI_NUM_DESCS);
-   sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL &&
-                                       sctx->num_vertex_elements >
-                                       num_vbos_in_user_sgprs;
-   sctx->vertex_buffer_user_sgprs_dirty =
-      sctx->num_vertex_elements > 0 && num_vbos_in_user_sgprs;
+   sctx->vertex_buffers_dirty = sctx->num_vertex_elements > 0;
    si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
    sctx->graphics_bindless_pointer_dirty = sctx->bindless_descriptors.buffer != NULL;
    sctx->compute_bindless_pointer_dirty = sctx->bindless_descriptors.buffer != NULL;
@@ -2871,9 +2860,6 @@ void si_release_all_descriptors(struct si_context *sctx)
    for (i = 0; i < SI_NUM_DESCS; ++i)
       si_release_descriptors(&sctx->descriptors[i]);
 
-   si_resource_reference(&sctx->vb_descriptors_buffer, NULL);
-   sctx->vb_descriptors_gpu_list = NULL; /* points into a mapped buffer */
-
    si_release_bindless_descriptors(sctx);
 }
 
@@ -2951,7 +2937,14 @@ void si_gfx_resources_add_all_to_bo_list(struct si_context *sctx)
       si_image_views_begin_new_cs(sctx, &sctx->images[i]);
    }
    si_buffer_resources_begin_new_cs(sctx, &sctx->internal_bindings);
-   si_vertex_buffers_begin_new_cs(sctx);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(sctx->vertex_buffer); i++) {
+      struct si_resource *buf = si_resource(sctx->vertex_buffer[i].buffer.resource);
+      if (buf) {
+         radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, buf,
+                                   RADEON_USAGE_READ | RADEON_PRIO_VERTEX_BUFFER);
+      }
+   }
 
    if (sctx->bo_list_add_all_resident_resources)
       si_resident_buffers_add_all_to_bo_list(sctx);

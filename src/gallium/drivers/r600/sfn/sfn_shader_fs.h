@@ -39,17 +39,18 @@ public:
 
    bool process_stage_intrinsic(nir_intrinsic_instr *intr) override;
 
+   unsigned image_size_const_offset() override { return m_image_size_const_offset;}
+
 protected:
-
    static const int s_max_interpolators = 6;
-   bool interpolators_used(int i) const {return m_interpolators_used.test(i);}
-private:
+   bool interpolators_used(int i) const { return m_interpolators_used.test(i); }
 
+private:
    bool load_interpolated_input(nir_intrinsic_instr *intr);
 
    virtual int allocate_interpolators_or_inputs() = 0;
    virtual bool load_input_hw(nir_intrinsic_instr *intr) = 0;
-   virtual bool process_stage_intrinsic_hw(nir_intrinsic_instr *intr)  = 0;
+   virtual bool process_stage_intrinsic_hw(nir_intrinsic_instr *intr) = 0;
    virtual bool load_interpolated_input_hw(nir_intrinsic_instr *intr) = 0;
 
    bool do_scan_instruction(nir_instr *instr) override;
@@ -59,11 +60,10 @@ private:
 
    bool scan_input(nir_intrinsic_instr *instr, int index_src_id);
 
-
    bool emit_export_pixel(nir_intrinsic_instr& intr);
-   bool emit_load_sample_mask_in(nir_intrinsic_instr* instr);
-   bool emit_load_helper_invocation(nir_intrinsic_instr* instr);
-   bool emit_load_sample_pos(nir_intrinsic_instr* instr);
+   bool emit_load_sample_mask_in(nir_intrinsic_instr *instr);
+   bool emit_load_helper_invocation(nir_intrinsic_instr *instr);
+   bool emit_load_sample_pos(nir_intrinsic_instr *instr);
    void do_finalize() override;
 
    bool read_prop(std::istream& is) override;
@@ -75,7 +75,6 @@ private:
    unsigned m_export_highest;
    unsigned m_num_color_exports;
    unsigned m_color_export_mask;
-   unsigned m_depth_exports;
    ExportInstr *m_last_pixel_export;
 
    std::bitset<s_max_interpolators> m_interpolators_used;
@@ -93,11 +92,13 @@ private:
    int m_rat_base{0};
    int m_pos_driver_loc{0};
    int m_face_driver_loc{0};
+   int m_image_size_const_offset{0};
 };
 
 class FragmentShaderR600 : public FragmentShader {
 public:
    using FragmentShader::FragmentShader;
+
 private:
    int allocate_interpolators_or_inputs() override;
    bool load_input_hw(nir_intrinsic_instr *intr) override;
@@ -106,7 +107,6 @@ private:
 
    IOMap<RegisterVec4> m_interpolated_inputs;
 };
-
 
 class FragmentShaderEG : public FragmentShader {
 public:
@@ -123,7 +123,7 @@ private:
    };
 
    struct InterpolateParams {
-      PVirtualValue i,j;
+      PVirtualValue i, j;
       int base;
    };
 
@@ -133,20 +133,28 @@ private:
    bool load_interpolated_input_hw(nir_intrinsic_instr *intr) override;
 
    bool load_barycentric_pixel(nir_intrinsic_instr *intr);
-   bool load_barycentric_at_sample(nir_intrinsic_instr* instr);
-   bool load_barycentric_at_offset(nir_intrinsic_instr* instr);
-   bool load_interpolated(RegisterVec4& dest, const InterpolateParams& params,
-                          int num_dest_comp, int start_comp);
+   bool load_barycentric_at_sample(nir_intrinsic_instr *instr);
+   bool load_barycentric_at_offset(nir_intrinsic_instr *instr);
+   bool load_interpolated(RegisterVec4& dest,
+                          const InterpolateParams& params,
+                          int num_dest_comp,
+                          int start_comp);
 
-   bool load_interpolated_one_comp(RegisterVec4& dest, const InterpolateParams& params, EAluOp op);
-   bool load_interpolated_two_comp(RegisterVec4& dest, const InterpolateParams& params, EAluOp op, int writemask);
-   bool load_interpolated_two_comp_for_one(RegisterVec4& dest, const InterpolateParams& params, EAluOp op,
+   bool load_interpolated_one_comp(RegisterVec4& dest,
+                                   const InterpolateParams& params,
+                                   EAluOp op);
+   bool load_interpolated_two_comp(RegisterVec4& dest,
+                                   const InterpolateParams& params,
+                                   EAluOp op,
+                                   int writemask);
+   bool load_interpolated_two_comp_for_one(RegisterVec4& dest,
+                                           const InterpolateParams& params,
+                                           EAluOp op,
                                            int dest_slot);
 
    std::array<Interpolator, s_max_interpolators> m_interpolator;
-
 };
 
-}
+} // namespace r600
 
 #endif

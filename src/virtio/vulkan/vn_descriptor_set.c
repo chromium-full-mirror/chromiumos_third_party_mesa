@@ -16,8 +16,9 @@
 #include "venus-protocol/vn_protocol_driver_descriptor_update_template.h"
 
 #include "vn_device.h"
+#include "vn_pipeline.h"
 
-static void
+void
 vn_descriptor_set_layout_destroy(struct vn_device *dev,
                                  struct vn_descriptor_set_layout *layout)
 {
@@ -31,22 +32,6 @@ vn_descriptor_set_layout_destroy(struct vn_device *dev,
 
    vn_object_base_fini(&layout->base);
    vk_free(alloc, layout);
-}
-
-static inline struct vn_descriptor_set_layout *
-vn_descriptor_set_layout_ref(struct vn_device *dev,
-                             struct vn_descriptor_set_layout *layout)
-{
-   vn_refcount_inc(&layout->refcount);
-   return layout;
-}
-
-static inline void
-vn_descriptor_set_layout_unref(struct vn_device *dev,
-                               struct vn_descriptor_set_layout *layout)
-{
-   if (vn_refcount_dec(&layout->refcount))
-      vn_descriptor_set_layout_destroy(dev, layout);
 }
 
 static void
@@ -91,6 +76,8 @@ vn_descriptor_type_index(VkDescriptorType type)
       return VN_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
    case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
       return VN_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
+   case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
+      return VN_DESCRIPTOR_TYPE_MUTABLE_EXT;
    default:
       break;
    }
@@ -127,6 +114,10 @@ vn_descriptor_set_layout_init(
       vk_find_struct_const(create_info->pNext,
                            DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
 
+   const VkMutableDescriptorTypeCreateInfoEXT *mutable_descriptor_info =
+      vk_find_struct_const(create_info->pNext,
+                           MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
+
    /* 14.2.1. Descriptor Set Layout
     *
     * If bindingCount is zero or if this structure is not included in
@@ -135,6 +126,10 @@ vn_descriptor_set_layout_init(
     */
    if (binding_flags && !binding_flags->bindingCount)
       binding_flags = NULL;
+
+   layout->is_push_descriptor =
+      create_info->flags &
+      VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
 
    layout->refcount = VN_REFCOUNT_INIT(1);
    layout->last_binding = last_binding;
@@ -174,6 +169,19 @@ vn_descriptor_set_layout_init(
       case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
          binding->has_immutable_samplers = binding_info->pImmutableSamplers;
          break;
+      case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
+         assert(mutable_descriptor_info->mutableDescriptorTypeListCount &&
+                mutable_descriptor_info->pMutableDescriptorTypeLists[i]
+                   .descriptorTypeCount);
+
+         const VkMutableDescriptorTypeListEXT *list =
+            &mutable_descriptor_info->pMutableDescriptorTypeLists[i];
+         for (uint32_t j = 0; j < list->descriptorTypeCount; j++) {
+            BITSET_SET(binding->mutable_descriptor_types,
+                       vn_descriptor_type_index(list->pDescriptorTypes[j]));
+         }
+         break;
+
       default:
          break;
       }
@@ -285,16 +293,32 @@ vn_CreateDescriptorPool(VkDevice device,
       vk_find_struct_const(pCreateInfo->pNext,
                            DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO);
 
-   struct vn_descriptor_pool *pool =
-      vk_zalloc(alloc, sizeof(*pool), VN_DEFAULT_ALIGN,
-                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (!pool)
+   uint32_t mutable_states_count = 0;
+   for (uint32_t i = 0; i < pCreateInfo->poolSizeCount; i++) {
+      const VkDescriptorPoolSize *pool_size = &pCreateInfo->pPoolSizes[i];
+      if (pool_size->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT)
+         mutable_states_count++;
+   }
+   struct vn_descriptor_pool *pool;
+   struct vn_descriptor_pool_state_mutable *mutable_states;
+
+   VK_MULTIALLOC(ma);
+   vk_multialloc_add(&ma, &pool, __typeof__(*pool), 1);
+   vk_multialloc_add(&ma, &mutable_states, __typeof__(*mutable_states),
+                     mutable_states_count);
+
+   if (!vk_multialloc_zalloc(&ma, alloc, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT))
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vn_object_base_init(&pool->base, VK_OBJECT_TYPE_DESCRIPTOR_POOL,
                        &dev->base);
 
    pool->allocator = *alloc;
+   pool->mutable_states = mutable_states;
+
+   const VkMutableDescriptorTypeCreateInfoEXT *mutable_descriptor_info =
+      vk_find_struct_const(pCreateInfo->pNext,
+                           MUTABLE_DESCRIPTOR_TYPE_CREATE_INFO_EXT);
 
    /* Without VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, the set
     * allocation must not fail due to a fragmented pool per spec. In this
@@ -310,19 +334,56 @@ vn_CreateDescriptorPool(VkDevice device,
    if (iub_info)
       pool->max.iub_binding_count = iub_info->maxInlineUniformBlockBindings;
 
+   uint32_t next_mutable_state = 0;
    for (uint32_t i = 0; i < pCreateInfo->poolSizeCount; i++) {
       const VkDescriptorPoolSize *pool_size = &pCreateInfo->pPoolSizes[i];
       const uint32_t type_index = vn_descriptor_type_index(pool_size->type);
 
       assert(type_index < VN_NUM_DESCRIPTOR_TYPES);
 
-      pool->max.descriptor_counts[type_index] += pool_size->descriptorCount;
+      if (pool_size->type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT) {
+         struct vn_descriptor_pool_state_mutable *mutable_state = NULL;
+         BITSET_DECLARE(mutable_types, VN_NUM_DESCRIPTOR_TYPES);
+         if (!mutable_descriptor_info ||
+             i >= mutable_descriptor_info->mutableDescriptorTypeListCount) {
+            BITSET_ONES(mutable_types);
+         } else {
+            const VkMutableDescriptorTypeListEXT *list =
+               &mutable_descriptor_info->pMutableDescriptorTypeLists[i];
+
+            for (uint32_t j = 0; j < list->descriptorTypeCount; j++) {
+               BITSET_SET(mutable_types, vn_descriptor_type_index(
+                                            list->pDescriptorTypes[j]));
+            }
+         }
+         for (uint32_t j = 0; j < next_mutable_state; j++) {
+            if (BITSET_EQUAL(mutable_types, pool->mutable_states[j].types)) {
+               mutable_state = &pool->mutable_states[j];
+               break;
+            }
+         }
+
+         if (!mutable_state) {
+            /* The application must ensure that partial overlap does not
+             * exist in pPoolSizes. so this entry must have a disjoint set
+             * of types.
+             */
+            mutable_state = &pool->mutable_states[next_mutable_state++];
+            BITSET_COPY(mutable_state->types, mutable_types);
+         }
+
+         mutable_state->max += pool_size->descriptorCount;
+      } else {
+         pool->max.descriptor_counts[type_index] +=
+            pool_size->descriptorCount;
+      }
 
       assert((pCreateInfo->pPoolSizes[i].type !=
               VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) ||
              iub_info);
    }
 
+   pool->mutable_states_count = next_mutable_state;
    list_inithead(&pool->descriptor_sets);
 
    VkDescriptorPool pool_handle = vn_descriptor_pool_to_handle(pool);
@@ -365,6 +426,50 @@ vn_DestroyDescriptorPool(VkDevice device,
    vk_free(alloc, pool);
 }
 
+static struct vn_descriptor_pool_state_mutable *
+vn_find_mutable_state_for_binding(
+   const struct vn_descriptor_pool *pool,
+   const struct vn_descriptor_set_layout_binding *binding)
+{
+   for (uint32_t i = 0; i < pool->mutable_states_count; i++) {
+      struct vn_descriptor_pool_state_mutable *mutable_state =
+         &pool->mutable_states[i];
+      BITSET_DECLARE(shared_types, VN_NUM_DESCRIPTOR_TYPES);
+      BITSET_AND(shared_types, mutable_state->types,
+                 binding->mutable_descriptor_types);
+
+      if (BITSET_EQUAL(shared_types, binding->mutable_descriptor_types)) {
+         /* The application must ensure that partial overlap does not
+          * exist in pPoolSizes. so there should be at most 1
+          * matching pool entry for a binding.
+          */
+         return mutable_state;
+      }
+   }
+   return NULL;
+}
+
+static void
+vn_pool_restore_mutable_states(struct vn_descriptor_pool *pool,
+                               const struct vn_descriptor_set_layout *layout,
+                               uint32_t max_binding_index,
+                               uint32_t last_binding_descriptor_count)
+{
+   for (uint32_t i = 0; i <= max_binding_index; i++) {
+      if (layout->bindings[i].type != VK_DESCRIPTOR_TYPE_MUTABLE_EXT)
+         continue;
+
+      const uint32_t count = i == layout->last_binding
+                                ? last_binding_descriptor_count
+                                : layout->bindings[i].count;
+
+      struct vn_descriptor_pool_state_mutable *mutable_state =
+         vn_find_mutable_state_for_binding(pool, &layout->bindings[i]);
+      assert(mutable_state && mutable_state->used >= count);
+      mutable_state->used -= count;
+   }
+}
+
 static bool
 vn_descriptor_pool_alloc_descriptors(
    struct vn_descriptor_pool *pool,
@@ -384,38 +489,64 @@ vn_descriptor_pool_alloc_descriptors(
 
    ++pool->used.set_count;
 
-   for (uint32_t i = 0; i <= layout->last_binding; i++) {
-      const VkDescriptorType type = layout->bindings[i].type;
-      const uint32_t count = i == layout->last_binding
+   uint32_t binding_index = 0;
+
+   while (binding_index <= layout->last_binding) {
+      const VkDescriptorType type = layout->bindings[binding_index].type;
+      const uint32_t count = binding_index == layout->last_binding
                                 ? last_binding_descriptor_count
-                                : layout->bindings[i].count;
+                                : layout->bindings[binding_index].count;
 
       /* Allocation may fail if a call to vkAllocateDescriptorSets would cause
        * the total number of inline uniform block bindings allocated from the
        * pool to exceed the value of
        * VkDescriptorPoolInlineUniformBlockCreateInfo::maxInlineUniformBlockBindings
        * used to create the descriptor pool.
+       *
+       * If descriptorCount is zero this binding entry is reserved and the
+       * resource must not be accessed from any stage via this binding within
+       * any pipeline using the set layout.
        */
-      if (type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) {
-         if (++pool->used.iub_binding_count > pool->max.iub_binding_count) {
-            /* restore pool state before this allocation */
-            pool->used = recovery;
-            return false;
-         }
+      if (type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK && count != 0) {
+         if (++pool->used.iub_binding_count > pool->max.iub_binding_count)
+            goto fail;
       }
 
-      const uint32_t type_index = vn_descriptor_type_index(type);
-      pool->used.descriptor_counts[type_index] += count;
+      if (type == VK_DESCRIPTOR_TYPE_MUTABLE_EXT) {
+         /* A mutable descriptor can be allocated if below are satisfied:
+          * - vn_descriptor_pool_state_mutable::types is a superset
+          * - vn_descriptor_pool_state_mutable::{max - used} is enough
+          */
+         struct vn_descriptor_pool_state_mutable *mutable_state =
+            vn_find_mutable_state_for_binding(
+               pool, &layout->bindings[binding_index]);
 
-      if (pool->used.descriptor_counts[type_index] >
-          pool->max.descriptor_counts[type_index]) {
-         /* restore pool state before this allocation */
-         pool->used = recovery;
-         return false;
+         if (mutable_state &&
+             mutable_state->max - mutable_state->used >= count) {
+            mutable_state->used += count;
+         } else
+            goto fail;
+      } else {
+         const uint32_t type_index = vn_descriptor_type_index(type);
+         pool->used.descriptor_counts[type_index] += count;
+
+         if (pool->used.descriptor_counts[type_index] >
+             pool->max.descriptor_counts[type_index])
+            goto fail;
       }
+      binding_index++;
    }
 
    return true;
+
+fail:
+   /* restore pool state before this allocation */
+   pool->used = recovery;
+   if (binding_index > 0) {
+      vn_pool_restore_mutable_states(pool, layout, binding_index - 1,
+                                     last_binding_descriptor_count);
+   }
+   return false;
 }
 
 static void
@@ -427,16 +558,22 @@ vn_descriptor_pool_free_descriptors(
    if (!pool->async_set_allocation)
       return;
 
+   vn_pool_restore_mutable_states(pool, layout, layout->last_binding,
+                                  last_binding_descriptor_count);
+
    for (uint32_t i = 0; i <= layout->last_binding; i++) {
       const uint32_t count = i == layout->last_binding
                                 ? last_binding_descriptor_count
                                 : layout->bindings[i].count;
 
-      pool->used.descriptor_counts[vn_descriptor_type_index(
-         layout->bindings[i].type)] -= count;
+      if (layout->bindings[i].type != VK_DESCRIPTOR_TYPE_MUTABLE_EXT) {
+         pool->used.descriptor_counts[vn_descriptor_type_index(
+            layout->bindings[i].type)] -= count;
 
-      if (layout->bindings[i].type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
-         --pool->used.iub_binding_count;
+         if (layout->bindings[i].type ==
+             VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+            --pool->used.iub_binding_count;
+      }
    }
 
    --pool->used.set_count;
@@ -449,6 +586,9 @@ vn_descriptor_pool_reset_descriptors(struct vn_descriptor_pool *pool)
       return;
 
    memset(&pool->used, 0, sizeof(pool->used));
+
+   for (uint32_t i = 0; i < pool->mutable_states_count; i++)
+      pool->mutable_states[i].used = 0;
 }
 
 VkResult
@@ -659,10 +799,93 @@ vn_update_descriptor_sets_alloc(uint32_t write_count,
    return update;
 }
 
-static struct vn_update_descriptor_sets *
+bool
+vn_should_sanitize_descriptor_set_writes(uint32_t write_count,
+                                         const VkWriteDescriptorSet *writes,
+                                         VkPipelineLayout pipeline_layout_handle)
+{
+   /* the encoder does not ignore
+    * VkWriteDescriptorSet::{pImageInfo,pBufferInfo,pTexelBufferView} when it
+    * should
+    *
+    * TODO make the encoder smarter
+    */
+   const struct vn_pipeline_layout *pipeline_layout =
+      vn_pipeline_layout_from_handle(pipeline_layout_handle);
+   for (uint32_t i = 0; i < write_count; i++) {
+      const struct vn_descriptor_set_layout *set_layout =
+         pipeline_layout
+            ? pipeline_layout->push_descriptor_set_layout
+            : vn_descriptor_set_from_handle(writes[i].dstSet)->layout;
+      const struct vn_descriptor_set_layout_binding *binding =
+         &set_layout->bindings[writes[i].dstBinding];
+      const VkWriteDescriptorSet *write = &writes[i];
+      const VkDescriptorImageInfo *imgs = write->pImageInfo;
+
+      switch (write->descriptorType) {
+      case VK_DESCRIPTOR_TYPE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+         if (write->pBufferInfo != NULL || write->pTexelBufferView != NULL)
+            return true;
+
+         for (uint32_t j = 0; j < write->descriptorCount; j++) {
+            switch (write->descriptorType) {
+            case VK_DESCRIPTOR_TYPE_SAMPLER:
+               if (imgs[j].imageView != VK_NULL_HANDLE)
+                  return true;
+               FALLTHROUGH;
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+               if (binding->has_immutable_samplers &&
+                   imgs[j].sampler != VK_NULL_HANDLE)
+                  return true;
+               break;
+            case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+            case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+               if (imgs[j].sampler != VK_NULL_HANDLE)
+                  return true;
+               break;
+            default:
+               break;
+            }
+         }
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+         if (write->pImageInfo != NULL || write->pBufferInfo != NULL)
+            return true;
+
+         break;
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+         if (write->pImageInfo != NULL || write->pTexelBufferView != NULL)
+            return true;
+
+         break;
+      case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+      case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
+      default:
+         if (write->pImageInfo != NULL || write->pBufferInfo != NULL ||
+             write->pTexelBufferView != NULL)
+            return true;
+
+         break;
+      }
+   }
+
+   return false;
+}
+
+struct vn_update_descriptor_sets *
 vn_update_descriptor_sets_parse_writes(uint32_t write_count,
                                        const VkWriteDescriptorSet *writes,
-                                       const VkAllocationCallbacks *alloc)
+                                       const VkAllocationCallbacks *alloc,
+                                       VkPipelineLayout pipeline_layout_handle)
 {
    uint32_t img_count = 0;
    for (uint32_t i = 0; i < write_count; i++) {
@@ -694,11 +917,15 @@ vn_update_descriptor_sets_parse_writes(uint32_t write_count,
     */
    memcpy(update->writes, writes, sizeof(*writes) * write_count);
    img_count = 0;
+   const struct vn_pipeline_layout *pipeline_layout =
+      vn_pipeline_layout_from_handle(pipeline_layout_handle);
    for (uint32_t i = 0; i < write_count; i++) {
-      const struct vn_descriptor_set *set =
-         vn_descriptor_set_from_handle(writes[i].dstSet);
+      const struct vn_descriptor_set_layout *set_layout =
+         pipeline_layout
+            ? pipeline_layout->push_descriptor_set_layout
+            : vn_descriptor_set_from_handle(writes[i].dstSet)->layout;
       const struct vn_descriptor_set_layout_binding *binding =
-         &set->layout->bindings[writes[i].dstBinding];
+         &set_layout->bindings[writes[i].dstBinding];
       VkWriteDescriptorSet *write = &update->writes[i];
       VkDescriptorImageInfo *imgs = &update->images[img_count];
 
@@ -716,7 +943,7 @@ vn_update_descriptor_sets_parse_writes(uint32_t write_count,
             switch (write->descriptorType) {
             case VK_DESCRIPTOR_TYPE_SAMPLER:
                imgs[j].imageView = VK_NULL_HANDLE;
-               break;
+               FALLTHROUGH;
             case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
                if (binding->has_immutable_samplers)
                   imgs[j].sampler = VK_NULL_HANDLE;
@@ -748,6 +975,7 @@ vn_update_descriptor_sets_parse_writes(uint32_t write_count,
          write->pTexelBufferView = NULL;
          break;
       case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
+      case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
       default:
          write->pImageInfo = NULL;
          write->pBufferInfo = NULL;
@@ -771,8 +999,8 @@ vn_UpdateDescriptorSets(VkDevice device,
    const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
 
    struct vn_update_descriptor_sets *update =
-      vn_update_descriptor_sets_parse_writes(descriptorWriteCount,
-                                             pDescriptorWrites, alloc);
+      vn_update_descriptor_sets_parse_writes(
+         descriptorWriteCount, pDescriptorWrites, alloc, VK_NULL_HANDLE);
    if (!update) {
       /* TODO update one-by-one? */
       vn_log(dev->instance, "TODO descriptor set update ignored due to OOM");
@@ -822,6 +1050,8 @@ vn_update_descriptor_sets_parse_template(
          break;
       case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK:
          iub_count += 1;
+         break;
+      case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
          break;
       default:
          unreachable("unhandled descriptor type");
@@ -932,6 +1162,15 @@ vn_CreateDescriptorUpdateTemplate(
       return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
 
+   templ->is_push_descriptor =
+      pCreateInfo->templateType ==
+      VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_PUSH_DESCRIPTORS_KHR;
+   if (templ->is_push_descriptor) {
+      templ->pipeline_bind_point = pCreateInfo->pipelineBindPoint;
+      templ->pipeline_layout =
+         vn_pipeline_layout_from_handle(pCreateInfo->pipelineLayout);
+   }
+
    mtx_init(&templ->mutex, mtx_plain);
 
    /* no host object */
@@ -966,32 +1205,30 @@ vn_DestroyDescriptorUpdateTemplate(
    vk_free(alloc, templ);
 }
 
-void
-vn_UpdateDescriptorSetWithTemplate(
-   VkDevice device,
-   VkDescriptorSet descriptorSet,
-   VkDescriptorUpdateTemplate descriptorUpdateTemplate,
-   const void *pData)
+struct vn_update_descriptor_sets *
+vn_update_descriptor_set_with_template_locked(
+   struct vn_descriptor_update_template *templ,
+   struct vn_descriptor_set *set,
+   const void *data)
 {
-   VN_TRACE_FUNC();
-   struct vn_device *dev = vn_device_from_handle(device);
-   struct vn_descriptor_set *set =
-      vn_descriptor_set_from_handle(descriptorSet);
-   struct vn_descriptor_update_template *templ =
-      vn_descriptor_update_template_from_handle(descriptorUpdateTemplate);
    struct vn_update_descriptor_sets *update = templ->update;
-
-   /* duplicate update instead to avoid locking? */
-   mtx_lock(&templ->mutex);
 
    for (uint32_t i = 0; i < update->write_count; i++) {
       const struct vn_descriptor_update_template_entry *entry =
          &templ->entries[i];
+
+      const struct vn_descriptor_set_layout *set_layout =
+         templ->is_push_descriptor
+            ? templ->pipeline_layout->push_descriptor_set_layout
+            : set->layout;
       const struct vn_descriptor_set_layout_binding *binding =
-         &set->layout->bindings[update->writes[i].dstBinding];
+         &set_layout->bindings[update->writes[i].dstBinding];
+
       VkWriteDescriptorSet *write = &update->writes[i];
 
-      write->dstSet = vn_descriptor_set_to_handle(set);
+      write->dstSet = templ->is_push_descriptor
+                         ? VK_NULL_HANDLE
+                         : vn_descriptor_set_to_handle(set);
 
       switch (write->descriptorType) {
       case VK_DESCRIPTOR_TYPE_SAMPLER:
@@ -1008,7 +1245,7 @@ vn_UpdateDescriptorSetWithTemplate(
             const bool need_view =
                write->descriptorType != VK_DESCRIPTOR_TYPE_SAMPLER;
             const VkDescriptorImageInfo *src =
-               pData + entry->offset + entry->stride * j;
+               data + entry->offset + entry->stride * j;
             VkDescriptorImageInfo *dst =
                (VkDescriptorImageInfo *)&write->pImageInfo[j];
 
@@ -1021,7 +1258,7 @@ vn_UpdateDescriptorSetWithTemplate(
       case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
          for (uint32_t j = 0; j < write->descriptorCount; j++) {
             const VkBufferView *src =
-               pData + entry->offset + entry->stride * j;
+               data + entry->offset + entry->stride * j;
             VkBufferView *dst = (VkBufferView *)&write->pTexelBufferView[j];
             *dst = *src;
          }
@@ -1032,7 +1269,7 @@ vn_UpdateDescriptorSetWithTemplate(
       case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
          for (uint32_t j = 0; j < write->descriptorCount; j++) {
             const VkDescriptorBufferInfo *src =
-               pData + entry->offset + entry->stride * j;
+               data + entry->offset + entry->stride * j;
             VkDescriptorBufferInfo *dst =
                (VkDescriptorBufferInfo *)&write->pBufferInfo[j];
             *dst = *src;
@@ -1042,13 +1279,35 @@ vn_UpdateDescriptorSetWithTemplate(
          VkWriteDescriptorSetInlineUniformBlock *iub_data =
             (VkWriteDescriptorSetInlineUniformBlock *)vk_find_struct_const(
                write->pNext, WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK);
-         iub_data->pData = pData + entry->offset;
+         iub_data->pData = data + entry->offset;
+         break;
+      case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
          break;
       default:
          unreachable("unhandled descriptor type");
          break;
       }
    }
+   return update;
+}
+
+void
+vn_UpdateDescriptorSetWithTemplate(
+   VkDevice device,
+   VkDescriptorSet descriptorSet,
+   VkDescriptorUpdateTemplate descriptorUpdateTemplate,
+   const void *pData)
+{
+   VN_TRACE_FUNC();
+   struct vn_device *dev = vn_device_from_handle(device);
+   struct vn_descriptor_update_template *templ =
+      vn_descriptor_update_template_from_handle(descriptorUpdateTemplate);
+   struct vn_descriptor_set *set =
+      vn_descriptor_set_from_handle(descriptorSet);
+   mtx_lock(&templ->mutex);
+
+   struct vn_update_descriptor_sets *update =
+      vn_update_descriptor_set_with_template_locked(templ, set, pData);
 
    vn_async_vkUpdateDescriptorSets(dev->instance, device, update->write_count,
                                    update->writes, 0, NULL);

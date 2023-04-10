@@ -511,6 +511,27 @@ static void update_samples(struct tu_subpass *subpass,
 }
 
 static void
+tu_render_pass_calc_hash(struct tu_render_pass *pass)
+{
+   #define HASH(hash, data) XXH64(&(data), sizeof(data), hash)
+
+   uint64_t hash = HASH(0, pass->attachment_count);
+   hash = XXH64(pass->attachments,
+         pass->attachment_count * sizeof(pass->attachments[0]), hash);
+   hash = HASH(hash, pass->subpass_count);
+   for (unsigned i = 0; i < pass->subpass_count; i++) {
+      hash = HASH(hash, pass->subpasses[i].samples);
+      hash = HASH(hash, pass->subpasses[i].input_count);
+      hash = HASH(hash, pass->subpasses[i].color_count);
+      hash = HASH(hash, pass->subpasses[i].resolve_count);
+   }
+
+   pass->autotune_hash = hash;
+
+   #undef HASH
+}
+
+static void
 tu_render_pass_cond_config(struct tu_render_pass *pass)
 {
    for (uint32_t i = 0; i < pass->attachment_count; i++) {
@@ -529,20 +550,6 @@ tu_render_pass_gmem_config(struct tu_render_pass *pass,
 {
    for (enum tu_gmem_layout layout = 0; layout < TU_GMEM_LAYOUT_COUNT;
         layout++) {
-      /* From the VK_KHR_multiview spec:
-       *
-       *    Multiview is all-or-nothing for a render pass - that is, either all
-       *    subpasses must have a non-zero view mask (though some subpasses may
-       *    have only one view) or all must be zero.
-       *
-       * This means we only have to check one of the view masks.
-       */
-      if (pass->subpasses[0].multiview_mask) {
-         /* It seems multiview must use sysmem rendering. */
-         pass->gmem_pixels[layout] = 0;
-         continue;
-      }
-
       /* log2(gmem_align/(tile_align_w*tile_align_h)) */
       uint32_t block_align_shift = 3;
       uint32_t tile_align_w = phys_dev->info->tile_align_w;
@@ -551,14 +558,17 @@ tu_render_pass_gmem_config(struct tu_render_pass *pass,
 
       /* calculate total bytes per pixel */
       uint32_t cpp_total = 0;
+      uint32_t min_cpp = UINT32_MAX;
       for (uint32_t i = 0; i < pass->attachment_count; i++) {
          struct tu_render_pass_attachment *att = &pass->attachments[i];
          bool cpp1 = (att->cpp == 1);
          if (att->gmem) {
             cpp_total += att->cpp;
+            min_cpp = MIN2(min_cpp, att->cpp);
 
             /* take into account the separate stencil: */
             if (att->format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+               min_cpp = MIN2(min_cpp, att->samples);
                cpp1 = (att->samples == 1);
                cpp_total += att->samples;
             }
@@ -575,6 +585,7 @@ tu_render_pass_gmem_config(struct tu_render_pass *pass,
       }
 
       pass->tile_align_w = tile_align_w;
+      pass->min_cpp = min_cpp;
 
       /* no gmem attachments */
       if (cpp_total == 0) {
@@ -639,6 +650,9 @@ tu_render_pass_gmem_config(struct tu_render_pass *pass,
 static void
 tu_render_pass_bandwidth_config(struct tu_render_pass *pass)
 {
+   pass->gmem_bandwidth_per_pixel = 0;
+   pass->sysmem_bandwidth_per_pixel = 0;
+
    for (uint32_t i = 0; i < pass->attachment_count; i++) {
       const struct tu_render_pass_attachment *att = &pass->attachments[i];
 
@@ -833,9 +847,9 @@ tu_CreateRenderPass2(VkDevice _device,
       subpass->srgb_cntl = 0;
 
       const VkSubpassDescriptionFlagBits raster_order_access_bits =
-         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_ARM |
-         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_ARM |
-         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_BIT_ARM;
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_DEPTH_ACCESS_BIT_EXT |
+         VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_STENCIL_ACCESS_BIT_EXT;
 
       subpass->raster_order_attachment_access = desc->flags & raster_order_access_bits;
 
@@ -923,13 +937,14 @@ tu_CreateRenderPass2(VkDevice _device,
    tu_render_pass_cond_config(pass);
    tu_render_pass_gmem_config(pass, device->physical_device);
    tu_render_pass_bandwidth_config(pass);
+   tu_render_pass_calc_hash(pass);
 
    for (unsigned i = 0; i < pCreateInfo->dependencyCount; ++i) {
       tu_render_pass_add_subpass_dep(pass, &pCreateInfo->pDependencies[i]);
    }
 
    tu_render_pass_add_implicit_deps(pass, pCreateInfo);
- 
+
    *pRenderPass = tu_render_pass_to_handle(pass);
 
    return VK_SUCCESS;
@@ -984,6 +999,7 @@ tu_setup_dynamic_render_pass(struct tu_cmd_buffer *cmd_buffer,
    pass->attachments = cmd_buffer->dynamic_rp_attachments;
 
    subpass->color_count = subpass->resolve_count = info->colorAttachmentCount;
+   subpass->resolve_depth_stencil = false;
    subpass->color_attachments = cmd_buffer->dynamic_color_attachments;
    subpass->resolve_attachments = cmd_buffer->dynamic_resolve_attachments;
    subpass->feedback_invalidate = false;
@@ -1088,6 +1104,7 @@ tu_setup_dynamic_render_pass(struct tu_cmd_buffer *cmd_buffer,
    tu_render_pass_cond_config(pass);
    tu_render_pass_gmem_config(pass, device->physical_device);
    tu_render_pass_bandwidth_config(pass);
+   tu_render_pass_calc_hash(pass);
 }
 
 void
@@ -1102,6 +1119,7 @@ tu_setup_dynamic_inheritance(struct tu_cmd_buffer *cmd_buffer,
 
    subpass->color_count = info->colorAttachmentCount;
    subpass->resolve_count = 0;
+   subpass->resolve_depth_stencil = false;
    subpass->color_attachments = cmd_buffer->dynamic_color_attachments;
    subpass->resolve_attachments = NULL;
    subpass->feedback_invalidate = false;

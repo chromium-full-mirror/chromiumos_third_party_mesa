@@ -98,7 +98,7 @@ radv_init_wsi(struct radv_physical_device *physical_device)
 
    physical_device->wsi_device.supports_modifiers = physical_device->rad_info.gfx_level >= GFX9;
    physical_device->wsi_device.set_memory_ownership = radv_wsi_set_memory_ownership;
-   physical_device->wsi_device.get_buffer_blit_queue = radv_wsi_get_prime_blit_queue;
+   physical_device->wsi_device.get_blit_queue = radv_wsi_get_prime_blit_queue;
 
    wsi_device_setup_syncobj_fd(&physical_device->wsi_device, physical_device->local_fd);
 
@@ -112,13 +112,4 @@ radv_finish_wsi(struct radv_physical_device *physical_device)
 {
    physical_device->vk.wsi_device = NULL;
    wsi_device_finish(&physical_device->wsi_device, &physical_device->instance->vk.alloc);
-}
-
-VKAPI_ATTR VkResult VKAPI_CALL
-radv_QueuePresentKHR(VkQueue _queue, const VkPresentInfoKHR *pPresentInfo)
-{
-   RADV_FROM_HANDLE(radv_queue, queue, _queue);
-   return wsi_common_queue_present(&queue->device->physical_device->wsi_device,
-                                   radv_device_to_handle(queue->device), _queue,
-                                   queue->vk.queue_family_index, pPresentInfo);
 }

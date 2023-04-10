@@ -179,12 +179,16 @@ static bool
 vtn_mode_is_cross_invocation(struct vtn_builder *b,
                              enum vtn_variable_mode mode)
 {
+   /* TODO: add TCS here once nir_remove_unused_io_vars() can handle vector indexing. */
+   bool cross_invocation_outputs = b->shader->info.stage == MESA_SHADER_MESH;
    return mode == vtn_variable_mode_ssbo ||
           mode == vtn_variable_mode_ubo ||
           mode == vtn_variable_mode_phys_ssbo ||
           mode == vtn_variable_mode_push_constant ||
           mode == vtn_variable_mode_workgroup ||
-          mode == vtn_variable_mode_cross_workgroup;
+          mode == vtn_variable_mode_cross_workgroup ||
+          (cross_invocation_outputs && mode == vtn_variable_mode_output) ||
+          (b->shader->info.stage == MESA_SHADER_TASK && mode == vtn_variable_mode_task_payload);
 }
 
 static bool
@@ -206,7 +210,7 @@ vtn_access_link_as_ssa(struct vtn_builder *b, struct vtn_access_link link,
    } else {
       nir_ssa_def *ssa = vtn_ssa_value(b, link.id)->def;
       if (ssa->bit_size != bit_size)
-         ssa = nir_i2i(&b->nb, ssa, bit_size);
+         ssa = nir_i2iN(&b->nb, ssa, bit_size);
       return nir_imul_imm(&b->nb, ssa, stride);
    }
 }
@@ -1143,6 +1147,9 @@ vtn_get_builtin_location(struct vtn_builder *b,
    case SpvBuiltInPrimitiveCountNV:
       *location = VARYING_SLOT_PRIMITIVE_COUNT;
       break;
+   case SpvBuiltInPrimitivePointIndicesEXT:
+   case SpvBuiltInPrimitiveLineIndicesEXT:
+   case SpvBuiltInPrimitiveTriangleIndicesEXT:
    case SpvBuiltInPrimitiveIndicesNV:
       *location = VARYING_SLOT_PRIMITIVE_INDICES;
       break;
@@ -1158,6 +1165,9 @@ vtn_get_builtin_location(struct vtn_builder *b,
    case SpvBuiltInMeshViewIndicesNV:
       *location = SYSTEM_VALUE_MESH_VIEW_INDICES;
       set_mode_system_value(b, mode);
+      break;
+   case SpvBuiltInCullPrimitiveEXT:
+      *location = VARYING_SLOT_CULL_PRIMITIVE;
       break;
    default:
       vtn_fail("Unsupported builtin: %s (%u)",
@@ -1235,6 +1245,19 @@ apply_var_decoration(struct vtn_builder *b,
       case SpvBuiltInCullDistance:
       case SpvBuiltInCullDistancePerViewNV:
          var_data->compact = true;
+         break;
+      case SpvBuiltInPrimitivePointIndicesEXT:
+      case SpvBuiltInPrimitiveLineIndicesEXT:
+      case SpvBuiltInPrimitiveTriangleIndicesEXT:
+         /* Not defined as per-primitive in the EXT, but they behave
+          * like per-primitive outputs so it's easier to treat them like that.
+          * They may still require special treatment in the backend in order to
+          * control where and how they are stored.
+          *
+          * EXT_mesh_shader: write-only array of vectors indexed by the primitive index
+          * NV_mesh_shader: read/write flat array
+          */
+         var_data->per_primitive = true;
          break;
       default:
          break;
@@ -1579,6 +1602,10 @@ vtn_storage_class_to_mode(struct vtn_builder *b,
    case SpvStorageClassWorkgroup:
       mode = vtn_variable_mode_workgroup;
       nir_mode = nir_var_mem_shared;
+      break;
+   case SpvStorageClassTaskPayloadWorkgroupEXT:
+      mode = vtn_variable_mode_task_payload;
+      nir_mode = nir_var_mem_task_payload;
       break;
    case SpvStorageClassAtomicCounter:
       mode = vtn_variable_mode_atomic_counter;
@@ -2417,7 +2444,6 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
       struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_pointer);
 
       struct vtn_type *ptr_type = rzalloc(b, struct vtn_type);
-      ptr_type = rzalloc(b, struct vtn_type);
       ptr_type->base_type = vtn_base_type_pointer;
       ptr_type->deref = sampler_type;
       ptr_type->storage_class = SpvStorageClassUniform;

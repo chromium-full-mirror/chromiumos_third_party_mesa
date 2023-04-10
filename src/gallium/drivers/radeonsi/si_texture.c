@@ -446,7 +446,13 @@ static void si_reallocate_texture_inplace(struct si_context *sctx, struct si_tex
          return;
    }
 
-   new_tex = (struct si_texture *)screen->resource_create(screen, &templ);
+   /* Inherit the modifier from the old texture. */
+   if (tex->surface.modifier != DRM_FORMAT_MOD_INVALID && screen->resource_create_with_modifiers)
+      new_tex = (struct si_texture *)screen->resource_create_with_modifiers(screen, &templ,
+                                                                            &tex->surface.modifier, 1);
+   else
+      new_tex = (struct si_texture *)screen->resource_create(screen, &templ);
+
    if (!new_tex)
       return;
 
@@ -1149,10 +1155,12 @@ static struct si_texture *si_texture_create_object(struct pipe_screen *screen,
    if (sscreen->debug_flags & DBG(VM)) {
       fprintf(stderr,
               "VM start=0x%" PRIX64 "  end=0x%" PRIX64
-              " | Texture %ix%ix%i, %i levels, %i samples, %s\n",
+              " | Texture %ix%ix%i, %i levels, %i samples, %s | Flags: ",
               tex->buffer.gpu_address, tex->buffer.gpu_address + tex->buffer.buf->size,
               base->width0, base->height0, util_num_layers(base, 0), base->last_level + 1,
               base->nr_samples ? base->nr_samples : 1, util_format_short_name(base->format));
+      si_res_print_flags(tex->buffer.flags);
+      fprintf(stderr, "\n");
    }
 
    if (sscreen->debug_flags & DBG(TEX)) {
@@ -1630,8 +1638,7 @@ static struct pipe_resource *si_texture_from_winsys_buffer(struct si_screen *ssc
    }
 
    if (ac_surface_get_plane_offset(sscreen->info.gfx_level, &tex->surface, 0, 0) +
-        tex->surface.total_size > buf->size ||
-       buf->alignment_log2 < tex->surface.alignment_log2) {
+        tex->surface.total_size > buf->size) {
       si_texture_reference(&tex, NULL);
       return NULL;
    }

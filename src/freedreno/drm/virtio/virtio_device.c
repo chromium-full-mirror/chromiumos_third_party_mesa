@@ -35,7 +35,7 @@ virtio_device_destroy(struct fd_device *dev)
 {
    struct virtio_device *virtio_dev = to_virtio_device(dev);
 
-   fd_bo_del_locked(virtio_dev->shmem_bo);
+   fd_bo_del(virtio_dev->shmem_bo);
    util_vma_heap_finish(&virtio_dev->address_space);
 }
 
@@ -43,6 +43,7 @@ static const struct fd_device_funcs funcs = {
    .bo_new = virtio_bo_new,
    .bo_from_handle = virtio_bo_from_handle,
    .pipe_new = virtio_pipe_new,
+   .flush = virtio_execbuf_flush,
    .destroy = virtio_device_destroy,
 };
 
@@ -58,7 +59,7 @@ get_capset(int fd, struct virgl_renderer_capset_drm *caps)
 
    memset(caps, 0, sizeof(*caps));
 
-   return drmIoctl(fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args);
+   return virtio_ioctl(fd, VIRTGPU_GET_CAPS, &args);
 }
 
 static int
@@ -73,7 +74,7 @@ set_context(int fd)
       .ctx_set_params = VOID2U64(params),
    };
 
-   return drmIoctl(fd, DRM_IOCTL_VIRTGPU_CONTEXT_INIT, &args);
+   return virtio_ioctl(fd, VIRTGPU_CONTEXT_INIT, &args);
 }
 
 static void
@@ -258,7 +259,7 @@ execbuf_locked(struct fd_device *dev, void *cmd, uint32_t cmd_size,
          .num_bo_handles = num_handles,
    };
 
-   int ret = drmIoctl(dev->fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &eb);
+   int ret = virtio_ioctl(dev->fd, VIRTGPU_EXECBUFFER, &eb);
    if (ret) {
       ERROR_MSG("EXECBUFFER failed: %s", strerror(errno));
       return ret;
@@ -331,6 +332,7 @@ virtio_execbuf_flush(struct fd_device *dev)
 int
 virtio_execbuf(struct fd_device *dev, struct msm_ccmd_req *req, bool sync)
 {
+   MESA_TRACE_FUNC();
    struct virtio_device *virtio_dev = to_virtio_device(dev);
    int fence_fd, ret = 0;
 
@@ -359,9 +361,11 @@ out_unlock:
       return ret;
 
    if (sync) {
+      MESA_TRACE_BEGIN("virtio_execbuf sync");
       sync_wait(fence_fd, -1);
       close(fence_fd);
       virtio_host_sync(dev, req);
+      MESA_TRACE_END();
    }
 
    return 0;
@@ -385,6 +389,7 @@ virtio_host_sync(struct fd_device *dev, const struct msm_ccmd_req *req)
 int
 virtio_simple_ioctl(struct fd_device *dev, unsigned cmd, void *_req)
 {
+   MESA_TRACE_FUNC();
    unsigned req_len = sizeof(struct msm_ccmd_ioctl_simple_req);
    unsigned rsp_len = sizeof(struct msm_ccmd_ioctl_simple_rsp);
 

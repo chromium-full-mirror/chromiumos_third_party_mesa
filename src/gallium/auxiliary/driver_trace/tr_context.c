@@ -30,7 +30,7 @@
 #include "util/u_memory.h"
 #include "util/u_framebuffer.h"
 
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_screen.h"
 
 #include "tr_dump.h"
@@ -2276,6 +2276,52 @@ static void trace_context_make_image_handle_resident(struct pipe_context *_pipe,
    pipe->make_image_handle_resident(pipe, handle, access, resident);
 }
 
+static void trace_context_set_global_binding(struct pipe_context *_pipe,
+                                             unsigned first, unsigned count,
+                                             struct pipe_resource **resources,
+                                             uint32_t **handles)
+{
+   struct trace_context *tr_ctx = trace_context(_pipe);
+   struct pipe_context *pipe = tr_ctx->pipe;
+
+   trace_dump_call_begin("pipe_context", "set_global_binding");
+   trace_dump_arg(ptr, pipe);
+   trace_dump_arg(uint, first);
+   trace_dump_arg(uint, count);
+   trace_dump_arg_array(ptr, resources, count);
+   trace_dump_arg_array_val(uint, handles, count);
+
+   pipe->set_global_binding(pipe, first, count, resources, handles);
+
+   /* TODO: the handles are 64 bit if ADDRESS_BITS are 64, this is better than
+    * nothing though
+    */
+   trace_dump_ret_array_val(uint, handles, count);
+   trace_dump_call_end();
+}
+
+static void
+trace_context_set_hw_atomic_buffers(struct pipe_context *_pipe,
+                                    unsigned start_slot, unsigned count,
+                                    const struct pipe_shader_buffer *buffers)
+{
+   struct trace_context *tr_ctx = trace_context(_pipe);
+   struct pipe_context *pipe = tr_ctx->pipe;
+
+   trace_dump_call_begin("pipe_context", "set_global_binding");
+   trace_dump_arg(ptr, pipe);
+   trace_dump_arg(uint, start_slot);
+   trace_dump_arg(uint, count);
+
+   trace_dump_arg_begin("buffers");
+   trace_dump_struct_array(shader_buffer, buffers, count);
+   trace_dump_arg_end();
+
+   pipe->set_hw_atomic_buffers(pipe, start_slot, count, buffers);
+
+   trace_dump_call_end();
+}
+
 struct pipe_context *
 trace_context_create(struct trace_screen *tr_scr,
                      struct pipe_context *pipe)
@@ -2409,6 +2455,9 @@ trace_context_create(struct trace_screen *tr_scr,
    TR_CTX_INIT(invalidate_resource);
    TR_CTX_INIT(set_context_param);
    TR_CTX_INIT(set_debug_callback);
+   TR_CTX_INIT(set_global_binding);
+   TR_CTX_INIT(set_hw_atomic_buffers);
+
 
 #undef TR_CTX_INIT
 

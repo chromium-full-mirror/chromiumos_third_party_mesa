@@ -1,6 +1,6 @@
 variables:
   FDO_UPSTREAM_REPO: mesa/mesa
-  MESA_TEMPLATES_COMMIT: &ci-templates-commit 290b79e0e78eab67a83766f4e9691be554fc4afd
+  MESA_TEMPLATES_COMMIT: &ci-templates-commit d5aa3941aa03c2f716595116354fb81eb8012acb
   CI_PRE_CLONE_SCRIPT: |-
           set -o xtrace
           wget -q -O download-git-cache.sh ${CI_PROJECT_URL}/-/raw/${CI_COMMIT_SHA}/.gitlab-ci/download-git-cache.sh
@@ -8,7 +8,7 @@ variables:
           rm download-git-cache.sh
           set +o xtrace
   CI_JOB_JWT_FILE: /minio_jwt
-  MINIO_HOST: minio-packet.freedesktop.org
+  MINIO_HOST: s3.freedesktop.org
   # per-pipeline artifact storage on MinIO
   PIPELINE_ARTIFACTS_BASE: ${MINIO_HOST}/artifacts/${CI_PROJECT_PATH}/${CI_PIPELINE_ID}
   # per-job artifact storage on MinIO
@@ -22,6 +22,9 @@ variables:
   MICROSOFT_FARM: "online"
   LIMA_FARM: "online"
   IGALIA_FARM: "online"
+  ANHOLT_FARM: "online"
+  VALVE_FARM: "online"
+  AUSTRIANCODER_FARM: "online"  # only etnaviv GPUs
 
 default:
   before_script:
@@ -46,12 +49,13 @@ default:
 
 include:
   - project: 'freedesktop/ci-templates'
-    ref: 34f4ade99434043f88e164933f570301fd18b125
+    ref: ffe4d1b10aab7534489f0c4bbc4c5899df17d3f2
     file:
       - '/templates/ci-fairy.yml'
   - project: 'freedesktop/ci-templates'
     ref: *ci-templates-commit
     file:
+      - '/templates/alpine.yml'
       - '/templates/debian.yml'
       - '/templates/fedora.yml'
   - local: '.gitlab-ci/image-tags.yml'
@@ -70,7 +74,6 @@ include:
   - local: 'src/gallium/drivers/lima/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/llvmpipe/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/nouveau/ci/gitlab-ci.yml'
-  - local: 'src/gallium/drivers/radeonsi/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/softpipe/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/virgl/ci/gitlab-ci.yml'
   - local: 'src/gallium/drivers/zink/ci/gitlab-ci.yml'
@@ -78,6 +81,7 @@ include:
   - local: 'src/intel/ci/gitlab-ci.yml'
   - local: 'src/microsoft/ci/gitlab-ci.yml'
   - local: 'src/panfrost/ci/gitlab-ci.yml'
+  - local: 'src/virtio/ci/gitlab-ci.yml'
 
 stages:
   - sanity
@@ -85,6 +89,7 @@ stages:
   - git-archive
   - build-x86_64
   - build-misc
+  - lint
   - amd
   - intel
   - nouveau
@@ -125,21 +130,24 @@ stages:
 
 
 .docs-base:
+  variables:
+    BUILDER: html
   extends:
     - .fdo.ci-fairy
     - .build-rules
+  artifacts:
+    expose_as: 'Documentation preview'
+    paths:
+    - public/
   script:
   - apk --no-cache add graphviz doxygen
-  - pip3 install sphinx breathe mako sphinx_rtd_theme
+  - pip3 install sphinx===5.1.1 breathe===4.34.0 mako===1.2.3 sphinx_rtd_theme===1.0.0
   - docs/doxygen-wrapper.py --out-dir=docs/doxygen_xml
-  - sphinx-build -W -b html docs public
+  - sphinx-build -W -b $BUILDER docs public
 
 pages:
   extends: .docs-base
   stage: deploy
-  artifacts:
-    paths:
-    - public
   needs: []
   rules:
     - !reference [.no_scheduled_pipelines-rules, rules]
@@ -168,15 +176,23 @@ test-docs-mr:
     - test-docs
   needs:
     - sanity
-  artifacts:
-    expose_as: 'Documentation preview'
-    paths:
-    - public/
   rules:
     - if: *is-pre-merge
       changes: *docs-or-ci
       when: on_success
     # Other cases default to never
+
+lincheck-docs:
+  extends: .docs-base
+  # Cancel job if a newer commit is pushed to the same branch
+  interruptible: true
+  stage: deploy
+  needs: []
+  rules:
+    - !reference [.scheduled_pipeline-rules, rules]
+  allow_failure: true
+  variables:
+    BUILDER: linkcheck
 
 # When to automatically run the CI for build jobs
 .build-rules:
@@ -262,9 +278,7 @@ make git archive:
     # compress the current folder
     - tar -cvzf ../$CI_PROJECT_NAME.tar.gz .
 
-    # login with the JWT token file
-    - ci-fairy minio login --token-file "${CI_JOB_JWT_FILE}"
-    - ci-fairy minio cp ../$CI_PROJECT_NAME.tar.gz minio://$MINIO_HOST/git-cache/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME/$CI_PROJECT_NAME.tar.gz
+    - ci-fairy s3cp --token-file "${CI_JOB_JWT_FILE}" ../$CI_PROJECT_NAME.tar.gz https://$MINIO_HOST/git-cache/$CI_PROJECT_NAMESPACE/$CI_PROJECT_NAME/$CI_PROJECT_NAME.tar.gz
 
 
 # Sanity checks of MR settings and commit logs

@@ -138,6 +138,7 @@ files_libnir = files(
   'nir_lower_bool_to_bitsize.c',
   'nir_lower_bool_to_float.c',
   'nir_lower_bool_to_int32.c',
+  'nir_lower_cl_images.c',
   'nir_lower_clamp_color_outputs.c',
   'nir_lower_clip.c',
   'nir_lower_clip_cull_distance_arrays.c',
@@ -246,6 +247,7 @@ files_libnir = files(
   'nir_opt_memcpy.c',
   'nir_opt_move.c',
   'nir_opt_move_discards_to_top.c',
+  'nir_opt_non_uniform_access.c',
   'nir_opt_offsets.c',
   'nir_opt_peephole_select.c',
   'nir_opt_phi_precision.c',
@@ -260,6 +262,8 @@ files_libnir = files(
   'nir_opt_undef.c',
   'nir_opt_uniform_atomics.c',
   'nir_opt_vectorize.c',
+  'nir_passthrough_gs.c',
+  'nir_passthrough_tcs.c',
   'nir_phi_builder.c',
   'nir_phi_builder.h',
   'nir_print.c',
@@ -370,10 +374,12 @@ _libnir = static_library(
   build_by_default : false,
 )
 
+inc_nir = include_directories('.')
+
 # Headers-only dependency
 idep_nir_headers = declare_dependency(
   sources : [nir_opcodes_h, nir_builder_opcodes_h, nir_intrinsics_h, nir_intrinsics_indices_h],
-  include_directories : include_directories('.'),
+  include_directories : inc_nir,
 )
 
 # Also link with nir
@@ -393,9 +399,11 @@ if with_tests
         'tests/comparison_pre_tests.cpp',
         'tests/control_flow_tests.cpp',
         'tests/core_tests.cpp',
+        'tests/loop_analyze_tests.cpp',
         'tests/lower_returns_tests.cpp',
         'tests/negative_equal_tests.cpp',
         'tests/opt_if_tests.cpp',
+        'tests/opt_shrink_vectors_tests.cpp',
         'tests/serialize_tests.cpp',
         'tests/ssa_def_bits_used_tests.cpp',
         'tests/vars_tests.cpp',
@@ -430,7 +438,7 @@ if with_tests
     ),
     suite : ['compiler', 'nir'],
     # TODO: Use a negative filter for gtest instead of the expect failure here.
-    should_fail : meson.get_cross_property('xfail', '').contains('load_store_vectorizer'),
+    should_fail : meson.get_external_property('xfail', '').contains('load_store_vectorizer'),
     protocol : gtest_test_protocol,
   )
 

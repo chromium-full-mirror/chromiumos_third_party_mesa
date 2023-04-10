@@ -21,6 +21,7 @@
  * SOFTWARE.
  */
 
+#include "util/libsync.h"
 #include "util/slab.h"
 
 #include "freedreno_ringbuffer_sp.h"
@@ -48,6 +49,7 @@ query_param(struct fd_pipe *pipe, uint32_t param, uint64_t *value)
 static int
 query_queue_param(struct fd_pipe *pipe, uint32_t param, uint64_t *value)
 {
+   MESA_TRACE_FUNC();
    struct msm_ccmd_submitqueue_query_req req = {
          .hdr = MSM_CCMD(SUBMITQUEUE_QUERY, sizeof(req)),
          .queue_id = to_virtio_pipe(pipe)->queue_id,
@@ -97,7 +99,7 @@ virtio_pipe_get_param(struct fd_pipe *pipe, enum fd_param_id param,
       return 0;
    case FD_TIMESTAMP:
       return query_param(pipe, MSM_PARAM_TIMESTAMP, value);
-   case FD_NR_RINGS:
+   case FD_NR_PRIORITIES:
       *value = virtio_dev->caps.u.msm.priorities;
       return 0;
    case FD_CTX_FAULTS:
@@ -106,6 +108,9 @@ virtio_pipe_get_param(struct fd_pipe *pipe, enum fd_param_id param,
       return query_param(pipe, MSM_PARAM_FAULTS, value);
    case FD_SUSPEND_COUNT:
       return query_param(pipe, MSM_PARAM_SUSPENDS, value);
+   case FD_VA_SIZE:
+      *value = virtio_dev->caps.u.msm.va_size;
+      return 0;
    default:
       ERROR_MSG("invalid param id: %d", param);
       return -1;
@@ -115,6 +120,11 @@ virtio_pipe_get_param(struct fd_pipe *pipe, enum fd_param_id param,
 static int
 virtio_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeout)
 {
+   MESA_TRACE_FUNC();
+
+   if (fence->use_fence_fd)
+      return sync_wait(fence->fence_fd, timeout / 1000000);
+
    struct msm_ccmd_wait_fence_req req = {
          .hdr = MSM_CCMD(WAIT_FENCE, sizeof(req)),
          .queue_id = to_virtio_pipe(pipe)->queue_id,
@@ -151,12 +161,12 @@ open_submitqueue(struct fd_pipe *pipe, uint32_t prio)
       .flags = 0,
       .prio = prio,
    };
-   uint64_t nr_rings = 1;
+   uint64_t nr_prio = 1;
    int ret;
 
-   virtio_pipe_get_param(pipe, FD_NR_RINGS, &nr_rings);
+   virtio_pipe_get_param(pipe, FD_NR_PRIORITIES, &nr_prio);
 
-   req.prio = MIN2(req.prio, MAX2(nr_rings, 1) - 1);
+   req.prio = MIN2(req.prio, MAX2(nr_prio, 1) - 1);
 
    ret = virtio_simple_ioctl(pipe->dev, DRM_IOCTL_MSM_SUBMITQUEUE_NEW, &req);
    if (ret) {

@@ -24,7 +24,7 @@
 #define _NINE_PIPE_H_
 
 #include "d3d9.h"
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h" /* pipe_box */
 #include "util/macros.h"
@@ -374,6 +374,7 @@ d3d9_to_pipe_format_checked(struct pipe_screen *screen,
                 return PIPE_FORMAT_NONE;
             if (format_check_internal(PIPE_FORMAT_R8G8B8X8_UNORM))
                 return PIPE_FORMAT_R8G8B8X8_UNORM;
+            break;
         default:
             break;
     }

@@ -48,8 +48,15 @@ static uint8_t si_vectorize_callback(const nir_instr *instr, const void *data)
       return 0;
 
    nir_alu_instr *alu = nir_instr_as_alu(instr);
-   if (nir_dest_bit_size(alu->dest.dest) == 16)
-      return 2;
+   if (nir_dest_bit_size(alu->dest.dest) == 16) {
+      switch (alu->op) {
+      case nir_op_unpack_32_2x16_split_x:
+      case nir_op_unpack_32_2x16_split_y:
+         return 1;
+      default:
+         return 2;
+      }
+   }
 
    return 1;
 }
@@ -189,7 +196,7 @@ static void si_late_optimize_16bit_samplers(struct si_screen *sscreen, nir_shade
    };
    struct nir_fold_16bit_tex_image_options fold_16bit_options = {
       .rounding_mode = nir_rounding_mode_rtne,
-      .fold_tex_dest = true,
+      .fold_tex_dest_types = nir_type_float | nir_type_uint | nir_type_int,
       .fold_image_load_store_data = true,
       .fold_srcs_options_count = has_g16 ? 2 : 1,
       .fold_srcs_options = fold_srcs_options,
@@ -233,6 +240,16 @@ static bool si_lower_intrinsics(nir_shader *nir)
                                         NULL);
 }
 
+const nir_lower_subgroups_options si_nir_subgroups_options = {
+   .subgroup_size = 64,
+   .ballot_bit_size = 64,
+   .ballot_components = 1,
+   .lower_to_scalar = true,
+   .lower_subgroup_masks = true,
+   .lower_vote_trivial = false,
+   .lower_vote_eq = true,
+};
+
 /**
  * Perform "lowering" operations on the NIR that are run once when the shader
  * selector is created.
@@ -247,31 +264,24 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
     *   and copy-propagated
     */
 
-   static const struct nir_lower_tex_options lower_tex_options = {
+   const struct nir_lower_tex_options lower_tex_options = {
       .lower_txp = ~0u,
       .lower_txs_cube_array = true,
       .lower_invalid_implicit_lod = true,
       .lower_tg4_offsets = true,
+      .lower_to_fragment_fetch_amd = sscreen->info.gfx_level < GFX11,
    };
    NIR_PASS_V(nir, nir_lower_tex, &lower_tex_options);
 
-   static const struct nir_lower_image_options lower_image_options = {
+   const struct nir_lower_image_options lower_image_options = {
       .lower_cube_size = true,
+      .lower_to_fragment_mask_load_amd = sscreen->info.gfx_level < GFX11,
    };
    NIR_PASS_V(nir, nir_lower_image, &lower_image_options);
 
    NIR_PASS_V(nir, si_lower_intrinsics);
 
-   const nir_lower_subgroups_options subgroups_options = {
-      .subgroup_size = 64,
-      .ballot_bit_size = 64,
-      .ballot_components = 1,
-      .lower_to_scalar = true,
-      .lower_subgroup_masks = true,
-      .lower_vote_trivial = false,
-      .lower_vote_eq = true,
-   };
-   NIR_PASS_V(nir, nir_lower_subgroups, &subgroups_options);
+   NIR_PASS_V(nir, nir_lower_subgroups, &si_nir_subgroups_options);
 
    NIR_PASS_V(nir, nir_lower_discard_or_demote,
               (sscreen->debug_flags & DBG(FS_CORRECT_DERIVS_AFTER_KILL)) ||
@@ -289,6 +299,17 @@ static void si_lower_nir(struct si_screen *sscreen, struct nir_shader *nir)
        nir->info.stage == MESA_SHADER_TESS_EVAL ||
        nir->info.stage == MESA_SHADER_GEOMETRY)
       NIR_PASS_V(nir, nir_lower_io_to_scalar, nir_var_shader_out);
+
+   if (nir->info.stage == MESA_SHADER_GEOMETRY) {
+      unsigned flags = nir_lower_gs_intrinsics_per_stream;
+      if (sscreen->use_ngg) {
+         flags |= nir_lower_gs_intrinsics_count_primitives |
+            nir_lower_gs_intrinsics_count_vertices_per_primitive |
+            nir_lower_gs_intrinsics_overwrite_incomplete;
+      }
+
+      NIR_PASS_V(nir, nir_lower_gs_intrinsics, flags);
+   }
 
    if (nir->info.stage == MESA_SHADER_COMPUTE) {
       if (nir->info.cs.derivative_group == DERIVATIVE_GROUP_QUADS) {
@@ -335,12 +356,15 @@ char *si_finalize_nir(struct pipe_screen *screen, void *nirptr)
 
    nir_lower_io_passes(nir);
 
+   NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_shared, nir_address_format_32bit_offset);
+
    /* Remove dead derefs, so that we can remove uniforms. */
    NIR_PASS_V(nir, nir_opt_dce);
 
    /* Remove uniforms because those should have been lowered to UBOs already. */
    nir_foreach_variable_with_modes_safe(var, nir, nir_var_uniform) {
       if (!glsl_type_get_image_count(var->type) &&
+          !glsl_type_get_texture_count(var->type) &&
           !glsl_type_get_sampler_count(var->type))
          exec_node_remove(&var->node);
    }

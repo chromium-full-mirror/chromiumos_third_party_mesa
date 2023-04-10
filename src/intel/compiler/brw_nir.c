@@ -35,19 +35,54 @@ remap_tess_levels(nir_builder *b, nir_intrinsic_instr *intr,
 {
    const int location = nir_intrinsic_base(intr);
    const unsigned component = nir_intrinsic_component(intr);
-   bool out_of_bounds;
+   bool out_of_bounds = false;
+   bool write = !nir_intrinsic_infos[intr->intrinsic].has_dest;
+   unsigned mask = write ? nir_intrinsic_write_mask(intr) : 0;
+   nir_ssa_def *src = NULL, *dest = NULL;
+
+   if (write) {
+      assert(intr->src[0].is_ssa);
+      assert(intr->num_components == intr->src[0].ssa->num_components);
+   } else {
+      assert(intr->dest.is_ssa);
+      assert(intr->num_components == intr->dest.ssa.num_components);
+   }
 
    if (location == VARYING_SLOT_TESS_LEVEL_INNER) {
+      b->cursor = write ? nir_before_instr(&intr->instr)
+                        : nir_after_instr(&intr->instr);
+
       switch (_primitive_mode) {
       case TESS_PRIMITIVE_QUADS:
          /* gl_TessLevelInner[0..1] lives at DWords 3-2 (reversed). */
          nir_intrinsic_set_base(intr, 0);
-         nir_intrinsic_set_component(intr, 3 - component);
-         out_of_bounds = false;
+
+         if (write) {
+            assert(intr->src[0].ssa->num_components == 2);
+
+            intr->num_components = 4;
+
+            nir_ssa_def *undef = nir_ssa_undef(b, 1, 32);
+            nir_ssa_def *x = nir_channel(b, intr->src[0].ssa, 0);
+            nir_ssa_def *y = nir_channel(b, intr->src[0].ssa, 1);
+            src = nir_vec4(b, undef, undef, y, x);
+            mask = !!(mask & WRITEMASK_X) << 3 | !!(mask & WRITEMASK_Y) << 2;
+         } else if (intr->dest.ssa.num_components > 1) {
+            assert(intr->dest.ssa.num_components == 2);
+
+            intr->num_components = 4;
+            intr->dest.ssa.num_components = 4;
+
+            unsigned wz[2] = { 3, 2 };
+            dest = nir_swizzle(b, &intr->dest.ssa, wz, 2);
+         } else {
+            nir_intrinsic_set_component(intr, 3 - component);
+         }
          break;
       case TESS_PRIMITIVE_TRIANGLES:
          /* gl_TessLevelInner[0] lives at DWord 4. */
          nir_intrinsic_set_base(intr, 1);
+         mask &= WRITEMASK_X;
          out_of_bounds = component > 0;
          break;
       case TESS_PRIMITIVE_ISOLINES:
@@ -57,28 +92,75 @@ remap_tess_levels(nir_builder *b, nir_intrinsic_instr *intr,
          unreachable("Bogus tessellation domain");
       }
    } else if (location == VARYING_SLOT_TESS_LEVEL_OUTER) {
-      if (_primitive_mode == TESS_PRIMITIVE_ISOLINES) {
+      b->cursor = write ? nir_before_instr(&intr->instr)
+                        : nir_after_instr(&intr->instr);
+
+      nir_intrinsic_set_base(intr, 1);
+
+      switch (_primitive_mode) {
+      case TESS_PRIMITIVE_QUADS:
+      case TESS_PRIMITIVE_TRIANGLES:
+         /* Quads:     gl_TessLevelOuter[0..3] lives at DWords 7-4 (reversed).
+          * Triangles: gl_TessLevelOuter[0..2] lives at DWords 7-5 (reversed).
+          */
+         if (write) {
+            assert(intr->src[0].ssa->num_components == 4);
+
+            unsigned wzyx[4] = { 3, 2, 1, 0 };
+            src = nir_swizzle(b, intr->src[0].ssa, wzyx, 4);
+            mask = !!(mask & WRITEMASK_X) << 3 | !!(mask & WRITEMASK_Y) << 2 |
+                   !!(mask & WRITEMASK_Z) << 1 | !!(mask & WRITEMASK_W) << 0;
+
+            /* Don't overwrite the inner factor at DWord 4 for triangles */
+            if (_primitive_mode == TESS_PRIMITIVE_TRIANGLES)
+               mask &= ~WRITEMASK_X;
+         } else if (intr->dest.ssa.num_components > 1) {
+            assert(intr->dest.ssa.num_components == 4);
+
+            unsigned wzyx[4] = { 3, 2, 1, 0 };
+            dest = nir_swizzle(b, &intr->dest.ssa, wzyx, 4);
+         } else {
+            nir_intrinsic_set_component(intr, 3 - component);
+            out_of_bounds = component == 3 &&
+                            _primitive_mode == TESS_PRIMITIVE_TRIANGLES;
+         }
+         break;
+      case TESS_PRIMITIVE_ISOLINES:
          /* gl_TessLevelOuter[0..1] lives at DWords 6-7 (in order). */
-         nir_intrinsic_set_base(intr, 1);
-         nir_intrinsic_set_component(intr, 2 + nir_intrinsic_component(intr));
-         out_of_bounds = component > 1;
-      } else {
-         /* Triangles use DWords 7-5 (reversed); Quads use 7-4 (reversed) */
-         nir_intrinsic_set_base(intr, 1);
-         nir_intrinsic_set_component(intr, 3 - nir_intrinsic_component(intr));
-         out_of_bounds = component == 3 && _primitive_mode == TESS_PRIMITIVE_TRIANGLES;
+         if (write) {
+            assert(intr->src[0].ssa->num_components == 4);
+
+            nir_ssa_def *undef = nir_ssa_undef(b, 1, 32);
+            nir_ssa_def *x = nir_channel(b, intr->src[0].ssa, 0);
+            nir_ssa_def *y = nir_channel(b, intr->src[0].ssa, 1);
+            src = nir_vec4(b, undef, undef, x, y);
+            mask = !!(mask & WRITEMASK_X) << 2 | !!(mask & WRITEMASK_Y) << 3;
+         } else {
+            nir_intrinsic_set_component(intr, 2 + component);
+            out_of_bounds = component > 1;
+         }
+         break;
+      default:
+         unreachable("Bogus tessellation domain");
       }
    } else {
       return false;
    }
 
    if (out_of_bounds) {
-      if (nir_intrinsic_infos[intr->intrinsic].has_dest) {
-         b->cursor = nir_before_instr(&intr->instr);
-         nir_ssa_def *undef = nir_ssa_undef(b, 1, 32);
-         nir_ssa_def_rewrite_uses(&intr->dest.ssa, undef);
-      }
+      if (!write)
+         nir_ssa_def_rewrite_uses(&intr->dest.ssa, nir_ssa_undef(b, 1, 32));
       nir_instr_remove(&intr->instr);
+   } else if (write) {
+      nir_intrinsic_set_write_mask(intr, mask);
+
+      if (src) {
+         nir_instr_rewrite_src(&intr->instr, &intr->src[0],
+                               nir_src_for_ssa(src));
+      }
+   } else if (dest) {
+      nir_ssa_def_rewrite_uses_after(&intr->dest.ssa, dest,
+                                     dest->parent_instr);
    }
 
    return true;
@@ -536,7 +618,14 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
 
    do {
       progress = false;
-      OPT(nir_split_array_vars, nir_var_function_temp);
+      /* This pass is causing problems with types used by OpenCL :
+       *    https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/13955
+       *
+       * Running with it disabled made no difference in the resulting assembly
+       * code.
+       */
+      if (nir->info.stage != MESA_SHADER_KERNEL)
+         OPT(nir_split_array_vars, nir_var_function_temp);
       OPT(nir_shrink_vec_array_vars, nir_var_function_temp);
       OPT(nir_opt_deref);
       if (OPT(nir_opt_memcpy))
@@ -554,6 +643,7 @@ brw_nir_optimize(nir_shader *nir, const struct brw_compiler *compiler,
       OPT(nir_opt_combine_stores, nir_var_all);
 
       OPT(nir_opt_ray_queries);
+      OPT(nir_opt_ray_query_ranges);
 
       if (is_scalar) {
          OPT(nir_lower_alu_to_scalar, NULL, NULL);
@@ -810,7 +900,7 @@ lower_xehp_tg4_offset_filter(const nir_instr *instr, UNUSED const void *data)
  */
 void
 brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
-                   const nir_shader *softfp64)
+                   const struct brw_nir_compiler_opts *opts)
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
    UNUSED bool progress; /* Written by OPT */
@@ -831,7 +921,13 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
        !(devinfo->ver >= 10 || devinfo->platform == INTEL_PLATFORM_KBL))
       OPT(brw_nir_apply_trig_workarounds);
 
-   if (devinfo->ver >= 12)
+   /* This workaround existing for performance reasons. Since it requires not
+    * setting RENDER_SURFACE_STATE::SurfaceArray when the array length is 1,
+    * we're loosing the HW robustness feature in that case.
+    *
+    * So when robust image access is enabled, just avoid the workaround.
+    */
+   if (devinfo->ver >= 12 && !opts->robust_image_access)
       OPT(brw_nir_clamp_image_1d_2d_array_sizes);
 
    const nir_lower_tex_options tex_options = {
@@ -861,14 +957,14 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
 
    brw_nir_optimize(nir, compiler, is_scalar, true);
 
-   OPT(nir_lower_doubles, softfp64, nir->options->lower_doubles_options);
-   OPT(nir_lower_int64);
+   OPT(nir_lower_doubles, opts->softfp64, nir->options->lower_doubles_options);
+   if (OPT(nir_lower_int64)) {
+      OPT(nir_opt_algebraic);
+      OPT(nir_lower_doubles, opts->softfp64,
+          nir->options->lower_doubles_options);
+   }
 
    OPT(nir_lower_bit_size, lower_bit_size_callback, (void *)compiler);
-
-   if (is_scalar) {
-      OPT(nir_lower_load_const_to_scalar);
-   }
 
    /* Lower a bunch of stuff */
    OPT(nir_lower_var_copies);
@@ -880,8 +976,15 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
       OPT(nir_opt_large_constants, NULL, 32);
    }
 
+   if (is_scalar) {
+      OPT(nir_lower_load_const_to_scalar);
+   }
+
    OPT(nir_lower_system_values);
-   OPT(nir_lower_compute_system_values, NULL);
+   nir_lower_compute_system_values_options lower_csv_options = {
+      .has_base_workgroup_id = nir->info.stage == MESA_SHADER_COMPUTE,
+   };
+   OPT(nir_lower_compute_system_values, &lower_csv_options);
 
    const nir_lower_subgroups_options subgroups_options = {
       .ballot_bit_size = 32,
@@ -1001,6 +1104,11 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
    }
 
    NIR_PASS(_, producer, nir_lower_io_to_vector, nir_var_shader_out);
+
+   if (producer->info.stage == MESA_SHADER_TESS_CTRL &&
+       producer->options->vectorize_tess_levels)
+   NIR_PASS_V(producer, nir_vectorize_tess_levels);
+
    NIR_PASS(_, producer, nir_opt_combine_stores, nir_var_shader_out);
    NIR_PASS(_, consumer, nir_lower_io_to_vector, nir_var_shader_in);
 
@@ -1025,7 +1133,7 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
    }
 }
 
-static bool
+bool
 brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
                              unsigned bit_size,
                              unsigned num_components,
@@ -1157,15 +1265,16 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    } while (progress);
 
    if (devinfo->verx10 >= 125) {
+      /* Lower integer division by constants before nir_lower_idiv. */
+      OPT(nir_opt_idiv_const, 32);
       const nir_lower_idiv_options options = {
-         .imprecise_32bit_lowering = false,
          .allow_fp16 = false
       };
       OPT(nir_lower_idiv, &options);
    }
 
    if (gl_shader_stage_can_set_fragment_shading_rate(nir->info.stage))
-      brw_nir_lower_shading_rate_output(nir);
+      NIR_PASS(_, nir, brw_nir_lower_shading_rate_output);
 
    brw_nir_optimize(nir, compiler, is_scalar, false);
 
@@ -1187,6 +1296,9 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
       /* Try and fuse multiply-adds */
       OPT(brw_nir_opt_peephole_ffma);
    }
+
+   if (is_scalar)
+      OPT(brw_nir_opt_peephole_imul32x16);
 
    if (OPT(nir_opt_comparison_pre)) {
       OPT(nir_copy_prop);
@@ -1346,19 +1458,6 @@ brw_nir_apply_sampler_key(nir_shader *nir,
    /* Prior to Haswell, we have to lower gradients on shadow samplers */
    tex_options.lower_txd_shadow = devinfo->verx10 <= 70;
 
-   tex_options.lower_y_uv_external = key_tex->y_uv_image_mask;
-   tex_options.lower_y_u_v_external = key_tex->y_u_v_image_mask;
-   tex_options.lower_yx_xuxv_external = key_tex->yx_xuxv_image_mask;
-   tex_options.lower_xy_uxvx_external = key_tex->xy_uxvx_image_mask;
-   tex_options.lower_ayuv_external = key_tex->ayuv_image_mask;
-   tex_options.lower_xyuv_external = key_tex->xyuv_image_mask;
-   tex_options.bt709_external = key_tex->bt709_mask;
-   tex_options.bt2020_external = key_tex->bt2020_mask;
-
-   /* Setup array of scaling factors for each texture. */
-   memcpy(&tex_options.scale_factors, &key_tex->scale_factors,
-          sizeof(tex_options.scale_factors));
-
    return nir_lower_tex(nir, &tex_options);
 }
 
@@ -1397,7 +1496,8 @@ get_subgroup_size(const struct shader_info *info, unsigned max_subgroup_size)
    case SUBGROUP_SIZE_REQUIRE_8:
    case SUBGROUP_SIZE_REQUIRE_16:
    case SUBGROUP_SIZE_REQUIRE_32:
-      assert(gl_shader_stage_uses_workgroup(info->stage));
+      assert(gl_shader_stage_uses_workgroup(info->stage) ||
+             (info->stage >= MESA_SHADER_RAYGEN && info->stage <= MESA_SHADER_CALLABLE));
       /* These enum values are expressly chosen to be equal to the subgroup
        * size that they require.
        */
@@ -1410,6 +1510,13 @@ get_subgroup_size(const struct shader_info *info, unsigned max_subgroup_size)
    }
 
    unreachable("Invalid subgroup size type");
+}
+
+unsigned
+brw_nir_api_subgroup_size(const nir_shader *nir,
+                          unsigned hw_subgroup_size)
+{
+   return get_subgroup_size(&nir->info, hw_subgroup_size);
 }
 
 void
@@ -1595,9 +1702,10 @@ brw_type_for_nir_type(const struct intel_device_info *devinfo,
 
 nir_shader *
 brw_nir_create_passthrough_tcs(void *mem_ctx, const struct brw_compiler *compiler,
-                               const nir_shader_compiler_options *options,
                                const struct brw_tcs_prog_key *key)
 {
+   const nir_shader_compiler_options *options =
+      compiler->nir_options[MESA_SHADER_TESS_CTRL];
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_TESS_CTRL,
                                                   options, "passthrough TCS");
    ralloc_steal(mem_ctx, b.shader);
@@ -1644,7 +1752,8 @@ brw_nir_create_passthrough_tcs(void *mem_ctx, const struct brw_compiler *compile
 
    nir_validate_shader(nir, "in brw_nir_create_passthrough_tcs");
 
-   brw_preprocess_nir(compiler, nir, NULL);
+   struct brw_nir_compiler_opts opts = {};
+   brw_preprocess_nir(compiler, nir, &opts);
 
    return nir;
 }

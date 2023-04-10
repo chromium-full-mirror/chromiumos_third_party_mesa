@@ -32,21 +32,7 @@
 #include "ac_spm.h"
 #include "ac_sqtt.h"
 #include "ac_gpu_info.h"
-#ifdef _WIN32
-#define AMDGPU_VRAM_TYPE_UNKNOWN 0
-#define AMDGPU_VRAM_TYPE_GDDR1 1
-#define AMDGPU_VRAM_TYPE_DDR2  2
-#define AMDGPU_VRAM_TYPE_GDDR3 3
-#define AMDGPU_VRAM_TYPE_GDDR4 4
-#define AMDGPU_VRAM_TYPE_GDDR5 5
-#define AMDGPU_VRAM_TYPE_HBM   6
-#define AMDGPU_VRAM_TYPE_DDR3  7
-#define AMDGPU_VRAM_TYPE_DDR4  8
-#define AMDGPU_VRAM_TYPE_GDDR6 9
-#define AMDGPU_VRAM_TYPE_DDR5  10
-#else
-#include "drm-uapi/amdgpu_drm.h"
-#endif
+#include "amd_family.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -64,7 +50,8 @@ enum sqtt_version
    SQTT_VERSION_NONE = 0x0,
    SQTT_VERSION_2_2 = 0x5, /* GFX8 */
    SQTT_VERSION_2_3 = 0x6, /* GFX9 */
-   SQTT_VERSION_2_4 = 0x7  /* GFX10+ */
+   SQTT_VERSION_2_4 = 0x7, /* GFX10+ */
+   SQTT_VERSION_3_2 = 0xb, /* GFX11+ */
 };
 
 /**
@@ -291,6 +278,7 @@ enum sqtt_gfxip_level
    SQTT_GFXIP_LEVEL_GFXIP_9 = 0x5,
    SQTT_GFXIP_LEVEL_GFXIP_10_1 = 0x7,
    SQTT_GFXIP_LEVEL_GFXIP_10_3 = 0x9,
+   SQTT_GFXIP_LEVEL_GFXIP_11_0 = 0xc,
 };
 
 enum sqtt_memory_type
@@ -300,6 +288,7 @@ enum sqtt_memory_type
    SQTT_MEMORY_TYPE_DDR2 = 0x2,
    SQTT_MEMORY_TYPE_DDR3 = 0x3,
    SQTT_MEMORY_TYPE_DDR4 = 0x4,
+   SQTT_MEMORY_TYPE_DDR5 = 0x5,
    SQTT_MEMORY_TYPE_GDDR3 = 0x10,
    SQTT_MEMORY_TYPE_GDDR4 = 0x11,
    SQTT_MEMORY_TYPE_GDDR5 = 0x12,
@@ -373,6 +362,8 @@ static enum sqtt_gfxip_level ac_gfx_level_to_sqtt_gfxip_level(enum amd_gfx_level
       return SQTT_GFXIP_LEVEL_GFXIP_10_1;
    case GFX10_3:
       return SQTT_GFXIP_LEVEL_GFXIP_10_3;
+   case GFX11:
+      return SQTT_GFXIP_LEVEL_GFXIP_11_0;
    default:
       unreachable("Invalid gfx level");
    }
@@ -381,48 +372,30 @@ static enum sqtt_gfxip_level ac_gfx_level_to_sqtt_gfxip_level(enum amd_gfx_level
 static enum sqtt_memory_type ac_vram_type_to_sqtt_memory_type(uint32_t vram_type)
 {
    switch (vram_type) {
-   case AMDGPU_VRAM_TYPE_UNKNOWN:
+   case AMD_VRAM_TYPE_UNKNOWN:
       return SQTT_MEMORY_TYPE_UNKNOWN;
-   case AMDGPU_VRAM_TYPE_DDR2:
+   case AMD_VRAM_TYPE_DDR2:
       return SQTT_MEMORY_TYPE_DDR2;
-   case AMDGPU_VRAM_TYPE_DDR3:
+   case AMD_VRAM_TYPE_DDR3:
       return SQTT_MEMORY_TYPE_DDR3;
-   case AMDGPU_VRAM_TYPE_DDR4:
+   case AMD_VRAM_TYPE_DDR4:
       return SQTT_MEMORY_TYPE_DDR4;
-   case AMDGPU_VRAM_TYPE_GDDR5:
+   case AMD_VRAM_TYPE_DDR5:
+      return SQTT_MEMORY_TYPE_DDR5;
+   case AMD_VRAM_TYPE_GDDR3:
+      return SQTT_MEMORY_TYPE_GDDR3;
+   case AMD_VRAM_TYPE_GDDR4:
+      return SQTT_MEMORY_TYPE_GDDR4;
+   case AMD_VRAM_TYPE_GDDR5:
       return SQTT_MEMORY_TYPE_GDDR5;
-   case AMDGPU_VRAM_TYPE_HBM:
-      return SQTT_MEMORY_TYPE_HBM;
-   case AMDGPU_VRAM_TYPE_GDDR6:
+   case AMD_VRAM_TYPE_GDDR6:
       return SQTT_MEMORY_TYPE_GDDR6;
-   case AMDGPU_VRAM_TYPE_DDR5:
+   case AMD_VRAM_TYPE_HBM:
+      return SQTT_MEMORY_TYPE_HBM;
+   case AMD_VRAM_TYPE_LPDDR4:
+      return SQTT_MEMORY_TYPE_LPDDR4;
+   case AMD_VRAM_TYPE_LPDDR5:
       return SQTT_MEMORY_TYPE_LPDDR5;
-   case AMDGPU_VRAM_TYPE_GDDR1:
-   case AMDGPU_VRAM_TYPE_GDDR3:
-   case AMDGPU_VRAM_TYPE_GDDR4:
-   default:
-      unreachable("Invalid vram type");
-   }
-}
-
-static uint32_t ac_memory_ops_per_clock(uint32_t vram_type)
-{
-   switch (vram_type) {
-   case AMDGPU_VRAM_TYPE_UNKNOWN:
-      return 0;
-   case AMDGPU_VRAM_TYPE_DDR2:
-   case AMDGPU_VRAM_TYPE_DDR3:
-   case AMDGPU_VRAM_TYPE_DDR4:
-   case AMDGPU_VRAM_TYPE_HBM:
-      return 2;
-   case AMDGPU_VRAM_TYPE_DDR5:
-   case AMDGPU_VRAM_TYPE_GDDR5:
-      return 4;
-   case AMDGPU_VRAM_TYPE_GDDR6:
-      return 16;
-   case AMDGPU_VRAM_TYPE_GDDR1:
-   case AMDGPU_VRAM_TYPE_GDDR3:
-   case AMDGPU_VRAM_TYPE_GDDR4:
    default:
       unreachable("Invalid vram type");
    }
@@ -733,6 +706,8 @@ static enum sqtt_version ac_gfx_level_to_sqtt_version(enum amd_gfx_level gfx_lev
       return SQTT_VERSION_2_4;
    case GFX10_3:
       return SQTT_VERSION_2_4;
+   case GFX11:
+      return SQTT_VERSION_3_2;
    default:
       unreachable("Invalid gfx level");
    }
@@ -875,6 +850,7 @@ enum elf_gfxip_level
    EF_AMDGPU_MACH_AMDGCN_GFX900 = 0x02c,
    EF_AMDGPU_MACH_AMDGCN_GFX1010 = 0x033,
    EF_AMDGPU_MACH_AMDGCN_GFX1030 = 0x036,
+   EF_AMDGPU_MACH_AMDGCN_GFX1100 = 0x041,
 };
 
 static enum elf_gfxip_level ac_gfx_level_to_elf_gfxip_level(enum amd_gfx_level gfx_level)
@@ -888,6 +864,8 @@ static enum elf_gfxip_level ac_gfx_level_to_elf_gfxip_level(enum amd_gfx_level g
       return EF_AMDGPU_MACH_AMDGCN_GFX1010;
    case GFX10_3:
       return EF_AMDGPU_MACH_AMDGCN_GFX1030;
+   case GFX11:
+      return EF_AMDGPU_MACH_AMDGCN_GFX1100;
    default:
       unreachable("Invalid gfx level");
    }
@@ -1002,6 +980,7 @@ static void ac_sqtt_dump_spm(const struct ac_spm_trace_data *spm_trace,
    fseek(output, file_offset, SEEK_SET);
 }
 
+#if defined(USE_LIBELF)
 static void ac_sqtt_dump_data(struct radeon_info *rad_info,
                               struct ac_thread_trace *thread_trace,
                               const struct ac_spm_trace_data *spm_trace,
@@ -1188,11 +1167,15 @@ static void ac_sqtt_dump_data(struct radeon_info *rad_info,
       ac_sqtt_dump_spm(spm_trace, file_offset, output);
    }
 }
+#endif
 
 int ac_dump_rgp_capture(struct radeon_info *info,
                         struct ac_thread_trace *thread_trace,
                         const struct ac_spm_trace_data *spm_trace)
 {
+#if !defined(USE_LIBELF)
+   return -1;
+#else
    char filename[2048];
    struct tm now;
    time_t t;
@@ -1215,4 +1198,5 @@ int ac_dump_rgp_capture(struct radeon_info *info,
 
    fclose(f);
    return 0;
+#endif
 }

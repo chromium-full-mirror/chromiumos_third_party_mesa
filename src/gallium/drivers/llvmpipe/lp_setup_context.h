@@ -77,7 +77,7 @@ struct lp_setup_context
    struct pipe_context *pipe;
    struct vertex_info *vertex_info;
    uint view_index;
-   uint prim;
+   enum pipe_prim_type prim;
    uint vertex_size;
    uint nr_vertices;
    uint sprite_coord_enable, sprite_coord_origin;
@@ -305,6 +305,14 @@ boolean
 lp_setup_bin_rectangle(struct lp_setup_context *setup,
                        struct lp_rast_rectangle *rect,
                        boolean opaque);
+
+static inline boolean
+lp_setup_zero_sample_mask(struct lp_setup_context *setup)
+{
+   uint32_t sample_mask = setup->fs.current.jit_context.sample_mask;
+   return sample_mask == 0 ||
+          (!setup->multisample && (sample_mask & 1) == 0);
+}
 
 
 #endif

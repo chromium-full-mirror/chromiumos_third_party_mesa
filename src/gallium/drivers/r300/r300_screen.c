@@ -46,7 +46,7 @@
  * (Or egotistical. Yet.) */
 static const char* r300_get_vendor(struct pipe_screen* pscreen)
 {
-    return "X.Org R300 Project";
+    return "Mesa";
 }
 
 static const char* r300_get_device_vendor(struct pipe_screen* pscreen)
@@ -130,7 +130,6 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
         case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
         case PIPE_CAP_ANISOTROPIC_FILTER:
-        case PIPE_CAP_POINT_SPRITE:
         case PIPE_CAP_OCCLUSION_QUERY:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
@@ -141,7 +140,6 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_CONDITIONAL_RENDER:
         case PIPE_CAP_TEXTURE_BARRIER:
         case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
-        case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
         case PIPE_CAP_CLIP_HALFZ:
         case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
         case PIPE_CAP_LEGACY_MATH_RULES:
@@ -500,10 +498,13 @@ static int r300_get_video_param(struct pipe_screen *screen,
    .lower_extract_word = true,                \
    .lower_fdiv = true,                        \
    .lower_fdph = true,                        \
+   .lower_ffloor = true,                      \
    .lower_flrp32 = true,                      \
    .lower_flrp64 = true,                      \
    .lower_fmod = true,                        \
    .lower_fround_even = true,                 \
+   .lower_fsign = true,                       \
+   .lower_ftrunc = true,                      \
    .lower_insert_byte = true,                 \
    .lower_insert_word = true,                 \
    .lower_rotate = true,                      \
@@ -518,7 +519,7 @@ static const nir_shader_compiler_options r500_vs_compiler_options = {
    /* Have HW loops support and 1024 max instr count, but don't unroll *too*
     * hard.
     */
-   .max_unroll_iterations = 32,
+   .max_unroll_iterations = 29,
 };
 
 static const nir_shader_compiler_options r500_fs_compiler_options = {

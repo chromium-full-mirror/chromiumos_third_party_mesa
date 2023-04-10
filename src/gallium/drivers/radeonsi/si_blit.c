@@ -85,6 +85,9 @@ void si_blitter_begin(struct si_context *sctx, enum si_blitter_op op)
       si_mark_atom_dirty(sctx, &sctx->atoms.s.dpbb_state);
    }
 
+   /* Force-disable fbfetch because there are unsolvable recursion problems with u_blitter. */
+   si_force_disable_ps_colorbuf0_slot(sctx);
+
    sctx->blitter_running = true;
 }
 
@@ -110,13 +113,11 @@ void si_blitter_end(struct si_context *sctx)
    if (sctx->screen->use_ngg_culling)
       si_mark_atom_dirty(sctx, &sctx->atoms.s.ngg_cull_state);
 
-   unsigned num_vbos_in_user_sgprs = si_num_vbos_in_user_sgprs(sctx->screen);
-   sctx->vertex_buffer_pointer_dirty = sctx->vb_descriptors_buffer != NULL &&
-                                       sctx->num_vertex_elements >
-                                       num_vbos_in_user_sgprs;
-   sctx->vertex_buffer_user_sgprs_dirty = sctx->num_vertex_elements > 0 &&
-                                          num_vbos_in_user_sgprs;
+   sctx->vertex_buffers_dirty = sctx->num_vertex_elements > 0;
    si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
+
+   /* We force-disabled fbfetch for u_blitter, so recompute the state. */
+   si_update_ps_colorbuf0_slot(sctx);
 }
 
 static unsigned u_max_sample(struct pipe_resource *r)
@@ -1218,6 +1219,9 @@ static void si_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
                               info->src.resource, info->src.level, &info->src.box);
       return;
    }
+
+   if (si_compute_blit(sctx, info))
+      return;
 
    si_gfx_blit(ctx, info);
 }

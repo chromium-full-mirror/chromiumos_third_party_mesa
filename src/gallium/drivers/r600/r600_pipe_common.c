@@ -588,6 +588,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	rctx->family = rscreen->family;
 	rctx->gfx_level = rscreen->gfx_level;
 
+	rctx->b.clear_buffer = u_default_clear_buffer;
 	rctx->b.invalidate_resource = r600_invalidate_resource;
 	rctx->b.resource_commit = r600_resource_commit;
 	rctx->b.buffer_map = r600_buffer_transfer_map;
@@ -715,7 +716,7 @@ static const struct debug_named_value common_debug_options[] = {
 
 static const char* r600_get_vendor(struct pipe_screen* pscreen)
 {
-	return "X.Org";
+	return "Mesa";
 }
 
 static const char* r600_get_device_vendor(struct pipe_screen* pscreen)
@@ -775,10 +776,7 @@ static void r600_disk_cache_create(struct r600_common_screen *rscreen)
 
 	/* These flags affect shader compilation. */
 	uint64_t shader_debug_flags =
-		rscreen->debug_flags &
-		(DBG_NIR |
-		 DBG_NIR_PREFERRED |
-		 DBG_USE_TGSI);
+		rscreen->debug_flags & DBG_USE_TGSI;
 
 	rscreen->disk_shader_cache =
 		disk_cache_create(r600_get_family_name(rscreen),
@@ -1336,6 +1334,8 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.lower_isign = true,
 		.lower_fsign = true,
 		.lower_fmod = true,
+		.lower_uadd_carry = true,
+		.lower_usub_borrow = true,
 		.lower_extract_byte = true,
 		.lower_extract_word = true,
 		.lower_insert_byte = true,
@@ -1357,15 +1357,15 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.lower_iabs = true,
 		.lower_uadd_sat = true,
 		.lower_usub_sat = true,
-		.lower_bitfield_extract = true,
-		.lower_bitfield_insert_to_bitfield_select = true,
 		.has_fused_comp_and_csel = true,
 		.lower_find_msb_to_reverse = true,
 		.lower_to_scalar = true,
 		.lower_to_scalar_filter = r600_lower_to_scalar_instr_filter,
 		.linker_ignore_precision = true,
 		.lower_fpow = true,
-		.lower_int64_options = ~0
+		.lower_int64_options = ~0,
+		.lower_cs_local_index_to_id = true,
+		.lower_uniforms_to_ubo = true
 	};
 
 	rscreen->nir_options = nir_options;
@@ -1373,10 +1373,17 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 	if (rscreen->info.family < CHIP_CEDAR)
 		rscreen->nir_options.force_indirect_unrolling_sampler = true;
 
+   if (rscreen->info.gfx_level >= EVERGREEN) {
+      rscreen->nir_options.lower_bitfield_extract = true;
+		rscreen->nir_options.lower_bitfield_insert_to_bitfield_select = true;
+   }
+
 	if (rscreen->info.gfx_level < EVERGREEN) {
 		/* Pre-EG doesn't have these ALU ops */
 		rscreen->nir_options.lower_bit_count = true;
 		rscreen->nir_options.lower_bitfield_reverse = true;
+      rscreen->nir_options.lower_bitfield_insert_to_shifts = true;
+      rscreen->nir_options.lower_bitfield_extract_to_shifts = true;
 	}
 
 	if (rscreen->info.gfx_level < CAYMAN) {
@@ -1391,7 +1398,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 			nir_lower_dtrunc;
 	}
 
-	if (!(rscreen->debug_flags & DBG_NIR_PREFERRED)) {
+	if (rscreen->debug_flags & DBG_USE_TGSI) {
 
 		rscreen->nir_options.lower_fpow = false;
 		/* TGSI is vector, and NIR-to-TGSI doesn't like it when the

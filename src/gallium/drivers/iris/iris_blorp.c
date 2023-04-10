@@ -304,16 +304,6 @@ iris_blorp_exec_render(struct blorp_batch *blorp_batch,
        !(blorp_batch->flags & BLORP_BATCH_NO_EMIT_DEPTH_STENCIL))
       genX(emit_depth_state_workarounds)(ice, batch, &params->depth.surf);
 
-   /* Flush the render cache in cases where the same surface is used with
-    * different aux modes, which can lead to GPU hangs.  Invalidation of
-    * sampler caches and flushing of any caches which had previously written
-    * the source surfaces should already have been handled by the caller.
-    */
-   if (params->dst.enabled) {
-      iris_cache_flush_for_render(batch, params->dst.addr.buffer,
-                                  params->dst.aux_usage);
-   }
-
    iris_require_command_space(batch, 1400);
 
 #if GFX_VER == 8
@@ -465,7 +455,9 @@ blorp_measure_start(struct blorp_batch *blorp_batch,
    if (batch->measure == NULL)
       return;
 
-   iris_measure_snapshot(ice, batch, params->snapshot_type, NULL, NULL, NULL);
+   iris_measure_snapshot(ice, batch,
+                         blorp_op_to_intel_measure_snapshot(params->op),
+                         NULL, NULL, NULL);
 }
 
 
@@ -476,12 +468,13 @@ blorp_measure_end(struct blorp_batch *blorp_batch,
    struct iris_batch *batch = blorp_batch->driver_batch;
 
    trace_intel_end_blorp(&batch->trace,
+                         params->op,
                          params->x1 - params->x0,
                          params->y1 - params->y0,
-                         params->hiz_op,
-                         params->fast_clear_op,
-                         params->shader_type,
-                         params->shader_pipeline);
+                         params->num_samples,
+                         params->shader_pipeline,
+                         params->dst.view.format,
+                         params->src.view.format);
 }
 
 void

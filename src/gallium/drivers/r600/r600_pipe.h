@@ -270,8 +270,6 @@ struct r600_gs_rings_state {
 #define DBG_NIR_SB	(1 << 28)
 #define DBG_USE_TGSI	(1 << 29)
 
-#define DBG_NIR_PREFERRED (DBG_NIR_SB | DBG_NIR)
-
 struct r600_screen {
 	struct r600_common_screen	b;
 	bool				has_msaa;
@@ -346,7 +344,11 @@ struct r600_pipe_shader_selector {
 	struct r600_pipe_shader *current;
 
 	struct tgsi_token       *tokens;
-        struct nir_shader       *nir;
+	struct nir_shader       *nir;
+
+	size_t  nir_blob_size;
+	void   *nir_blob;
+
 	struct pipe_stream_output_info  so;
 	struct tgsi_shader_info		info;
 

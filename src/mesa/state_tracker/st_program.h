@@ -89,6 +89,7 @@ st_get_external_sampler_key(struct st_context *st, struct gl_program *prog)
       case PIPE_FORMAT_P010:
       case PIPE_FORMAT_P012:
       case PIPE_FORMAT_P016:
+      case PIPE_FORMAT_P030:
          key.lower_nv12 |= (1 << unit);
          break;
       case PIPE_FORMAT_IYUV:
@@ -176,7 +177,6 @@ struct st_fp_variant_key
    GLuint lower_two_sided_color:1;
 
    GLuint lower_flatshade:1;
-   GLuint lower_texcoord_replace:MAX_TEXTURE_COORD_UNITS;
    unsigned lower_alpha_func:3;
 
    /** needed for ATI_fragment_shader */
