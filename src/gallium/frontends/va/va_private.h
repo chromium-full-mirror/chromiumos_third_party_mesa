@@ -323,6 +323,7 @@ typedef struct {
       struct pipe_av1_picture_desc av1;
       struct pipe_h264_enc_picture_desc h264enc;
       struct pipe_h265_enc_picture_desc h265enc;
+      struct pipe_av1_enc_picture_desc av1enc;
       struct pipe_vpp_desc vidproc;
    } desc;
 
@@ -516,6 +517,7 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
 void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices);
 void getEncParamPresetH264(vlVaContext *context);
 void getEncParamPresetH265(vlVaContext *context);
+void getEncParamPresetAV1(vlVaContext *context);
 void vlVaHandleVAEncMiscParameterTypeQualityLevel(struct pipe_enc_quality_modes *p, vlVaQualityBits *in);
 VAStatus vlVaHandleVAEncPictureParameterBufferTypeH264(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
 VAStatus vlVaHandleVAEncSliceParameterBufferTypeH264(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
@@ -535,4 +537,12 @@ VAStatus vlVaHandleVAEncPackedHeaderDataBufferTypeHEVC(vlVaContext *context, vlV
 VAStatus vlVaHandleVAEncMiscParameterTypeQualityLevelHEVC(vlVaContext *context, VAEncMiscParameterBuffer *buf);
 VAStatus vlVaHandleVAEncMiscParameterTypeMaxFrameSizeHEVC(vlVaContext *context, VAEncMiscParameterBuffer *buf);
 VAStatus vlVaHandleVAEncMiscParameterTypeHRDHEVC(vlVaContext *context, VAEncMiscParameterBuffer *buf);
+VAStatus vlVaHandleVAEncSequenceParameterBufferTypeAV1(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
+VAStatus vlVaHandleVAEncPictureParameterBufferTypeAV1(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
+VAStatus vlVaHandleVAEncMiscParameterTypeRateControlAV1(vlVaContext *context, VAEncMiscParameterBuffer *buf);
+VAStatus vlVaHandleVAEncPackedHeaderDataBufferTypeAV1(vlVaContext *context, vlVaBuffer *buf);
+VAStatus vlVaHandleVAEncMiscParameterTypeFrameRateAV1(vlVaContext *context, VAEncMiscParameterBuffer *buf);
+VAStatus vlVaHandleVAEncMiscParameterTypeQualityLevelAV1(vlVaContext *context, VAEncMiscParameterBuffer *buf);
+VAStatus vlVaHandleVAEncMiscParameterTypeMaxFrameSizeAV1(vlVaContext *context, VAEncMiscParameterBuffer *buf);
+VAStatus vlVaHandleVAEncMiscParameterTypeHRDAV1(vlVaContext *context, VAEncMiscParameterBuffer *buf);
 #endif //VA_PRIVATE_H
