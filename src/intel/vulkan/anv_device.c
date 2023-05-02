@@ -298,6 +298,7 @@ get_device_extensions(const struct anv_physical_device *device,
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
       .EXT_display_control                   = true,
 #endif
+      .EXT_dynamic_rendering_unused_attachments = true,
       .EXT_extended_dynamic_state            = true,
       .EXT_extended_dynamic_state2           = true,
       .EXT_extended_dynamic_state3           = true,
@@ -1597,6 +1598,9 @@ void anv_GetPhysicalDeviceFeatures2(
 
       /* VK_EXT_vertex_input_dynamic_state */
       .vertexInputDynamicState = true,
+
+      /* VK_EXT_dynamic_rendering_unused_attachments */
+      .dynamicRenderingUnusedAttachments = true,
    };
 
    /* The new DOOM and Wolfenstein games require depthBounds without

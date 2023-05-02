@@ -509,6 +509,21 @@ populate_mesh_prog_key(const struct anv_device *device,
    populate_base_prog_key(device, robust_buffer_access, &key->base);
 }
 
+static uint32_t
+rp_color_mask(const struct vk_render_pass_state *rp)
+{
+   if (rp == NULL || rp->attachment_aspects == VK_IMAGE_ASPECT_METADATA_BIT)
+      return ((1u << MAX_RTS) - 1);
+
+   uint32_t color_mask = 0;
+   for (uint32_t i = 0; i < rp->color_attachment_count; i++) {
+      if (rp->color_attachment_formats[i] != VK_FORMAT_UNDEFINED)
+         color_mask |= BITFIELD_BIT(i);
+   }
+
+   return color_mask;
+}
+
 static void
 populate_wm_prog_key(const struct anv_graphics_pipeline *pipeline,
                      bool robust_buffer_acccess,
@@ -534,10 +549,10 @@ populate_wm_prog_key(const struct anv_graphics_pipeline *pipeline,
 
    key->ignore_sample_mask_out = false;
 
-   assert(rp->color_attachment_count <= MAX_RTS);
+   assert(rp == NULL || rp->color_attachment_count <= MAX_RTS);
    /* Consider all inputs as valid until look at the NIR variables. */
-   key->color_outputs_valid = (1u << rp->color_attachment_count) - 1;
-   key->nr_color_regions = rp->color_attachment_count;
+   key->color_outputs_valid = rp_color_mask(rp);
+   key->nr_color_regions = util_last_bit(key->color_outputs_valid);
 
    /* To reduce possible shader recompilations we would need to know if
     * there is a SampleMask output variable to compute if we should emit
@@ -1254,8 +1269,7 @@ anv_pipeline_link_fs(const struct brw_compiler *compiler,
 
       stage->key.wm.color_outputs_valid |= BITFIELD_RANGE(rt, array_len);
    }
-   stage->key.wm.color_outputs_valid &=
-      (1u << rp->color_attachment_count) - 1;
+   stage->key.wm.color_outputs_valid &= rp_color_mask(rp);
    stage->key.wm.nr_color_regions =
       util_last_bit(stage->key.wm.color_outputs_valid);
 
