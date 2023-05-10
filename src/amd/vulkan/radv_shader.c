@@ -38,10 +38,12 @@
 #include "radv_private.h"
 #include "radv_shader_args.h"
 
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "ac_binary.h"
 #include "ac_nir.h"
+#if defined(USE_LIBELF)
 #include "ac_rtld.h"
+#endif
 #include "aco_interface.h"
 #include "sid.h"
 #include "vk_format.h"
@@ -89,11 +91,16 @@ get_nir_options_for_stage(struct radv_physical_device *device, gl_shader_stage s
       .lower_iadd_sat = device->rad_info.gfx_level <= GFX8,
       .lower_hadd = true,
       .lower_mul_32x16 = true,
+      .lower_uclz = true,
       .has_fsub = true,
       .has_isub = true,
       .has_sdot_4x8 = device->rad_info.has_accelerated_dot_product,
+      .has_sudot_4x8 =
+         device->rad_info.has_accelerated_dot_product && device->rad_info.gfx_level >= GFX11,
       .has_udot_4x8 = device->rad_info.has_accelerated_dot_product,
-      .has_dot_2x16 = device->rad_info.has_accelerated_dot_product,
+      .has_dot_2x16 =
+         device->rad_info.has_accelerated_dot_product && device->rad_info.gfx_level < GFX11,
+      .has_find_msb_rev = true,
       .use_scoped_barrier = true,
 #ifdef LLVM_AVAILABLE
       .has_fmulz = !device->use_llvm || LLVM_VERSION_MAJOR >= 12,
@@ -539,19 +546,11 @@ radv_lower_fs_intrinsics(nir_shader *nir, const struct radv_pipeline_stage *fs_s
 
          switch (intrin->intrinsic) {
          case nir_intrinsic_load_sample_mask_in: {
-            uint8_t log2_ps_iter_samples;
-
-            if (info->ps.uses_sample_shading) {
-               log2_ps_iter_samples = util_logbase2(key->ps.num_samples);
-            } else {
-               log2_ps_iter_samples = key->ps.log2_ps_iter_samples;
-            }
-
             nir_ssa_def *sample_coverage =
                nir_load_vector_arg_amd(&b, 1, .base = args->ac.sample_coverage.arg_index);
 
             nir_ssa_def *def = NULL;
-            if (log2_ps_iter_samples) {
+            if (info->ps.uses_sample_shading || key->ps.sample_shading_enable) {
                /* gl_SampleMaskIn[0] = (SampleCoverage & (1 << gl_SampleID)). */
                nir_ssa_def *sample_id = nir_load_sample_id(&b);
                def = nir_iand(&b, sample_coverage, nir_ishl(&b, nir_imm_int(&b, 1u), sample_id));
@@ -593,6 +592,56 @@ radv_lower_fs_intrinsics(nir_shader *nir, const struct radv_pipeline_stage *fs_s
             progress = true;
             break;
          }
+         case nir_intrinsic_load_barycentric_at_sample: {
+            nir_ssa_def *num_samples = nir_load_rasterization_samples_amd(&b);
+            nir_ssa_def *new_dest;
+
+            if (key->dynamic_rasterization_samples) {
+               nir_ssa_def *res1, *res2;
+
+               nir_push_if(&b, nir_ieq_imm(&b, num_samples, 1));
+               {
+                  res1 = nir_load_barycentric_pixel(&b, 32,
+                                                    .interp_mode = nir_intrinsic_interp_mode(intrin));
+               }
+               nir_push_else(&b, NULL);
+               {
+                  nir_ssa_def *sample_pos =
+                     nir_load_sample_positions_amd(&b, 32, intrin->src[0].ssa, num_samples);
+
+                  /* sample_pos -= 0.5 */
+                  sample_pos = nir_fsub(&b, sample_pos, nir_imm_float(&b, 0.5f));
+
+                  res2 = nir_load_barycentric_at_offset(&b, 32, sample_pos,
+                                                        .interp_mode = nir_intrinsic_interp_mode(intrin));
+               }
+               nir_pop_if(&b, NULL);
+
+               new_dest = nir_if_phi(&b, res1, res2);
+            } else {
+               if (!key->ps.num_samples) {
+                  new_dest =
+                     nir_load_barycentric_pixel(&b, 32,
+                                                .interp_mode = nir_intrinsic_interp_mode(intrin));
+               } else {
+                  nir_ssa_def *sample_pos =
+                     nir_load_sample_positions_amd(&b, 32, intrin->src[0].ssa, num_samples);
+
+                  /* sample_pos -= 0.5 */
+                  sample_pos = nir_fsub(&b, sample_pos, nir_imm_float(&b, 0.5f));
+
+                  new_dest =
+                     nir_load_barycentric_at_offset(&b, 32, sample_pos,
+                                                    .interp_mode = nir_intrinsic_interp_mode(intrin));
+               }
+            }
+
+            nir_ssa_def_rewrite_uses(&intrin->dest.ssa, new_dest);
+            nir_instr_remove(instr);
+
+            progress = true;
+            break;
+         }
          default:
             break;
          }
@@ -600,7 +649,7 @@ radv_lower_fs_intrinsics(nir_shader *nir, const struct radv_pipeline_stage *fs_s
    }
 
    if (progress)
-      nir_metadata_preserve(impl, nir_metadata_block_index | nir_metadata_dominance);
+      nir_metadata_preserve(impl, 0);
    else
       nir_metadata_preserve(impl, nir_metadata_all);
 
@@ -674,7 +723,7 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_pipeline_
       /* Only compute shaders currently support requiring a
        * specific subgroup size.
        */
-      assert(stage->stage == MESA_SHADER_COMPUTE);
+      assert(stage->stage >= MESA_SHADER_COMPUTE);
       subgroup_size = key->cs.compute_subgroup_size;
       ballot_bit_size = key->cs.compute_subgroup_size;
    }
@@ -740,6 +789,7 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_pipeline_
                .int64 = true,
                .int64_atomics = true,
                .integer_functions2 = true,
+               .mesh_shading = true,
                .mesh_shading_nv = true,
                .min_lod = true,
                .multiview = true,
@@ -784,6 +834,7 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_pipeline_
                .func = radv_spirv_nir_debug,
                .private_data = &spirv_debug_data,
             },
+         .force_tex_non_uniform = key->tex_non_uniform,
       };
       nir = spirv_to_nir(spirv, stage->spirv.size / 4, spec_entries, num_spec_entries, stage->stage,
                          stage->entrypoint, &spirv_options,
@@ -919,16 +970,27 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_pipeline_
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
    if (nir->info.ray_queries > 0) {
+      /* Lower shared variables early to prevent the over allocation of shared memory in
+       * radv_nir_lower_ray_queries.  */
+      if (nir->info.stage == MESA_SHADER_COMPUTE) {
+         if (!nir->info.shared_memory_explicit_layout)
+            NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, nir_var_mem_shared, shared_var_info);
+
+         NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_shared,
+                  nir_address_format_32bit_offset);
+      }
+
       NIR_PASS(_, nir, nir_opt_ray_queries);
+      NIR_PASS(_, nir, nir_opt_ray_query_ranges);
       NIR_PASS(_, nir, radv_nir_lower_ray_queries, device);
    }
 
-   static const nir_lower_tex_options tex_options = {
+   nir_lower_tex_options tex_options = {
       .lower_txp = ~0,
       .lower_txf_offset = true,
       .lower_tg4_offsets = true,
       .lower_txs_cube_array = true,
-      .lower_to_fragment_fetch_amd = true,
+      .lower_to_fragment_fetch_amd = device->physical_device->use_fmask,
       .lower_lod_zero_width = true,
       .lower_invalid_implicit_lod = true,
       .lower_array_layer_round_even = true,
@@ -994,7 +1056,6 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_pipeline_
 
    const nir_opt_access_options opt_access_options = {
       .is_vulkan = true,
-      .infer_non_readable = true,
    };
    NIR_PASS(_, nir, nir_opt_access, &opt_access_options);
 
@@ -1015,9 +1076,11 @@ radv_shader_spirv_to_nir(struct radv_device *device, const struct radv_pipeline_
           nir->info.stage == MESA_SHADER_MESH)
          var_modes |= nir_var_mem_task_payload;
 
-      if (!nir->info.shared_memory_explicit_layout) {
+      if (!nir->info.shared_memory_explicit_layout)
          NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, var_modes, shared_var_info);
-      }
+      else if (var_modes & ~nir_var_mem_shared)
+         NIR_PASS(_, nir, nir_lower_vars_to_explicit_types, var_modes & ~nir_var_mem_shared,
+                  shared_var_info);
       NIR_PASS(_, nir, nir_lower_explicit_io, var_modes, nir_address_format_32bit_offset);
 
       if (nir->info.zero_initialize_shared_memory && nir->info.shared_size > 0) {
@@ -1089,8 +1152,8 @@ find_layer_in_var(nir_shader *nir)
  * driver_location.
  */
 
-static bool
-lower_view_index(nir_shader *nir, bool per_primitive)
+bool
+radv_lower_view_index(nir_shader *nir, bool per_primitive)
 {
    bool progress = false;
    nir_function_impl *entry = nir_shader_get_entrypoint(nir);
@@ -1134,28 +1197,41 @@ lower_view_index(nir_shader *nir, bool per_primitive)
 }
 
 void
-radv_lower_io(struct radv_device *device, nir_shader *nir, bool is_mesh_shading)
+radv_lower_io(struct radv_device *device, nir_shader *nir)
 {
    if (nir->info.stage == MESA_SHADER_COMPUTE)
       return;
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
-      NIR_PASS(_, nir, lower_view_index, is_mesh_shading);
       nir_assign_io_var_locations(nir, nir_var_shader_in, &nir->num_inputs, MESA_SHADER_FRAGMENT);
    }
 
-   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4,
-            nir_lower_io_lower_64bit_to_32);
+   if (nir->info.stage == MESA_SHADER_VERTEX) {
+      NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in, type_size_vec4, 0);
+      NIR_PASS(_, nir, nir_lower_io, nir_var_shader_out, type_size_vec4,
+               nir_lower_io_lower_64bit_to_32);
+   } else {
+      NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out, type_size_vec4,
+               nir_lower_io_lower_64bit_to_32);
+   }
 
    /* This pass needs actual constants */
    NIR_PASS(_, nir, nir_opt_constant_folding);
 
    NIR_PASS(_, nir, nir_io_add_const_offset_to_base, nir_var_shader_in | nir_var_shader_out);
+
+   if (device->physical_device->use_ngg_streamout && nir->xfb_info) {
+      NIR_PASS_V(nir, nir_io_add_intrinsic_xfb_info);
+
+      /* The total number of shader outputs is required for computing the pervertex LDS size for
+       * VS/TES when lowering NGG streamout.
+       */
+      nir_assign_io_var_locations(nir, nir_var_shader_out, &nir->num_outputs, nir->info.stage);
+   }
 }
 
 bool
-radv_lower_io_to_mem(struct radv_device *device, struct radv_pipeline_stage *stage,
-                     const struct radv_pipeline_key *pl_key)
+radv_lower_io_to_mem(struct radv_device *device, struct radv_pipeline_stage *stage)
 {
    const struct radv_shader_info *info = &stage->info;
    nir_shader *nir = stage->nir;
@@ -1167,8 +1243,7 @@ radv_lower_io_to_mem(struct radv_device *device, struct radv_pipeline_stage *sta
          return true;
       } else if (info->vs.as_es) {
          NIR_PASS_V(nir, ac_nir_lower_es_outputs_to_mem, NULL,
-                    device->physical_device->rad_info.gfx_level,
-                    info->vs.num_linked_outputs * 16u);
+                    device->physical_device->rad_info.gfx_level, info->esgs_itemsize);
          return true;
       }
    } else if (nir->info.stage == MESA_SHADER_TESS_CTRL) {
@@ -1186,8 +1261,7 @@ radv_lower_io_to_mem(struct radv_device *device, struct radv_pipeline_stage *sta
 
       if (info->tes.as_es) {
          NIR_PASS_V(nir, ac_nir_lower_es_outputs_to_mem, NULL,
-                    device->physical_device->rad_info.gfx_level,
-                    info->tes.num_linked_outputs * 16u);
+                    device->physical_device->rad_info.gfx_level, info->esgs_itemsize);
       }
 
       return true;
@@ -1266,6 +1340,57 @@ radv_consider_culling(const struct radv_physical_device *pdevice, struct nir_sha
    return true;
 }
 
+static void
+setup_ngg_lds_layout(struct radv_device *device, nir_shader *nir, struct radv_shader_info *info,
+                     unsigned max_vtx_in)
+{
+   unsigned scratch_lds_base = 0;
+   gl_shader_stage stage = nir->info.stage;
+
+   if (stage == MESA_SHADER_VERTEX || stage == MESA_SHADER_TESS_EVAL) {
+      /* Get pervertex LDS usage. */
+      bool uses_instanceid =
+         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_INSTANCE_ID);
+      bool uses_primtive_id =
+         BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
+      bool streamout_enabled = nir->xfb_info && device->physical_device->use_ngg_streamout;
+      unsigned pervertex_lds_bytes =
+         ac_ngg_nogs_get_pervertex_lds_size(stage,
+                                            nir->num_outputs,
+                                            streamout_enabled,
+                                            info->outinfo.export_prim_id,
+                                            false, /* user edge flag */
+                                            info->has_ngg_culling,
+                                            uses_instanceid,
+                                            uses_primtive_id);
+
+      unsigned total_es_lds_bytes = pervertex_lds_bytes * max_vtx_in;
+      scratch_lds_base = ALIGN(total_es_lds_bytes, 8u);
+   } else if (stage == MESA_SHADER_GEOMETRY) {
+      unsigned esgs_ring_lds_bytes = info->ngg_info.esgs_ring_size;
+      unsigned gs_total_out_vtx_bytes = info->ngg_info.ngg_emit_size * 4u;
+      scratch_lds_base =
+         ALIGN(esgs_ring_lds_bytes + gs_total_out_vtx_bytes, 8u /* for the repacking code */);
+   } else {
+      /* not handled here */
+      return;
+   }
+
+   /* Get scratch LDS usage. */
+   unsigned scratch_lds_size =
+      ac_ngg_get_scratch_lds_size(stage,
+                                  info->workgroup_size,
+                                  info->wave_size,
+                                  device->physical_device->use_ngg_streamout,
+                                  info->has_ngg_culling);
+
+   /* Get total LDS usage. */
+   nir->info.shared_size = scratch_lds_base + scratch_lds_size;
+
+   /* Record scratch base for abi lower of nir_load_lds_ngg_scratch_base_amd. */
+   info->ngg_info.scratch_lds_base = scratch_lds_base;
+}
+
 void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_stage,
                     const struct radv_pipeline_key *pl_key)
 {
@@ -1288,12 +1413,11 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
          num_vertices_per_prim = 2;
 
       /* Manually mark the primitive ID used, so the shader can repack it. */
-      if (info->tes.outinfo.export_prim_id)
+      if (info->outinfo.export_prim_id)
          BITSET_SET(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
 
    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
-      /* Need to add 1, because: V_028A6C_POINTLIST=0, V_028A6C_LINESTRIP=1, V_028A6C_TRISTRIP=2, etc. */
-      num_vertices_per_prim = si_conv_prim_to_gs_out(pl_key->vs.topology) + 1;
+      num_vertices_per_prim = radv_get_num_vertices_per_prim(pl_key);
 
       /* Manually mark the instance ID used, so the shader can repack it. */
       if (pl_key->vs.instance_rate_inputs)
@@ -1313,38 +1437,44 @@ void radv_lower_ngg(struct radv_device *device, struct radv_pipeline_stage *ngg_
    }
 
    /* Invocations that process an input vertex */
-   unsigned max_vtx_in = MIN2(256, ngg_info->enable_vertex_grouping ? ngg_info->hw_max_esverts : num_vertices_per_prim * ngg_info->max_gsprims);
+   unsigned max_vtx_in = MIN2(256, ngg_info->hw_max_esverts);
+
+   setup_ngg_lds_layout(device, nir, &ngg_stage->info, max_vtx_in);
+
+   ac_nir_lower_ngg_options options = {0};
+   options.family = device->physical_device->rad_info.family;
+   options.gfx_level = device->physical_device->rad_info.gfx_level;
+   options.max_workgroup_size = info->workgroup_size;
+   options.wave_size = info->wave_size;
+   options.vs_output_param_offset = info->outinfo.vs_output_param_offset;
+   options.can_cull = nir->info.stage != MESA_SHADER_GEOMETRY && info->has_ngg_culling;
+   options.disable_streamout = !device->physical_device->use_ngg_streamout;
+   options.has_gen_prim_query = info->has_ngg_prim_query;
+   options.has_xfb_prim_query = info->has_ngg_xfb_query;
 
    if (nir->info.stage == MESA_SHADER_VERTEX ||
        nir->info.stage == MESA_SHADER_TESS_EVAL) {
-      bool export_prim_id;
-
       assert(info->is_ngg);
 
       if (info->has_ngg_culling)
          radv_optimize_nir_algebraic(nir, false);
 
-      if (nir->info.stage == MESA_SHADER_VERTEX) {
-         export_prim_id = info->vs.outinfo.export_prim_id;
-      } else {
-         export_prim_id = info->tes.outinfo.export_prim_id;
-      }
+      options.num_vertices_per_primitive = num_vertices_per_prim;
+      options.early_prim_export = info->has_ngg_early_prim_export;
+      options.passthrough = info->is_ngg_passthrough;
+      options.primitive_id_location = info->outinfo.export_prim_id ? VARYING_SLOT_PRIMITIVE_ID : -1;
+      options.instance_rate_inputs = pl_key->vs.instance_rate_inputs << VERT_ATTRIB_GENERIC0;
 
-      NIR_PASS_V(nir, ac_nir_lower_ngg_nogs,
-                 device->physical_device->rad_info.family,
-                 max_vtx_in, num_vertices_per_prim,
-                 info->workgroup_size, info->wave_size, info->has_ngg_culling,
-                 info->has_ngg_early_prim_export, info->is_ngg_passthrough, export_prim_id,
-                 pl_key->vs.provoking_vtx_last, false, pl_key->primitives_generated_query,
-                 pl_key->vs.instance_rate_inputs);
+      NIR_PASS_V(nir, ac_nir_lower_ngg_nogs, &options);
 
       /* Increase ESGS ring size so the LLVM binary contains the correct LDS size. */
       ngg_stage->info.ngg_info.esgs_ring_size = nir->info.shared_size;
    } else if (nir->info.stage == MESA_SHADER_GEOMETRY) {
       assert(info->is_ngg);
-      NIR_PASS_V(nir, ac_nir_lower_ngg_gs, info->wave_size, info->workgroup_size,
-                 info->ngg_info.esgs_ring_size, info->gs.gsvs_vertex_size,
-                 info->ngg_info.ngg_emit_size * 4u, pl_key->vs.provoking_vtx_last);
+
+      options.gs_out_vtx_bytes = info->gs.gsvs_vertex_size;
+
+      NIR_PASS_V(nir, ac_nir_lower_ngg_gs, &options);
    } else if (nir->info.stage == MESA_SHADER_MESH) {
       bool scratch_ring = false;
       NIR_PASS_V(nir, ac_nir_lower_ngg_ms, &scratch_ring, info->wave_size, pl_key->has_multiview_view_index);
@@ -1482,6 +1612,7 @@ radv_alloc_shader_memory(struct radv_device *device, uint32_t size, void *ptr)
       RADV_BO_PRIORITY_SHADER, 0, &arena->bo);
    if (result != VK_SUCCESS)
       goto fail;
+   radv_rmv_log_bo_allocate(device, arena->bo, arena_size, true);
 
    list_inithead(&arena->entries);
 
@@ -1519,8 +1650,10 @@ fail:
    mtx_unlock(&device->shader_arena_mutex);
    free(alloc);
    free(hole);
-   if (arena && arena->bo)
+   if (arena && arena->bo) {
+      radv_rmv_log_bo_destroy(device, arena->bo);
       device->ws->buffer_destroy(device->ws, arena->bo);
+   }
    free(arena);
    return NULL;
 }
@@ -1572,6 +1705,7 @@ radv_free_shader_memory(struct radv_device *device, union radv_shader_arena_bloc
       struct radv_shader_arena *arena = hole->arena;
       free_block_obj(device, hole);
 
+      radv_rmv_log_bo_destroy(device, arena->bo);
       device->ws->buffer_destroy(device->ws, arena->bo);
       list_del(&arena->list);
       free(arena);
@@ -1603,6 +1737,7 @@ radv_destroy_shader_arenas(struct radv_device *device)
 
    list_for_each_entry_safe(struct radv_shader_arena, arena, &device->shader_arenas, list)
    {
+      radv_rmv_log_bo_destroy(device, arena->bo);
       device->ws->buffer_destroy(device->ws, arena->bo);
       free(arena);
    }
@@ -1709,7 +1844,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
 
          config_out->rsrc2 |= S_00B12C_OC_LDS_EN(1) | S_00B12C_EXCP_EN(excp_en);
       } else {
-         bool enable_prim_id = info->tes.outinfo.export_prim_id || info->uses_prim_id;
+         bool enable_prim_id = info->outinfo.export_prim_id || info->uses_prim_id;
          vgpr_comp_cnt = enable_prim_id ? 3 : 2;
 
          config_out->rsrc1 |= S_00B128_MEM_ORDERED(pdevice->rad_info.gfx_level >= GFX10);
@@ -1729,12 +1864,10 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
             } else if (pdevice->rad_info.gfx_level <= GFX10_3) {
                vgpr_comp_cnt = 1;
             }
-            config_out->rsrc2 |=
-               S_00B42C_LDS_SIZE_GFX10(info->tcs.num_lds_blocks) | S_00B42C_EXCP_EN_GFX6(excp_en);
+            config_out->rsrc2 |= S_00B42C_EXCP_EN_GFX6(excp_en);
          } else {
             vgpr_comp_cnt = info->vs.needs_instance_id ? 2 : 1;
-            config_out->rsrc2 |=
-               S_00B42C_LDS_SIZE_GFX9(info->tcs.num_lds_blocks) | S_00B42C_EXCP_EN_GFX9(excp_en);
+            config_out->rsrc2 |= S_00B42C_EXCP_EN_GFX9(excp_en);
          }
       } else {
          config_out->rsrc2 |= S_00B12C_OC_LDS_EN(1) | S_00B12C_EXCP_EN(excp_en);
@@ -1764,7 +1897,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
           */
          if (info->vs.needs_instance_id && pdevice->rad_info.gfx_level >= GFX10) {
             vgpr_comp_cnt = 3;
-         } else if (info->vs.outinfo.export_prim_id) {
+         } else if (info->outinfo.export_prim_id) {
             vgpr_comp_cnt = 2;
          } else if (info->vs.needs_instance_id) {
             vgpr_comp_cnt = 1;
@@ -1824,7 +1957,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
       if (es_stage == MESA_SHADER_VERTEX) {
          es_vgpr_comp_cnt = info->vs.needs_instance_id ? 3 : 0;
       } else if (es_stage == MESA_SHADER_TESS_EVAL) {
-         bool enable_prim_id = info->tes.outinfo.export_prim_id || info->uses_prim_id;
+         bool enable_prim_id = info->outinfo.export_prim_id || info->uses_prim_id;
          es_vgpr_comp_cnt = enable_prim_id ? 3 : 2;
       } else if (es_stage == MESA_SHADER_MESH) {
          es_vgpr_comp_cnt = 0;
@@ -1849,7 +1982,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
       if (info->uses_invocation_id) {
          gs_vgpr_comp_cnt = 3; /* VGPR3 contains InvocationID. */
       } else if (info->uses_prim_id || (es_stage == MESA_SHADER_VERTEX &&
-                                        info->vs.outinfo.export_prim_id)) {
+                                        info->outinfo.export_prim_id)) {
          gs_vgpr_comp_cnt = 2; /* VGPR2 contains PrimitiveID. */
       } else if (need_gs_vtx_offset2) {
          gs_vgpr_comp_cnt = 1; /* VGPR1 contains offsets 2, 3 */
@@ -1907,6 +2040,7 @@ radv_postprocess_config(const struct radv_device *device, const struct ac_shader
    }
 }
 
+#if defined(USE_LIBELF)
 static bool
 radv_open_rtld_binary(struct radv_device *device, const struct radv_shader *shader,
                       const struct radv_shader_binary *binary, struct ac_rtld_binary *rtld_binary)
@@ -1917,8 +2051,7 @@ radv_open_rtld_binary(struct radv_device *device, const struct radv_shader *shad
    unsigned num_lds_symbols = 0;
 
    if (device->physical_device->rad_info.gfx_level >= GFX9 &&
-       (binary->stage == MESA_SHADER_GEOMETRY || binary->info.is_ngg) &&
-       !binary->is_gs_copy_shader) {
+       (binary->stage == MESA_SHADER_GEOMETRY || binary->info.is_ngg)) {
       struct ac_rtld_symbol *sym = &lds_symbols[num_lds_symbols++];
       sym->name = "esgs_ring";
       sym->size = binary->info.ngg_info.esgs_ring_size;
@@ -1950,12 +2083,16 @@ radv_open_rtld_binary(struct radv_device *device, const struct radv_shader *shad
 
    return ac_rtld_open(rtld_binary, open_info);
 }
+#endif
 
 bool
 radv_shader_binary_upload(struct radv_device *device, const struct radv_shader_binary *binary,
                           struct radv_shader *shader, void *dest_ptr)
 {
    if (binary->type == RADV_BINARY_TYPE_RTLD) {
+#if !defined(USE_LIBELF)
+      return false;
+#else
       struct ac_rtld_binary rtld_binary = {0};
 
       if (!radv_open_rtld_binary(device, shader, binary, &rtld_binary)) {
@@ -1970,13 +2107,14 @@ radv_shader_binary_upload(struct radv_device *device, const struct radv_shader_b
       };
 
       if (!ac_rtld_upload(&info)) {
-         radv_shader_destroy(device, shader);
+         radv_shader_unref(device, shader);
          ac_rtld_close(&rtld_binary);
          return false;
       }
 
       shader->code_ptr = dest_ptr;
       ac_rtld_close(&rtld_binary);
+#endif
    } else {
       struct radv_shader_binary_legacy *bin = (struct radv_shader_binary_legacy *)binary;
       memcpy(dest_ptr, bin->data + bin->stats_size, bin->code_size);
@@ -2004,6 +2142,10 @@ radv_shader_create(struct radv_device *device, const struct radv_shader_binary *
    shader->ref_count = 1;
 
    if (binary->type == RADV_BINARY_TYPE_RTLD) {
+#if !defined(USE_LIBELF)
+      free(shader);
+      return NULL;
+#else
       struct ac_rtld_binary rtld_binary = {0};
 
       if (!radv_open_rtld_binary(device, shader, binary, &rtld_binary)) {
@@ -2031,6 +2173,7 @@ radv_shader_create(struct radv_device *device, const struct radv_shader_binary *
       shader->code_size = rtld_binary.rx_size;
       shader->exec_size = rtld_binary.exec_size;
       ac_rtld_close(&rtld_binary);
+#endif
    } else {
       assert(binary->type == RADV_BINARY_TYPE_LEGACY);
       config = ((struct radv_shader_binary_legacy *)binary)->base.config;
@@ -2050,6 +2193,10 @@ radv_shader_create(struct radv_device *device, const struct radv_shader_binary *
    }
 
    if (binary->type == RADV_BINARY_TYPE_RTLD) {
+#if !defined(USE_LIBELF)
+      free(shader);
+      return NULL;
+#else
       struct radv_shader_binary_rtld *bin = (struct radv_shader_binary_rtld *)binary;
       struct ac_rtld_binary rtld_binary = {0};
 
@@ -2063,7 +2210,7 @@ radv_shader_create(struct radv_device *device, const struct radv_shader_binary *
          size_t disasm_size;
          if (!ac_rtld_get_section_by_name(&rtld_binary, ".AMDGPU.disasm", &disasm_data,
                                           &disasm_size)) {
-            radv_shader_destroy(device, shader);
+            radv_shader_unref(device, shader);
             ac_rtld_close(&rtld_binary);
             return NULL;
          }
@@ -2075,6 +2222,7 @@ radv_shader_create(struct radv_device *device, const struct radv_shader_binary *
          shader->disasm_string[disasm_size] = 0;
       }
       ac_rtld_close(&rtld_binary);
+#endif
    } else {
       struct radv_shader_binary_legacy *bin = (struct radv_shader_binary_legacy *)binary;
 
@@ -2091,6 +2239,39 @@ radv_shader_create(struct radv_device *device, const struct radv_shader_binary *
       }
    }
    return shader;
+}
+
+static struct radv_shader_part *
+radv_shader_part_create(struct radv_shader_part_binary *binary, unsigned wave_size)
+{
+   uint32_t code_size = radv_get_shader_binary_size(binary->code_size);
+   struct radv_shader_part *shader_part;
+
+   shader_part = calloc(1, sizeof(struct radv_shader_part));
+   if (!shader_part)
+      return NULL;
+
+   shader_part->ref_count = 1;
+   shader_part->binary = binary;
+   shader_part->code_size = code_size;
+   shader_part->rsrc1 = S_00B848_VGPRS((binary->num_vgprs - 1) / (wave_size == 32 ? 8 : 4)) |
+                        S_00B228_SGPRS((binary->num_sgprs - 1) / 8);
+   shader_part->num_preserved_sgprs = binary->num_preserved_sgprs;
+   shader_part->disasm_string =
+      binary->disasm_size ? strdup((const char *)(binary->data + binary->code_size)) : NULL;
+
+   return shader_part;
+}
+
+void
+radv_shader_part_binary_upload(const struct radv_shader_part_binary *binary, void *dest_ptr)
+{
+   memcpy(dest_ptr, binary->data, binary->code_size);
+
+   /* Add end-of-code markers for the UMR disassembler. */
+   uint32_t *ptr32 = (uint32_t *)dest_ptr + binary->code_size / 4;
+   for (unsigned i = 0; i < DEBUGGER_NUM_MARKERS; i++)
+      ptr32[i] = DEBUGGER_END_OF_CODE_MARKER;
 }
 
 static char *
@@ -2119,7 +2300,6 @@ radv_dump_nir_shaders(struct nir_shader *const *shaders, int shader_count)
 static void
 radv_aco_build_shader_binary(void **bin,
                              gl_shader_stage stage,
-                             bool is_gs_copy_shader,
                              const struct ac_shader_config *config,
                              const char *llvm_ir_str,
                              unsigned llvm_ir_size,
@@ -2146,7 +2326,6 @@ radv_aco_build_shader_binary(void **bin,
    struct radv_shader_binary_legacy *legacy_binary = (struct radv_shader_binary_legacy *)calloc(size, 1);
    legacy_binary->base.type = RADV_BINARY_TYPE_LEGACY;
    legacy_binary->base.stage = stage;
-   legacy_binary->base.is_gs_copy_shader = is_gs_copy_shader;
    legacy_binary->base.total_size = size;
    legacy_binary->base.config = *config;
 
@@ -2174,25 +2353,21 @@ radv_aco_build_shader_binary(void **bin,
    *binary = (struct radv_shader_binary*)legacy_binary;
 }
 
-static struct radv_shader *
-shader_compile(struct radv_device *device, struct nir_shader *const *shaders, int shader_count, gl_shader_stage stage,
-               struct radv_shader_info *info, const struct radv_shader_args *args,
-               struct radv_nir_compiler_options *options, bool gs_copy_shader,
-               bool trap_handler_shader, bool keep_shader_info, bool keep_statistic_info,
-               struct radv_shader_binary **binary_out)
+static void
+radv_fill_nir_compiler_options(struct radv_nir_compiler_options *options,
+                               struct radv_device *device, const struct radv_pipeline_key *key,
+                               bool should_use_wgp, bool can_dump_shader, bool is_meta_shader,
+                               bool keep_shader_info, bool keep_statistic_info)
 {
-   enum radeon_family chip_family = device->physical_device->rad_info.family;
-   struct radv_shader_binary *binary = NULL;
+   if (key)
+      options->key = *key;
 
-   struct radv_shader_debug_data debug_data = {
-      .device = device,
-      .object = NULL,
-   };
-
-   options->family = chip_family;
+   options->robust_buffer_access = device->robust_buffer_access;
+   options->wgp_mode = should_use_wgp;
+   options->family = device->physical_device->rad_info.family;
    options->gfx_level = device->physical_device->rad_info.gfx_level;
    options->has_3d_cube_border_color_mipmap = device->physical_device->rad_info.has_3d_cube_border_color_mipmap;
-   options->dump_shader = radv_can_dump_shader(device, shaders[0], gs_copy_shader || trap_handler_shader);
+   options->dump_shader = can_dump_shader;
    options->dump_preoptir =
       options->dump_shader && device->instance->debug_flags & RADV_DEBUG_PREOPTIR;
    options->record_ir = keep_shader_info;
@@ -2200,24 +2375,46 @@ shader_compile(struct radv_device *device, struct nir_shader *const *shaders, in
    options->check_ir = device->instance->debug_flags & RADV_DEBUG_CHECKIR;
    options->address32_hi = device->physical_device->rad_info.address32_hi;
    options->has_ls_vgpr_init_bug = device->physical_device->rad_info.has_ls_vgpr_init_bug;
-   options->enable_mrt_output_nan_fixup =
-      !is_meta_shader(shaders[0]) && options->key.ps.enable_mrt_output_nan_fixup;
-   options->debug.func = radv_compiler_debug;
-   options->debug.private_data = &debug_data;
+
+   if (!is_meta_shader)
+      options->enable_mrt_output_nan_fixup = options->key.ps.epilog.enable_mrt_output_nan_fixup;
+}
+
+static struct radv_shader *
+shader_compile(struct radv_device *device, struct nir_shader *const *shaders, int shader_count,
+               gl_shader_stage stage, const struct radv_shader_info *info,
+               const struct radv_shader_args *args, const struct radv_pipeline_key *key,
+               bool trap_handler_shader, bool keep_shader_info, bool keep_statistic_info,
+               struct radv_shader_binary **binary_out)
+{
+   struct radv_nir_compiler_options options = {0};
+   radv_fill_nir_compiler_options(
+      &options, device, key, radv_should_use_wgp_mode(device, stage, info),
+      radv_can_dump_shader(device, shaders[0], trap_handler_shader), is_meta_shader(shaders[0]),
+      keep_shader_info, keep_statistic_info);
+
+   struct radv_shader_debug_data debug_data = {
+      .device = device,
+      .object = NULL,
+   };
+   options.debug.func = radv_compiler_debug;
+   options.debug.private_data = &debug_data;
+
+   struct radv_shader_binary *binary = NULL;
 
 #ifdef LLVM_AVAILABLE
-   if (radv_use_llvm_for_stage(device, stage) || options->dump_shader || options->record_ir)
+   if (radv_use_llvm_for_stage(device, stage) || options.dump_shader || options.record_ir)
       ac_init_llvm_once();
 
    if (radv_use_llvm_for_stage(device, stage)) {
-      llvm_compile_shader(options, info, shader_count, shaders, &binary, args);
+      llvm_compile_shader(&options, info, shader_count, shaders, &binary, args);
 #else
    if (false) {
 #endif
    } else {
       struct aco_shader_info ac_info;
       struct aco_compiler_options ac_opts;
-      radv_aco_convert_opts(&ac_opts, options);
+      radv_aco_convert_opts(&ac_opts, &options);
       radv_aco_convert_shader_info(&ac_info, info);
       aco_compile_shader(&ac_opts, &ac_info, shader_count, shaders, args, &radv_aco_build_shader_binary, (void **)&binary);
    }
@@ -2230,7 +2427,7 @@ shader_compile(struct radv_device *device, struct nir_shader *const *shaders, in
       return NULL;
    }
 
-   if (options->dump_shader) {
+   if (options.dump_shader) {
       fprintf(stderr, "%s", radv_get_shader_name(info, shaders[0]->info.stage));
       for (int i = 1; i < shader_count; ++i)
          fprintf(stderr, " + %s", radv_get_shader_name(info, shaders[i]->info.stage));
@@ -2256,38 +2453,31 @@ radv_shader_nir_to_asm(struct radv_device *device, struct radv_pipeline_stage *p
                        bool keep_statistic_info, struct radv_shader_binary **binary_out)
 {
    gl_shader_stage stage = shaders[shader_count - 1]->info.stage;
-   struct radv_nir_compiler_options options = {0};
 
-   if (key)
-      options.key = *key;
-
-   options.robust_buffer_access = device->robust_buffer_access;
-   options.wgp_mode = radv_should_use_wgp_mode(device, stage, &pl_stage->info);
-
-   return shader_compile(device, shaders, shader_count, stage, &pl_stage->info,
-                         &pl_stage->args, &options, false, false, keep_shader_info,
-                         keep_statistic_info, binary_out);
+   return shader_compile(device, shaders, shader_count, stage, &pl_stage->info, &pl_stage->args,
+                         key, false, keep_shader_info, keep_statistic_info, binary_out);
 }
 
 struct radv_shader *
 radv_create_gs_copy_shader(struct radv_device *device, struct nir_shader *shader,
-                           struct radv_shader_info *info, const struct radv_shader_args *args,
+                           const struct radv_shader_info *info, const struct radv_shader_args *args,
                            struct radv_shader_binary **binary_out, bool keep_shader_info,
                            bool keep_statistic_info, bool disable_optimizations)
 {
-   struct radv_nir_compiler_options options = {0};
    gl_shader_stage stage = MESA_SHADER_VERTEX;
 
-   options.key.optimisations_disabled = disable_optimizations;
+   struct radv_pipeline_key key = {
+      .optimisations_disabled = disable_optimizations,
+   };
 
-   return shader_compile(device, &shader, 1, stage, info, args, &options, true, false,
-                         keep_shader_info, keep_statistic_info, binary_out);
+   return shader_compile(device, &shader, 1, stage, info, args, &key, false, keep_shader_info,
+                         keep_statistic_info, binary_out);
 }
 
 struct radv_trap_handler_shader *
 radv_create_trap_handler_shader(struct radv_device *device)
 {
-   struct radv_nir_compiler_options options = {0};
+   gl_shader_stage stage = MESA_SHADER_COMPUTE;
    struct radv_shader *shader = NULL;
    struct radv_shader_binary *binary = NULL;
    struct radv_shader_info info = {0};
@@ -2298,19 +2488,18 @@ radv_create_trap_handler_shader(struct radv_device *device)
    if (!trap)
       return NULL;
 
-   nir_builder b = radv_meta_init_shader(device, MESA_SHADER_COMPUTE, "meta_trap_handler");
+   nir_builder b = radv_meta_init_shader(device, stage, "meta_trap_handler");
 
-   options.wgp_mode = radv_should_use_wgp_mode(device, MESA_SHADER_COMPUTE, &info);
    info.wave_size = 64;
 
-   struct radv_shader_args args;
+   struct radv_shader_args args = {0};
    args.explicit_scratch_args = true;
    args.is_trap_handler_shader = true;
-   radv_declare_shader_args(device->physical_device->rad_info.gfx_level, &key, &info,
-                            MESA_SHADER_COMPUTE, false, MESA_SHADER_VERTEX, &args);
+   radv_declare_shader_args(device->physical_device->rad_info.gfx_level, &key, &info, stage, false,
+                            MESA_SHADER_VERTEX, &args);
 
-   shader = shader_compile(device, &b.shader, 1, MESA_SHADER_COMPUTE, &info, &args, &options,
-                           false, true, false, false, &binary);
+   shader =
+      shader_compile(device, &b.shader, 1, stage, &info, &args, &key, true, false, false, &binary);
 
    trap->alloc = radv_alloc_shader_memory(device, shader->code_size, NULL);
 
@@ -2340,38 +2529,6 @@ radv_trap_handler_shader_destroy(struct radv_device *device, struct radv_trap_ha
 
    radv_free_shader_memory(device, trap->alloc);
    free(trap);
-}
-
-static struct radv_shader_part *
-upload_shader_part(struct radv_device *device, struct radv_shader_part_binary *bin, unsigned wave_size)
-{
-   uint32_t code_size = radv_get_shader_binary_size(bin->code_size);
-   struct radv_shader_part *shader_part = malloc(sizeof(struct radv_shader_part));
-   if (!shader_part)
-      return NULL;
-
-   shader_part->alloc = radv_alloc_shader_memory(device, code_size, NULL);
-   if (!shader_part->alloc) {
-      free(shader_part);
-      return NULL;
-   }
-
-   shader_part->bo = shader_part->alloc->arena->bo;
-   char *dest_ptr = shader_part->alloc->arena->ptr + shader_part->alloc->offset;
-
-   memcpy(dest_ptr, bin->data, bin->code_size);
-
-   /* Add end-of-code markers for the UMR disassembler. */
-   uint32_t *ptr32 = (uint32_t *)dest_ptr + bin->code_size / 4;
-   for (unsigned i = 0; i < DEBUGGER_NUM_MARKERS; i++)
-      ptr32[i] = DEBUGGER_END_OF_CODE_MARKER;
-
-   shader_part->rsrc1 = S_00B848_VGPRS((bin->num_vgprs - 1) / (wave_size == 32 ? 8 : 4)) |
-                   S_00B228_SGPRS((bin->num_sgprs - 1) / 8);
-   shader_part->num_preserved_sgprs = bin->num_preserved_sgprs;
-   shader_part->disasm_string = NULL;
-
-   return shader_part;
 }
 
 static void radv_aco_build_shader_part(void **bin,
@@ -2406,14 +2563,12 @@ static void radv_aco_build_shader_part(void **bin,
 struct radv_shader_part *
 radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_key *key)
 {
+   struct radv_shader_part *prolog;
    struct radv_shader_args args = {0};
    struct radv_nir_compiler_options options = {0};
-   options.family = device->physical_device->rad_info.family;
-   options.gfx_level = device->physical_device->rad_info.gfx_level;
-   options.has_3d_cube_border_color_mipmap = device->physical_device->rad_info.has_3d_cube_border_color_mipmap;
-   options.address32_hi = device->physical_device->rad_info.address32_hi;
-   options.dump_shader = device->instance->debug_flags & RADV_DEBUG_DUMP_PROLOGS;
-   options.record_ir = device->instance->debug_flags & RADV_DEBUG_HANG;
+   radv_fill_nir_compiler_options(&options, device, NULL, false,
+                                  device->instance->debug_flags & RADV_DEBUG_DUMP_PROLOGS, false,
+                                  device->instance->debug_flags & RADV_DEBUG_HANG, false);
 
    struct radv_shader_info info = {0};
    info.wave_size = key->wave32 ? 32 : 64;
@@ -2449,38 +2604,53 @@ radv_create_vs_prolog(struct radv_device *device, const struct radv_vs_prolog_ke
    radv_aco_convert_vs_prolog_key(&ac_key, key);
    aco_compile_vs_prolog(&ac_opts, &ac_info, &ac_key, &args, &radv_aco_build_shader_part,
                          (void **)&binary);
-   struct radv_shader_part *prolog = upload_shader_part(device, binary, info.wave_size);
-   if (prolog) {
-      prolog->nontrivial_divisors = key->state->nontrivial_divisors;
-      prolog->disasm_string =
-         binary->disasm_size ? strdup((const char *)(binary->data + binary->code_size)) : NULL;
-   }
 
-   free(binary);
+   prolog = radv_shader_part_create(binary, info.wave_size);
+   if (!prolog)
+      goto fail_create;
 
-   if (prolog && options.dump_shader) {
+   prolog->nontrivial_divisors = key->state->nontrivial_divisors;
+
+   /* Allocate memory and upload the prolog. */
+   prolog->alloc = radv_alloc_shader_memory(device, prolog->code_size, NULL);
+   if (!prolog->alloc)
+      goto fail_alloc;
+
+   prolog->bo = prolog->alloc->arena->bo;
+   prolog->va = radv_buffer_get_va(prolog->bo) + prolog->alloc->offset;
+
+   void *dest_ptr = prolog->alloc->arena->ptr + prolog->alloc->offset;
+   radv_shader_part_binary_upload(binary, dest_ptr);
+
+   if (options.dump_shader) {
       fprintf(stderr, "Vertex prolog");
       fprintf(stderr, "\ndisasm:\n%s\n", prolog->disasm_string);
    }
 
+   free(prolog->binary);
+   prolog->binary = NULL;
+
    return prolog;
+
+fail_alloc:
+   radv_shader_part_destroy(device, prolog);
+fail_create:
+   free(binary);
+   return NULL;
 }
 
 struct radv_shader_part *
 radv_create_ps_epilog(struct radv_device *device, const struct radv_ps_epilog_key *key)
 {
+   struct radv_shader_part *epilog;
    struct radv_shader_args args = {0};
    struct radv_nir_compiler_options options = {0};
-   options.family = device->physical_device->rad_info.family;
-   options.gfx_level = device->physical_device->rad_info.gfx_level;
-   options.address32_hi = device->physical_device->rad_info.address32_hi;
-   options.dump_shader = device->instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS;
-   options.record_ir = device->instance->debug_flags & RADV_DEBUG_HANG;
-   options.dump_preoptir = device->instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS;
-   options.dump_shader = device->instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS;
+   radv_fill_nir_compiler_options(&options, device, NULL, false,
+                                  device->instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS, false,
+                                  device->instance->debug_flags & RADV_DEBUG_HANG, false);
 
    struct radv_shader_info info = {0};
-   info.wave_size = key->wave32 ? 32 : 64;
+   info.wave_size = device->physical_device->ps_wave_size;
    info.workgroup_size = 64;
 
    radv_declare_ps_epilog_args(device->physical_device->rad_info.gfx_level, key, &args);
@@ -2499,27 +2669,45 @@ radv_create_ps_epilog(struct radv_device *device, const struct radv_ps_epilog_ke
    radv_aco_convert_ps_epilog_key(&ac_key, key);
    aco_compile_ps_epilog(&ac_opts, &ac_info, &ac_key, &args, &radv_aco_build_shader_part,
                          (void **)&binary);
-   struct radv_shader_part *epilog = upload_shader_part(device, binary, info.wave_size);
-   if (epilog) {
-      epilog->disasm_string =
-         binary->disasm_size ? strdup((const char *)(binary->data + binary->code_size)) : NULL;
-   }
 
-   free(binary);
+   epilog = radv_shader_part_create(binary, info.wave_size);
+   if (!epilog)
+      goto fail_create;
 
-   if (epilog && options.dump_shader) {
+   epilog->spi_shader_col_format = key->spi_shader_col_format;
+
+   /* Allocate memory and upload the epilog. */
+   epilog->alloc = radv_alloc_shader_memory(device, epilog->code_size, NULL);
+   if (!epilog->alloc)
+      goto fail_alloc;
+
+   epilog->bo = epilog->alloc->arena->bo;
+   epilog->va = radv_buffer_get_va(epilog->bo) + epilog->alloc->offset;
+
+   void *dest_ptr = epilog->alloc->arena->ptr + epilog->alloc->offset;
+   radv_shader_part_binary_upload(binary, dest_ptr);
+
+   if (options.dump_shader) {
       fprintf(stderr, "Fragment epilog");
       fprintf(stderr, "\ndisasm:\n%s\n", epilog->disasm_string);
    }
 
+   free(epilog->binary);
+   epilog->binary = NULL;
+
    return epilog;
+
+fail_alloc:
+   radv_shader_part_destroy(device, epilog);
+fail_create:
+   free(binary);
+   return NULL;
 }
 
 void
 radv_shader_destroy(struct radv_device *device, struct radv_shader *shader)
 {
-   if (!p_atomic_dec_zero(&shader->ref_count))
-      return;
+   assert(shader->ref_count == 0);
 
    free(shader->spirv);
    free(shader->nir_string);
@@ -2532,10 +2720,11 @@ radv_shader_destroy(struct radv_device *device, struct radv_shader *shader)
 void
 radv_shader_part_destroy(struct radv_device *device, struct radv_shader_part *shader_part)
 {
-   if (!shader_part)
-      return;
+   assert(shader_part->ref_count == 0);
 
-   radv_free_shader_memory(device, shader_part->alloc);
+   if (shader_part->alloc)
+      radv_free_shader_memory(device, shader_part->alloc);
+   free(shader_part->binary);
    free(shader_part->disasm_string);
    free(shader_part);
 }
@@ -2626,6 +2815,7 @@ radv_get_max_waves(const struct radv_device *device, struct radv_shader *shader,
 {
    struct radeon_info *info = &device->physical_device->rad_info;
    enum amd_gfx_level gfx_level = info->gfx_level;
+   enum radeon_family family = info->family;
    uint8_t wave_size = shader->info.wave_size;
    struct ac_shader_config *conf = &shader->config;
    unsigned max_simd_waves;
@@ -2652,7 +2842,9 @@ radv_get_max_waves(const struct radv_device *device, struct radv_shader *shader,
    if (conf->num_vgprs) {
       unsigned physical_vgprs = info->num_physical_wave64_vgprs_per_simd * (64 / wave_size);
       unsigned vgprs = align(conf->num_vgprs, wave_size == 32 ? 8 : 4);
-      if (gfx_level == GFX10_3)
+      if (family == CHIP_GFX1100 || family == CHIP_GFX1101)
+         vgprs = util_align_npot(vgprs, wave_size == 32 ? 24 : 12);
+      else if (gfx_level == GFX10_3)
          vgprs = align(vgprs, wave_size == 32 ? 16 : 8);
       max_simd_waves = MIN2(max_simd_waves, physical_vgprs / vgprs);
    }

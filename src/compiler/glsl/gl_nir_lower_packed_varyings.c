@@ -209,8 +209,10 @@ struct lower_packed_varyings_state
    bool ifc_exposed_to_query_api;
 };
 
-static bool
-needs_lowering(struct lower_packed_varyings_state *state, nir_variable *var)
+bool
+lower_packed_varying_needs_lowering(nir_shader *shader, nir_variable *var,
+                                    bool xfb_enabled, bool disable_xfb_packing,
+                                    bool disable_varying_packing)
 {
    /* Things composed of vec4's, varyings with explicitly assigned
     * locations or varyings marked as must_be_shader_input (which might be used
@@ -220,7 +222,7 @@ needs_lowering(struct lower_packed_varyings_state *state, nir_variable *var)
       return false;
 
    const struct glsl_type *type = var->type;
-   if (nir_is_arrayed_io(var, state->shader->info.stage) || var->data.per_view) {
+   if (nir_is_arrayed_io(var, shader->info.stage) || var->data.per_view) {
       assert(glsl_type_is_array(type));
       type = glsl_get_array_element(type);
    }
@@ -228,9 +230,9 @@ needs_lowering(struct lower_packed_varyings_state *state, nir_variable *var)
    /* Some drivers (e.g. panfrost) don't support packing of transform
     * feedback varyings.
     */
-   if (state->disable_xfb_packing && var->data.is_xfb &&
+   if (disable_xfb_packing && var->data.is_xfb &&
        !(glsl_type_is_array(type) || glsl_type_is_struct(type) || glsl_type_is_matrix(type)) &&
-       state->xfb_enabled)
+       xfb_enabled)
       return false;
 
    /* Override disable_varying_packing if the var is only used by transform
@@ -238,9 +240,9 @@ needs_lowering(struct lower_packed_varyings_state *state, nir_variable *var)
     * variable is an array, struct or matrix as the elements of these types
     * will always have the same interpolation and therefore are safe to pack.
     */
-   if (state->disable_varying_packing && !var->data.is_xfb_only &&
+   if (disable_varying_packing && !var->data.is_xfb_only &&
        !((glsl_type_is_array(type) || glsl_type_is_struct(type) || glsl_type_is_matrix(type)) &&
-         state->xfb_enabled))
+         xfb_enabled))
       return false;
 
    type = glsl_without_array(type);
@@ -354,28 +356,6 @@ get_packed_varying_deref(struct lower_packed_varyings_state *state,
    return deref;
 }
 
-static nir_ssa_def *
-i2u(struct lower_packed_varyings_state *state, nir_ssa_def *value)
-{
-   value =
-      nir_build_alu(&state->b,
-                    nir_type_conversion_op(nir_type_int, nir_type_uint,
-                                           nir_rounding_mode_undef),
-                    value, NULL, NULL, NULL);
-   return value;
-}
-
-static nir_ssa_def *
-u2i(struct lower_packed_varyings_state *state, nir_ssa_def *value)
-{
-   value =
-      nir_build_alu(&state->b,
-                    nir_type_conversion_op(nir_type_uint, nir_type_int,
-                                           nir_rounding_mode_undef),
-                    value, NULL, NULL, NULL);
-   return value;
-}
-
 struct packing_store_values {
    bool is_64bit;
    unsigned writemasks[2];
@@ -414,8 +394,6 @@ bitwise_assign_pack(struct lower_packed_varyings_state *state,
       assert(packed_base_type == GLSL_TYPE_INT);
       switch (unpacked_base_type) {
       case GLSL_TYPE_UINT:
-         value = u2i(state, value);
-         break;
       case GLSL_TYPE_FLOAT:
          value = nir_mov(&state->b, value);
          break;
@@ -429,36 +407,27 @@ bitwise_assign_pack(struct lower_packed_varyings_state *state,
             unsigned swiz_x = 0;
             unsigned writemask = 0x3;
             nir_ssa_def *swizzle = nir_swizzle(&state->b, value, &swiz_x, 1);
-            nir_ssa_def *x_value = nir_unpack_64_2x32(&state->b, swizzle);
-            if (unpacked_base_type != GLSL_TYPE_INT64)
-               x_value = u2i(state, x_value);
 
             store_state->is_64bit = true;
             store_state->deref = packed_deref;
-            store_state->values[0] = x_value;
+            store_state->values[0] = nir_unpack_64_2x32(&state->b, swizzle);
             store_state->writemasks[0] = writemask;
 
             unsigned swiz_y = 1;
             writemask = 0xc;
             swizzle = nir_swizzle(&state->b, value, &swiz_y, 1);
-            nir_ssa_def *y_value = nir_unpack_64_2x32(&state->b, swizzle);
-            if (unpacked_base_type != GLSL_TYPE_INT64)
-               y_value = u2i(state, y_value);
 
             store_state->deref = packed_deref;
-            store_state->values[1] = y_value;
+            store_state->values[1] = nir_unpack_64_2x32(&state->b, swizzle);
             store_state->writemasks[1] = writemask;
             return store_state;
          } else {
             value = nir_unpack_64_2x32(&state->b, value);
-
-            if (unpacked_base_type != GLSL_TYPE_INT64)
-               value = u2i(state, value);
          }
          break;
       case GLSL_TYPE_SAMPLER:
       case GLSL_TYPE_IMAGE:
-         value = u2i(state, nir_unpack_64_2x32(&state->b, value));
+         value = nir_unpack_64_2x32(&state->b, value);
          break;
       default:
          assert(!"Unexpected type conversion while lowering varyings");
@@ -501,8 +470,6 @@ bitwise_assign_unpack(struct lower_packed_varyings_state *state,
 
       switch (unpacked_base_type) {
       case GLSL_TYPE_UINT:
-         value = i2u(state, value);
-         break;
       case GLSL_TYPE_FLOAT:
          value = nir_mov(&state->b, value);
          break;
@@ -515,38 +482,31 @@ bitwise_assign_unpack(struct lower_packed_varyings_state *state,
 
             unsigned swiz_xy[2] = {0, 1};
             writemask = 1 << (ffs(writemask) - 1);
-            nir_ssa_def *xy_value = nir_swizzle(&state->b, value, swiz_xy, 2);
-            if (unpacked_base_type != GLSL_TYPE_INT64)
-               xy_value = i2u(state, xy_value);
 
-            xy_value = nir_pack_64_2x32(&state->b, xy_value);
             store_state->is_64bit = true;
             store_state->deref = unpacked_deref;
-            store_state->values[0] = xy_value;
+            store_state->values[0] =
+               nir_pack_64_2x32(&state->b,
+                                nir_swizzle(&state->b, value, swiz_xy, 2));
             store_state->writemasks[0] = writemask;
 
             unsigned swiz_zw[2] = {2, 3};
             writemask = writemask << 1;
-            nir_ssa_def *zw_value = nir_swizzle(&state->b, value, swiz_zw, 2);
-            if (unpacked_base_type != GLSL_TYPE_INT64)
-               zw_value = i2u(state, zw_value);
 
-            zw_value = nir_pack_64_2x32(&state->b, zw_value);
             store_state->deref = unpacked_deref;
-            store_state->values[1] = zw_value;
+            store_state->values[1] =
+               nir_pack_64_2x32(&state->b,
+                                nir_swizzle(&state->b, value, swiz_zw, 2));
             store_state->writemasks[1] = writemask;
 
             return store_state;
          } else {
-            if (unpacked_base_type != GLSL_TYPE_INT64)
-               value = i2u(state, value);
-
             value = nir_pack_64_2x32(&state->b, value);
          }
          break;
       case GLSL_TYPE_SAMPLER:
       case GLSL_TYPE_IMAGE:
-         value = nir_pack_64_2x32(&state->b, i2u(state, value));
+         value = nir_pack_64_2x32(&state->b, value);
          break;
       default:
          assert(!"Unexpected type conversion while lowering varyings");
@@ -899,7 +859,11 @@ static void
 lower_output_var(struct lower_packed_varyings_state *state, nir_variable *var)
 {
    if (var->data.mode != state->mode ||
-       var->data.location < VARYING_SLOT_VAR0 || !needs_lowering(state, var))
+       var->data.location < VARYING_SLOT_VAR0 ||
+       !lower_packed_varying_needs_lowering(state->shader, var,
+                                            state->xfb_enabled,
+                                            state->disable_xfb_packing,
+                                            state->disable_varying_packing))
       return;
 
       /* Skip any new packed varyings we just added */
@@ -980,7 +944,11 @@ lower_packed_inputs(struct lower_packed_varyings_state *state)
     */
    nir_foreach_shader_in_variable_safe(var, state->shader) {
       if (var->data.mode != state->mode ||
-          var->data.location < VARYING_SLOT_VAR0 || !needs_lowering(state, var))
+          var->data.location < VARYING_SLOT_VAR0 ||
+          !lower_packed_varying_needs_lowering(state->shader, var,
+                                               state->xfb_enabled,
+                                               state->disable_xfb_packing,
+                                               state->disable_varying_packing))
          continue;
 
       /* Skip any new packed varyings we just added */

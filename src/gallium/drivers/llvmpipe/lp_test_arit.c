@@ -362,11 +362,11 @@ build_unary_test_func(struct gallivm_state *gallivm,
    LLVMSetFunctionCallConv(func, LLVMCCallConv);
 
    LLVMPositionBuilderAtEnd(builder, block);
-   
-   arg1 = LLVMBuildLoad(builder, arg1, "");
+
+   arg1 = LLVMBuildLoad2(builder, vf32t, arg1, "");
 
    ret = test->builder(&bld, arg1);
-   
+
    LLVMBuildStore(builder, ret, arg0);
 
    LLVMBuildRetVoid(builder);
@@ -398,7 +398,7 @@ flush_denorm_to_zero(float val)
 
    fi_val.f = val;
 
-#if defined(PIPE_ARCH_SSE)
+#if DETECT_ARCH_SSE
    if (util_get_cpu_caps()->has_sse) {
       if ((fi_val.ui & 0x7f800000) == 0) {
          fi_val.ui &= 0xff800000;

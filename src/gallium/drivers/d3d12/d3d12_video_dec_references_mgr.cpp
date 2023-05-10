@@ -23,6 +23,9 @@
 
 #include "d3d12_video_dec_references_mgr.h"
 #include "d3d12_video_dec_h264.h"
+#include "d3d12_video_dec_hevc.h"
+#include "d3d12_video_dec_av1.h"
+#include "d3d12_video_dec_vp9.h"
 #include "d3d12_video_texture_array_dpb_manager.h"
 #include "d3d12_video_array_of_textures_dpb_manager.h"
 #include "d3d12_screen.h"
@@ -40,6 +43,12 @@ GetInvalidReferenceIndex(d3d12_video_decode_profile_type DecodeProfileType)
    switch (DecodeProfileType) {
       case d3d12_video_decode_profile_type_h264:
          return DXVA_H264_INVALID_PICTURE_INDEX;
+      case d3d12_video_decode_profile_type_hevc:
+         return DXVA_HEVC_INVALID_PICTURE_INDEX;
+      case d3d12_video_decode_profile_type_av1:
+         return DXVA_AV1_INVALID_PICTURE_INDEX;
+      case d3d12_video_decode_profile_type_vp9:
+         return DXVA_VP9_INVALID_PICTURE_INDEX;
       default:
          return 0;
    };
@@ -60,7 +69,7 @@ d3d12_video_decoder_references_manager::get_current_frame_decode_output_texture(
    assert(m_DecodeTargetToOriginalIndex7Bits.count(pCurrentDecodeTarget) > 0); // Needs to already have a Index7Bits assigned for current pic params
    uint16_t remappedIdx = find_remapped_index(m_DecodeTargetToOriginalIndex7Bits[pCurrentDecodeTarget]);
 
-   if(remappedIdx != m_invalidIndex) { // If it already has a remapped index in use, reuse that allocation
+   if((remappedIdx != m_invalidIndex) && !(is_reference_only())) { // If it already has a remapped index in use, reuse that allocation
       // return the existing allocation for this decode target
       d3d12_video_reconstructed_picture reconPicture = m_upD3D12TexturesStorageManager->get_reference_frame(remappedIdx);
       *ppOutTexture2D       = reconPicture.pReconstructedPicture;
@@ -199,13 +208,12 @@ d3d12_video_decoder_references_manager::d3d12_video_decoder_references_manager(
    d3d12_video_decode_profile_type   DecodeProfileType,
    d3d12_video_decode_dpb_descriptor m_dpbDescriptor)
    : m_DecodeTargetToOriginalIndex7Bits({ }),
-     m_CurrentIndex7BitsAvailable(0),
      m_pD3D12Screen(pD3D12Screen),
      m_invalidIndex(GetInvalidReferenceIndex(DecodeProfileType)),
      m_dpbDescriptor(m_dpbDescriptor),
      m_formatInfo({ m_dpbDescriptor.Format })
 {
-   HRESULT hr = m_pD3D12Screen->dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &m_formatInfo, sizeof(m_formatInfo));
+   ASSERTED HRESULT hr = m_pD3D12Screen->dev->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &m_formatInfo, sizeof(m_formatInfo));
    assert(SUCCEEDED(hr));
    D3D12_VIDEO_ENCODER_PICTURE_RESOLUTION_DESC targetFrameResolution = { static_cast<uint32_t>(m_dpbDescriptor.Width),
                                                                          m_dpbDescriptor.Height };
@@ -320,7 +328,7 @@ d3d12_video_decoder_references_manager::store_future_reference(uint16_t         
    // Set the index as the key in this map entry.
    m_referenceDXVAIndices[remappedIndex].originalIndex = index;
    IUnknown *pUnkHeap                                  = nullptr;
-   HRESULT hr = decoderHeap.Get()->QueryInterface(IID_PPV_ARGS(&pUnkHeap));
+   ASSERTED HRESULT hr = decoderHeap.Get()->QueryInterface(IID_PPV_ARGS(&pUnkHeap));
    assert(SUCCEEDED(hr));
    d3d12_video_reconstructed_picture reconPic = { pTexture2D, subresourceIndex, pUnkHeap };
 
@@ -354,7 +362,7 @@ d3d12_video_decoder_references_manager::release_unused_references_texture_memory
       if (!m_referenceDXVAIndices[index].fUsed) {
          d3d12_video_reconstructed_picture reconPicture = m_upD3D12TexturesStorageManager->get_reference_frame(index);
          if (reconPicture.pReconstructedPicture != nullptr) {
-            bool wasTracked = m_upD3D12TexturesStorageManager->untrack_reconstructed_picture_allocation(reconPicture);
+            ASSERTED bool wasTracked = m_upD3D12TexturesStorageManager->untrack_reconstructed_picture_allocation(reconPicture);
             // Untrack this resource, will mark it as free un the underlying storage buffer pool
             // if not tracked, must be due to no-copies allocation
             assert (wasTracked || is_pipe_buffer_underlying_output_decode_allocation());

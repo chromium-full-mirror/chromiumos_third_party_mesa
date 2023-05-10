@@ -164,6 +164,10 @@
    DRI_CONF_OPT_B(disable_glsl_line_continuations, def, \
                   "Disable backslash-based line continuations in GLSL source")
 
+#define DRI_CONF_DISABLE_UNIFORM_ARRAY_RESIZE(def) \
+   DRI_CONF_OPT_B(disable_uniform_array_resize, def, \
+                  "Disable the glsl optimisation that resizes uniform arrays")
+
 #define DRI_CONF_FORCE_GLSL_VERSION(def) \
    DRI_CONF_OPT_I(force_glsl_version, def, 0, 999, \
                   "Force a default GLSL version for shaders that lack an explicit #version line")
@@ -282,9 +286,9 @@
    DRI_CONF_OPT_S_NODEF(indirect_gl_extension_override, \
                   "Allow enabling/disabling a list of indirect-GL extensions")
 
-#define DRI_CONF_DISABLE_PROTECTED_CONTENT_CHECK(def) \
-   DRI_CONF_OPT_B(disable_protected_content_check, def, \
-                  "Don't reject image import if protected_content attribute doesn't match")
+#define DRI_CONF_FORCE_PROTECTED_CONTENT_CHECK(def) \
+   DRI_CONF_OPT_B(force_protected_content_check, def, \
+                  "Reject image import if protected_content attribute doesn't match")
 
 #define DRI_CONF_IGNORE_MAP_UNSYNCHRONIZED(def) \
    DRI_CONF_OPT_B(ignore_map_unsynchronized, def, \
@@ -335,6 +339,10 @@
    DRI_CONF_OPT_I(pp_jimenezmlaa_color, def, min, max, \
                   "Morphological anti-aliasing based on Jimenez' MLAA. 0 to disable, 8 for default quality. Color version, usable with 2d GL apps")
 
+#define DRI_CONF_PP_LOWER_DEPTH_RANGE_RATE() \
+   DRI_CONF_OPT_F(lower_depth_range_rate, 1.0, 0.0, 1.0, \
+                  "Lower depth range for fixing misrendering issues due to z coordinate float point interpolation accuracy")
+
 /**
  * \brief Performance-related options
  */
@@ -356,6 +364,10 @@
    DRI_CONF_OPT_B(adaptive_sync,def, \
                   "Adapt the monitor sync to the application performance (when possible)")
 
+#define DRI_CONF_BLOCK_ON_DEPLETED_BUFFERS(def) \
+   DRI_CONF_OPT_B(block_on_depleted_buffers, def, \
+                  "Block clients using buffer backpressure until new buffer is available to reduce latency")
+
 #define DRI_CONF_VK_WSI_FORCE_BGRA8_UNORM_FIRST(def) \
    DRI_CONF_OPT_B(vk_wsi_force_bgra8_unorm_first, def, \
                   "Force vkGetPhysicalDeviceSurfaceFormatsKHR to return VK_FORMAT_B8G8R8A8_UNORM as the first format")
@@ -371,6 +383,10 @@
 #define DRI_CONF_VK_X11_ENSURE_MIN_IMAGE_COUNT(def) \
    DRI_CONF_OPT_B(vk_x11_ensure_min_image_count, def, \
                   "Force the X11 WSI to create at least the number of image specified by the driver in VkSurfaceCapabilitiesKHR::minImageCount")
+
+#define DRI_CONF_VK_KHR_PRESENT_WAIT(def) \
+   DRI_CONF_OPT_B(vk_khr_present_wait, def, \
+                  "Expose VK_KHR_present_wait and id extensions despite them not being implemented for all supported surface types")
 
 #define DRI_CONF_VK_XWAYLAND_WAIT_READY(def) \
    DRI_CONF_OPT_B(vk_xwayland_wait_ready, def, \
@@ -474,14 +490,6 @@
 #define DRI_CONF_NINE_FORCESWRENDERINGONCPU(def) \
    DRI_CONF_OPT_B(force_sw_rendering_on_cpu, def, \
                   "If set to false, emulates software rendering on the requested device, else uses a software renderer.")
-
-/**
- * \brief radeonsi specific configuration options
- */
-
-#define DRI_CONF_RADEONSI_ZERO_ALL_VRAM_ALLOCS(def) \
-   DRI_CONF_OPT_B(radeonsi_zerovram, def, \
-                  "Zero all vram allocations")
 
 #define DRI_CONF_V3D_NONMSAA_TEXTURE_SIZE_LIMIT(def) \
    DRI_CONF_OPT_B(v3d_nonmsaa_texture_size_limit, def, \
@@ -591,6 +599,16 @@
    DRI_CONF_OPT_B(radv_enable_unified_heap_on_apu, def, \
                   "Enable an unified heap with DEVICE_LOCAL on integrated GPUs")
 
+#define DRI_CONF_RADV_TEX_NON_UNIFORM(def) \
+   DRI_CONF_OPT_B(radv_tex_non_uniform, def, \
+                  "Always mark texture sample operations as non-uniform.")
+
+#define DRI_CONF_RADV_RT(def) \
+   DRI_CONF_OPT_B(radv_rt, def, \
+                  "Expose support for VK_KHR_ray_tracing_pipeline")
+
+#define DRI_CONF_RADV_APP_LAYER() DRI_CONF_OPT_S_NODEF(radv_app_layer, "Select an application layer.")
+
 /**
  * \brief ANV specific configuration options
  */
@@ -602,5 +620,13 @@
 #define DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(def) \
    DRI_CONF_OPT_B(anv_sample_mask_out_opengl_behaviour, def, \
                   "Ignore sample mask out when having single sampled target")
+
+#define DRI_CONF_ANV_FP64_WORKAROUND_ENABLED(def) \
+   DRI_CONF_OPT_B(fp64_workaround_enabled, def, \
+                  "Use softpf64 when the shader uses float64, but the device doesn't support that type")
+
+#define DRI_CONF_ANV_GENERATED_INDIRECT_THRESHOLD(def) \
+   DRI_CONF_OPT_I(generated_indirect_threshold, def, 0, INT32_MAX, \
+                  "Indirect threshold count above which we start generating commands")
 
 #endif

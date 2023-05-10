@@ -38,11 +38,11 @@
 #include <stdio.h>
 #include <ctype.h>
 
-#define AMDGPU_ARCTURUS_RANGE   0x32, 0x3C
-#define AMDGPU_ALDEBARAN_RANGE  0x3C, 0xFF
+#define AMDGPU_MI100_RANGE       0x32, 0x3C
+#define AMDGPU_MI200_RANGE       0x3C, 0xFF
 
-#define ASICREV_IS_ARCTURUS(r)         ASICREV_IS(r, ARCTURUS)
-#define ASICREV_IS_ALDEBARAN(r)        ASICREV_IS(r, ALDEBARAN)
+#define ASICREV_IS_MI100(r)      ASICREV_IS(r, MI100)
+#define ASICREV_IS_MI200(r)      ASICREV_IS(r, MI200)
 
 #ifdef _WIN32
 #define DRM_CAP_ADDFB2_MODIFIERS 0x10
@@ -86,6 +86,8 @@
 #define AMDGPU_VRAM_TYPE_DDR4  8
 #define AMDGPU_VRAM_TYPE_GDDR6 9
 #define AMDGPU_VRAM_TYPE_DDR5  10
+#define AMDGPU_VRAM_TYPE_LPDDR4 11
+#define AMDGPU_VRAM_TYPE_LPDDR5 12
 
 struct drm_amdgpu_heap_info {
    uint64_t total_heap_size;
@@ -797,8 +799,8 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
       identify_chip(VEGA10);
       identify_chip(VEGA12);
       identify_chip(VEGA20);
-      identify_chip(ARCTURUS);
-      identify_chip(ALDEBARAN);
+      identify_chip(MI100);
+      identify_chip(MI200);
       break;
    case FAMILY_RV:
       identify_chip(RAVEN);
@@ -832,7 +834,8 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
       identify_chip(GFX1102);
       break;
    case FAMILY_GFX1103:
-      identify_chip(GFX1103);
+      identify_chip(GFX1103_R1);
+      identify_chip(GFX1103_R2);
       break;
    }
 
@@ -906,22 +909,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
    info->uvd_fw_version = info->ip[AMD_IP_UVD].num_queues ? uvd_version : 0;
    info->vce_fw_version = info->ip[AMD_IP_VCE].num_queues ? vce_version : 0;
 
-   /* Based on MemoryOpsPerClockTable from PAL. */
-   switch (info->vram_type) {
-   case AMDGPU_VRAM_TYPE_DDR2:
-   case AMDGPU_VRAM_TYPE_DDR3:
-   case AMDGPU_VRAM_TYPE_DDR4: /* same for LPDDR4 */
-   case AMDGPU_VRAM_TYPE_HBM: /* same for HBM2 and HBM3 */
-      info->memory_freq_mhz_effective *= 2;
-      break;
-   case AMDGPU_VRAM_TYPE_DDR5: /* same for LPDDR5 */
-   case AMDGPU_VRAM_TYPE_GDDR5:
-      info->memory_freq_mhz_effective *= 4;
-      break;
-   case AMDGPU_VRAM_TYPE_GDDR6:
-      info->memory_freq_mhz_effective *= 16;
-      break;
-   }
+   info->memory_freq_mhz_effective *= ac_memory_ops_per_clock(info->vram_type);
 
    /* unified ring */
    info->has_video_hw.vcn_decode
@@ -940,6 +928,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
     */
    info->has_sparse_vm_mappings = info->gfx_level >= GFX7;
    info->has_scheduled_fence_dependency = info->drm_minor >= 28;
+   info->has_gang_submit = info->drm_minor >= 49;
    info->mid_command_buffer_preemption_enabled = device_info.ids_flags & AMDGPU_IDS_FLAGS_PREEMPTION;
    info->has_tmz_support = has_tmz_support(dev, info, device_info.ids_flags);
    info->kernel_has_modifiers = has_modifiers(fd);
@@ -968,7 +957,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
             info->num_tcc_blocks /= 2;
       }
    } else {
-      if (!info->has_graphics && info->family >= CHIP_ALDEBARAN)
+      if (!info->has_graphics && info->family >= CHIP_MI200)
          info->tcc_cache_line_size = 128;
       else
          info->tcc_cache_line_size = 64;
@@ -998,6 +987,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
    case CHIP_FIJI:
    case CHIP_POLARIS12:
    case CHIP_VEGAM:
+   case CHIP_GFX1036:
       info->l2_cache_size = info->num_tcc_blocks * 128 * 1024;
       break;
    default:
@@ -1008,7 +998,10 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
       break;
    }
 
-   info->l1_cache_size = 16384;
+   if (info->gfx_level >= GFX11)
+      info->l1_cache_size = 32768;
+   else
+      info->l1_cache_size = 16384;
 
    info->mc_arb_ramcfg = amdinfo.mc_arb_ramcfg;
    info->gb_addr_config = amdinfo.gb_addr_cfg;
@@ -1076,8 +1069,8 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
     * instruction encoding which accumulates with the destination.
     */
    info->has_accelerated_dot_product =
-      info->family == CHIP_ARCTURUS || info->family == CHIP_ALDEBARAN ||
-      info->family == CHIP_VEGA20 || info->family >= CHIP_NAVI12;
+      info->family == CHIP_VEGA20 ||
+      (info->family >= CHIP_MI100 && info->family != CHIP_NAVI10);
 
    /* TODO: Figure out how to use LOAD_CONTEXT_REG on GFX6-GFX7. */
    info->has_load_ctx_reg_pkt =
@@ -1114,6 +1107,13 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
    info->has_vgt_flush_ngg_legacy_bug = info->gfx_level == GFX10 ||
                                         info->family == CHIP_NAVI21;
 
+   /* First Navi2x chips have a hw bug that doesn't allow to write
+    * depth/stencil from a FS for multi-pixel fragments.
+    */
+   info->has_vrs_ds_export_bug = info->family == CHIP_NAVI21 ||
+                                 info->family == CHIP_NAVI22 ||
+                                 info->family == CHIP_VANGOGH;
+
    /* HW bug workaround when CS threadgroups > 256 threads and async compute
     * isn't used, i.e. only one compute job can run at a time.  If async
     * compute is possible, the threadgroup size must be limited to 256 threads
@@ -1134,6 +1134,12 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
                                  (info->gfx_level == GFX9 &&
                                   info->me_fw_feature >= 52);
 
+   /* Firmware bug with DISPATCH_TASKMESH_INDIRECT_MULTI_ACE packets.
+    * On old MEC FW versions, it hangs the GPU when indirect count is zero.
+    */
+   info->has_taskmesh_indirect0_bug = info->gfx_level == GFX10_3 &&
+                                      info->mec_fw_version < 100;
+
    info->has_export_conflict_bug = info->gfx_level == GFX11;
 
    /* Get the number of good compute units. */
@@ -1143,11 +1149,11 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
          if (info->gfx_level >= GFX11) {
             assert(info->max_sa_per_se <= 2);
             info->cu_mask[i][j] = device_info.cu_bitmap[i % 4][(i / 4) * 2 + j];
-         } else if (info->family == CHIP_ARCTURUS) {
+         } else if (info->family == CHIP_MI100) {
             /* The CU bitmap in amd gpu info structure is
              * 4x4 size array, and it's usually suitable for Vega
              * ASICs which has 4*2 SE/SA layout.
-             * But for Arcturus, SE/SA layout is changed to 8*1.
+             * But for MI100, SE/SA layout is changed to 8*1.
              * To mostly reduce the impact, we make it compatible
              * with current bitmap array as below:
              *    SE4 --> cu_bitmap[0][1]
@@ -1286,7 +1292,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
       info->sgpr_alloc_granularity = 8;
    }
 
-   info->has_3d_cube_border_color_mipmap = info->has_graphics || info->family == CHIP_ARCTURUS;
+   info->has_3d_cube_border_color_mipmap = info->has_graphics || info->family == CHIP_MI100;
    info->never_stop_sq_perf_counters = info->gfx_level == GFX10 ||
                                        info->gfx_level == GFX10_3;
    info->never_send_perfcounter_stop = info->gfx_level == GFX11;
@@ -1302,7 +1308,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
 
    info->max_sgpr_alloc = info->family == CHIP_TONGA || info->family == CHIP_ICELAND ? 96 : 104;
 
-   if (!info->has_graphics && info->family >= CHIP_ALDEBARAN) {
+   if (!info->has_graphics && info->family >= CHIP_MI200) {
       info->min_wave64_vgpr_alloc = 8;
       info->max_vgpr_alloc = 512;
       info->wave64_vgpr_alloc_granularity = 8;
@@ -1312,7 +1318,12 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
       info->wave64_vgpr_alloc_granularity = 4;
    }
 
-   info->num_physical_wave64_vgprs_per_simd = info->gfx_level >= GFX10 ? 512 : 256;
+   if (info->family == CHIP_GFX1100 || info->family == CHIP_GFX1101)
+      info->num_physical_wave64_vgprs_per_simd = 768;
+   else if (info->gfx_level >= GFX10)
+      info->num_physical_wave64_vgprs_per_simd = 512;
+   else
+      info->num_physical_wave64_vgprs_per_simd = 256;
    info->num_simd_per_compute_unit = info->gfx_level >= GFX10 ? 2 : 4;
 
    /* BIG_PAGE is supported since gfx10.3 and requires VRAM. VRAM is only guaranteed
@@ -1331,7 +1342,7 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
    info->max_scratch_waves = MAX2(32 * info->min_good_cu_per_sa * info->max_sa_per_se * info->num_se,
                                   max_waves_per_tg);
    info->num_rb = util_bitcount(info->enabled_rb_mask);
-   info->max_gflops = info->num_cu * 128 * info->max_gpu_freq_mhz / 1000;
+   info->max_gflops = (info->gfx_level >= GFX11 ? 256 : 128) * info->num_cu * info->max_gpu_freq_mhz / 1000;
    info->memory_bandwidth_gbps = DIV_ROUND_UP(info->memory_freq_mhz_effective * info->memory_bus_width / 8, 1000);
 
    if (info->gfx_level >= GFX10_3 && info->has_dedicated_vram) {
@@ -1358,7 +1369,8 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info)
             exit(1);
          }
 
-         ac_parse_ib(stdout, ib, size / 4, NULL, 0, "IB", info->gfx_level, NULL, NULL);
+         ac_parse_ib(stdout, ib, size / 4, NULL, 0, "IB", info->gfx_level, info->family,
+                     NULL, NULL);
          free(ib);
          exit(0);
       }
@@ -1407,7 +1419,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
 
    if (info->gfx_level >= GFX10) {
       fprintf(f, "    l0_cache_size = %i KB\n", DIV_ROUND_UP(info->l1_cache_size, 1024));
-      fprintf(f, "    l1_cache_size = %i KB\n", 128);
+      fprintf(f, "    l1_cache_size = %i KB\n", info->gfx_level >= GFX11 ? 256 : 128);
    } else {
       fprintf(f, "    l1_cache_size = %i KB\n", DIV_ROUND_UP(info->l1_cache_size, 1024));
    }
@@ -1478,6 +1490,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    has_sqtt_auto_flush_mode_bug = %i\n", info->has_sqtt_auto_flush_mode_bug);
    fprintf(f, "    never_send_perfcounter_stop = %i\n", info->never_send_perfcounter_stop);
    fprintf(f, "    discardable_allows_big_page = %i\n", info->discardable_allows_big_page);
+   fprintf(f, "    has_taskmesh_indirect0_bug = %i\n", info->has_taskmesh_indirect0_bug);
 
    fprintf(f, "Display features:\n");
    fprintf(f, "    use_display_dcc_unaligned = %u\n", info->use_display_dcc_unaligned);
@@ -1541,6 +1554,7 @@ void ac_print_gpu_info(struct radeon_info *info, FILE *f)
    fprintf(f, "    has_sparse_vm_mappings = %u\n", info->has_sparse_vm_mappings);
    fprintf(f, "    has_stable_pstate = %u\n", info->has_stable_pstate);
    fprintf(f, "    has_scheduled_fence_dependency = %u\n", info->has_scheduled_fence_dependency);
+   fprintf(f, "    has_gang_submit = %u\n", info->has_gang_submit);
    fprintf(f, "    mid_command_buffer_preemption_enabled = %u\n",
            info->mid_command_buffer_preemption_enabled);
    fprintf(f, "    has_tmz_support = %u\n", info->has_tmz_support);
@@ -2007,4 +2021,29 @@ void ac_get_task_info(struct radeon_info *info,
    task_info->draw_ring_offset = ALIGN(AC_TASK_CTRLBUF_BYTES, 256);
    task_info->payload_ring_offset = ALIGN(task_info->draw_ring_offset + draw_ring_bytes, 256);
    task_info->bo_size_bytes = task_info->payload_ring_offset + payload_ring_bytes;
+}
+
+uint32_t ac_memory_ops_per_clock(uint32_t vram_type)
+{
+   /* Based on MemoryOpsPerClockTable from PAL. */
+   switch (vram_type) {
+   case AMDGPU_VRAM_TYPE_GDDR1:
+   case AMDGPU_VRAM_TYPE_GDDR3: /* last in low-end Evergreen */
+   case AMDGPU_VRAM_TYPE_GDDR4: /* last in R7xx, not used much */
+   case AMDGPU_VRAM_TYPE_UNKNOWN:
+   default:
+      return 0;
+   case AMDGPU_VRAM_TYPE_DDR2:
+   case AMDGPU_VRAM_TYPE_DDR3:
+   case AMDGPU_VRAM_TYPE_DDR4:
+   case AMDGPU_VRAM_TYPE_LPDDR4:
+   case AMDGPU_VRAM_TYPE_HBM: /* same for HBM2 and HBM3 */
+      return 2;
+   case AMDGPU_VRAM_TYPE_DDR5:
+   case AMDGPU_VRAM_TYPE_LPDDR5:
+   case AMDGPU_VRAM_TYPE_GDDR5: /* last in Polaris and low-end Navi14 */
+      return 4;
+   case AMDGPU_VRAM_TYPE_GDDR6:
+      return 16;
+   }
 }

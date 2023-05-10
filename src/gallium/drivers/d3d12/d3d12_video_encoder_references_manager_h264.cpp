@@ -52,8 +52,8 @@ d3d12_video_encoder_references_manager_h264::reset_gop_tracking_and_dpb()
    m_CurrentFrameReferencesData.ReconstructedPicTexture = { nullptr, 0 };
 
    // Reset DPB storage
-   uint32_t numPicsBeforeClearInDPB = m_rDPBStorageManager.get_number_of_pics_in_dpb();
-   uint32_t cFreedResources = m_rDPBStorageManager.clear_decode_picture_buffer();
+   ASSERTED uint32_t numPicsBeforeClearInDPB = m_rDPBStorageManager.get_number_of_pics_in_dpb();
+   ASSERTED uint32_t cFreedResources = m_rDPBStorageManager.clear_decode_picture_buffer();
    assert(numPicsBeforeClearInDPB == cFreedResources);
 
    // Initialize if needed the reconstructed picture allocation for the first IDR picture in the GOP
@@ -365,6 +365,9 @@ d3d12_video_encoder_references_manager_h264::print_dpb()
          dpbContents += "}\n";
       }
 
+      debug_printf("[D3D12 Video Encoder Picture Manager H264] DPB Current output reconstructed picture %p subresource %d\n",
+                     m_CurrentFrameReferencesData.ReconstructedPicTexture.pReconstructedPicture,
+                     m_CurrentFrameReferencesData.ReconstructedPicTexture.ReconstructedPictureSubresource);
       debug_printf("[D3D12 Video Encoder Picture Manager H264] DPB has %d frames - DPB references for frame with POC "
                     "%d (frame_num: %d) are: \n %s \n",
                     m_rDPBStorageManager.get_number_of_pics_in_dpb(),
@@ -398,11 +401,12 @@ d3d12_video_encoder_references_manager_h264::is_current_frame_used_as_reference(
 
 void
 d3d12_video_encoder_references_manager_h264::begin_frame(D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA curFrameData,
-                                                         bool bUsedAsReference)
+                                                         bool bUsedAsReference, struct pipe_picture_desc* picture)
 {
    m_curFrameState = *curFrameData.pH264PicData;
    m_isCurrentFrameUsedAsReference = bUsedAsReference;
-   debug_printf("Marking frame_num %d (POC %d) as reference ? %d\n",
+   debug_printf("[Entrypoint: %d] - Marking frame_num %d (POC %d) as reference ? %d\n",
+                 picture->entry_point,
                  curFrameData.pH264PicData->FrameDecodingOrderNumber,
                  curFrameData.pH264PicData->PictureOrderCountNumber,
                  bUsedAsReference);

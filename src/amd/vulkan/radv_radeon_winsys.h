@@ -67,6 +67,7 @@ enum radeon_bo_flag { /* bitfield */
                       RADEON_FLAG_PREFER_LOCAL_BO = (1 << 9),
                       RADEON_FLAG_ZERO_VRAM = (1 << 10),
                       RADEON_FLAG_REPLAYABLE = (1 << 11),
+                      RADEON_FLAG_DISCARDABLE = (1 << 12),
 };
 
 enum radeon_ctx_priority {
@@ -190,8 +191,9 @@ struct radv_winsys_submit_info {
    enum amd_ip_type ip_type;
    int queue_index;
    unsigned cs_count;
+   unsigned preamble_count;
    struct radeon_cmdbuf **cs_array;
-   struct radeon_cmdbuf *initial_preamble_cs;
+   struct radeon_cmdbuf **initial_preamble_cs;
    struct radeon_cmdbuf *continue_preamble_cs;
 };
 
@@ -281,14 +283,12 @@ struct radeon_winsys {
 
    void (*cs_grow)(struct radeon_cmdbuf *cs, size_t min_size);
 
-   VkResult (*cs_submit)(struct radeon_winsys_ctx *ctx, uint32_t submit_count,
+   VkResult (*cs_submit)(struct radeon_winsys_ctx *ctx,
                          const struct radv_winsys_submit_info *submits, uint32_t wait_count,
                          const struct vk_sync_wait *waits, uint32_t signal_count,
                          const struct vk_sync_signal *signals, bool can_patch);
 
    void (*cs_add_buffer)(struct radeon_cmdbuf *cs, struct radeon_winsys_bo *bo);
-
-   void (*cs_add_buffers)(struct radeon_cmdbuf *to, struct radeon_cmdbuf *from);
 
    void (*cs_execute_secondary)(struct radeon_cmdbuf *parent, struct radeon_cmdbuf *child,
                                 bool allow_ib2);
@@ -303,6 +303,8 @@ struct radeon_winsys {
                        struct radeon_surf *surf);
 
    int (*get_fd)(struct radeon_winsys *ws);
+
+   struct ac_addrlib *(*get_addrlib)(struct radeon_winsys *ws);
 
    const struct vk_sync_type *const *(*get_sync_types)(struct radeon_winsys *ws);
 };
@@ -321,7 +323,7 @@ radeon_emit_array(struct radeon_cmdbuf *cs, const uint32_t *values, unsigned cou
 }
 
 static inline uint64_t
-radv_buffer_get_va(struct radeon_winsys_bo *bo)
+radv_buffer_get_va(const struct radeon_winsys_bo *bo)
 {
    return bo->va;
 }

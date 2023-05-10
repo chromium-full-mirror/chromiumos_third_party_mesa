@@ -153,7 +153,16 @@ struct dxil_features {
             native_low_precision : 1,
             shading_rate : 1,
             raytracing_tier_1_1 : 1,
-            sampler_feedback : 1;
+            sampler_feedback : 1,
+            atomic_int64_typed : 1,
+            atomic_int64_tgsm : 1,
+            derivatives_in_mesh_or_amp : 1,
+            resource_descriptor_heap_indexing : 1,
+            sampler_descriptor_heap_indexing : 1,
+            unnamed : 1,
+            atomic_int64_heap_resource : 1,
+            advanced_texture_ops : 1,
+            writable_msaa : 1;
 };
 
 struct dxil_shader_info {
@@ -309,6 +318,12 @@ const struct dxil_type *
 dxil_module_get_samplepos_type(struct dxil_module *m);
 
 const struct dxil_type *
+dxil_module_get_res_bind_type(struct dxil_module *m);
+
+const struct dxil_type *
+dxil_module_get_res_props_type(struct dxil_module *m);
+
+const struct dxil_type *
 dxil_module_get_struct_type(struct dxil_module *m,
                             const char *name,
                             const struct dxil_type **elem_types,
@@ -377,6 +392,18 @@ dxil_module_get_array_const(struct dxil_module *m, const struct dxil_type *type,
 
 const struct dxil_value *
 dxil_module_get_undef(struct dxil_module *m, const struct dxil_type *type);
+
+const struct dxil_value *
+dxil_module_get_res_bind_const(struct dxil_module *m,
+                               uint32_t lower_bound,
+                               uint32_t upper_bound,
+                               uint32_t space,
+                               uint8_t class);
+
+const struct dxil_value *
+dxil_module_get_res_props_const(struct dxil_module *m,
+                                enum dxil_resource_class class,
+                                const struct dxil_mdnode *mdnode);
 
 const struct dxil_mdnode *
 dxil_get_metadata_string(struct dxil_module *m, const char *str);

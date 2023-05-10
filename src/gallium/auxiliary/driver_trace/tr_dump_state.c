@@ -139,6 +139,7 @@ void trace_dump_rasterizer_state(const struct pipe_rasterizer_state *state)
    trace_dump_member(bool, state, no_ms_sample_mask_out);
    trace_dump_member(bool, state, force_persample_interp);
    trace_dump_member(bool, state, line_smooth);
+   trace_dump_member(bool, state, line_rectangular);
    trace_dump_member(bool, state, line_stipple_enable);
    trace_dump_member(bool, state, line_last_pixel);
 
@@ -149,6 +150,7 @@ void trace_dump_rasterizer_state(const struct pipe_rasterizer_state *state)
 
    trace_dump_member(bool, state, rasterizer_discard);
 
+   trace_dump_member(bool, state, depth_clamp);
    trace_dump_member(bool, state, depth_clip_near);
    trace_dump_member(bool, state, depth_clip_far);
 
@@ -347,8 +349,7 @@ void trace_dump_compute_state(const struct pipe_compute_state *state)
    }
    trace_dump_member_end();
 
-   trace_dump_member(uint, state, req_local_mem);
-   trace_dump_member(uint, state, req_private_mem);
+   trace_dump_member(uint, state, static_shared_mem);
    trace_dump_member(uint, state, req_input_mem);
 
    trace_dump_struct_end();
@@ -542,7 +543,7 @@ void trace_dump_sampler_state(const struct pipe_sampler_state *state)
    trace_dump_member(uint, state, mag_img_filter);
    trace_dump_member(uint, state, compare_mode);
    trace_dump_member(uint, state, compare_func);
-   trace_dump_member(bool, state, normalized_coords);
+   trace_dump_member(bool, state, unnormalized_coords);
    trace_dump_member(uint, state, max_anisotropy);
    trace_dump_member(bool, state, seamless_cube_map);
    trace_dump_member(float, state, lod_bias);
@@ -1080,6 +1081,7 @@ void trace_dump_grid_info(const struct pipe_grid_info *state)
 
    trace_dump_member(uint, state, pc);
    trace_dump_member(ptr, state, input);
+   trace_dump_member(uint, state, variable_shared_mem);
 
    trace_dump_member_begin("block");
    trace_dump_array(uint, state->block, ARRAY_SIZE(state->block));

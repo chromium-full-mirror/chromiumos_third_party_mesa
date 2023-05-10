@@ -36,7 +36,7 @@
 
 #include "state_tracker/st_context.h"
 
-static simple_mtx_t override_lock = _SIMPLE_MTX_INITIALIZER_NP;
+static simple_mtx_t override_lock = SIMPLE_MTX_INITIALIZER;
 
 /**
  * Scans 'string' to see if it ends with 'ending'.
@@ -252,17 +252,14 @@ compute_version(const struct gl_extensions *extensions,
    GLuint major, minor, version;
 
    const bool ver_1_4 = (extensions->ARB_shadow);
-   const bool ver_1_5 = (ver_1_4 &&
-                         extensions->ARB_occlusion_query);
+   const bool ver_1_5 = ver_1_4;
    const bool ver_2_0 = (ver_1_5 &&
-                         extensions->ARB_point_sprite &&
                          extensions->ARB_vertex_shader &&
                          extensions->ARB_fragment_shader &&
                          extensions->ARB_texture_non_power_of_two &&
                          extensions->EXT_blend_equation_separate &&
                          extensions->EXT_stencil_two_side);
    const bool ver_2_1 = (ver_2_0 &&
-                         extensions->EXT_pixel_buffer_object &&
                          extensions->EXT_texture_sRGB);
    /* We lie about the minimum number of color attachments. Strictly, OpenGL
     * 3.0 requires 8, whereas OpenGL ES requires 4. OpenGL ES 3.0 class
@@ -314,7 +311,6 @@ compute_version(const struct gl_extensions *extensions,
                          extensions->ARB_blend_func_extended &&
                          extensions->ARB_explicit_attrib_location &&
                          extensions->ARB_instanced_arrays &&
-                         extensions->ARB_occlusion_query2 &&
                          extensions->ARB_shader_bit_encoding &&
                          extensions->ARB_texture_rgb10_a2ui &&
                          extensions->ARB_timer_query &&
@@ -339,6 +335,9 @@ compute_version(const struct gl_extensions *extensions,
                          consts->GLSLVersion >= 410 &&
                          consts->MaxTextureSize >= 16384 &&
                          consts->MaxRenderbufferSize >= 16384 &&
+                         consts->MaxCubeTextureLevels >= 15 &&
+                         consts->Max3DTextureLevels >= 12 &&
+                         consts->MaxArrayTextureLayers >= 2048 &&
                          extensions->ARB_ES2_compatibility &&
                          extensions->ARB_shader_precision &&
                          extensions->ARB_vertex_attrib_64bit &&
@@ -396,7 +395,6 @@ compute_version(const struct gl_extensions *extensions,
                          extensions->ARB_gl_spirv &&
                          extensions->ARB_spirv_extensions &&
                          extensions->ARB_indirect_parameters &&
-                         extensions->ARB_pipeline_statistics_query &&
                          extensions->ARB_polygon_offset_clamp &&
                          extensions->ARB_shader_atomic_counter_ops &&
                          extensions->ARB_shader_draw_parameters &&

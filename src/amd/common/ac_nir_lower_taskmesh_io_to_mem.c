@@ -25,7 +25,7 @@
 #include "ac_nir.h"
 #include "nir_builder.h"
 #include "amdgfxregs.h"
-#include "u_math.h"
+#include "util/u_math.h"
 
 /*
  * These NIR passes are used to lower NIR cross-stage I/O intrinsics
@@ -211,7 +211,7 @@ task_draw_ready_bit(nir_builder *b,
    nir_ssa_def *workgroup_index = task_workgroup_index(b, s);
 
    nir_ssa_def *idx = nir_iadd_nuw(b, ring_entry, workgroup_index);
-   return nir_ubfe(b, idx, nir_imm_int(b, util_bitcount(s->num_entries - 1)), nir_imm_int(b, 1));
+   return nir_u2u8(b, nir_ubfe(b, idx, nir_imm_int(b, util_bitcount(s->num_entries - 1)), nir_imm_int(b, 1)));
 }
 
 static nir_ssa_def *
@@ -240,9 +240,11 @@ task_write_draw_ring(nir_builder *b,
    nir_ssa_def *ring = nir_load_ring_task_draw_amd(b);
    nir_ssa_def *scalar_off = nir_imul_imm(b, ptr, s->draw_entry_bytes);
    nir_ssa_def *vector_off = nir_imm_int(b, 0);
+   nir_ssa_def *zero = nir_imm_int(b, 0);
 
-   nir_store_buffer_amd(b, store_val, ring, vector_off, scalar_off,
-                        .base = const_off, .memory_modes = nir_var_shader_out);
+   nir_store_buffer_amd(b, store_val, ring, vector_off, scalar_off, zero,
+                        .base = const_off, .memory_modes = nir_var_shader_out,
+                        .access = ACCESS_COHERENT);
 }
 
 static bool
@@ -267,9 +269,13 @@ lower_task_launch_mesh_workgroups(nir_builder *b,
     * so we assume that all invocations are active here.
     */
 
-   /* Wait for all necessary stores to finish. */
+   /* Wait for all necessary stores to finish.
+    * Device memory scope is necessary because we need to ensure there is
+    * always a waitcnt_vscnt instruction in order to avoid a race condition
+    * between payload stores and their loads after mesh shaders launch.
+    */
    nir_scoped_barrier(b, .execution_scope = NIR_SCOPE_WORKGROUP,
-                         .memory_scope = NIR_SCOPE_WORKGROUP,
+                         .memory_scope = NIR_SCOPE_DEVICE,
                          .memory_semantics = NIR_MEMORY_ACQ_REL,
                          .memory_modes = nir_var_mem_task_payload | nir_var_shader_out |
                                          nir_var_mem_ssbo | nir_var_mem_global);
@@ -282,9 +288,13 @@ lower_task_launch_mesh_workgroups(nir_builder *b,
       nir_ssa_def *x = nir_channel(b, dimensions, 0);
       nir_ssa_def *y = nir_channel(b, dimensions, 1);
       nir_ssa_def *z = nir_channel(b, dimensions, 2);
-      nir_ssa_def *rdy = task_draw_ready_bit(b, s);
-      nir_ssa_def *store_val = nir_vec4(b, x, y, z, rdy);
-      task_write_draw_ring(b, store_val, 0, s);
+
+      /* Dispatch dimensions of mesh shader workgroups. */
+      task_write_draw_ring(b, nir_vec3(b, x, y, z), 0, s);
+      /* Prevent the two stores from being reordered. */
+      nir_scoped_memory_barrier(b, NIR_SCOPE_INVOCATION, NIR_MEMORY_RELEASE, nir_var_shader_out);
+      /* Ready bit, only write the low 8 bits. */
+      task_write_draw_ring(b, task_draw_ready_bit(b, s), 12, s);
    }
    nir_pop_if(b, if_invocation_index_zero);
 
@@ -304,10 +314,12 @@ lower_task_payload_store(nir_builder *b,
    nir_ssa_def *ring = nir_load_ring_task_payload_amd(b);
    nir_ssa_def *ptr = task_ring_entry_index(b, s);
    nir_ssa_def *ring_off = nir_imul_imm(b, ptr, s->payload_entry_bytes);
+   nir_ssa_def *zero = nir_imm_int(b, 0);
 
-   nir_store_buffer_amd(b, store_val, ring, addr, ring_off, .base = base,
+   nir_store_buffer_amd(b, store_val, ring, addr, ring_off, zero, .base = base,
                         .write_mask = write_mask,
-                        .memory_modes = nir_var_mem_task_payload);
+                        .memory_modes = nir_var_mem_task_payload,
+                        .access = ACCESS_COHERENT);
 
    return NIR_LOWER_INSTR_PROGRESS_REPLACE;
 }
@@ -329,9 +341,11 @@ lower_taskmesh_payload_load(nir_builder *b,
    nir_ssa_def *addr = intrin->src[0].ssa;
    nir_ssa_def *ring = nir_load_ring_task_payload_amd(b);
    nir_ssa_def *ring_off = nir_imul_imm(b, ptr, s->payload_entry_bytes);
+   nir_ssa_def *zero = nir_imm_int(b, 0);
 
-   return nir_load_buffer_amd(b, num_components, bit_size, ring, addr, ring_off, .base = base,
-                              .memory_modes = nir_var_mem_task_payload);
+   return nir_load_buffer_amd(b, num_components, bit_size, ring, addr, ring_off, zero, .base = base,
+                              .memory_modes = nir_var_mem_task_payload,
+                              .access = ACCESS_COHERENT);
 }
 
 static nir_ssa_def *
@@ -365,7 +379,7 @@ ac_nir_lower_task_outputs_to_mem(nir_shader *shader,
    nir_lower_task_shader_options lower_ts_opt = {
       .payload_to_shared_for_atomics = true,
    };
-   NIR_PASS(_, shader, nir_lower_task_shader, lower_ts_opt);
+   nir_lower_task_shader(shader, lower_ts_opt);
 
    lower_tsms_io_state state = {
       .draw_entry_bytes = 16,

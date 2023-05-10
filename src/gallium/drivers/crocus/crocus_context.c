@@ -61,7 +61,7 @@ crocus_init_identifier_bo(struct crocus_context *ice)
 
    ice->workaround_bo->kflags |= EXEC_OBJECT_CAPTURE;
    ice->workaround_offset = ALIGN(
-      intel_debug_write_identifiers(bo_map, 4096, "Crocus") + 8, 8);
+      intel_debug_write_identifiers(bo_map, 4096, "Crocus"), 32);
 
    crocus_bo_unmap(ice->workaround_bo);
 
@@ -277,6 +277,7 @@ crocus_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    crocus_init_program_functions(ctx);
    crocus_init_resource_functions(ctx);
    crocus_init_flush_functions(ctx);
+   crocus_init_perfquery_functions(ctx);
 
    crocus_init_program_cache(ice);
 

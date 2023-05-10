@@ -84,7 +84,7 @@ lima_screen_get_name(struct pipe_screen *pscreen)
 static const char *
 lima_screen_get_vendor(struct pipe_screen *pscreen)
 {
-   return "lima";
+   return "Mesa";
 }
 
 static const char *
@@ -107,12 +107,7 @@ lima_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_SWIZZLE:
    case PIPE_CAP_VERTEX_COLOR_UNCLAMPED:
    case PIPE_CAP_TEXTURE_BARRIER:
-   case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
    case PIPE_CAP_SURFACE_SAMPLE_COUNT:
-      return 1;
-
-   /* Unimplemented, but for exporting OpenGL 2.0 */
-   case PIPE_CAP_POINT_SPRITE:
       return 1;
 
    /* not clear supported */
@@ -601,7 +596,7 @@ static const struct debug_named_value lima_debug_options[] = {
           "print debug info for shader disk cache" },
         { "noblit", LIMA_DEBUG_NO_BLIT,
           "use generic u_blitter instead of lima-specific" },
-        { NULL }
+        DEBUG_NAMED_VALUE_END
 };
 
 DEBUG_GET_ONCE_FLAGS_OPTION(lima_debug, "LIMA_DEBUG", lima_debug_options, 0)

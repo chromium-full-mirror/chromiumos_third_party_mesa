@@ -30,6 +30,7 @@ LIBDRM_VERSION = $(shell cat external/libdrm/meson.build | grep -o "\<version\>\
 
 MESA_VK_LIB_SUFFIX_amd := radeon
 MESA_VK_LIB_SUFFIX_intel := intel
+MESA_VK_LIB_SUFFIX_intel_hasvk := intel_hasvk
 MESA_VK_LIB_SUFFIX_freedreno := freedreno
 MESA_VK_LIB_SUFFIX_broadcom := broadcom
 MESA_VK_LIB_SUFFIX_panfrost := panfrost
@@ -99,6 +100,12 @@ MESON_GEN_PKGCONFIGS += android.hardware.graphics.mapper:4.0
 endif
 
 __MY_SHARED_LIBRARIES := $(LOCAL_SHARED_LIBRARIES)
+
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 30; echo $$?), 0)
+MESA_LIBGBM_NAME := libgbm_mesa
+else
+MESA_LIBGBM_NAME := libgbm
+endif
 
 ifeq ($(TARGET_IS_64_BIT),true)
 LOCAL_MULTILIB := 64
@@ -170,7 +177,7 @@ $(foreach driver,$(BOARD_MESA3D_VULKAN_DRIVERS), \
 
 ifneq ($(filter true, $(BOARD_MESA3D_BUILD_LIBGBM)),)
 # Modules 'libgbm', produces '/vendor/lib{64}/libgbm.so'
-$(eval $(call mesa3d-lib,libgbm,.so.1,,MESA3D_LIBGBM_BIN,$(MESA3D_TOP)/src/gbm/main))
+$(eval $(call mesa3d-lib,$(MESA_LIBGBM_NAME),.so.1,,MESA3D_LIBGBM_BIN,$(MESA3D_TOP)/src/gbm/main))
 endif
 
 #-------------------------------------------------------------------------------

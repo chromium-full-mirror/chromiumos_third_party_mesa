@@ -41,6 +41,7 @@
 #include "hwdef/rogue_hw_utils.h"
 #include "pipe/p_defines.h"
 #include "pvr_bo.h"
+#include "pvr_clear.h"
 #include "pvr_csb.h"
 #include "pvr_csb_enum_helpers.h"
 #include "pvr_debug.h"
@@ -57,6 +58,7 @@
 #include "rogue/rogue_compiler.h"
 #include "util/build_id.h"
 #include "util/log.h"
+#include "util/macros.h"
 #include "util/mesa-sha1.h"
 #include "util/os_misc.h"
 #include "util/u_math.h"
@@ -188,7 +190,7 @@ VkResult pvr_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
                              pAllocator);
    if (result != VK_SUCCESS) {
       vk_free(pAllocator, instance);
-      return vk_error(NULL, result);
+      return result;
    }
 
    pvr_process_debug_variable();
@@ -240,7 +242,8 @@ void pvr_DestroyInstance(VkInstance _instance,
    if (!instance)
       return;
 
-   pvr_physical_device_finish(&instance->physical_device);
+   if (instance->physical_devices_count > 0)
+      pvr_physical_device_finish(&instance->physical_device);
 
    VG(VALGRIND_DESTROY_MEMPOOL(instance));
 
@@ -619,7 +622,7 @@ void pvr_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       .largePoints = true,
       .alphaToOne = true,
       .multiViewport = false,
-      .samplerAnisotropy = true,
+      .samplerAnisotropy = false,
       .textureCompressionETC2 = true,
       .textureCompressionASTC_LDR = PVR_HAS_FEATURE(&pdevice->dev_info, astc),
       .textureCompressionBC = false,
@@ -662,7 +665,28 @@ void pvr_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
    }
 }
 
-/* TODO: See if this function can be improved once fully implemented. */
+static uint32_t
+pvr_get_simultanous_num_allocs(const struct pvr_physical_device *pdevice)
+{
+   const struct pvr_device_runtime_info *dev_runtime_info =
+      &pdevice->dev_runtime_info;
+   const struct pvr_device_info *dev_info = &pdevice->dev_info;
+   uint32_t min_cluster_per_phantom;
+
+   if (PVR_HAS_FEATURE(dev_info, s8xe))
+      return PVR_GET_FEATURE_VALUE(dev_info, num_raster_pipes, 0U);
+
+   assert(dev_runtime_info->num_phantoms == 1);
+   min_cluster_per_phantom = PVR_GET_FEATURE_VALUE(dev_info, num_clusters, 1U);
+
+   if (min_cluster_per_phantom >= 4)
+      return 1;
+   else if (min_cluster_per_phantom == 2)
+      return 2;
+   else
+      return 4;
+}
+
 uint32_t pvr_calc_fscommon_size_and_tiles_in_flight(
    const struct pvr_physical_device *pdevice,
    uint32_t fs_common_size,
@@ -670,46 +694,21 @@ uint32_t pvr_calc_fscommon_size_and_tiles_in_flight(
 {
    const struct pvr_device_runtime_info *dev_runtime_info =
       &pdevice->dev_runtime_info;
+   const uint32_t available_shareds =
+      dev_runtime_info->reserved_shared_size - dev_runtime_info->max_coeffs;
    const struct pvr_device_info *dev_info = &pdevice->dev_info;
-   uint32_t max_tiles_in_flight;
+   const uint32_t max_tiles_in_flight =
+      PVR_GET_FEATURE_VALUE(dev_info, isp_max_tiles_in_flight, 1U);
+   uint32_t num_tile_in_flight;
    uint32_t num_allocs;
 
-   if (PVR_HAS_FEATURE(dev_info, s8xe)) {
-      num_allocs = PVR_GET_FEATURE_VALUE(dev_info, num_raster_pipes, 0U);
-   } else {
-      uint32_t min_cluster_per_phantom = 0;
+   if (fs_common_size == 0)
+      return max_tiles_in_flight;
 
-      if (dev_runtime_info->num_phantoms > 1) {
-         pvr_finishme("Unimplemented path!!");
-      } else {
-         min_cluster_per_phantom =
-            PVR_GET_FEATURE_VALUE(dev_info, num_clusters, 1U);
-      }
+   num_allocs = pvr_get_simultanous_num_allocs(pdevice);
 
-      if (dev_runtime_info->num_phantoms > 1)
-         pvr_finishme("Unimplemented path!!");
-
-      if (dev_runtime_info->num_phantoms > 2)
-         pvr_finishme("Unimplemented path!!");
-
-      if (dev_runtime_info->num_phantoms > 3)
-         pvr_finishme("Unimplemented path!!");
-
-      if (min_cluster_per_phantom >= 4)
-         num_allocs = 1;
-      else if (min_cluster_per_phantom == 2)
-         num_allocs = 2;
-      else
-         num_allocs = 4;
-   }
-
-   max_tiles_in_flight =
-      PVR_GET_FEATURE_VALUE(dev_info, isp_max_tiles_in_flight, 1U);
-
-   if (fs_common_size == UINT_MAX) {
-      const struct pvr_device_runtime_info *dev_runtime_info =
-         &pdevice->dev_runtime_info;
-      uint32_t max_common_size;
+   if (fs_common_size == UINT32_MAX) {
+      uint32_t max_common_size = available_shareds;
 
       num_allocs *= MIN2(min_tiles_in_flight, max_tiles_in_flight);
 
@@ -718,23 +717,38 @@ uint32_t pvr_calc_fscommon_size_and_tiles_in_flight(
          num_allocs += 1;
       }
 
-      max_common_size =
-         dev_runtime_info->reserved_shared_size - dev_runtime_info->max_coeffs;
-
       /* Double resource requirements to deal with fragmentation. */
       max_common_size /= num_allocs * 2;
+      max_common_size = MIN2(max_common_size, ROGUE_MAX_PIXEL_SHARED_REGISTERS);
       max_common_size =
          ROUND_DOWN_TO(max_common_size,
                        PVRX(TA_STATE_PDS_SIZEINFO2_USC_SHAREDSIZE_UNIT_SIZE));
 
       return max_common_size;
-   } else if (fs_common_size == 0) {
-      return max_tiles_in_flight;
    }
 
-   pvr_finishme("Unimplemented path!!");
+   num_tile_in_flight = available_shareds / (fs_common_size * 2);
 
-   return 0;
+   if (!PVR_HAS_ERN(dev_info, 38748))
+      num_tile_in_flight -= 1;
+
+   num_tile_in_flight /= num_allocs;
+
+#if defined(DEBUG)
+   /* Validate the above result. */
+
+   assert(num_tile_in_flight >= MIN2(num_tile_in_flight, max_tiles_in_flight));
+   num_allocs *= num_tile_in_flight;
+
+   if (!PVR_HAS_ERN(dev_info, 38748)) {
+      /* Hardware needs space for one extra shared allocation. */
+      num_allocs += 1;
+   }
+
+   assert(fs_common_size <= available_shareds / (num_allocs * 2));
+#endif
+
+   return MIN2(num_tile_in_flight, max_tiles_in_flight);
 }
 
 struct pvr_descriptor_limits {
@@ -771,7 +785,7 @@ pvr_get_physical_device_descriptor_limits(struct pvr_physical_device *pdevice)
    };
 
    const uint32_t common_size =
-      pvr_calc_fscommon_size_and_tiles_in_flight(pdevice, -1, 1);
+      pvr_calc_fscommon_size_and_tiles_in_flight(pdevice, UINT32_MAX, 1);
    enum pvr_descriptor_cs_level cs_level;
 
    if (common_size >= 2048) {
@@ -857,9 +871,9 @@ void pvr_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
    VkPhysicalDeviceLimits limits = {
       .maxImageDimension1D = max_render_size,
       .maxImageDimension2D = max_render_size,
-      .maxImageDimension3D = 2U * 1024U,
+      .maxImageDimension3D = PVR_MAX_TEXTURE_EXTENT_Z,
       .maxImageDimensionCube = max_render_size,
-      .maxImageArrayLayers = 2U * 1024U,
+      .maxImageArrayLayers = PVR_MAX_ARRAY_LAYERS,
       .maxTexelBufferElements = 64U * 1024U,
       .maxUniformBufferRange = 128U * 1024U * 1024U,
       .maxStorageBufferRange = 128U * 1024U * 1024U,
@@ -1111,45 +1125,29 @@ vk_icdGetPhysicalDeviceProcAddr(VkInstance _instance, const char *pName)
    return vk_instance_get_physical_device_proc_addr(&instance->vk, pName);
 }
 
-static VkResult pvr_device_init_compute_fence_program(struct pvr_device *device)
+VkResult pvr_pds_compute_shader_create_and_upload(
+   struct pvr_device *device,
+   struct pvr_pds_compute_shader_program *program,
+   struct pvr_pds_upload *const pds_upload_out)
 {
    const struct pvr_device_info *dev_info = &device->pdevice->dev_info;
    const uint32_t cache_line_size = rogue_get_slc_cache_line_size(dev_info);
-   struct pvr_pds_compute_shader_program program = { 0U };
    size_t staging_buffer_size;
    uint32_t *staging_buffer;
    uint32_t *data_buffer;
    uint32_t *code_buffer;
    VkResult result;
 
-   STATIC_ASSERT(ARRAY_SIZE(program.local_input_regs) ==
-                 ARRAY_SIZE(program.work_group_input_regs));
-   STATIC_ASSERT(ARRAY_SIZE(program.local_input_regs) ==
-                 ARRAY_SIZE(program.global_input_regs));
-
-   /* Initialize PDS structure. */
-   for (uint32_t i = 0U; i < ARRAY_SIZE(program.local_input_regs); i++) {
-      program.local_input_regs[i] = PVR_PDS_COMPUTE_INPUT_REG_UNUSED;
-      program.work_group_input_regs[i] = PVR_PDS_COMPUTE_INPUT_REG_UNUSED;
-      program.global_input_regs[i] = PVR_PDS_COMPUTE_INPUT_REG_UNUSED;
-   }
-
-   program.barrier_coefficient = PVR_PDS_COMPUTE_INPUT_REG_UNUSED;
-
-   /* Fence kernel. */
-   program.fence = true;
-   program.clear_pds_barrier = true;
-
    /* Calculate how much space we'll need for the compute shader PDS program.
     */
-   pvr_pds_set_sizes_compute_shader(&program, dev_info);
+   pvr_pds_compute_shader(program, NULL, PDS_GENERATE_SIZES, dev_info);
 
    /* FIXME: Fix the below inconsistency of code size being in bytes whereas
     * data size being in dwords.
     */
    /* Code size is in bytes, data size in dwords. */
    staging_buffer_size =
-      program.data_size * sizeof(uint32_t) + program.code_size;
+      program->data_size * sizeof(uint32_t) + program->code_size;
 
    staging_buffer = vk_alloc(&device->vk.alloc,
                              staging_buffer_size,
@@ -1159,25 +1157,57 @@ static VkResult pvr_device_init_compute_fence_program(struct pvr_device *device)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    data_buffer = staging_buffer;
-   code_buffer = pvr_pds_generate_compute_shader_data_segment(&program,
-                                                              data_buffer,
-                                                              dev_info);
-   pvr_pds_generate_compute_shader_code_segment(&program,
-                                                code_buffer,
-                                                dev_info);
+   code_buffer = pvr_pds_compute_shader(program,
+                                        data_buffer,
+                                        PDS_GENERATE_DATA_SEGMENT,
+                                        dev_info);
+
+   pvr_pds_compute_shader(program,
+                          code_buffer,
+                          PDS_GENERATE_CODE_SEGMENT,
+                          dev_info);
+
    result = pvr_gpu_upload_pds(device,
                                data_buffer,
-                               program.data_size,
+                               program->data_size,
                                PVRX(CDMCTRL_KERNEL1_DATA_ADDR_ALIGNMENT),
                                code_buffer,
-                               program.code_size / sizeof(uint32_t),
+                               program->code_size / sizeof(uint32_t),
                                PVRX(CDMCTRL_KERNEL2_CODE_ADDR_ALIGNMENT),
                                cache_line_size,
-                               &device->pds_compute_fence_program);
+                               pds_upload_out);
 
    vk_free(&device->vk.alloc, staging_buffer);
 
    return result;
+}
+
+static VkResult pvr_device_init_compute_fence_program(struct pvr_device *device)
+{
+   struct pvr_pds_compute_shader_program program;
+
+   pvr_pds_compute_shader_program_init(&program);
+   /* Fence kernel. */
+   program.fence = true;
+   program.clear_pds_barrier = true;
+
+   return pvr_pds_compute_shader_create_and_upload(
+      device,
+      &program,
+      &device->pds_compute_fence_program);
+}
+
+static VkResult pvr_device_init_compute_empty_program(struct pvr_device *device)
+{
+   struct pvr_pds_compute_shader_program program;
+
+   pvr_pds_compute_shader_program_init(&program);
+   program.clear_pds_barrier = true;
+
+   return pvr_pds_compute_shader_create_and_upload(
+      device,
+      &program,
+      &device->pds_compute_empty_program);
 }
 
 static VkResult pvr_pds_idfwdf_programs_create_and_upload(
@@ -1376,7 +1406,6 @@ static VkResult pvr_device_init_compute_idfwdf_state(struct pvr_device *device)
       .format = VK_FORMAT_R32G32B32A32_SFLOAT,
       .mem_layout = PVR_MEMLAYOUT_LINEAR,
       .flags = PVR_TEXFLAGS_INDEX_LOOKUP,
-      /* TODO: Is this correct? Is it 2D, 3D, or 2D_ARRAY? */
       .type = VK_IMAGE_VIEW_TYPE_2D,
       .extent = { .width = 4, .height = 2, .depth = 0 },
       .mip_levels = 1,
@@ -1546,6 +1575,82 @@ err_free_nop_usc_bo:
    return result;
 }
 
+static void pvr_device_init_tile_buffer_state(struct pvr_device *device)
+{
+   simple_mtx_init(&device->tile_buffer_state.mtx, mtx_plain);
+
+   for (uint32_t i = 0; i < ARRAY_SIZE(device->tile_buffer_state.buffers); i++)
+      device->tile_buffer_state.buffers[i] = NULL;
+
+   device->tile_buffer_state.buffer_count = 0;
+}
+
+static void pvr_device_finish_tile_buffer_state(struct pvr_device *device)
+{
+   /* Destroy the mutex first to trigger asserts in case it's still locked so
+    * that we don't put things in an inconsistent state by freeing buffers that
+    * might be in use or attempt to free buffers while new buffers are being
+    * allocated.
+    */
+   simple_mtx_destroy(&device->tile_buffer_state.mtx);
+
+   for (uint32_t i = 0; i < device->tile_buffer_state.buffer_count; i++)
+      pvr_bo_free(device, device->tile_buffer_state.buffers[i]);
+}
+
+/**
+ * \brief Ensures that a certain amount of tile buffers are allocated.
+ *
+ * Make sure that \p capacity amount of tile buffers are allocated. If less were
+ * present, append new tile buffers of \p size_in_bytes each to reach the quota.
+ */
+VkResult pvr_device_tile_buffer_ensure_cap(struct pvr_device *device,
+                                           uint32_t capacity,
+                                           uint32_t size_in_bytes)
+{
+   const uint32_t cache_line_size =
+      rogue_get_slc_cache_line_size(&device->pdevice->dev_info);
+   uint32_t offset;
+   VkResult result;
+
+   simple_mtx_lock(&device->tile_buffer_state.mtx);
+
+   offset = device->tile_buffer_state.buffer_count;
+
+   /* Clamping in release and asserting in debug. */
+   assert(capacity <= ARRAY_SIZE(device->tile_buffer_state.buffers));
+   capacity = MIN2(capacity, ARRAY_SIZE(device->tile_buffer_state.buffers));
+
+   /* TODO: Implement bo multialloc? To reduce the amount of syscalls and
+    * allocations.
+    */
+   for (uint32_t i = 0; i < (capacity - offset); i++) {
+      result = pvr_bo_alloc(device,
+                            device->heaps.general_heap,
+                            size_in_bytes,
+                            cache_line_size,
+                            0,
+                            &device->tile_buffer_state.buffers[offset + i]);
+      if (result != VK_SUCCESS) {
+         for (uint32_t j = 0; j < i; j++)
+            pvr_bo_free(device, device->tile_buffer_state.buffers[offset + j]);
+
+         goto err_release_lock;
+      }
+   }
+
+   device->tile_buffer_state.buffer_count = capacity;
+
+   simple_mtx_unlock(&device->tile_buffer_state.mtx);
+
+   return VK_SUCCESS;
+
+err_release_lock:
+   simple_mtx_unlock(&device->tile_buffer_state.mtx);
+
+   return result;
+}
+
 static void pvr_device_init_default_sampler_state(struct pvr_device *device)
 {
    pvr_csb_pack (&device->input_attachment_sampler, TEXSTATE_SAMPLER, sampler) {
@@ -1626,6 +1731,10 @@ VkResult pvr_CreateDevice(VkPhysicalDevice physicalDevice,
 
    device->ws->ops->get_heaps_info(device->ws, &device->heaps);
 
+   result = pvr_bo_store_create(device);
+   if (result != VK_SUCCESS)
+      goto err_pvr_winsys_destroy;
+
    result = pvr_free_list_create(device,
                                  PVR_GLOBAL_FREE_LIST_INITIAL_SIZE,
                                  PVR_GLOBAL_FREE_LIST_MAX_SIZE,
@@ -1634,7 +1743,7 @@ VkResult pvr_CreateDevice(VkPhysicalDevice physicalDevice,
                                  NULL /* parent_free_list */,
                                  &device->global_free_list);
    if (result != VK_SUCCESS)
-      goto err_pvr_winsys_destroy;
+      goto err_pvr_bo_store_destroy;
 
    result = pvr_device_init_nop_program(device);
    if (result != VK_SUCCESS)
@@ -1644,13 +1753,27 @@ VkResult pvr_CreateDevice(VkPhysicalDevice physicalDevice,
    if (result != VK_SUCCESS)
       goto err_pvr_free_nop_program;
 
-   result = pvr_device_init_compute_idfwdf_state(device);
+   result = pvr_device_init_compute_empty_program(device);
    if (result != VK_SUCCESS)
       goto err_pvr_free_compute_fence;
 
-   result = pvr_queues_create(device, pCreateInfo);
+   result = pvr_device_create_compute_query_programs(device);
+   if (result != VK_SUCCESS)
+      goto err_pvr_free_compute_empty;
+
+   result = pvr_device_init_compute_idfwdf_state(device);
+   if (result != VK_SUCCESS)
+      goto err_pvr_destroy_compute_query_programs;
+
+   result = pvr_device_init_graphics_static_clear_state(device);
    if (result != VK_SUCCESS)
       goto err_pvr_finish_compute_idfwdf;
+
+   pvr_device_init_tile_buffer_state(device);
+
+   result = pvr_queues_create(device, pCreateInfo);
+   if (result != VK_SUCCESS)
+      goto err_pvr_finish_tile_buffer_state;
 
    pvr_device_init_default_sampler_state(device);
 
@@ -1674,8 +1797,18 @@ VkResult pvr_CreateDevice(VkPhysicalDevice physicalDevice,
 
    return VK_SUCCESS;
 
+err_pvr_finish_tile_buffer_state:
+   pvr_device_finish_tile_buffer_state(device);
+   pvr_device_finish_graphics_static_clear_state(device);
+
 err_pvr_finish_compute_idfwdf:
    pvr_device_finish_compute_idfwdf_state(device);
+
+err_pvr_destroy_compute_query_programs:
+   pvr_device_destroy_compute_query_programs(device);
+
+err_pvr_free_compute_empty:
+   pvr_bo_free(device, device->pds_compute_empty_program.pvr_bo);
 
 err_pvr_free_compute_fence:
    pvr_bo_free(device, device->pds_compute_fence_program.pvr_bo);
@@ -1686,6 +1819,9 @@ err_pvr_free_nop_program:
 
 err_pvr_free_list_destroy:
    pvr_free_list_destroy(device->global_free_list);
+
+err_pvr_bo_store_destroy:
+   pvr_bo_store_destroy(device);
 
 err_pvr_winsys_destroy:
    pvr_winsys_destroy(device->ws);
@@ -1711,12 +1847,21 @@ void pvr_DestroyDevice(VkDevice _device,
    PVR_FROM_HANDLE(pvr_device, device, _device);
 
    pvr_queues_destroy(device);
+   pvr_device_finish_tile_buffer_state(device);
+   pvr_device_finish_graphics_static_clear_state(device);
    pvr_device_finish_compute_idfwdf_state(device);
+   pvr_device_destroy_compute_query_programs(device);
+   pvr_bo_free(device, device->pds_compute_empty_program.pvr_bo);
    pvr_bo_free(device, device->pds_compute_fence_program.pvr_bo);
    pvr_bo_free(device, device->nop_program.pds.pvr_bo);
    pvr_bo_free(device, device->nop_program.usc);
    pvr_free_list_destroy(device->global_free_list);
+   pvr_bo_store_destroy(device);
    pvr_winsys_destroy(device->ws);
+
+   if (device->master_fd >= 0)
+      close(device->master_fd);
+
    close(device->render_fd);
    vk_device_finish(&device->vk);
    vk_free(&device->vk.alloc, device);
@@ -2085,7 +2230,20 @@ VkResult pvr_CreateEvent(VkDevice _device,
                          const VkAllocationCallbacks *pAllocator,
                          VkEvent *pEvent)
 {
-   assert(!"Unimplemented");
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+
+   struct pvr_event *event = vk_object_alloc(&device->vk,
+                                             pAllocator,
+                                             sizeof(*event),
+                                             VK_OBJECT_TYPE_EVENT);
+   if (!event)
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+   event->sync = NULL;
+   event->state = PVR_EVENT_STATE_RESET_BY_HOST;
+
+   *pEvent = pvr_event_to_handle(event);
+
    return VK_SUCCESS;
 }
 
@@ -2093,24 +2251,89 @@ void pvr_DestroyEvent(VkDevice _device,
                       VkEvent _event,
                       const VkAllocationCallbacks *pAllocator)
 {
-   assert(!"Unimplemented");
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   PVR_FROM_HANDLE(pvr_event, event, _event);
+
+   if (!event)
+      return;
+
+   if (event->sync)
+      vk_sync_destroy(&device->vk, event->sync);
+
+   vk_object_free(&device->vk, pAllocator, event);
 }
 
 VkResult pvr_GetEventStatus(VkDevice _device, VkEvent _event)
 {
-   assert(!"Unimplemented");
-   return VK_SUCCESS;
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+   PVR_FROM_HANDLE(pvr_event, event, _event);
+   VkResult result;
+
+   switch (event->state) {
+   case PVR_EVENT_STATE_SET_BY_DEVICE:
+      if (!event->sync)
+         return VK_EVENT_RESET;
+
+      result =
+         vk_sync_wait(&device->vk, event->sync, 0U, VK_SYNC_WAIT_COMPLETE, 0);
+      result = (result == VK_SUCCESS) ? VK_EVENT_SET : VK_EVENT_RESET;
+      break;
+
+   case PVR_EVENT_STATE_RESET_BY_DEVICE:
+      if (!event->sync)
+         return VK_EVENT_RESET;
+
+      result =
+         vk_sync_wait(&device->vk, event->sync, 0U, VK_SYNC_WAIT_COMPLETE, 0);
+      result = (result == VK_SUCCESS) ? VK_EVENT_RESET : VK_EVENT_SET;
+      break;
+
+   case PVR_EVENT_STATE_SET_BY_HOST:
+      result = VK_EVENT_SET;
+      break;
+
+   case PVR_EVENT_STATE_RESET_BY_HOST:
+      result = VK_EVENT_RESET;
+      break;
+
+   default:
+      unreachable("Event object in unknown state");
+   }
+
+   return result;
 }
 
 VkResult pvr_SetEvent(VkDevice _device, VkEvent _event)
 {
-   assert(!"Unimplemented");
+   PVR_FROM_HANDLE(pvr_event, event, _event);
+
+   if (event->sync) {
+      PVR_FROM_HANDLE(pvr_device, device, _device);
+
+      const VkResult result = vk_sync_signal(&device->vk, event->sync, 0);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   event->state = PVR_EVENT_STATE_SET_BY_HOST;
+
    return VK_SUCCESS;
 }
 
 VkResult pvr_ResetEvent(VkDevice _device, VkEvent _event)
 {
-   assert(!"Unimplemented");
+   PVR_FROM_HANDLE(pvr_event, event, _event);
+
+   if (event->sync) {
+      PVR_FROM_HANDLE(pvr_device, device, _device);
+
+      const VkResult result = vk_sync_reset(&device->vk, event->sync);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   event->state = PVR_EVENT_STATE_RESET_BY_HOST;
+
    return VK_SUCCESS;
 }
 

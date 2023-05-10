@@ -26,6 +26,7 @@
 
 #include "vk_cmd_queue.h"
 #include "vk_graphics_state.h"
+#include "vk_log.h"
 #include "vk_object.h"
 #include "util/list.h"
 #include "util/u_dynarray.h"
@@ -58,6 +59,43 @@ struct vk_attachment_state {
    VkClearValue clear_value;
 };
 
+struct vk_command_buffer_ops {
+   /** Creates a command buffer
+    *
+    * Used by the common command pool implementation.  This function MUST
+    * call `vk_command_buffer_finish()`.  Notably, this function does not
+    * receive any additional parameters such as the level.  The level will be
+    * set by `vk_common_AllocateCommandBuffers()` and the driver must not rely
+    * on it until `vkBeginCommandBuffer()` time.
+    */
+   VkResult (*create)(struct vk_command_pool *,
+                      struct vk_command_buffer **);
+
+   /** Resets the command buffer
+    *
+    * Used by the common command pool implementation.  This function MUST
+    * call `vk_command_buffer_reset()`.  Unlike `vkResetCommandBuffer()`,
+    * this function does not have a return value because it may be called on
+    * destruction paths.
+    */
+   void (*reset)(struct vk_command_buffer *, VkCommandBufferResetFlags);
+
+   /** Destroys the command buffer
+    *
+    * Used by the common command pool implementation.  This function MUST
+    * call `vk_command_buffer_finish()`.
+    */
+   void (*destroy)(struct vk_command_buffer *);
+};
+
+enum mesa_vk_command_buffer_state {
+   MESA_VK_COMMAND_BUFFER_STATE_INVALID,
+   MESA_VK_COMMAND_BUFFER_STATE_INITIAL,
+   MESA_VK_COMMAND_BUFFER_STATE_RECORDING,
+   MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE,
+   MESA_VK_COMMAND_BUFFER_STATE_PENDING,
+};
+
 struct vk_command_buffer {
    struct vk_object_base base;
 
@@ -66,17 +104,18 @@ struct vk_command_buffer {
    /** VkCommandBufferAllocateInfo::level */
    VkCommandBufferLevel level;
 
+   const struct vk_command_buffer_ops *ops;
+
    struct vk_dynamic_graphics_state dynamic_graphics_state;
+
+   /** State of the command buffer */
+   enum mesa_vk_command_buffer_state state;
+
+   /** Command buffer recording error state. */
+   VkResult record_result;
 
    /** Link in vk_command_pool::command_buffers if pool != NULL */
    struct list_head pool_link;
-
-   /** Destroys the command buffer
-    *
-    * Used by the common command pool implementation.  This function MUST
-    * call vk_command_buffer_finish().
-    */
-   void (*destroy)(struct vk_command_buffer *);
 
    /** Command list for emulated secondary command buffers */
    struct vk_cmd_queue cmd_queue;
@@ -137,8 +176,9 @@ VK_DEFINE_HANDLE_CASTS(vk_command_buffer, base, VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
 
 VkResult MUST_CHECK
-vk_command_buffer_init(struct vk_command_buffer *command_buffer,
-                       struct vk_command_pool *pool,
+vk_command_buffer_init(struct vk_command_pool *pool,
+                       struct vk_command_buffer *command_buffer,
+                       const struct vk_command_buffer_ops *ops,
                        VkCommandBufferLevel level);
 
 void
@@ -148,7 +188,40 @@ void
 vk_command_buffer_reset(struct vk_command_buffer *command_buffer);
 
 void
+vk_command_buffer_recycle(struct vk_command_buffer *command_buffer);
+
+void
+vk_command_buffer_begin(struct vk_command_buffer *command_buffer,
+                        const VkCommandBufferBeginInfo *pBeginInfo);
+
+VkResult
+vk_command_buffer_end(struct vk_command_buffer *command_buffer);
+
+void
 vk_command_buffer_finish(struct vk_command_buffer *command_buffer);
+
+static inline VkResult
+__vk_command_buffer_set_error(struct vk_command_buffer *command_buffer,
+                              VkResult error, const char *file, int line)
+{
+   assert(error != VK_SUCCESS);
+   error = __vk_errorf(command_buffer, error, file, line, NULL);
+   if (command_buffer->record_result == VK_SUCCESS)
+       command_buffer->record_result = error;
+   return error;
+}
+
+#define vk_command_buffer_set_error(command_buffer, error) \
+   __vk_command_buffer_set_error(command_buffer, error, __FILE__, __LINE__)
+
+static inline VkResult
+vk_command_buffer_get_record_result(struct vk_command_buffer *command_buffer)
+{
+   return command_buffer->record_result;
+}
+
+#define vk_command_buffer_has_error(command_buffer) \
+   unlikely((command_buffer)->record_result != VK_SUCCESS)
 
 #ifdef __cplusplus
 }

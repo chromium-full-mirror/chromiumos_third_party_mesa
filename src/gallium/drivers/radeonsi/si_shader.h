@@ -146,10 +146,6 @@
 extern "C" {
 #endif
 
-// Use LDS symbols when supported by LLVM. Can be disabled for testing the old
-// path on newer LLVM for now. Should be removed in the long term.
-#define USE_LDS_SYMBOLS (true)
-
 struct nir_shader;
 struct si_shader;
 struct si_context;
@@ -296,7 +292,7 @@ enum
 } while (0)
 
 /* This is called during shader compilation and returns LLVMValueRef. */
-#define GET_FIELD(ctx, field) si_unpack_param((ctx), (ctx)->vs_state_bits, field##__SHIFT, \
+#define GET_FIELD(ctx, field) si_unpack_param((ctx), (ctx)->args->vs_state_bits, field##__SHIFT, \
                                              util_bitcount(field##__MASK))
 
 enum
@@ -617,7 +613,6 @@ union si_shader_part_key {
       unsigned as_ls : 1;
       unsigned as_es : 1;
       unsigned as_ngg : 1;
-      unsigned load_vgprs_after_culling : 1;
       /* Prologs for monolithic shaders shouldn't set EXEC. */
       unsigned is_monolithic : 1;
    } vs_prolog;
@@ -849,6 +844,10 @@ struct si_shader {
    struct si_shader *gs_copy_shader;
 
    struct si_resource *bo;
+   /* gpu_address should be bo->gpu_address except if SQTT is
+    * in use.
+    */
+   uint64_t gpu_address;
    struct si_resource *scratch_bo;
    union si_shader_key key;
    struct util_queue_fence ready;
@@ -964,6 +963,8 @@ struct si_shader_part {
 };
 
 /* si_shader.c */
+struct ac_rtld_binary;
+
 void si_update_shader_binary_info(struct si_shader *shader, nir_shader *nir);
 bool si_compile_shader(struct si_screen *sscreen, struct ac_llvm_compiler *compiler,
                        struct si_shader *shader, struct util_debug_callback *debug);
@@ -983,6 +984,10 @@ const char *si_get_shader_name(const struct si_shader *shader);
 void si_shader_binary_clean(struct si_shader_binary *binary);
 struct nir_shader *si_deserialize_shader(struct si_shader_selector *sel);
 unsigned si_get_ps_num_interp(struct si_shader *ps);
+bool si_shader_binary_open(struct si_screen *screen, struct si_shader *shader,
+                           struct ac_rtld_binary *rtld);
+bool si_get_external_symbol(enum amd_gfx_level gfx_level, void *data, const char *name,
+                            uint64_t *value);
 
 /* si_shader_info.c */
 void si_nir_scan_shader(struct si_screen *sscreen,  const struct nir_shader *nir,
@@ -996,6 +1001,8 @@ struct si_shader *si_generate_gs_copy_shader(struct si_screen *sscreen,
                                              struct util_debug_callback *debug);
 
 /* si_shader_nir.c */
+extern const nir_lower_subgroups_options si_nir_subgroups_options;
+
 void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first);
 void si_nir_late_opts(nir_shader *nir);
 char *si_finalize_nir(struct pipe_screen *screen, void *nirptr);

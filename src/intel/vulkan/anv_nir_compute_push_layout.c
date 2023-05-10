@@ -84,7 +84,6 @@ anv_nir_compute_push_layout(nir_shader *nir,
    const bool has_push_intrinsic = push_start <= push_end;
 
    const bool push_ubo_ranges =
-      pdevice->info.verx10 >= 75 &&
       has_const_ubo && nir->info.stage != MESA_SHADER_COMPUTE &&
       !brw_shader_stage_requires_bindless_resources(nir->info.stage);
 
@@ -118,7 +117,7 @@ anv_nir_compute_push_layout(nir_shader *nir,
     * push_end (no push constants is indicated by push_start = UINT_MAX).
     */
    push_start = MIN2(push_start, push_end);
-   push_start = align_down_u32(push_start, 32);
+   push_start = ROUND_DOWN_TO(push_start, 32);
 
    /* For vec4 our push data size needs to be aligned to a vec4 and for
     * scalar, it needs to be aligned to a DWORD.

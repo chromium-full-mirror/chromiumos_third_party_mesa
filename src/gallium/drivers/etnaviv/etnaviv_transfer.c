@@ -32,7 +32,7 @@
 #include "etnaviv_screen.h"
 
 #include "pipe/p_defines.h"
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "util/format/u_format.h"
@@ -124,10 +124,17 @@ etna_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
       etna_bo_cpu_fini(etna_resource(trans->rsc)->bo);
 
    if (ptrans->usage & PIPE_MAP_WRITE) {
+      if (etna_resource_needs_flush(rsc)) {
+         if (ptrans->usage & PIPE_MAP_DISCARD_WHOLE_RESOURCE)
+            rsc->flush_seqno = rsc->seqno;
+         else
+            etna_copy_resource(pctx, &rsc->base, &rsc->base, 0, rsc->base.last_level);
+      }
+
       if (trans->rsc) {
          /* We have a temporary resource due to either tile status or
           * tiling format. Write back the updated buffer contents.
-          * FIXME: we need to invalidate the tile status. */
+          */
          etna_copy_resource_box(pctx, ptrans->resource, trans->rsc, ptrans->level, &ptrans->box);
       } else if (trans->staging) {
          /* map buffer object */
@@ -156,6 +163,7 @@ etna_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptrans)
          FREE(trans->staging);
       }
 
+      rsc->levels[ptrans->level].ts_valid = false;
       rsc->seqno++;
 
       if (rsc->base.bind & PIPE_BIND_SAMPLER_VIEW) {
@@ -222,6 +230,7 @@ etna_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
     */
    if ((usage & PIPE_MAP_DISCARD_RANGE) &&
        !(usage & PIPE_MAP_UNSYNCHRONIZED) &&
+       !(prsc->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT) &&
        prsc->last_level == 0 &&
        prsc->width0 == box->width &&
        prsc->height0 == box->height &&
@@ -268,12 +277,6 @@ etna_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
       if (usage & PIPE_MAP_DIRECTLY) {
          slab_free(&ctx->transfer_pool, trans);
          BUG("unsupported map flags %#x with tile status/tiled layout", usage);
-         return NULL;
-      }
-
-      if (prsc->depth0 > 1 && rsc->ts_bo) {
-         slab_free(&ctx->transfer_pool, trans);
-         BUG("resource has depth >1 with tile status");
          return NULL;
       }
 

@@ -33,6 +33,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "util/macros.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -115,6 +117,8 @@ struct radeon_info {
    bool never_send_perfcounter_stop;
    bool discardable_allows_big_page;
    bool has_export_conflict_bug;
+   bool has_vrs_ds_export_bug;
+   bool has_taskmesh_indirect0_bug;
 
    /* Display features. */
    /* There are 2 display DCC codepaths, because display expects unaligned DCC. */
@@ -189,6 +193,7 @@ struct radeon_info {
    bool has_eqaa_surface_allocator;
    bool has_sparse_vm_mappings;
    bool has_scheduled_fence_dependency;
+   bool has_gang_submit;
    bool has_stable_pstate;
    /* Whether SR-IOV is enabled or amdgpu.mcbp=1 was set on the kernel command line. */
    bool mid_command_buffer_preemption_enabled;
@@ -309,6 +314,8 @@ struct ac_task_info {
 
 void ac_get_task_info(struct radeon_info *info,
                       struct ac_task_info *task_info);
+
+uint32_t ac_memory_ops_per_clock(uint32_t vram_type);
 
 #ifdef __cplusplus
 }

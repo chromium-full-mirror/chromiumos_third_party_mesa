@@ -623,11 +623,14 @@ emit_resolve_image_layer_per_tile_list(struct v3dv_job *job,
       region->dstSubresource.baseArrayLayer + layer_offset :
       region->dstOffset.z + layer_offset;
 
+   bool is_depth_or_stencil =
+      region->dstSubresource.aspectMask &
+      (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
    emit_image_store(job->device, cl, framebuffer, dst,
                     region->dstSubresource.aspectMask,
                     dst_layer,
                     region->dstSubresource.mipLevel,
-                    false, false, true);
+                    false, false, !is_depth_or_stencil);
 
    cl_emit(cl, END_OF_TILE_MARKER, end);
 
@@ -1274,7 +1277,8 @@ v3dX(meta_copy_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
       uint32_t width, height;
       framebuffer_size_for_pixel_count(num_items, &width, &height);
 
-      v3dv_job_start_frame(job, width, height, 1, true, 1, internal_bpp, false);
+      v3dv_job_start_frame(job, width, height, 1, true, true,
+                           1, internal_bpp, false);
 
       struct v3dv_meta_framebuffer framebuffer;
       v3dX(meta_framebuffer_init)(&framebuffer, vk_format, internal_type,
@@ -1320,7 +1324,8 @@ v3dX(meta_fill_buffer)(struct v3dv_cmd_buffer *cmd_buffer,
       uint32_t width, height;
       framebuffer_size_for_pixel_count(num_items, &width, &height);
 
-      v3dv_job_start_frame(job, width, height, 1, true, 1, internal_bpp, false);
+      v3dv_job_start_frame(job, width, height, 1, true, true,
+                           1, internal_bpp, false);
 
       struct v3dv_meta_framebuffer framebuffer;
       v3dX(meta_framebuffer_init)(&framebuffer, VK_FORMAT_R8G8B8A8_UINT,

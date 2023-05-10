@@ -20,6 +20,8 @@
  * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+#include "nir_serialize.h"
+#include "pipe/p_defines.h"
 #include "r600_sq.h"
 #include "r600_formats.h"
 #include "r600_opcodes.h"
@@ -174,19 +176,32 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 	int r;
 	struct r600_screen *rscreen = (struct r600_screen *)ctx->screen;
 	
+	const nir_shader_compiler_options *nir_options =
+		(const nir_shader_compiler_options *)
+			ctx->screen->get_compiler_options(ctx->screen,
+		                                     PIPE_SHADER_IR_NIR,
+		                                     shader->shader.processor_type);
+	if (!sel->nir && !(sel->ir_type == PIPE_SHADER_IR_TGSI)) {
+		assert(sel->nir_blob);
+		struct blob_reader blob_reader;
+		blob_reader_init(&blob_reader, sel->nir_blob, sel->nir_blob_size);
+		sel->nir = nir_deserialize(NULL, nir_options, &blob_reader);
+	}
+
 	int processor = sel->ir_type == PIPE_SHADER_IR_TGSI ?
 		tgsi_get_processor_type(sel->tokens):
 		pipe_shader_type_from_mesa(sel->nir->info.stage);
 	
 	bool dump = r600_can_dump_shader(&rctx->screen->b, processor);
-	unsigned use_sb = !(rctx->screen->b.debug_flags & DBG_NO_SB) ||
+	unsigned use_sb = (rctx->screen->b.debug_flags & DBG_USE_TGSI &&
+                      !(rctx->screen->b.debug_flags & DBG_NO_SB)) ||
                      (rctx->screen->b.debug_flags & DBG_NIR_SB);
 	unsigned sb_disasm;
 	unsigned export_shader;
 	
 	shader->shader.bc.isa = rctx->isa;
 	
-	if (!(rscreen->b.debug_flags & DBG_NIR_PREFERRED)) {
+	if (rscreen->b.debug_flags & DBG_USE_TGSI) {
 		assert(sel->ir_type == PIPE_SHADER_IR_TGSI);
 		r = r600_shader_from_tgsi(rctx, shader, key);
 		if (r) {
@@ -194,27 +209,29 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 			goto error;
 		}
 	} else {
+		glsl_type_singleton_init_or_ref();
 		if (sel->ir_type == PIPE_SHADER_IR_TGSI) {
 			if (sel->nir)
 				ralloc_free(sel->nir);
+			if (sel->nir_blob) {
+				free(sel->nir_blob);
+				sel->nir_blob = NULL;
+			}
 			sel->nir = tgsi_to_nir(sel->tokens, ctx->screen, true);
-                        const nir_shader_compiler_options *nir_options =
-                              (const nir_shader_compiler_options *)
-                              ctx->screen->get_compiler_options(ctx->screen,
-                                                                PIPE_SHADER_IR_NIR,
-                                                                shader->shader.processor_type);
-                        /* Lower int64 ops because we have some r600 build-in shaders that use it */
+			/* Lower int64 ops because we have some r600 build-in shaders that use it */
 			if (nir_options->lower_int64_options) {
 				NIR_PASS_V(sel->nir, nir_lower_regs_to_ssa);
-				NIR_PASS_V(sel->nir, nir_lower_alu_to_scalar, NULL, NULL);
+				NIR_PASS_V(sel->nir, nir_lower_alu_to_scalar, r600_lower_to_scalar_instr_filter, NULL);
 				NIR_PASS_V(sel->nir, nir_lower_int64);
-				NIR_PASS_V(sel->nir, nir_opt_vectorize, NULL, NULL);
 			}
 			NIR_PASS_V(sel->nir, nir_lower_flrp, ~0, false);
 		}
 		nir_tgsi_scan_shader(sel->nir, &sel->info, true);
 
 		r = r600_shader_from_nir(rctx, shader, &key);
+
+		glsl_type_singleton_decref();
+
 		if (r) {
 			fprintf(stderr, "--Failed shader--------------------------------------------------\n");
 			
@@ -223,7 +240,7 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 				tgsi_dump(sel->tokens, 0);
 			}
 			
-			if (rscreen->b.debug_flags & (DBG_NIR_PREFERRED)) {
+			if (!(rscreen->b.debug_flags & DBG_USE_TGSI)) {
 				fprintf(stderr, "--NIR --------------------------------------------------------\n");
 				nir_print_shader(sel->nir, stderr);
 			}
@@ -377,6 +394,18 @@ int r600_pipe_shader_create(struct pipe_context *ctx,
 			   shader->shader.num_loops,
 			   shader->shader.bc.ncf,
 			   shader->shader.bc.nstack);
+
+	if (!sel->nir_blob && sel->nir && sel->ir_type != PIPE_SHADER_IR_TGSI) {
+		struct blob blob;
+		blob_init(&blob);
+		nir_serialize(&blob, sel->nir, false);
+		sel->nir_blob = malloc(blob.size);
+		memcpy(sel->nir_blob, blob.data, blob.size);
+		sel->nir_blob_size = blob.size;
+		blob_finish(&blob);
+	}
+	ralloc_free(sel->nir);
+	sel->nir = NULL;
 
 	return 0;
 
@@ -740,9 +769,15 @@ int r600_get_lds_unique_index(unsigned semantic_name, unsigned index)
 		return 2 + index;
 	case TGSI_SEMANTIC_TEXCOORD:
 		return 4 + index;
+	case TGSI_SEMANTIC_COLOR:
+		return 12 + index;
+	case TGSI_SEMANTIC_BCOLOR:
+		return 14 + index;
+	case TGSI_SEMANTIC_CLIPVERTEX:
+		return 16;
 	case TGSI_SEMANTIC_GENERIC:
-		if (index <= 63-4)
-			return 4 + index;
+		if (index <= 63-17)
+			return 17 + index;
 		else
 			/* same explanation as in the default statement,
 			 * the only user hitting this is st/nine.

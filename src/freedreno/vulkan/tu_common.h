@@ -33,6 +33,7 @@
 #include "util/list.h"
 #include "util/log.h"
 #include "util/macros.h"
+#include "util/perf/cpu_trace.h"
 #include "util/sparse_array.h"
 #include "util/u_atomic.h"
 #include "util/u_dynarray.h"
@@ -46,7 +47,6 @@
 #include "vk_instance.h"
 #include "vk_log.h"
 #include "vk_physical_device.h"
-#include "vk_shader_module.h"
 #include "vk_pipeline_cache.h"
 #include "wsi_common.h"
 
@@ -94,17 +94,26 @@
    (MAX_DYNAMIC_UNIFORM_BUFFERS + 2 * MAX_DYNAMIC_STORAGE_BUFFERS) *         \
    A6XX_TEX_CONST_DWORDS
 
+#define SAMPLE_LOCATION_MIN 0.f
+#define SAMPLE_LOCATION_MAX 0.9375f
+
 #define TU_MAX_DRM_DEVICES 8
 #define MAX_VIEWS 16
 #define MAX_BIND_POINTS 2 /* compute + graphics */
-/* The Qualcomm driver exposes 0x20000058 */
-#define MAX_STORAGE_BUFFER_RANGE 0x20000000
+/* match the latest Qualcomm driver which is also a hw limit on later gens */
+#define MAX_STORAGE_BUFFER_RANGE (1u << 27)
 /* We use ldc for uniform buffer loads, just like the Qualcomm driver, so
  * expose the same maximum range.
  * TODO: The SIZE bitfield is 15 bits, and in 4-dword units, so the actual
  * range might be higher.
  */
 #define MAX_UNIFORM_BUFFER_RANGE 0x10000
+
+/* Use the minimum maximum to guarantee that it can always fit in the safe
+ * const file size, even with maximum push constant usage and driver params.
+ */
+#define MAX_INLINE_UBO_RANGE 256
+#define MAX_INLINE_UBOS 4
 
 #define A6XX_TEX_CONST_DWORDS 16
 #define A6XX_TEX_SAMP_DWORDS 4

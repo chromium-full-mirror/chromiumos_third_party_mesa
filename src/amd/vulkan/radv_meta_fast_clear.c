@@ -135,10 +135,9 @@ create_dcc_compress_compute(struct radv_device *device)
       .layout = device->meta_state.fast_clear_flush.dcc_decompress_compute_p_layout,
    };
 
-   result = radv_CreateComputePipelines(
-      radv_device_to_handle(device), radv_pipeline_cache_to_handle(&device->meta_state.cache), 1,
-      &vk_pipeline_info, NULL,
-      &device->meta_state.fast_clear_flush.dcc_decompress_compute_pipeline);
+   result = radv_compute_pipeline_create(
+      radv_device_to_handle(device), device->meta_state.cache, &vk_pipeline_info, NULL,
+      &device->meta_state.fast_clear_flush.dcc_decompress_compute_pipeline, true);
    if (result != VK_SUCCESS)
       goto cleanup;
 
@@ -230,7 +229,7 @@ create_pipeline(struct radv_device *device, VkShaderModule vs_module_h, VkPipeli
    };
 
    result = radv_graphics_pipeline_create(
-      device_h, radv_pipeline_cache_to_handle(&device->meta_state.cache),
+      device_h, device->meta_state.cache,
       &(VkGraphicsPipelineCreateInfo){
          .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
          .pNext = &rendering_create_info,
@@ -275,12 +274,13 @@ create_pipeline(struct radv_device *device, VkShaderModule vs_module_h, VkPipeli
          .use_rectlist = true,
          .custom_blend_mode = V_028808_CB_ELIMINATE_FAST_CLEAR,
       },
-      &device->meta_state.alloc, &device->meta_state.fast_clear_flush.cmask_eliminate_pipeline);
+      &device->meta_state.alloc, &device->meta_state.fast_clear_flush.cmask_eliminate_pipeline,
+      true);
    if (result != VK_SUCCESS)
       goto cleanup;
 
    result = radv_graphics_pipeline_create(
-      device_h, radv_pipeline_cache_to_handle(&device->meta_state.cache),
+      device_h, device->meta_state.cache,
       &(VkGraphicsPipelineCreateInfo){
          .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
          .pNext = &rendering_create_info,
@@ -325,12 +325,13 @@ create_pipeline(struct radv_device *device, VkShaderModule vs_module_h, VkPipeli
          .use_rectlist = true,
          .custom_blend_mode = V_028808_CB_FMASK_DECOMPRESS,
       },
-      &device->meta_state.alloc, &device->meta_state.fast_clear_flush.fmask_decompress_pipeline);
+      &device->meta_state.alloc, &device->meta_state.fast_clear_flush.fmask_decompress_pipeline,
+      true);
    if (result != VK_SUCCESS)
       goto cleanup;
 
    result = radv_graphics_pipeline_create(
-      device_h, radv_pipeline_cache_to_handle(&device->meta_state.cache),
+      device_h, device->meta_state.cache,
       &(VkGraphicsPipelineCreateInfo){
          .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
          .pNext = &rendering_create_info,
@@ -377,7 +378,8 @@ create_pipeline(struct radv_device *device, VkShaderModule vs_module_h, VkPipeli
                                  ? V_028808_CB_DCC_DECOMPRESS_GFX11
                                  : V_028808_CB_DCC_DECOMPRESS_GFX8,
       },
-      &device->meta_state.alloc, &device->meta_state.fast_clear_flush.dcc_decompress_pipeline);
+      &device->meta_state.alloc, &device->meta_state.fast_clear_flush.dcc_decompress_pipeline,
+      true);
    if (result != VK_SUCCESS)
       goto cleanup;
 
@@ -586,12 +588,13 @@ radv_process_color_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *
 
       ret = radv_device_init_meta_fast_clear_flush_state_internal(device);
       if (ret != VK_SUCCESS) {
-         cmd_buffer->record_result = ret;
+         vk_command_buffer_set_error(&cmd_buffer->vk, ret);
          return;
       }
    }
 
-   radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_GRAPHICS_PIPELINE | RADV_META_SAVE_PASS);
+   radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_GRAPHICS_PIPELINE |
+                                            RADV_META_SAVE_RENDER);
 
    if (pred_offset) {
       pred_offset += 8 * subresourceRange->baseMipLevel;
@@ -725,7 +728,7 @@ radv_decompress_dcc_compute(struct radv_cmd_buffer *cmd_buffer, struct radv_imag
    if (!cmd_buffer->device->meta_state.fast_clear_flush.cmask_eliminate_pipeline) {
       VkResult ret = radv_device_init_meta_fast_clear_flush_state_internal(cmd_buffer->device);
       if (ret != VK_SUCCESS) {
-         cmd_buffer->record_result = ret;
+         vk_command_buffer_set_error(&cmd_buffer->vk, ret);
          return;
       }
    }

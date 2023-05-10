@@ -45,7 +45,9 @@
 
 #include "dev/intel_debug.h"
 #include "dev/intel_device_info.h"
+#include "common/intel_gem.h"
 #include "util/macros.h"
+#include "util/u_math.h"
 
 static int close_init_helper(int fd);
 static int ioctl_init_helper(int fd, unsigned long request, ...);
@@ -104,12 +106,6 @@ get_bo(unsigned fd, uint32_t handle)
    bo = &bos[handle + fd * MAX_BO_COUNT];
 
    return bo;
-}
-
-static inline uint32_t
-align_u32(uint32_t v, uint32_t a)
-{
-   return (v + a - 1) & ~(a - 1);
 }
 
 static struct intel_device_info devinfo = {0};
@@ -186,21 +182,21 @@ gem_mmap(int fd, uint32_t handle, uint64_t offset, uint64_t size)
    return (void *)(uintptr_t) mmap.addr_ptr;
 }
 
-static enum drm_i915_gem_engine_class
+static enum intel_engine_class
 engine_class_from_ring_flag(uint32_t ring_flag)
 {
    switch (ring_flag) {
    case I915_EXEC_DEFAULT:
    case I915_EXEC_RENDER:
-      return I915_ENGINE_CLASS_RENDER;
+      return INTEL_ENGINE_CLASS_RENDER;
    case I915_EXEC_BSD:
-      return I915_ENGINE_CLASS_VIDEO;
+      return INTEL_ENGINE_CLASS_VIDEO;
    case I915_EXEC_BLT:
-      return I915_ENGINE_CLASS_COPY;
+      return INTEL_ENGINE_CLASS_COPY;
    case I915_EXEC_VEBOX:
-      return I915_ENGINE_CLASS_VIDEO_ENHANCE;
+      return INTEL_ENGINE_CLASS_VIDEO_ENHANCE;
    default:
-      return I915_ENGINE_CLASS_INVALID;
+      return INTEL_ENGINE_CLASS_INVALID;
    }
 }
 
@@ -256,9 +252,9 @@ dump_execbuffer2(int fd, struct drm_i915_gem_execbuffer2 *execbuffer2)
          bo->offset = obj->offset;
       } else {
          if (obj->alignment != 0)
-            offset = align_u32(offset, obj->alignment);
+            offset = align(offset, obj->alignment);
          bo->offset = offset;
-         offset = align_u32(offset + bo->size + 4095, 4096);
+         offset = align(offset + bo->size + 4095, 4096);
       }
 
       if (bo->map == NULL && bo->size > 0)
@@ -410,16 +406,12 @@ close(int fd)
 static int
 get_pci_id(int fd, int *pci_id)
 {
-   struct drm_i915_getparam gparam;
-
    if (device_override) {
       *pci_id = device;
       return 0;
    }
 
-   gparam.param = I915_PARAM_CHIPSET_ID;
-   gparam.value = pci_id;
-   return libc_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gparam);
+   return intel_gem_get_param(fd, I915_PARAM_CHIPSET_ID, pci_id) ? 0 : -1;
 }
 
 static void

@@ -85,10 +85,7 @@ vn_wsi_init(struct vn_physical_device *physical_dev)
    if (result != VK_SUCCESS)
       return result;
 
-   if (physical_dev->base.base.supported_extensions
-          .EXT_image_drm_format_modifier)
-      physical_dev->wsi_device.supports_modifiers = true;
-
+   physical_dev->wsi_device.supports_modifiers = true;
    physical_dev->base.base.wsi_device = &physical_dev->wsi_device;
 
    return VK_SUCCESS;
@@ -146,7 +143,7 @@ vn_wsi_create_image(struct vn_device *dev,
       return result;
 
    img->wsi.is_wsi = true;
-   img->wsi.is_prime_blit_src = wsi_info->buffer_blit_src;
+   img->wsi.is_prime_blit_src = wsi_info->blit_src;
    img->wsi.tiling_override = create_info->tiling;
 
    if (create_info->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {

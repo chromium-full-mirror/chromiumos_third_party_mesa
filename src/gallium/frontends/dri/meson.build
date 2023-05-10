@@ -44,7 +44,7 @@ if with_dri2
 endif
 
 libdri_c_args = []
-if with_gallium_zink
+if with_gallium_zink and not with_platform_android
   if get_option('glvnd')
     libdri_c_args += '-DKOPPER_LIB_NAMES="libEGL_@0@ and libGLX_@0@"'.format(get_option('glvnd-vendor-name'))
   else
@@ -59,7 +59,7 @@ endif
 
 libdri = static_library(
   'dri',
-  files_libdri,
+  [ files_libdri, sha1_h ],
   include_directories : [
     inc_include, inc_util, inc_mesa, inc_mapi, inc_src, inc_gallium,
     inc_gallium_aux, inc_util,  inc_gallium_drivers,

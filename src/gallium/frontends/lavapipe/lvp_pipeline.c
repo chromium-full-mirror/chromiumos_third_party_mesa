@@ -37,12 +37,7 @@
 
 #define SPIR_V_MAGIC_NUMBER 0x07230203
 
-#define LVP_PIPELINE_DUP(dst, src, type, count) do {             \
-      type *temp = ralloc_array(mem_ctx, type, count);           \
-      if (!temp) return VK_ERROR_OUT_OF_HOST_MEMORY;             \
-      memcpy(temp, (src), sizeof(type) * count);                 \
-      dst = temp;                                                \
-   } while(0)
+#define MAX_DYNAMIC_STATES 72
 
 void
 lvp_pipeline_destroy(struct lvp_device *device, struct lvp_pipeline *pipeline)
@@ -86,30 +81,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyPipeline(
    simple_mtx_lock(&device->queue.pipeline_lock);
    util_dynarray_append(&device->queue.pipeline_destroys, struct lvp_pipeline*, pipeline);
    simple_mtx_unlock(&device->queue.pipeline_lock);
-}
-
-static inline unsigned
-st_shader_stage_to_ptarget(gl_shader_stage stage)
-{
-   switch (stage) {
-   case MESA_SHADER_VERTEX:
-      return PIPE_SHADER_VERTEX;
-   case MESA_SHADER_FRAGMENT:
-      return PIPE_SHADER_FRAGMENT;
-   case MESA_SHADER_GEOMETRY:
-      return PIPE_SHADER_GEOMETRY;
-   case MESA_SHADER_TESS_CTRL:
-      return PIPE_SHADER_TESS_CTRL;
-   case MESA_SHADER_TESS_EVAL:
-      return PIPE_SHADER_TESS_EVAL;
-   case MESA_SHADER_COMPUTE:
-      return PIPE_SHADER_COMPUTE;
-   default:
-      break;
-   }
-
-   assert(!"should not be reached");
-   return PIPE_SHADER_VERTEX;
 }
 
 static void
@@ -385,7 +356,7 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
 {
    struct lvp_device *pdevice = pipeline->device;
    gl_shader_stage stage = vk_to_mesa_shader_stage(sinfo->stage);
-   const nir_shader_compiler_options *drv_options = pdevice->pscreen->get_compiler_options(pipeline->device->pscreen, PIPE_SHADER_IR_NIR, st_shader_stage_to_ptarget(stage));
+   assert(stage <= MESA_SHADER_COMPUTE && stage != MESA_SHADER_NONE);
    VkResult result;
    nir_shader *nir;
 
@@ -397,6 +368,10 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
          .int64 = (pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_INT64) == 1),
          .tessellation = true,
          .float_controls = true,
+         .float32_atomic_add = true,
+#if LLVM_VERSION_MAJOR >= 15
+         .float32_atomic_min_max = true,
+#endif
          .image_ms_array = true,
          .image_read_without_format = true,
          .image_write_without_format = true,
@@ -411,6 +386,7 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
          .device_group = true,
          .draw_parameters = true,
          .shader_viewport_index_layer = true,
+         .shader_clock = true,
          .multiview = true,
          .physical_storage_buffer_address = true,
          .int64_atomics = true,
@@ -436,7 +412,7 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    };
 
    result = vk_pipeline_shader_stage_to_nir(&pdevice->vk, sinfo,
-                                            &spirv_options, drv_options,
+                                            &spirv_options, pdevice->physical_device->drv_options[stage],
                                             NULL, &nir);
    if (result != VK_SUCCESS)
       return result;
@@ -458,9 +434,9 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
 
    if (stage == MESA_SHADER_FRAGMENT)
       lvp_lower_input_attachments(nir, false);
+   NIR_PASS_V(nir, nir_lower_system_values);
    NIR_PASS_V(nir, nir_lower_is_helper_invocation);
    NIR_PASS_V(nir, lower_demote);
-   NIR_PASS_V(nir, nir_lower_system_values);
    NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
 
    NIR_PASS_V(nir, nir_remove_dead_variables,
@@ -469,6 +445,8 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    scan_pipeline_info(pipeline, nir);
 
    optimize(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+
    lvp_lower_pipeline_layout(pipeline->device, pipeline->layout, nir);
 
    NIR_PASS_V(nir, nir_lower_io_to_temporaries, nir_shader_get_entrypoint(nir), true, true);
@@ -504,13 +482,11 @@ lvp_shader_compile_to_ir(struct lvp_pipeline *pipeline,
    /* Skip if there are potentially conflicting rounding modes */
    struct nir_fold_16bit_tex_image_options fold_16bit_options = {
       .rounding_mode = nir_rounding_mode_undef,
-      .fold_tex_dest = true,
+      .fold_tex_dest_types = nir_type_float | nir_type_uint | nir_type_int,
    };
    NIR_PASS_V(nir, nir_fold_16bit_tex_image, &fold_16bit_options);
 
    lvp_shader_optimize(nir);
-
-   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
    if (nir->info.stage != MESA_SHADER_VERTEX)
       nir_assign_io_var_locations(nir, nir_var_shader_in, &nir->num_inputs, nir->info.stage);
@@ -618,7 +594,7 @@ lvp_pipeline_compile_stage(struct lvp_pipeline *pipeline, nir_shader *nir)
       struct pipe_compute_state shstate = {0};
       shstate.prog = nir;
       shstate.ir_type = PIPE_SHADER_IR_NIR;
-      shstate.req_local_mem = nir->info.shared_size;
+      shstate.static_shared_mem = nir->info.shared_size;
       return device->queue.ctx->create_compute_state(device->queue.ctx, &shstate);
    } else {
       struct pipe_shader_state shstate = {0};
@@ -697,14 +673,18 @@ layouts_equal(const struct lvp_descriptor_set_layout *a, const struct lvp_descri
 #endif
 
 static void
-merge_layouts(struct lvp_pipeline *dst, struct lvp_pipeline_layout *src)
+merge_layouts(struct vk_device *device, struct lvp_pipeline *dst, struct lvp_pipeline_layout *src)
 {
    if (!src)
       return;
    if (!dst->layout) {
-      /* no layout created yet: copy onto ralloc ctx allocation for auto-free */
-      dst->layout = ralloc(dst->mem_ctx, struct lvp_pipeline_layout);
+      dst->layout = vk_zalloc(&device->alloc, sizeof(struct lvp_pipeline_layout), 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       memcpy(dst->layout, src, sizeof(struct lvp_pipeline_layout));
+      dst->layout->vk.ref_cnt = 1;
+      for (unsigned i = 0; i < dst->layout->vk.set_count; i++) {
+         if (dst->layout->vk.set_layouts[i])
+            vk_descriptor_set_layout_ref(dst->layout->vk.set_layouts[i]);
+      }
       return;
    }
 #ifndef NDEBUG
@@ -727,8 +707,11 @@ merge_layouts(struct lvp_pipeline *dst, struct lvp_pipeline_layout *src)
    }
 #endif
    for (unsigned i = 0; i < src->vk.set_count; i++) {
-      if (!dst->layout->vk.set_layouts[i])
+      if (!dst->layout->vk.set_layouts[i]) {
          dst->layout->vk.set_layouts[i] = src->vk.set_layouts[i];
+         if (dst->layout->vk.set_layouts[i])
+            vk_descriptor_set_layout_ref(src->vk.set_layouts[i]);
+      }
    }
    dst->layout->vk.set_count = MAX2(dst->layout->vk.set_count,
                                     src->vk.set_count);
@@ -763,8 +746,6 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
       pipeline->library = true;
 
    struct lvp_pipeline_layout *layout = lvp_pipeline_layout_from_handle(pCreateInfo->layout);
-   if (layout)
-      vk_pipeline_layout_ref(&layout->vk);
 
    if (!layout || !(layout->vk.create_flags & VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT))
       /* this is a regular pipeline with no partials: directly reuse */
@@ -775,7 +756,7 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
          pipeline->layout = layout;
       else {
          /* this is a partial: copy for later merging to avoid modifying another layout */
-         merge_layouts(pipeline, layout);
+         merge_layouts(&device->vk, pipeline, layout);
       }
    }
 
@@ -790,16 +771,20 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
             pipeline->line_rectangular = p->line_rectangular;
             pipeline->last_vertex = p->last_vertex;
             memcpy(&pipeline->stream_output, &p->stream_output, sizeof(p->stream_output));
+            memcpy(&pipeline->access, &p->access, sizeof(p->access));
          }
          if (p->stages & VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT)
             pipeline->force_min_sample = p->force_min_sample;
          if (p->stages & layout_stages) {
             if (!layout || (layout->vk.create_flags & VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT))
-               merge_layouts(pipeline, p->layout);
+               merge_layouts(&device->vk, pipeline, p->layout);
          }
          pipeline->stages |= p->stages;
       }
    }
+
+   if (pipeline->layout == layout && layout)
+      vk_pipeline_layout_ref(&layout->vk);
 
    result = vk_graphics_pipeline_state_fill(&device->vk,
                                             &pipeline->graphics_state,
@@ -845,8 +830,13 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
    if (pCreateInfo->stageCount && pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]) {
       nir_lower_patch_vertices(pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL], pipeline->pipeline_nir[MESA_SHADER_TESS_CTRL]->info.tess.tcs_vertices_out, NULL);
       merge_tess_info(&pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info, &pipeline->pipeline_nir[MESA_SHADER_TESS_CTRL]->info);
-      if (pipeline->graphics_state.ts->domain_origin == VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT)
+      if (BITSET_TEST(pipeline->graphics_state.dynamic,
+                      MESA_VK_DYNAMIC_TS_DOMAIN_ORIGIN)) {
+         pipeline->tess_ccw = nir_shader_clone(pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL], pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]);
+         pipeline->tess_ccw->info.tess.ccw = !pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw;
+      } else if (pipeline->graphics_state.ts->domain_origin == VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT) {
          pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw = !pipeline->pipeline_nir[MESA_SHADER_TESS_EVAL]->info.tess.ccw;
+      }
    }
    if (libstate) {
        for (unsigned i = 0; i < libstate->libraryCount; i++) {
@@ -860,6 +850,8 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
                 if (p->pipeline_nir[j])
                    pipeline->pipeline_nir[j] = nir_shader_clone(pipeline->mem_ctx, p->pipeline_nir[j]);
              }
+             if (p->tess_ccw)
+                pipeline->tess_ccw = nir_shader_clone(pipeline->mem_ctx, p->tess_ccw);
           }
        }
    } else if (pipeline->stages & VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT) {
@@ -884,9 +876,13 @@ lvp_graphics_pipeline_init(struct lvp_pipeline *pipeline,
          gl_shader_stage stage = i;
          assert(stage == pipeline->pipeline_nir[i]->info.stage);
          enum pipe_shader_type pstage = pipe_shader_type_from_mesa(stage);
-         if (!pipeline->inlines[stage].can_inline)
+         if (!pipeline->inlines[stage].can_inline) {
             pipeline->shader_cso[pstage] = lvp_pipeline_compile(pipeline,
                                                                 nir_shader_clone(NULL, pipeline->pipeline_nir[stage]));
+            if (pipeline->tess_ccw)
+               pipeline->tess_ccw_cso = lvp_pipeline_compile(pipeline,
+                                                             nir_shader_clone(NULL, pipeline->tess_ccw));
+         }
          if (stage == MESA_SHADER_FRAGMENT)
             has_fragment_shader = true;
       }

@@ -28,18 +28,12 @@
 
 #include <X11/extensions/XShm.h>
 #include "kopper_interface.h"
+#include "GL/internal/mesa_interface.h"
 
 struct drisw_display
 {
    __GLXDRIdisplay base;
    bool zink;
-};
-
-struct drisw_context
-{
-   struct glx_context base;
-   __DRIcontext *driContext;
-
 };
 
 struct drisw_screen
@@ -49,6 +43,7 @@ struct drisw_screen
    __DRIscreen *driScreen;
    __GLXDRIscreen vtable;
    const __DRIcoreExtension *core;
+   const __DRImesaCoreExtension *mesa;
    const __DRIswrastExtension *swrast;
    const __DRIkopperExtension *kopper;
    const __DRI2flushExtension *f;

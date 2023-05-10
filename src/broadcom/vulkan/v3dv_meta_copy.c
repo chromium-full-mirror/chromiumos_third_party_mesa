@@ -407,7 +407,7 @@ copy_image_to_buffer_tlb(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t width = DIV_ROUND_UP(region->imageExtent.width, block_w);
    const uint32_t height = DIV_ROUND_UP(region->imageExtent.height, block_h);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false,
+   v3dv_job_start_frame(job, width, height, num_layers, false, true,
                         1, internal_bpp, false);
 
    struct v3dv_meta_framebuffer framebuffer;
@@ -948,7 +948,8 @@ copy_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t width = DIV_ROUND_UP(region->extent.width, block_w);
    const uint32_t height = DIV_ROUND_UP(region->extent.height, block_h);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false, 1, internal_bpp,
+   v3dv_job_start_frame(job, width, height, num_layers,
+                        false, true, 1, internal_bpp,
                         src->vk.samples > VK_SAMPLE_COUNT_1_BIT);
 
    struct v3dv_meta_framebuffer framebuffer;
@@ -1317,7 +1318,7 @@ copy_buffer_to_image_tfu(struct v3dv_cmd_buffer *cmd_buffer,
     * at a time, and the TFU copies full images. Also, V3D depth bits for
     * both D24S8 and D24X8 stored in the 24-bit MSB of each 32-bit word, but
     * the Vulkan spec has the buffer data specified the other way around, so it
-    * is not a straight copy, we would havew to swizzle the channels, which the
+    * is not a straight copy, we would have to swizzle the channels, which the
     * TFU can't do.
     */
    if (image->vk.format == VK_FORMAT_D24_UNORM_S8_UINT ||
@@ -1448,7 +1449,7 @@ copy_buffer_to_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
    const uint32_t width = DIV_ROUND_UP(region->imageExtent.width, block_w);
    const uint32_t height = DIV_ROUND_UP(region->imageExtent.height, block_h);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false,
+   v3dv_job_start_frame(job, width, height, num_layers, false, true,
                         1, internal_bpp, false);
 
    struct v3dv_meta_framebuffer framebuffer;
@@ -2093,7 +2094,6 @@ texel_buffer_shader_copy(struct v3dv_cmd_buffer *cmd_buffer,
 
    /* Push command buffer state before starting meta operation */
    v3dv_cmd_buffer_meta_state_push(cmd_buffer, true);
-   uint32_t dirty_dynamic_state = 0;
 
    /* Bind common state for all layers and regions  */
    VkCommandBuffer _cmd_buffer = v3dv_cmd_buffer_to_handle(cmd_buffer);
@@ -2220,7 +2220,6 @@ texel_buffer_shader_copy(struct v3dv_cmd_buffer *cmd_buffer,
       }
 
       /* For each region */
-      dirty_dynamic_state = V3DV_CMD_DIRTY_VIEWPORT | V3DV_CMD_DIRTY_SCISSOR;
       for (uint32_t r = 0; r < region_count; r++) {
          const VkBufferImageCopy2 *region = &regions[r];
 
@@ -2278,7 +2277,7 @@ texel_buffer_shader_copy(struct v3dv_cmd_buffer *cmd_buffer,
    } /* For each layer */
 
 fail:
-   v3dv_cmd_buffer_meta_state_pop(cmd_buffer, dirty_dynamic_state, true);
+   v3dv_cmd_buffer_meta_state_pop(cmd_buffer, true);
    return handled;
 }
 
@@ -3802,7 +3801,6 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
 {
    bool handled = true;
    VkResult result;
-   uint32_t dirty_dynamic_state = 0;
 
    /* We don't support rendering to linear depth/stencil, this should have
     * been rewritten to a compatible color blit by the caller.
@@ -4203,11 +4201,10 @@ blit_shader(struct v3dv_cmd_buffer *cmd_buffer,
       };
 
       v3dv_CmdEndRenderPass2(_cmd_buffer, &sp_end_info);
-      dirty_dynamic_state = V3DV_CMD_DIRTY_VIEWPORT | V3DV_CMD_DIRTY_SCISSOR;
    }
 
 fail:
-   v3dv_cmd_buffer_meta_state_pop(cmd_buffer, dirty_dynamic_state, true);
+   v3dv_cmd_buffer_meta_state_pop(cmd_buffer, true);
 
    return handled;
 }
@@ -4288,7 +4285,7 @@ resolve_image_tlb(struct v3dv_cmd_buffer *cmd_buffer,
       (fb_format, region->srcSubresource.aspectMask,
        &internal_type, &internal_bpp);
 
-   v3dv_job_start_frame(job, width, height, num_layers, false,
+   v3dv_job_start_frame(job, width, height, num_layers, false, true,
                         1, internal_bpp, true);
 
    struct v3dv_meta_framebuffer framebuffer;

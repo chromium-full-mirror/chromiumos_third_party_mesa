@@ -84,7 +84,7 @@ struct brw_compiler {
    void (*shader_perf_log)(void *, unsigned *id, const char *str, ...) PRINTFLIKE(3, 4);
 
    bool scalar_stage[MESA_ALL_SHADER_STAGES];
-   bool use_tcs_8_patch;
+   bool use_tcs_multi_patch;
    struct nir_shader_compiler_options *nir_options[MESA_ALL_SHADER_STAGES];
 
    /**
@@ -104,12 +104,6 @@ struct brw_compiler {
     * whether nir_opt_large_constants will be run.
     */
    bool supports_shader_constants;
-
-   /**
-    * Whether or not the driver wants variable group size to be lowered by the
-    * back-end compiler.
-    */
-   bool lower_variable_group_size;
 
    /**
     * Whether indirect UBO loads should use the sampler or go through the
@@ -206,36 +200,9 @@ struct brw_sampler_prog_key_data {
    uint32_t gather_channel_quirk_mask;
 
    /**
-    * Whether this sampler uses the compressed multisample surface layout.
-    */
-   uint32_t compressed_multisample_layout_mask;
-
-   /**
-    * Whether this sampler is using 16x multisampling. If so fetching from
-    * this sampler will be handled with a different instruction, ld2dms_w
-    * instead of ld2dms.
-    */
-   uint32_t msaa_16;
-
-   /**
     * For Sandybridge, which shader w/a we need for gather quirks.
     */
    enum gfx6_gather_sampler_wa gfx6_gather_wa[BRW_MAX_SAMPLERS];
-
-   /**
-    * Texture units that have a YUV image bound.
-    */
-   uint32_t y_u_v_image_mask;
-   uint32_t y_uv_image_mask;
-   uint32_t yx_xuxv_image_mask;
-   uint32_t xy_uxvx_image_mask;
-   uint32_t ayuv_image_mask;
-   uint32_t xyuv_image_mask;
-   uint32_t bt709_mask;
-   uint32_t bt2020_mask;
-
-   /* Scale factor for each texture. */
-   float scale_factors[BRW_MAX_SAMPLERS];
 };
 
 struct brw_base_prog_key {
@@ -532,6 +499,12 @@ struct brw_cs_prog_key {
 
 struct brw_bs_prog_key {
    struct brw_base_prog_key base;
+
+   /* Represents enum enum brw_rt_ray_flags values given at pipeline creation
+    * to be combined with ray_flags handed to the traceRayEXT() calls by the
+    * shader.
+    */
+   uint32_t pipeline_ray_flags;
 };
 
 struct brw_ff_gs_prog_key {
@@ -635,6 +608,8 @@ struct brw_image_param {
 struct brw_ubo_range
 {
    uint16_t block;
+
+   /* In units of 32-byte registers */
    uint8_t start;
    uint8_t length;
 };
@@ -1103,6 +1078,9 @@ struct brw_bs_prog_data {
 
    /** Offset into the shader where the resume SBT is located */
    uint32_t resume_sbt_offset;
+
+   /** Number of resume shaders */
+   uint32_t num_resume_shaders;
 };
 
 struct brw_ff_gs_prog_data {
@@ -1204,6 +1182,12 @@ struct brw_vue_map {
    int num_slots;
 
    /**
+    * Number of position VUE slots.  If num_pos_slots > 1, primitive
+    * replication is being used.
+    */
+   int num_pos_slots;
+
+   /**
     * Number of per-patch VUE slots. Only valid for tessellation control
     * shader outputs and tessellation evaluation shader inputs.
     */
@@ -1259,7 +1243,7 @@ enum shader_dispatch_mode {
    DISPATCH_MODE_SIMD8 = 3,
 
    DISPATCH_MODE_TCS_SINGLE_PATCH = 0,
-   DISPATCH_MODE_TCS_8_PATCH = 2,
+   DISPATCH_MODE_TCS_MULTI_PATCH = 2,
 };
 
 /**

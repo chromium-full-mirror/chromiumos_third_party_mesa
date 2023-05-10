@@ -32,7 +32,7 @@
 #include "compiler/nir/nir_serialize.h"
 
 #include "util/blob.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/disk_cache.h"
 #include "util/hash_table.h"
 #include "util/set.h"
@@ -337,7 +337,7 @@ vk_pipeline_cache_lookup_object(struct vk_pipeline_cache *cache,
    if (object == NULL) {
 #ifdef ENABLE_SHADER_CACHE
       struct disk_cache *disk_cache = cache->base.device->physical->disk_cache;
-      if (disk_cache != NULL) {
+      if (disk_cache != NULL && cache->object_cache != NULL) {
          cache_key cache_key;
          disk_cache_compute_key(disk_cache, key_data, key_size, cache_key);
 
@@ -606,7 +606,7 @@ vk_pipeline_cache_create(struct vk_device *device,
    simple_mtx_init(&cache->lock, mtx_plain);
 
    if (info->force_enable ||
-       env_var_as_boolean("VK_ENABLE_PIPELINE_CACHE", true)) {
+       debug_get_bool_option("VK_ENABLE_PIPELINE_CACHE", true)) {
       cache->object_cache = _mesa_set_create(NULL, object_key_hash,
                                              object_keys_equal);
    }

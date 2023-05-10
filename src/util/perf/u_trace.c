@@ -24,9 +24,8 @@
 #include <inttypes.h>
 
 #include "util/list.h"
+#include "util/u_call_once.h"
 #include "util/u_debug.h"
-#include "util/u_inlines.h"
-#include "util/u_fifo.h"
 #include "util/u_vector.h"
 
 #include "u_trace.h"
@@ -38,18 +37,25 @@
 #define TIMESTAMP_BUF_SIZE 0x1000
 #define TRACES_PER_CHUNK   (TIMESTAMP_BUF_SIZE / sizeof(uint64_t))
 
-bool ut_trace_instrument;
+struct u_trace_state {
+   util_once_flag once;
+   FILE *trace_file;
+   enum u_trace_type enabled_traces;
+};
+static struct u_trace_state u_trace_state = {
+   .once = UTIL_ONCE_FLAG_INIT
+};
 
 #ifdef HAVE_PERFETTO
-int ut_perfetto_enabled;
-
 /**
  * Global list of contexts, so we can defer starting the queue until
  * perfetto tracing is started.
- *
- * TODO locking
  */
-struct list_head ctx_list = { &ctx_list, &ctx_list };
+static struct list_head ctx_list = { &ctx_list, &ctx_list };
+
+static simple_mtx_t ctx_list_mutex = SIMPLE_MTX_INITIALIZER;
+/* The amount of Perfetto tracers connected */
+int _u_trace_perfetto_count;
 #endif
 
 struct u_trace_payload_buf {
@@ -352,29 +358,46 @@ get_chunk(struct u_trace *ut, size_t payload_size)
    return chunk;
 }
 
-DEBUG_GET_ONCE_BOOL_OPTION(trace_instrument, "GPU_TRACE_INSTRUMENT", false)
-DEBUG_GET_ONCE_BOOL_OPTION(trace, "GPU_TRACE", false)
-DEBUG_GET_ONCE_FILE_OPTION(trace_file, "GPU_TRACEFILE", NULL, "w")
-DEBUG_GET_ONCE_OPTION(trace_format, "GPU_TRACE_FORMAT", "txt")
+static const struct debug_named_value config_control[] = {
+   { "print", U_TRACE_TYPE_PRINT, "Enable print"},
+   { "print_json", U_TRACE_TYPE_PRINT_JSON, "Enable print in JSON"},
+#ifdef HAVE_PERFETTO
+   { "perfetto", U_TRACE_TYPE_PERFETTO_ENV, "Enable perfetto" },
+#endif
+   { "markers", U_TRACE_TYPE_MARKERS, "Enable marker trace"},
+   DEBUG_NAMED_VALUE_END
+};
 
-static FILE *
-get_tracefile(void)
+DEBUG_GET_ONCE_OPTION(trace_file, "MESA_GPU_TRACEFILE", NULL)
+
+static void
+trace_file_fini(void)
 {
-   static FILE *tracefile = NULL;
-   static bool firsttime = true;
+   fclose(u_trace_state.trace_file);
+   u_trace_state.trace_file = NULL;
+}
 
-   if (firsttime) {
-      tracefile = debug_get_option_trace_file();
-      if (!tracefile && debug_get_option_trace()) {
-         tracefile = stdout;
+static void
+u_trace_state_init_once(void)
+{
+   u_trace_state.enabled_traces =
+      debug_get_flags_option("MESA_GPU_TRACES", config_control, 0);
+   const char *tracefile_name = debug_get_option_trace_file();
+   if (tracefile_name && !__check_suid()) {
+      u_trace_state.trace_file = fopen(tracefile_name, "w");
+      if (u_trace_state.trace_file != NULL) {
+         atexit(trace_file_fini);
       }
-
-      ut_trace_instrument = debug_get_option_trace_instrument();
-
-      firsttime = false;
    }
+   if (!u_trace_state.trace_file) {
+      u_trace_state.trace_file = stdout;
+   }
+}
 
-   return tracefile;
+static void
+u_trace_state_init(void)
+{
+   util_call_once(&u_trace_state.once, u_trace_state_init_once);
 }
 
 static void
@@ -401,6 +424,9 @@ u_trace_context_init(struct u_trace_context *utctx,
       u_trace_read_ts           read_timestamp,
       u_trace_delete_flush_data delete_flush_data)
 {
+   u_trace_state_init();
+
+   utctx->enabled_traces = u_trace_state.enabled_traces;
    utctx->pctx = pctx;
    utctx->create_timestamp_buffer = create_timestamp_buffer;
    utctx->delete_timestamp_buffer = delete_timestamp_buffer;
@@ -417,23 +443,34 @@ u_trace_context_init(struct u_trace_context *utctx,
 
    list_inithead(&utctx->flushed_trace_chunks);
 
-   utctx->out = get_tracefile();
+   if (utctx->enabled_traces & U_TRACE_TYPE_PRINT) {
+      utctx->out = u_trace_state.trace_file;
 
-   const char *trace_format = debug_get_option_trace_format();
-   if (strcmp(trace_format, "json") == 0) {
-      utctx->out_printer = &json_printer;
+      if (utctx->enabled_traces & U_TRACE_TYPE_JSON) {
+         utctx->out_printer = &json_printer;
+      } else {
+         utctx->out_printer = &txt_printer;
+      }
    } else {
-      utctx->out_printer = &txt_printer;
+      utctx->out = NULL;
+      utctx->out_printer = NULL;
    }
 
 #ifdef HAVE_PERFETTO
+   simple_mtx_lock(&ctx_list_mutex);
    list_add(&utctx->node, &ctx_list);
-#endif
-
-   if (!u_trace_context_actively_tracing(utctx))
-      return;
+   if (_u_trace_perfetto_count > 0)
+      utctx->enabled_traces |= U_TRACE_TYPE_PERFETTO_ACTIVE;
 
    queue_init(utctx);
+
+   simple_mtx_unlock(&ctx_list_mutex);
+#else
+   queue_init(utctx);
+#endif
+
+   if (!(p_atomic_read_relaxed(&utctx->enabled_traces) & U_TRACE_TYPE_REQUIRE_QUEUING))
+      return;
 
    if (utctx->out) {
       utctx->out_printer->start(utctx);
@@ -444,7 +481,9 @@ void
 u_trace_context_fini(struct u_trace_context *utctx)
 {
 #ifdef HAVE_PERFETTO
+   simple_mtx_lock(&ctx_list_mutex);
    list_del(&utctx->node);
+   simple_mtx_unlock(&ctx_list_mutex);
 #endif
 
    if (utctx->out) {
@@ -463,16 +502,34 @@ u_trace_context_fini(struct u_trace_context *utctx)
 void
 u_trace_perfetto_start(void)
 {
-   list_for_each_entry (struct u_trace_context, utctx, &ctx_list, node)
+   simple_mtx_lock(&ctx_list_mutex);
+
+   list_for_each_entry(struct u_trace_context, utctx, &ctx_list, node) {
       queue_init(utctx);
-   ut_perfetto_enabled++;
+      p_atomic_set(&utctx->enabled_traces,
+                   utctx->enabled_traces | U_TRACE_TYPE_PERFETTO_ACTIVE);
+   }
+
+   _u_trace_perfetto_count++;
+
+   simple_mtx_unlock(&ctx_list_mutex);
 }
 
 void
 u_trace_perfetto_stop(void)
 {
-   assert(ut_perfetto_enabled > 0);
-   ut_perfetto_enabled--;
+   simple_mtx_lock(&ctx_list_mutex);
+
+   assert(_u_trace_perfetto_count > 0);
+   _u_trace_perfetto_count--;
+   if (_u_trace_perfetto_count == 0) {
+      list_for_each_entry(struct u_trace_context, utctx, &ctx_list, node) {
+         p_atomic_set(&utctx->enabled_traces,
+                      utctx->enabled_traces & ~U_TRACE_TYPE_PERFETTO_ACTIVE);
+      }
+   }
+
+   simple_mtx_unlock(&ctx_list_mutex);
 }
 #endif
 
@@ -525,7 +582,8 @@ process_chunk(void *job, void *gdata, int thread_index)
          utctx->out_printer->event(utctx, chunk, evt, ns, delta);
       }
 #ifdef HAVE_PERFETTO
-      if (evt->tp->perfetto) {
+      if (evt->tp->perfetto &&
+          (p_atomic_read_relaxed(&utctx->enabled_traces) & U_TRACE_TYPE_PERFETTO_ACTIVE)) {
          evt->tp->perfetto(utctx->pctx, ns, chunk->flush_data, evt->payload);
       }
 #endif
@@ -595,7 +653,6 @@ u_trace_init(struct u_trace *ut, struct u_trace_context *utctx)
 {
    ut->utctx = utctx;
    list_inithead(&ut->trace_chunks);
-   ut->enabled = u_trace_context_instrumenting(utctx);
 }
 
 void
@@ -616,9 +673,6 @@ u_trace_has_points(struct u_trace *ut)
 struct u_trace_iterator
 u_trace_begin_iterator(struct u_trace *ut)
 {
-   if (!ut->enabled)
-      return (struct u_trace_iterator) {NULL, NULL, 0};
-
    if (list_is_empty(&ut->trace_chunks))
       return (struct u_trace_iterator) { ut, NULL, 0 };
 
@@ -631,9 +685,6 @@ u_trace_begin_iterator(struct u_trace *ut)
 struct u_trace_iterator
 u_trace_end_iterator(struct u_trace *ut)
 {
-   if (!ut->enabled)
-      return (struct u_trace_iterator) {NULL, NULL, 0};
-
    if (list_is_empty(&ut->trace_chunks))
       return (struct u_trace_iterator) { ut, NULL, 0 };
 

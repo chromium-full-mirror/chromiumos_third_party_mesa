@@ -172,6 +172,9 @@ static void scan_instruction(const struct nir_shader *nir,
                              struct tgsi_shader_info *info,
                              const nir_instr *instr)
 {
+   info->num_tokens = 2; /* indicate that the shader is non-empty */
+   info->num_instructions = 2;
+
    if (instr->type == nir_instr_type_alu) {
       const nir_alu_instr *alu = nir_instr_as_alu(instr);
 
@@ -282,6 +285,7 @@ static void scan_instruction(const struct nir_shader *nir,
          info->writes_memory = true;
          break;
       case nir_intrinsic_image_deref_store:
+      case nir_intrinsic_image_store:
          info->writes_memory = true;
          break;
       case nir_intrinsic_bindless_image_atomic_add:
@@ -313,6 +317,16 @@ static void scan_instruction(const struct nir_shader *nir,
       case nir_intrinsic_image_deref_atomic_xor:
       case nir_intrinsic_image_deref_atomic_exchange:
       case nir_intrinsic_image_deref_atomic_comp_swap:
+      case nir_intrinsic_image_atomic_add:
+      case nir_intrinsic_image_atomic_imin:
+      case nir_intrinsic_image_atomic_imax:
+      case nir_intrinsic_image_atomic_umin:
+      case nir_intrinsic_image_atomic_umax:
+      case nir_intrinsic_image_atomic_and:
+      case nir_intrinsic_image_atomic_or:
+      case nir_intrinsic_image_atomic_xor:
+      case nir_intrinsic_image_atomic_exchange:
+      case nir_intrinsic_image_atomic_comp_swap:
          info->writes_memory = true;
          break;
       case nir_intrinsic_store_ssbo:
@@ -411,8 +425,8 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
    unsigned i;
 
    info->processor = pipe_shader_type_from_mesa(nir->info.stage);
-   info->num_tokens = 2; /* indicate that the shader is non-empty */
-   info->num_instructions = 2;
+   info->num_tokens = 1; /* Presume empty */
+   info->num_instructions = 1;
 
    info->properties[TGSI_PROPERTY_NEXT_SHADER] =
       pipe_shader_type_from_mesa(nir->info.next_stage);

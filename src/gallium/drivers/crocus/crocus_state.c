@@ -77,9 +77,6 @@
 #include <memcheck.h>
 #include <valgrind.h>
 #define VG(x) x
-#ifdef DEBUG
-#define __gen_validate_value(x) VALGRIND_CHECK_MEM_IS_DEFINED(&(x), sizeof(x))
-#endif
 #else
 #define VG(x)
 #endif
@@ -111,6 +108,7 @@
 #include "crocus_resource.h"
 
 #include "crocus_genx_macros.h"
+#include "intel/common/intel_genX_state.h"
 #include "intel/common/intel_guardband.h"
 #include "main/macros.h" /* UNCLAMPED_* */
 
@@ -2375,7 +2373,7 @@ crocus_upload_sampler_state(struct crocus_batch *batch,
       samp.TCZAddressControlMode = wrap_r;
 
 #if GFX_VER >= 6
-      samp.NonnormalizedCoordinateEnable = !state->normalized_coords;
+      samp.NonnormalizedCoordinateEnable = state->unnormalized_coords;
 #endif
       samp.MinModeFilter = state->min_img_filter;
       samp.MagModeFilter = cso->mag_img_filter;
@@ -3374,8 +3372,14 @@ crocus_set_viewport_states(struct pipe_context *ctx,
                            const struct pipe_viewport_state *states)
 {
    struct crocus_context *ice = (struct crocus_context *) ctx;
+   struct crocus_screen *screen = (struct crocus_screen *)ctx->screen;
 
    memcpy(&ice->state.viewports[start_slot], states, sizeof(*states) * count);
+
+   /* Fix depth test misrenderings by lowering translated depth range */
+   if (screen->driconf.lower_depth_range_rate != 1.0f)
+      ice->state.viewports[start_slot].translate[2] *=
+         screen->driconf.lower_depth_range_rate;
 
    ice->state.dirty |= CROCUS_DIRTY_SF_CL_VIEWPORT;
    ice->state.dirty |= CROCUS_DIRTY_RASTER;
@@ -6149,7 +6153,7 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
       be.AlphaTestFunction = translate_compare_func(cso_zsa->cso.alpha_func);
       be.AlphaToCoverageEnable = cso_blend->cso.alpha_to_coverage;
       be.AlphaToOneEnable = cso_blend->cso.alpha_to_one;
-      be.AlphaToCoverageDitherEnable = GFX_VER >= 7 && cso_blend->cso.alpha_to_coverage;
+      be.AlphaToCoverageDitherEnable = GFX_VER >= 7 && cso_blend->cso.alpha_to_coverage_dither;
       be.ColorDitherEnable = cso_blend->cso.dither;
 
 #if GFX_VER >= 8
@@ -6443,9 +6447,9 @@ crocus_upload_dirty_render_state(struct crocus_context *ice,
           */
          ps.VectorMaskEnable = GFX_VER >= 8 && wm_prog_data->uses_vmask;
 
-         ps._8PixelDispatchEnable = wm_prog_data->dispatch_8;
-         ps._16PixelDispatchEnable = wm_prog_data->dispatch_16;
-         ps._32PixelDispatchEnable = wm_prog_data->dispatch_32;
+         intel_set_ps_dispatch_state(&ps, &batch->screen->devinfo,
+                                     wm_prog_data,
+                                     ice->state.framebuffer.samples);
 
          ps.DispatchGRFStartRegisterForConstantSetupData0 =
             brw_wm_prog_data_dispatch_grf_start_reg(wm_prog_data, ps, 0);

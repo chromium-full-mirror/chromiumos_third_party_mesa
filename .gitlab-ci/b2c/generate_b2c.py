@@ -24,6 +24,7 @@
 from jinja2 import Environment, FileSystemLoader
 from argparse import ArgumentParser
 from os import environ, path
+import json
 
 
 parser = ArgumentParser()
@@ -69,7 +70,10 @@ values['log_level'] = args.log_level
 values['poweroff_delay'] = args.poweroff_delay
 values['session_end_regex'] = args.session_end_regex
 values['session_reboot_regex'] = args.session_reboot_regex
-values['tags'] = args.tags
+try:
+    values['tags'] = json.loads(args.tags)
+except json.decoder.JSONDecodeError:
+    values['tags'] = args.tags.split(",")
 values['template'] = args.template
 values['timeout_boot_minutes'] = args.timeout_boot_minutes
 values['timeout_boot_retries'] = args.timeout_boot_retries
@@ -88,10 +92,12 @@ if args.mount_volume is not None:
 values['working_dir'] = args.working_dir
 
 assert(len(args.local_container) > 0)
-values['local_container'] = args.local_container.replace(
-    # Use the gateway's pull-through registry cache to reduce load on fd.o.
-    'registry.freedesktop.org', '{{ fdo_proxy_registry }}'
-)
+
+# Use the gateway's pull-through registry caches to reduce load on fd.o.
+values['local_container'] = args.local_container
+for url, replacement in [('registry.freedesktop.org', '{{ fdo_proxy_registry }}'),
+                         ('harbor.freedesktop.org', '{{ harbor_fdo_registry }}')]:
+    values['local_container'] = values['local_container'].replace(url, replacement)
 
 if 'B2C_KERNEL_CMDLINE_EXTRAS' in environ:
     values['cmdline_extras'] = environ['B2C_KERNEL_CMDLINE_EXTRAS']
