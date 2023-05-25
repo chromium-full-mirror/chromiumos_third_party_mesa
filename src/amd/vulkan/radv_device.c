@@ -7752,6 +7752,35 @@ vk_icdNegotiateLoaderICDInterfaceVersion(uint32_t *pSupportedVersion)
    return VK_SUCCESS;
 }
 
+void
+radv_gfx11_set_db_render_control(const struct radv_device *device, unsigned num_samples,
+                                 unsigned *db_render_control)
+{
+   const struct radv_physical_device *pdevice = device->physical_device;
+   unsigned max_allowed_tiles_in_wave = 0;
+
+   if (pdevice->rad_info.has_dedicated_vram) {
+      if (num_samples == 8)
+         max_allowed_tiles_in_wave = 7;
+      else if (num_samples == 4)
+         max_allowed_tiles_in_wave = 14;
+   } else {
+      if (num_samples == 8)
+         max_allowed_tiles_in_wave = 8;
+   }
+
+   /* TODO: We may want to disable this workaround for future chips. */
+   if (num_samples >= 4) {
+      if (max_allowed_tiles_in_wave)
+         max_allowed_tiles_in_wave--;
+      else
+         max_allowed_tiles_in_wave = 15;
+   }
+
+   *db_render_control |= S_028000_OREO_MODE(V_028000_OMODE_O_THEN_B) |
+                         S_028000_MAX_ALLOWED_TILES_IN_WAVE(max_allowed_tiles_in_wave);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL
 radv_GetMemoryFdKHR(VkDevice _device, const VkMemoryGetFdInfoKHR *pGetFdInfo, int *pFD)
 {
