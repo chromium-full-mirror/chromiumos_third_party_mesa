@@ -849,6 +849,10 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ps_num_samples);
       }
 
+      if (info->ps.reads_sample_mask_in && (info->ps.uses_sample_shading ||
+                                            key->ps.sample_shading_enable))
+         ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ps_iter_mask);
+
       ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.prim_mask);
       if (args->explicit_scratch_args && gfx_level < GFX11) {
          ac_add_arg(&args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &args->ac.scratch_offset);
@@ -960,6 +964,8 @@ radv_declare_shader_args(enum amd_gfx_level gfx_level, const struct radv_pipelin
          set_loc_shader(args, AC_UD_PS_EPILOG_PC, &user_sgpr_idx, 1);
       if (args->ps_num_samples.used)
          set_loc_shader(args, AC_UD_PS_NUM_SAMPLES, &user_sgpr_idx, 1);
+      if (args->ps_iter_mask.used)
+         set_loc_shader(args, AC_UD_PS_ITER_MASK, &user_sgpr_idx, 1);
       break;
    default:
       unreachable("Shader stage not implemented");
