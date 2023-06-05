@@ -273,7 +273,7 @@ add_gpus([
         a6xx_gen1,
         num_ccu = 1,
         tile_align_w = 32,
-        tile_align_h = 32,
+        tile_align_h = 16,
         magic_regs = dict(
             PC_POWER_CNTL = 0,
             TPL1_DBG_ECO_CNTL = 0x00108000,
