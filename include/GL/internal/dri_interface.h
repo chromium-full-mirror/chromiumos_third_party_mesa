@@ -240,8 +240,7 @@ struct __DRItexBufferExtensionRec {
 enum __DRI2throttleReason {
    __DRI2_THROTTLE_SWAPBUFFER,
    __DRI2_THROTTLE_COPYSUBBUFFER,
-   __DRI2_THROTTLE_FLUSHFRONT,
-   __DRI2_NOTHROTTLE_SWAPBUFFER,
+   __DRI2_THROTTLE_FLUSHFRONT
 };
 
 struct __DRI2flushExtensionRec {
