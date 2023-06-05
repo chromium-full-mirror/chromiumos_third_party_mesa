@@ -29,7 +29,6 @@
 #include "macros.h"
 #include "main/dispatch.h" /* for _gloffset_COUNT */
 #include "api_exec_decl.h"
-#include "glthread_marshal.h"
 
 static void GLAPIENTRY
 _context_lost_GetSynciv(GLsync sync, GLenum pname, GLsizei bufSize,
@@ -67,14 +66,14 @@ context_lost_nop_handler(void)
 void
 _mesa_set_context_lost_dispatch(struct gl_context *ctx)
 {
-   if (ctx->Dispatch.ContextLost == NULL) {
+   if (ctx->ContextLost == NULL) {
       int numEntries = MAX2(_glapi_get_dispatch_table_size(), _gloffset_COUNT);
 
-      ctx->Dispatch.ContextLost = malloc(numEntries * sizeof(_glapi_proc));
-      if (!ctx->Dispatch.ContextLost)
+      ctx->ContextLost = malloc(numEntries * sizeof(_glapi_proc));
+      if (!ctx->ContextLost)
          return;
 
-      _glapi_proc *entry = (_glapi_proc *) ctx->Dispatch.ContextLost;
+      _glapi_proc *entry = (_glapi_proc *) ctx->ContextLost;
       unsigned i;
       for (i = 0; i < numEntries; i++)
          entry[i] = (_glapi_proc) context_lost_nop_handler;
@@ -97,14 +96,14 @@ _mesa_set_context_lost_dispatch(struct gl_context *ctx)
        *        + GetQueryObjectuiv with <pname> QUERY_RESULT_AVAILABLE
        *          ignores the other parameters and returns TRUE in <params>."
        */
-      SET_GetError(ctx->Dispatch.ContextLost, _mesa_GetError);
-      SET_GetGraphicsResetStatusARB(ctx->Dispatch.ContextLost, _mesa_GetGraphicsResetStatusARB);
-      SET_GetSynciv(ctx->Dispatch.ContextLost, _context_lost_GetSynciv);
-      SET_GetQueryObjectuiv(ctx->Dispatch.ContextLost, _context_lost_GetQueryObjectuiv);
+      SET_GetError(ctx->ContextLost, _mesa_GetError);
+      SET_GetGraphicsResetStatusARB(ctx->ContextLost, _mesa_GetGraphicsResetStatusARB);
+      SET_GetSynciv(ctx->ContextLost, _context_lost_GetSynciv);
+      SET_GetQueryObjectuiv(ctx->ContextLost, _context_lost_GetQueryObjectuiv);
    }
 
-   ctx->Dispatch.Current = ctx->Dispatch.ContextLost;
-   _glapi_set_dispatch(ctx->Dispatch.Current);
+   ctx->CurrentServerDispatch = ctx->ContextLost;
+   _glapi_set_dispatch(ctx->CurrentServerDispatch);
 }
 
 /**

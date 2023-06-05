@@ -541,11 +541,15 @@ struct panvk_sysvals {
          /* Only for graphics */
          union panvk_sysval_vec4 viewport_scale;
          union panvk_sysval_vec4 viewport_offset;
+         union {
+            union panvk_sysval_vec4 vertex_instance_offsets;
+            struct {
+               uint32_t first_vertex;
+               uint32_t base_vertex;
+               uint32_t base_instance;
+            };
+         };
          union panvk_sysval_vec4 blend_constants;
-
-         uint32_t first_vertex;
-         uint32_t base_vertex;
-         uint32_t base_instance;
       };
 
       struct {
@@ -836,6 +840,7 @@ struct panvk_pipeline {
 
    struct {
       unsigned ubo_idx;
+      struct panfrost_sysvals ids;
    } sysvals[MESA_SHADER_STAGES];
 
    unsigned tls_size;

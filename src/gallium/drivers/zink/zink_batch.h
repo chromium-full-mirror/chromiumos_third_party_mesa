@@ -24,7 +24,7 @@
 #ifndef ZINK_BATCH_H
 #define ZINK_BATCH_H
 
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.h>
 #include "zink_types.h"
 
 #include "util/list.h"
@@ -115,8 +115,6 @@ zink_batch_usage_exists(const struct zink_batch_usage *u)
 
 bool
 zink_screen_usage_check_completion(struct zink_screen *screen, const struct zink_batch_usage *u);
-bool
-zink_screen_usage_check_completion_fast(struct zink_screen *screen, const struct zink_batch_usage *u);
 
 bool
 zink_batch_usage_check_completion(struct zink_context *ctx, const struct zink_batch_usage *u);

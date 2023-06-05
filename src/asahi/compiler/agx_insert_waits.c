@@ -5,7 +5,6 @@
 
 #include "agx_builder.h"
 #include "agx_compiler.h"
-#include "agx_debug.h"
 
 #define AGX_MAX_PENDING (8)
 
@@ -137,7 +136,7 @@ void
 agx_insert_waits(agx_context *ctx)
 {
    agx_foreach_block(ctx, block) {
-      if (agx_compiler_debug & AGX_DBG_WAIT)
+      if (agx_debug & AGX_DBG_WAIT)
          agx_insert_waits_trivial(ctx, block);
       else
          agx_insert_waits_local(ctx, block);

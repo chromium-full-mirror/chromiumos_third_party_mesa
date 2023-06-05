@@ -69,7 +69,7 @@ header_code = """
 
 #include "os/os_process.h"
 
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.h>
 
 #if defined(__APPLE__)
 // Source of MVK_VERSION

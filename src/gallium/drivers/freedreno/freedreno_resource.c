@@ -182,7 +182,7 @@ fd_resource_set_bo(struct fd_resource *rsc, struct fd_bo *bo)
    struct fd_screen *screen = fd_screen(rsc->b.b.screen);
 
    rsc->bo = bo;
-   rsc->seqno = seqno_next_u16(&screen->rsc_seqno);
+   rsc->seqno = p_atomic_inc_return(&screen->rsc_seqno);
 }
 
 int
@@ -310,7 +310,7 @@ fd_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resource *pdst,
    fd_resource_tracking_reference(&dst->track, src->track);
    src->is_replacement = true;
 
-   dst->seqno = seqno_next_u16(&ctx->screen->rsc_seqno);
+   dst->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
 
    fd_screen_unlock(ctx->screen);
 }
@@ -452,16 +452,16 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
    DBG("shadow: %p (%d, %p) -> %p (%d, %p)", rsc, rsc->b.b.reference.count,
        rsc->track, shadow, shadow->b.b.reference.count, shadow->track);
 
-   SWAP(rsc->bo, shadow->bo);
-   SWAP(rsc->valid, shadow->valid);
+   swap(rsc->bo, shadow->bo);
+   swap(rsc->valid, shadow->valid);
 
    /* swap() doesn't work because you can't typeof() the bitfield. */
    bool temp = shadow->needs_ubwc_clear;
    shadow->needs_ubwc_clear = rsc->needs_ubwc_clear;
    rsc->needs_ubwc_clear = temp;
 
-   SWAP(rsc->layout, shadow->layout);
-   rsc->seqno = seqno_next_u16(&ctx->screen->rsc_seqno);
+   swap(rsc->layout, shadow->layout);
+   rsc->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
 
    /* at this point, the newly created shadow buffer is not referenced
     * by any batches, but the existing rsc (probably) is.  We need to
@@ -473,7 +473,7 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
       _mesa_set_remove(batch->resources, entry);
       _mesa_set_add_pre_hashed(batch->resources, shadow->hash, shadow);
    }
-   SWAP(rsc->track, shadow->track);
+   swap(rsc->track, shadow->track);
 
    fd_screen_unlock(ctx->screen);
 
@@ -569,7 +569,7 @@ fd_resource_uncompress(struct fd_context *ctx, struct fd_resource *rsc, bool lin
 
    uint64_t modifier = linear ? DRM_FORMAT_MOD_LINEAR : FD_FORMAT_MOD_QCOM_TILED;
 
-   ASSERTED bool success = fd_try_shadow_resource(ctx, rsc, 0, NULL, modifier);
+   bool success = fd_try_shadow_resource(ctx, rsc, 0, NULL, modifier);
 
    /* shadow should not fail in any cases where we need to uncompress: */
    assert(success);
@@ -1207,7 +1207,7 @@ has_explicit_modifier(const uint64_t *modifiers, int count)
 }
 
 static enum fd_layout_type
-get_best_layout(struct fd_screen *screen,
+get_best_layout(struct fd_screen *screen, struct pipe_resource *prsc,
                 const struct pipe_resource *tmpl, const uint64_t *modifiers,
                 int count)
 {
@@ -1218,7 +1218,7 @@ get_best_layout(struct fd_screen *screen,
    if (!screen->tile_mode)
       return LINEAR;
 
-   if (!screen->tile_mode(tmpl))
+   if (!screen->tile_mode(prsc))
       return LINEAR;
 
    if (tmpl->target == PIPE_BUFFER)
@@ -1227,7 +1227,7 @@ get_best_layout(struct fd_screen *screen,
    if (tmpl->bind & PIPE_BIND_LINEAR) {
       if (tmpl->usage != PIPE_USAGE_STAGING)
          perf_debug("%" PRSC_FMT ": forcing linear: bind flags",
-                    PRSC_ARGS(tmpl));
+                    PRSC_ARGS(prsc));
       return LINEAR;
    }
 
@@ -1238,7 +1238,7 @@ get_best_layout(struct fd_screen *screen,
    if (!can_explicit && (tmpl->bind & PIPE_BIND_SHARED)) {
       perf_debug("%" PRSC_FMT
                  ": forcing linear: shared resource + implicit modifiers",
-                 PRSC_ARGS(tmpl));
+                 PRSC_ARGS(prsc));
       return LINEAR;
    }
 
@@ -1257,7 +1257,7 @@ get_best_layout(struct fd_screen *screen,
        !drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count)) {
       perf_debug("%" PRSC_FMT
                  ": not using UBWC: not in acceptable modifier set",
-                 PRSC_ARGS(tmpl));
+                 PRSC_ARGS(prsc));
       ubwc_ok = false;
    }
 
@@ -1277,12 +1277,12 @@ get_best_layout(struct fd_screen *screen,
 
    if (!drm_find_modifier(DRM_FORMAT_MOD_LINEAR, modifiers, count)) {
       perf_debug("%" PRSC_FMT ": need linear but not in modifier set",
-                 PRSC_ARGS(tmpl));
+                 PRSC_ARGS(prsc));
       return ERROR;
    }
 
    perf_debug("%" PRSC_FMT ": not using tiling: explicit modifiers and no UBWC",
-              PRSC_ARGS(tmpl));
+              PRSC_ARGS(prsc));
    return LINEAR;
 }
 
@@ -1323,7 +1323,7 @@ fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
    fd_resource_layout_init(prsc);
 
    enum fd_layout_type layout =
-      get_best_layout(screen, tmpl, modifiers, count);
+      get_best_layout(screen, prsc, tmpl, modifiers, count);
    if (layout == ERROR) {
       free(prsc);
       return NULL;

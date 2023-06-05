@@ -679,8 +679,6 @@ kopper_present(void *data, void *gdata, int thread_idx)
       cpi->info.waitSemaphoreCount = 0;
    }
    VkResult error2 = VKSCR(QueuePresentKHR)(screen->queue, &cpi->info);
-   zink_screen_debug_marker_end(screen, screen->frame_marker_emitted);
-   zink_screen_debug_marker_begin(screen, "frame");
    simple_mtx_unlock(&screen->queue_lock);
    swapchain->last_present = cpi->image;
    if (cpi->indefinite_acquire)
@@ -839,7 +837,7 @@ zink_kopper_present_readback(struct zink_context *ctx, struct zink_resource *res
    si.pWaitDstStageMask = &mask;
    VkSemaphore acquire = zink_kopper_acquire_submit(screen, res);
    VkSemaphore present = res->obj->present ? res->obj->present : zink_kopper_present(screen, res);
-   if (screen->threaded_submit)
+   if (screen->threaded)
       util_queue_finish(&screen->flush_queue);
    si.waitSemaphoreCount = !!acquire;
    si.pWaitSemaphores = &acquire;

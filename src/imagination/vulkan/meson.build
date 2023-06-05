@@ -60,18 +60,14 @@ pvr_files = files(
   'pvr_query.c',
   'pvr_query_compute.c',
   'pvr_queue.c',
-  'pvr_robustness.c',
   'pvr_shader.c',
   'pvr_spm.c',
   'pvr_tex_state.c',
   'pvr_wsi.c',
-
-  'usc/pvr_uscgen.c',
 )
 
 pvr_includes = [
   include_directories('usc/programs'),
-  include_directories('usc'),
   include_directories('winsys'),
   libpowervr_pds_includes,
 ]

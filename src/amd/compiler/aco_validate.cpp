@@ -223,22 +223,20 @@ validate_ir(Program* program)
          }
 
          /* check opsel */
-         if (instr->isVOP3() || instr->isVOP1() || instr->isVOP2() || instr->isVOPC()) {
-            VALU_instruction& valu = instr->valu();
-            check(valu.opsel == 0 || program->gfx_level >= GFX9, "Opsel is only supported on GFX9+",
+         if (instr->isVOP3()) {
+            VOP3_instruction& vop3 = instr->vop3();
+            check(vop3.opsel == 0 || program->gfx_level >= GFX9, "Opsel is only supported on GFX9+",
                   instr.get());
-            check(valu.opsel == 0 || instr->format == Format::VOP3 || program->gfx_level >= GFX11,
-                  "Opsel is only supported for VOP3 before GFX11", instr.get());
 
             for (unsigned i = 0; i < 3; i++) {
                if (i >= instr->operands.size() ||
-                   (!instr->isVOP3() && !instr->operands[i].isOfType(RegType::vgpr)) ||
                    (instr->operands[i].hasRegClass() &&
                     instr->operands[i].regClass().is_subdword() && !instr->operands[i].isFixed()))
-                  check(!valu.opsel[i], "Unexpected opsel for operand", instr.get());
+                  check((vop3.opsel & (1 << i)) == 0, "Unexpected opsel for operand", instr.get());
             }
             if (instr->definitions[0].regClass().is_subdword() && !instr->definitions[0].isFixed())
-               check(!valu.opsel[3], "Unexpected opsel for sub-dword definition", instr.get());
+               check((vop3.opsel & (1 << 3)) == 0, "Unexpected opsel for sub-dword definition",
+                     instr.get());
          } else if (instr->opcode == aco_opcode::v_fma_mixlo_f16 ||
                     instr->opcode == aco_opcode::v_fma_mixhi_f16 ||
                     instr->opcode == aco_opcode::v_fma_mix_f32) {
@@ -246,11 +244,11 @@ validate_ir(Program* program)
                      (instr->opcode == aco_opcode::v_fma_mix_f32 ? v1 : v2b),
                   "v_fma_mix_f32/v_fma_mix_f16 must have v1/v2b definition", instr.get());
          } else if (instr->isVOP3P()) {
-            VALU_instruction& vop3p = instr->valu();
+            VOP3P_instruction& vop3p = instr->vop3p();
             for (unsigned i = 0; i < instr->operands.size(); i++) {
                if (instr->operands[i].hasRegClass() &&
                    instr->operands[i].regClass().is_subdword() && !instr->operands[i].isFixed())
-                  check(!vop3p.opsel_lo[i] && !vop3p.opsel_hi[i],
+                  check((vop3p.opsel_lo & (1 << i)) == 0 && (vop3p.opsel_hi & (1 << i)) == 0,
                         "Unexpected opsel for subdword operand", instr.get());
             }
             check(instr->definitions[0].regClass() == v1, "VOP3P must have v1 definition",
@@ -286,7 +284,7 @@ validate_ir(Program* program)
                      instr.get());
          }
 
-         if (instr->isSALU() || instr->isVALU()) {
+         if (instr->isSALU() || instr->isVALU() || instr->isVINTERP_INREG()) {
             /* check literals */
             Operand literal(s1);
             for (unsigned i = 0; i < instr->operands.size(); i++) {
@@ -308,7 +306,7 @@ validate_ir(Program* program)
             }
 
             /* check num sgprs for VALU */
-            if (instr->isVALU()) {
+            if (instr->isVALU() || instr->isVINTERP_INREG()) {
                bool is_shift64 = instr->opcode == aco_opcode::v_lshlrev_b64 ||
                                  instr->opcode == aco_opcode::v_lshrrev_b64 ||
                                  instr->opcode == aco_opcode::v_ashrrev_i64;
@@ -384,31 +382,6 @@ validate_ir(Program* program)
                }
                check(num_sgprs + (literal.isUndefined() ? 0 : 1) <= const_bus_limit,
                      "Too many SGPRs/literals", instr.get());
-
-               /* Validate modifiers. */
-               check(!instr->valu().opsel || instr->isVOP3() || instr->isVOP1() ||
-                        instr->isVOP2() || instr->isVOPC() || instr->isVINTERP_INREG(),
-                     "OPSEL set for unsupported instruction format", instr.get());
-               check(!instr->valu().opsel_lo || instr->isVOP3P(),
-                     "OPSEL_LO set for unsupported instruction format", instr.get());
-               check(!instr->valu().opsel_hi || instr->isVOP3P(),
-                     "OPSEL_HI set for unsupported instruction format", instr.get());
-               check(!instr->valu().omod || instr->isVOP3() ||instr->isSDWA(),
-                     "OMOD set for unsupported instruction format", instr.get());
-               check(!instr->valu().clamp || instr->isVOP3() || instr->isVOP3P() ||
-                        instr->isSDWA() || instr->isVINTERP_INREG(),
-                     "CLAMP set for unsupported instruction format", instr.get());
-
-               for (bool abs : instr->valu().abs) {
-                  check(!abs || instr->isVOP3() || instr->isVOP3P() || instr->isSDWA() ||
-                           instr->isDPP16(),
-                        "ABS/NEG_HI set for unsupported instruction format", instr.get());
-               }
-               for (bool neg : instr->valu().neg) {
-                  check(!neg || instr->isVOP3() || instr->isVOP3P() || instr->isSDWA() ||
-                           instr->isDPP16() || instr->isVINTERP_INREG(),
-                        "NEG/NEG_LO set for unsupported instruction format", instr.get());
-               }
             }
 
             if (instr->isSOP1() || instr->isSOP2()) {
@@ -561,8 +534,9 @@ validate_ir(Program* program)
                check(instr->definitions[2].getTemp().type() == RegType::vgpr &&
                         instr->definitions[2].getTemp().size() == 1,
                      "Third definition of p_dual_src_export_gfx11 must be a v1", instr.get());
-               check(instr->definitions[3].regClass() == program->lane_mask,
-                     "Fourth definition of p_dual_src_export_gfx11 must be a lane mask", instr.get());
+               check(instr->definitions[3].getTemp().type() == RegType::sgpr &&
+                        instr->definitions[3].getTemp().size() == 2,
+                     "Fourth definition of p_dual_src_export_gfx11 must be a s2", instr.get());
                check(instr->definitions[4].physReg() == vcc,
                      "Fifth definition of p_dual_src_export_gfx11 must be vcc", instr.get());
                check(instr->definitions[5].physReg() == scc,
@@ -868,8 +842,8 @@ validate_subdword_operand(amd_gfx_level gfx_level, const aco_ptr<Instruction>& i
       bool fma_mix = instr->opcode == aco_opcode::v_fma_mixlo_f16 ||
                      instr->opcode == aco_opcode::v_fma_mixhi_f16 ||
                      instr->opcode == aco_opcode::v_fma_mix_f32;
-      return instr->valu().opsel_lo[index] == (byte >> 1) &&
-             instr->valu().opsel_hi[index] == (fma_mix || (byte >> 1));
+      return ((instr->vop3p().opsel_lo >> index) & 1) == (byte >> 1) &&
+             ((instr->vop3p().opsel_hi >> index) & 1) == (fma_mix || (byte >> 1));
    }
    if (byte == 2 && can_use_opsel(gfx_level, instr->opcode, index))
       return true;
@@ -955,7 +929,7 @@ get_subdword_bytes_written(Program* program, const aco_ptr<Instruction>& instr, 
 
    if (instr->isPseudo())
       return gfx_level >= GFX8 ? def.bytes() : def.size() * 4u;
-   if (instr->isVALU()) {
+   if (instr->isVALU() || instr->isVINTERP_INREG()) {
       assert(def.bytes() <= 2);
       if (instr->isSDWA())
          return instr->sdwa().dst_sel.size();

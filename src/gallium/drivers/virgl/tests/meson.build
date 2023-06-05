@@ -28,5 +28,5 @@ test(
     link_with : [libvirgl, libgallium],
   ),
   suite : ['virgl'],
-  protocol : 'gtest',
+  protocol : gtest_test_protocol,
 )

@@ -91,6 +91,11 @@ dead_code_analysis(Program* program)
       process_block(ctx, program->blocks[next_block]);
    }
 
+   /* add one use to exec to prevent startpgm from being removed */
+   aco_ptr<Instruction>& startpgm = program->blocks[0].instructions[0];
+   assert(startpgm->opcode == aco_opcode::p_startpgm);
+   ctx.uses[startpgm->definitions.back().tempId()]++;
+
    return ctx.uses;
 }
 

@@ -504,17 +504,17 @@ traces:
       checksum: f11aa01f5ef3a563567e2a85998c418e
   freedoom/freedoom-phase2-gl-high.trace:
     gl-intel-apl:
-      checksum: b9951727c5c869d5ca510d83a557711b
+      checksum: 13860db550196b58c07c7a5493d4cbb1
     gl-intel-glx:
-      checksum: b9951727c5c869d5ca510d83a557711b
+      checksum: 13860db550196b58c07c7a5493d4cbb1
     gl-intel-amly:
-      checksum: b9951727c5c869d5ca510d83a557711b
+      checksum: 13860db550196b58c07c7a5493d4cbb1
     gl-intel-kbl:
-      checksum: b9951727c5c869d5ca510d83a557711b
+      checksum: 13860db550196b58c07c7a5493d4cbb1
     gl-intel-whl:
-      checksum: b9951727c5c869d5ca510d83a557711b
+      checksum: 13860db550196b58c07c7a5493d4cbb1
     gl-intel-cml:
-      checksum: b9951727c5c869d5ca510d83a557711b
+      checksum: 13860db550196b58c07c7a5493d4cbb1
   unvanquished/unvanquished-lowest.trace:
     gl-intel-apl:
       checksum: 884096b6dd40e2f500d0837501287fac

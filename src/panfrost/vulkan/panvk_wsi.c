@@ -47,7 +47,7 @@ panvk_wsi_init(struct panvk_physical_device *physical_device)
                             panvk_wsi_proc_addr,
                             &physical_device->instance->vk.alloc,
                             physical_device->master_fd, NULL,
-                            &(struct wsi_device_options){.sw_device = false});
+                            false);
    if (result != VK_SUCCESS)
       return result;
 

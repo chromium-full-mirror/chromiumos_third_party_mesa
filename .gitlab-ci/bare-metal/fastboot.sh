@@ -1,7 +1,5 @@
 #!/bin/bash
 
-. "$SCRIPTS_DIR"/setup-test-env.sh
-
 BM=$CI_PROJECT_DIR/install/bare-metal
 CI_COMMON=$CI_PROJECT_DIR/install/common
 

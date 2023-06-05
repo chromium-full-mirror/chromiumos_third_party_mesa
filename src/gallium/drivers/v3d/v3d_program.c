@@ -467,12 +467,22 @@ v3d_setup_shared_key(struct v3d_context *v3d, struct v3d_key *key,
         for (int i = 0; i < texstate->num_textures; i++) {
                 struct pipe_sampler_view *sampler = texstate->textures[i];
                 struct v3d_sampler_view *v3d_sampler = v3d_sampler_view(sampler);
+                struct pipe_sampler_state *sampler_state =
+                        texstate->samplers[i];
 
                 if (!sampler)
                         continue;
 
+                assert(sampler->target == PIPE_BUFFER || sampler_state);
+
+                unsigned compare_mode = sampler_state ?
+                        sampler_state->compare_mode :
+                        PIPE_TEX_COMPARE_NONE;
+
                 key->sampler[i].return_size =
-                        v3d_get_tex_return_size(devinfo, sampler->format);
+                        v3d_get_tex_return_size(devinfo,
+                                                sampler->format,
+                                                compare_mode);
 
                 /* For 16-bit, we set up the sampler to always return 2
                  * channels (meaning no recompiles for most statechanges),

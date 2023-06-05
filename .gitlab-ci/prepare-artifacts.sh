@@ -1,6 +1,4 @@
-#!/usr/bin/env bash
-
-section_switch prepare-artifacts "artifacts: prepare"
+#!/bin/bash
 
 set -e
 set -o xtrace
@@ -38,7 +36,6 @@ cp -Rp .gitlab-ci/*.txt install/
 cp -Rp .gitlab-ci/report-flakes.py install/
 cp -Rp .gitlab-ci/valve install/
 cp -Rp .gitlab-ci/vkd3d-proton install/
-cp -Rp .gitlab-ci/setup-test-env.sh install/
 cp -Rp .gitlab-ci/*-runner.sh install/
 find . -path \*/ci/\*.txt \
     -o -path \*/ci/\*.toml \
@@ -59,5 +56,3 @@ if [ -n "$MINIO_ARTIFACT_NAME" ]; then
     zstd artifacts/install.tar -o ${MINIO_ARTIFACT_NAME}
     ci-fairy s3cp --token-file "${CI_JOB_JWT_FILE}" ${MINIO_ARTIFACT_NAME} https://${PIPELINE_ARTIFACTS_BASE}/${MINIO_ARTIFACT_NAME}
 fi
-
-section_end prepare-artifacts

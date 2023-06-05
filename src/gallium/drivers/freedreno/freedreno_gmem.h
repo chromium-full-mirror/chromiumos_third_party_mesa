@@ -32,8 +32,6 @@
 
 #include "freedreno_util.h"
 
-BEGINC;
-
 /* per-pipe configuration for hw binning: */
 struct fd_vsc_pipe {
    uint8_t x, y, w, h; /* VSC_PIPE[p].CONFIG */
@@ -97,7 +95,5 @@ bool fd_gmem_needs_restore(struct fd_batch *batch, const struct fd_tile *tile,
 struct pipe_screen;
 void fd_gmem_screen_init(struct pipe_screen *pscreen);
 void fd_gmem_screen_fini(struct pipe_screen *pscreen);
-
-ENDC;
 
 #endif /* FREEDRENO_GMEM_H_ */

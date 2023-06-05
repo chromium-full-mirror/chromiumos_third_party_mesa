@@ -73,7 +73,7 @@ rnn_new(int nocolor)
 }
 
 static void
-init(struct rnn *rnn, char *file, char *domain, char *variant)
+init(struct rnn *rnn, char *file, char *domain)
 {
    /* prepare rnn stuff for lookup */
    rnn_parsefile(rnn->db, file);
@@ -87,11 +87,11 @@ init(struct rnn *rnn, char *file, char *domain, char *variant)
    if (!rnn->dom[0] && rnn->dom[1]) {
       fprintf(stderr, "Could not find domain %s in %s\n", domain, file);
    }
-   rnn->variant = variant;
+   rnn->variant = domain;
 
-   rnndec_varadd(rnn->vc, "chip", variant);
+   rnndec_varadd(rnn->vc, "chip", domain);
    if (rnn->vc != rnn->vc_nocolor)
-      rnndec_varadd(rnn->vc_nocolor, "chip", variant);
+      rnndec_varadd(rnn->vc_nocolor, "chip", domain);
    if (rnn->db->estatus)
       errx(rnn->db->estatus, "failed to parse register database");
 }
@@ -99,24 +99,22 @@ init(struct rnn *rnn, char *file, char *domain, char *variant)
 void
 rnn_load_file(struct rnn *rnn, char *file, char *domain)
 {
-   init(rnn, file, domain, domain);
+   init(rnn, file, domain);
 }
 
 void
 rnn_load(struct rnn *rnn, const char *gpuname)
 {
    if (strstr(gpuname, "a2")) {
-      init(rnn, "adreno/a2xx.xml", "A2XX", "A2XX");
+      init(rnn, "adreno/a2xx.xml", "A2XX");
    } else if (strstr(gpuname, "a3")) {
-      init(rnn, "adreno/a3xx.xml", "A3XX", "A3XX");
+      init(rnn, "adreno/a3xx.xml", "A3XX");
    } else if (strstr(gpuname, "a4")) {
-      init(rnn, "adreno/a4xx.xml", "A4XX", "A4XX");
+      init(rnn, "adreno/a4xx.xml", "A4XX");
    } else if (strstr(gpuname, "a5")) {
-      init(rnn, "adreno/a5xx.xml", "A5XX", "A5XX");
+      init(rnn, "adreno/a5xx.xml", "A5XX");
    } else if (strstr(gpuname, "a6")) {
-      init(rnn, "adreno/a6xx.xml", "A6XX", "A6XX");
-   } else if (strstr(gpuname, "a7")) {
-      init(rnn, "adreno/a6xx.xml", "A6XX", "A7XX");
+      init(rnn, "adreno/a6xx.xml", "A6XX");
    }
 }
 

@@ -117,12 +117,7 @@ lp_sampler_static_texture_state(struct lp_static_texture_state *state,
    assert(state->swizzle_b < PIPE_SWIZZLE_NONE);
    assert(state->swizzle_a < PIPE_SWIZZLE_NONE);
 
-   /* check if it is a tex2d created from buf */
-   if (view->is_tex2d_from_buf)
-      state->target = PIPE_TEXTURE_2D;
-   else
-      state->target = view->target;
-
+   state->target = view->target;
    state->pot_width = util_is_power_of_two_or_zero(texture->width0);
    state->pot_height = util_is_power_of_two_or_zero(texture->height0);
    state->pot_depth = util_is_power_of_two_or_zero(texture->depth0);

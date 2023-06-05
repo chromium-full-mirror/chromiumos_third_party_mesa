@@ -142,6 +142,6 @@ if with_tests
       dependencies: [idep_gtest, libpanfrost_dep],
     ),
     suite : ['panfrost'],
-    protocol : 'gtest',
+    protocol : gtest_test_protocol,
   )
 endif

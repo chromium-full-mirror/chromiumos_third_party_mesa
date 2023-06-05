@@ -372,7 +372,7 @@ public:
       id = -1;
    }
 
-   inline unsigned int getSize() const { return size; }
+   inline int getSize() const { return size; }
 
    inline void *get(unsigned int id) { assert(id < size); return data[id].p; }
 

@@ -63,7 +63,7 @@ header = """/**
 void
 _mesa_init_dispatch(struct gl_context *ctx)
 {
-   struct _glapi_table *table = ctx->Dispatch.OutsideBeginEnd;
+   struct _glapi_table *table = ctx->OutsideBeginEnd;
 
    assert(table != NULL);
    assert(ctx->Version > 0);

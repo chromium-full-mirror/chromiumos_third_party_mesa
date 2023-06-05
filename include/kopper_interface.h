@@ -61,8 +61,7 @@ struct __DRIkopperExtensionRec {
                                         const __DRIconfig *config,
                                         void *loaderPrivate,
                                         int pixmap);
-    /* flags is a set of __DRI2_FLUSH_* flags */
-    int64_t (*swapBuffers)(__DRIdrawable *draw, uint32_t flush_flags);
+    int64_t (*swapBuffers)(__DRIdrawable *draw);
     void (*setSwapInterval)(__DRIdrawable *drawable, int interval);
     int (*queryBufferAge)(__DRIdrawable *drawable);
 };

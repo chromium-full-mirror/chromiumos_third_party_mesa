@@ -510,8 +510,7 @@ vk_image_layout_stencil_write_optimal(VkImageLayout layout)
 {
    return layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL ||
           layout == VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL ||
-          layout == VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL ||
-          layout == VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL;
+          layout == VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL;
 }
 #endif
 
@@ -542,7 +541,6 @@ transition_stencil_buffer(struct anv_cmd_buffer *cmd_buffer,
     *  - VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
     *  - VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
     *  - VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL
-    *  - VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL
     *
     * For general, we have no nice opportunity to transition so we do the copy
     * to the shadow unconditionally at the end of the subpass. For transfer
@@ -813,7 +811,7 @@ genX(copy_fast_clear_dwords)(struct anv_cmd_buffer *cmd_buffer,
     *
     * It is unclear exactly why this hang occurs.  Both MI commands come with
     * warnings about the 3D pipeline but that doesn't seem to fully explain
-    * it.  My (Faith's) best theory is that it has something to do with the
+    * it.  My (Jason's) best theory is that it has something to do with the
     * fact that we're using a GPU state register as our temporary and that
     * something with reading/writing it is causing problems.
     *
@@ -1727,6 +1725,11 @@ genX(emit_apply_pipe_flushes)(struct anv_batch *batch,
          pipe.RenderTargetCacheFlushEnable =
             bits & ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
 
+         /* Wa_1409600907: "PIPE_CONTROL with Depth Stall Enable bit must
+          * be set with any PIPE_CONTROL with Depth Flush Enable bit set.
+          */
+         pipe.DepthStallEnable = bits & ANV_PIPE_DEPTH_STALL_BIT;
+
          pipe.CommandStreamerStallEnable = bits & ANV_PIPE_CS_STALL_BIT;
 #if GFX_VER == 8
          /* From Broadwell PRM, volume 2a:
@@ -1974,22 +1977,6 @@ cmd_buffer_barrier(struct anv_cmd_buffer *cmd_buffer,
                                    img_barrier->oldLayout,
                                    img_barrier->newLayout,
                                    false /* will_full_fast_clear */);
-
-         /* If we are in a renderpass, the gfx7 stencil shadow may need to be
-          * updated even if the layout doesn't change
-          */
-         if (cmd_buffer->state.gfx.samples &&
-              (img_barrier->dstAccessMask & (VK_ACCESS_2_SHADER_READ_BIT |
-                                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
-                                             VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT))) {
-            const uint32_t plane =
-               anv_image_aspect_to_plane(image, VK_IMAGE_ASPECT_STENCIL_BIT);
-            if (anv_surface_is_valid(&image->planes[plane].shadow_surface))
-               anv_image_copy_to_shadow(cmd_buffer, image,
-                                        VK_IMAGE_ASPECT_STENCIL_BIT,
-                                        range->baseMipLevel, level_count,
-                                        base_layer, layer_count);
-         }
       }
 
       if (range->aspectMask & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV) {
@@ -2785,7 +2772,7 @@ cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer,
    const struct anv_graphics_pipeline *pipeline = gfx_state->pipeline;
 
    /* Compute robust pushed register access mask for each stage. */
-   if (cmd_buffer->device->vk.enabled_features.robustBufferAccess) {
+   if (cmd_buffer->device->robust_buffer_access) {
       anv_foreach_stage(stage, dirty_stages) {
          if (!anv_pipeline_has_stage(pipeline, stage))
             continue;
@@ -4894,7 +4881,10 @@ genX(cmd_buffer_update_dirty_vbs_for_gfx8_vb_flush)(struct anv_cmd_buffer *cmd_b
       struct anv_vb_cache_range *bound = &cmd_buffer->state.gfx.ib_bound_range;
       struct anv_vb_cache_range *dirty = &cmd_buffer->state.gfx.ib_dirty_range;
 
-      anv_merge_vb_cache_range(dirty, bound);
+      if (bound->end > bound->start) {
+         dirty->start = MIN2(dirty->start, bound->start);
+         dirty->end = MAX2(dirty->end, bound->end);
+      }
    }
 
    uint64_t mask = vb_used;
@@ -4908,7 +4898,10 @@ genX(cmd_buffer_update_dirty_vbs_for_gfx8_vb_flush)(struct anv_cmd_buffer *cmd_b
       bound = &cmd_buffer->state.gfx.vb_bound_ranges[i];
       dirty = &cmd_buffer->state.gfx.vb_dirty_ranges[i];
 
-      anv_merge_vb_cache_range(dirty, bound);
+      if (bound->end > bound->start) {
+         dirty->start = MIN2(dirty->start, bound->start);
+         dirty->end = MAX2(dirty->end, bound->end);
+      }
    }
 }
 
@@ -5731,7 +5724,6 @@ void genX(CmdEndRendering)(
     *  - VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
     *  - VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
     *  - VK_IMAGE_LAYOUT_STENCIL_ATTACHMENT_OPTIMAL
-    *  - VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL
     *  - VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
     *
     * For general, we have no nice opportunity to transition so we do the copy

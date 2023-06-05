@@ -1,6 +1,24 @@
 """
-Copyright 2021 Alyssa Rosenzweig
-# SPDX-License-Identifier: MIT
+Copyright (C) 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next
+paragraph) shall be included in all copies or substantial portions of the
+Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 """
 
 opcodes = {}
@@ -90,14 +108,6 @@ DIM = enum("dim", {
     8: '2d_ms_array',
 })
 
-GATHER = enum("gather", {
-	0b000: "none",
-	0b001: "r",
-	0b011: "g",
-	0b101: "b",
-	0b111: "a",
-})
-
 OFFSET = immediate("offset", "bool")
 SHADOW = immediate("shadow", "bool")
 SCOREBOARD = immediate("scoreboard")
@@ -128,24 +138,9 @@ SR = enum("sr", {
    56: 'active_thread_index_in_quad',
    58: 'active_thread_index_in_subgroup',
    62: 'backfacing',
-   63: 'is_active_thread',
    80: 'thread_position_in_grid.x',
    81: 'thread_position_in_grid.y',
    82: 'thread_position_in_grid.z',
-})
-
-ATOMIC_OPC = enum("atomic_opc", {
-	0: 'add',
-	1: 'sub',
-	2: 'xchg',
-	3: 'cmpxchg',
-	4: 'umin',
-	5: 'imin',
-	6: 'umax',
-	7: 'imax',
-	8: 'and',
-	9: 'or',
-	10: 'xor',
 })
 
 FUNOP = lambda x: (x << 28)
@@ -238,8 +233,7 @@ op("fcmpsel",
 # TODO: anything else?
 op("texture_sample",
       encoding_32 = (0x31, 0x7F, 8, 10), # XXX WRONG SIZE
-      srcs = 5, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SHADOW,
-								GATHER])
+      srcs = 5, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET, SHADOW])
 op("texture_load",
       encoding_32 = (0x71, 0x7F, 8, 10), # XXX WRONG SIZE
       srcs = 5, imms = [DIM, LOD_MODE, MASK, SCOREBOARD, OFFSET])
@@ -249,38 +243,17 @@ op("device_load",
       encoding_32 = (0x05, 0x7F, 6, 8),
       srcs = 2, imms = [FORMAT, MASK, SHIFT, SCOREBOARD], can_reorder = False)
 
-# sources are base (relative to workgroup memory), index
-op("local_load",
-      encoding_32 = (0b1101001, 0, 6, 8),
-      srcs = 2, imms = [FORMAT, MASK])
-
 # sources are value, base, index
 # TODO: Consider permitting the short form
 op("device_store",
       encoding_32 = (0x45 | (1 << 47), 0, 8, _),
       dests = 0, srcs = 3, imms = [FORMAT, MASK, SHIFT, SCOREBOARD], can_eliminate = False)
 
-# sources are value, base, index
-op("local_store",
-      encoding_32 = (0b0101001, 0, 6, 8),
-      dests = 0, srcs = 3, imms = [FORMAT, MASK],
-      can_eliminate=False)
-
 # sources are value, index
 # TODO: Consider permitting the short form
 op("uniform_store",
       encoding_32 = ((0b111 << 27) | 0b1000101 | (1 << 47), 0, 8, _),
       dests = 0, srcs = 2, can_eliminate = False)
-
-# sources are value, base, index
-op("atomic",
-      encoding_32 = (0x15 | (1 << 26) | (1 << 31) | (5 << 44), 0x3F | (1 << 26) | (1 << 31) | (5 << 44), 8, _),
-      dests = 1, srcs = 3, imms = [ATOMIC_OPC, SCOREBOARD], can_eliminate = False)
-
-# XXX: stop hardcoding the long form
-op("local_atomic",
-      encoding_32 = (0x19 | (1 << 15) | (1 << 36) | (1 << 47), 0x3F | (1 << 36) | (1 << 47), 10, _),
-      dests = 1, srcs = 3, imms = [ATOMIC_OPC], can_eliminate = False)
 
 op("wait", (0x38, 0xFF, 2, _), dests = 0,
       can_eliminate = False, imms = [SCOREBOARD])
@@ -357,7 +330,7 @@ op("phi", _, srcs = VARIABLE)
 
 op("unit_test", _, dests = 0, srcs = 1, can_eliminate = False)
 
-# Like mov, but takes a register and can only appear at the start. Guaranteed
+# Like mov, but takes a register and can only appear at the start. Gauranteed
 # to be coalesced during RA, rather than lowered to a real move. 
 op("preload", _, srcs = 1)
 

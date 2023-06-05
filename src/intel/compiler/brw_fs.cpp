@@ -38,7 +38,6 @@
 #include "brw_dead_control_flow.h"
 #include "brw_private.h"
 #include "dev/intel_debug.h"
-#include "dev/intel_wa.h"
 #include "compiler/glsl_types.h"
 #include "compiler/nir/nir_builder.h"
 #include "program/prog_parameter.h"
@@ -641,19 +640,10 @@ fs_visitor::limit_dispatch_width(unsigned n, const char *msg)
 bool
 fs_inst::is_partial_write() const
 {
-   if (this->predicate && !this->predicate_trivial &&
-       this->opcode != BRW_OPCODE_SEL)
-      return true;
-
-   if (this->dst.offset % REG_SIZE != 0)
-      return true;
-
-   /* SEND instructions always write whole registers */
-   if (this->opcode == SHADER_OPCODE_SEND)
-      return false;
-
-   return this->exec_size * type_sz(this->dst.type) < 32 ||
-          !this->dst.is_contiguous();
+   return ((this->predicate && this->opcode != BRW_OPCODE_SEL) ||
+           (this->exec_size * type_sz(this->dst.type)) < 32 ||
+           !this->dst.is_contiguous() ||
+           this->dst.offset % REG_SIZE != 0);
 }
 
 unsigned
@@ -2615,7 +2605,6 @@ fs_visitor::opt_algebraic()
          /* a * 1.0 = a */
          if (inst->src[1].is_one()) {
             inst->opcode = BRW_OPCODE_MOV;
-            inst->sources = 1;
             inst->src[1] = reg_undef;
             progress = true;
             break;
@@ -2624,7 +2613,6 @@ fs_visitor::opt_algebraic()
          /* a * -1.0 = -a */
          if (inst->src[1].is_negative_one()) {
             inst->opcode = BRW_OPCODE_MOV;
-            inst->sources = 1;
             inst->src[0].negate = !inst->src[0].negate;
             inst->src[1] = reg_undef;
             progress = true;
@@ -2639,7 +2627,6 @@ fs_visitor::opt_algebraic()
          if (brw_reg_type_is_integer(inst->src[1].type) &&
              inst->src[1].is_zero()) {
             inst->opcode = BRW_OPCODE_MOV;
-            inst->sources = 1;
             inst->src[1] = reg_undef;
             progress = true;
             break;
@@ -2648,7 +2635,6 @@ fs_visitor::opt_algebraic()
          if (inst->src[0].file == IMM) {
             assert(inst->src[0].type == BRW_REGISTER_TYPE_F);
             inst->opcode = BRW_OPCODE_MOV;
-            inst->sources = 1;
             inst->src[0].f += inst->src[1].f;
             inst->src[1] = reg_undef;
             progress = true;
@@ -2664,11 +2650,9 @@ fs_visitor::opt_algebraic()
              */
             if (inst->src[0].negate) {
                inst->opcode = BRW_OPCODE_NOT;
-               inst->sources = 1;
                inst->src[0].negate = false;
             } else {
                inst->opcode = BRW_OPCODE_MOV;
-               inst->sources = 1;
             }
             inst->src[1] = reg_undef;
             progress = true;
@@ -2715,7 +2699,6 @@ fs_visitor::opt_algebraic()
          }
          if (inst->src[0].equals(inst->src[1])) {
             inst->opcode = BRW_OPCODE_MOV;
-            inst->sources = 1;
             inst->src[1] = reg_undef;
             inst->predicate = BRW_PREDICATE_NONE;
             inst->predicate_inverse = false;
@@ -2728,7 +2711,6 @@ fs_visitor::opt_algebraic()
                case BRW_REGISTER_TYPE_F:
                   if (inst->src[1].f >= 1.0f) {
                      inst->opcode = BRW_OPCODE_MOV;
-                     inst->sources = 1;
                      inst->src[1] = reg_undef;
                      inst->conditional_mod = BRW_CONDITIONAL_NONE;
                      progress = true;
@@ -2744,7 +2726,6 @@ fs_visitor::opt_algebraic()
                case BRW_REGISTER_TYPE_F:
                   if (inst->src[1].f <= 0.0f) {
                      inst->opcode = BRW_OPCODE_MOV;
-                     inst->sources = 1;
                      inst->src[1] = reg_undef;
                      inst->conditional_mod = BRW_CONDITIONAL_NONE;
                      progress = true;
@@ -2765,13 +2746,11 @@ fs_visitor::opt_algebraic()
             break;
          if (inst->src[1].is_one()) {
             inst->opcode = BRW_OPCODE_ADD;
-            inst->sources = 2;
             inst->src[1] = inst->src[2];
             inst->src[2] = reg_undef;
             progress = true;
          } else if (inst->src[2].is_one()) {
             inst->opcode = BRW_OPCODE_ADD;
-            inst->sources = 2;
             inst->src[2] = reg_undef;
             progress = true;
          }
@@ -2850,9 +2829,9 @@ fs_visitor::opt_zero_samples()
    /* Gfx4 infers the texturing opcode based on the message length so we can't
     * change it.  Gfx12.5 has restrictions on the number of coordinate
     * parameters that have to be provided for some texture types
-    * (Wa_14012688258).
+    * (Wa_14013363432).
     */
-   if (devinfo->ver < 5 || intel_needs_workaround(devinfo, 14012688258))
+   if (devinfo->ver < 5 || devinfo->verx10 == 125)
       return false;
 
    bool progress = false;
@@ -6254,7 +6233,7 @@ needs_dummy_fence(const intel_device_info *devinfo, fs_inst *inst)
    return false;
 }
 
-/* Wa_14015360517
+/* Wa_14017989577
  *
  * The first instruction of any kernel should have non-zero emask.
  * Make sure this happens by introducing a dummy mov instruction.
@@ -6262,7 +6241,7 @@ needs_dummy_fence(const intel_device_info *devinfo, fs_inst *inst)
 void
 fs_visitor::emit_dummy_mov_instruction()
 {
-   if (!intel_needs_workaround(devinfo, 14015360517))
+   if (devinfo->verx10 < 120)
       return;
 
    struct backend_instruction *first_inst =
@@ -6445,18 +6424,15 @@ fs_visitor::fixup_nomask_control_flow()
                 */
                const bool save_flag = flag_liveout &
                                       flag_mask(flag, dispatch_width / 8);
-               const fs_reg tmp = ubld.group(8, 0).vgrf(flag.type);
+               const fs_reg tmp = ubld.group(1, 0).vgrf(flag.type);
 
-               if (save_flag) {
-                  ubld.group(8, 0).UNDEF(tmp);
+               if (save_flag)
                   ubld.group(1, 0).MOV(tmp, flag);
-               }
 
                ubld.emit(FS_OPCODE_LOAD_LIVE_CHANNELS);
 
                set_predicate(pred, inst);
                inst->flag_subreg = 0;
-               inst->predicate_trivial = true;
 
                if (save_flag)
                   ubld.group(1, 0).at(block, inst->next).MOV(flag, tmp);
@@ -6479,18 +6455,6 @@ fs_visitor::fixup_nomask_control_flow()
    return progress;
 }
 
-uint32_t
-fs_visitor::compute_max_register_pressure()
-{
-   const register_pressure &rp = regpressure_analysis.require();
-   uint32_t ip = 0, max_pressure = 0;
-   foreach_block_and_inst(block, backend_instruction, inst, cfg) {
-      max_pressure = MAX2(max_pressure, rp.regs_live_at_ip[ip]);
-      ip++;
-   }
-   return max_pressure;
-}
-
 void
 fs_visitor::allocate_registers(bool allow_spilling)
 {
@@ -6509,11 +6473,6 @@ fs_visitor::allocate_registers(bool allow_spilling)
       "none",
       "lifo"
    };
-
-   compact_virtual_grfs();
-
-   if (needs_register_pressure)
-      shader_stats.max_register_pressure = compute_max_register_pressure();
 
    bool spill_all = allow_spilling && INTEL_DEBUG(DEBUG_SPILL_FS);
 
@@ -6664,7 +6623,7 @@ fs_visitor::run_vs()
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(true /* allow_spilling */);
@@ -6790,7 +6749,7 @@ fs_visitor::run_tcs()
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(true /* allow_spilling */);
@@ -6822,7 +6781,7 @@ fs_visitor::run_tes()
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(true /* allow_spilling */);
@@ -6870,7 +6829,7 @@ fs_visitor::run_gs()
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(true /* allow_spilling */);
@@ -6973,7 +6932,7 @@ fs_visitor::run_fs(bool allow_spilling, bool do_rep_send)
       fixup_3src_null_dest();
       emit_dummy_memory_fence_before_eot();
 
-      /* Wa_14015360517 */
+      /* Wa_14017989577 */
       emit_dummy_mov_instruction();
 
       allocate_registers(allow_spilling);
@@ -7013,7 +6972,7 @@ fs_visitor::run_cs(bool allow_spilling)
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(allow_spilling);
@@ -7045,7 +7004,7 @@ fs_visitor::run_bs(bool allow_spilling)
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(allow_spilling);
@@ -7078,7 +7037,7 @@ fs_visitor::run_task(bool allow_spilling)
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(allow_spilling);
@@ -7111,7 +7070,7 @@ fs_visitor::run_mesh(bool allow_spilling)
    fixup_3src_null_dest();
    emit_dummy_memory_fence_before_eot();
 
-   /* Wa_14015360517 */
+   /* Wa_14017989577 */
    emit_dummy_mov_instruction();
 
    allocate_registers(allow_spilling);
@@ -7165,8 +7124,6 @@ brw_compute_barycentric_interp_modes(const struct intel_device_info *devinfo,
             case nir_intrinsic_load_barycentric_pixel:
             case nir_intrinsic_load_barycentric_centroid:
             case nir_intrinsic_load_barycentric_sample:
-            case nir_intrinsic_load_barycentric_at_sample:
-            case nir_intrinsic_load_barycentric_at_offset:
                break;
             default:
                continue;
@@ -7383,20 +7340,6 @@ brw_nir_populate_wm_prog_data(const nir_shader *shader,
 
    prog_data->barycentric_interp_modes =
       brw_compute_barycentric_interp_modes(devinfo, shader);
-
-   /* From the BDW PRM documentation for 3DSTATE_WM:
-    *
-    *    "MSDISPMODE_PERSAMPLE is required in order to select Perspective
-    *     Sample or Non- perspective Sample barycentric coordinates."
-    *
-    * So cleanup any potentially set sample barycentric mode when not in per
-    * sample dispatch.
-    */
-   if (prog_data->persample_dispatch == BRW_NEVER) {
-      prog_data->barycentric_interp_modes &=
-         ~BITFIELD_BIT(BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE);
-   }
-
    prog_data->uses_nonperspective_interp_modes |=
       (prog_data->barycentric_interp_modes &
       BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) != 0;
@@ -7499,7 +7442,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
 
    v8 = std::make_unique<fs_visitor>(compiler, params->log_data, mem_ctx, &key->base,
                                      &prog_data->base, nir, 8,
-                                     params->stats != NULL,
                                      debug_enabled);
    if (!v8->run_fs(allow_spilling, false /* do_rep_send */)) {
       params->error_str = ralloc_strdup(mem_ctx, v8->fail_msg);
@@ -7542,7 +7484,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
       /* Try a SIMD16 compile */
       v16 = std::make_unique<fs_visitor>(compiler, params->log_data, mem_ctx, &key->base,
                                          &prog_data->base, nir, 16,
-                                         params->stats != NULL,
                                          debug_enabled);
       v16->import_uniforms(v8.get());
       if (!v16->run_fs(allow_spilling, params->use_rep_send)) {
@@ -7570,7 +7511,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
       /* Try a SIMD32 compile */
       v32 = std::make_unique<fs_visitor>(compiler, params->log_data, mem_ctx, &key->base,
                                          &prog_data->base, nir, 32,
-                                         params->stats != NULL,
                                          debug_enabled);
       v32->import_uniforms(v8.get());
       if (!v32->run_fs(allow_spilling, false)) {
@@ -7637,14 +7577,12 @@ brw_compile_fs(const struct brw_compiler *compiler,
    }
 
    struct brw_compile_stats *stats = params->stats;
-   uint32_t max_dispatch_width = 0;
 
    if (simd8_cfg) {
       prog_data->dispatch_8 = true;
       g.generate_code(simd8_cfg, 8, v8->shader_stats,
                       v8->performance_analysis.require(), stats);
       stats = stats ? stats + 1 : NULL;
-      max_dispatch_width = 8;
    }
 
    if (simd16_cfg) {
@@ -7653,7 +7591,6 @@ brw_compile_fs(const struct brw_compiler *compiler,
          simd16_cfg, 16, v16->shader_stats,
          v16->performance_analysis.require(), stats);
       stats = stats ? stats + 1 : NULL;
-      max_dispatch_width = 16;
    }
 
    if (simd32_cfg) {
@@ -7662,11 +7599,7 @@ brw_compile_fs(const struct brw_compiler *compiler,
          simd32_cfg, 32, v32->shader_stats,
          v32->performance_analysis.require(), stats);
       stats = stats ? stats + 1 : NULL;
-      max_dispatch_width = 32;
    }
-
-   for (struct brw_compile_stats *s = params->stats; s != NULL && s != stats; s++)
-      s->max_dispatch_width = max_dispatch_width;
 
    g.add_const_data(nir->constant_data, nir->constant_data_size);
    return g.get_assembly();
@@ -7855,8 +7788,7 @@ brw_compile_cs(const struct brw_compiler *compiler,
                           key->base.robust_buffer_access);
 
       v[simd] = std::make_unique<fs_visitor>(compiler, params->log_data, mem_ctx, &key->base,
-                                             &prog_data->base, shader, dispatch_width,
-                                             params->stats != NULL,
+                                    &prog_data->base, shader, dispatch_width,
                                              debug_enabled);
 
       const int first = brw_simd_first_compiled(simd_state);
@@ -7903,8 +7835,6 @@ brw_compile_cs(const struct brw_compiler *compiler,
       g.enable_debug(name);
    }
 
-   uint32_t max_dispatch_width = 8u << (util_last_bit(prog_data->prog_mask) - 1);
-
    struct brw_compile_stats *stats = params->stats;
    for (unsigned simd = 0; simd < 3; simd++) {
       if (prog_data->prog_mask & (1u << simd)) {
@@ -7912,10 +7842,7 @@ brw_compile_cs(const struct brw_compiler *compiler,
          prog_data->prog_offset[simd] =
             g.generate_code(v[simd]->cfg, 8u << simd, v[simd]->shader_stats,
                             v[simd]->performance_analysis.require(), stats);
-         if (stats)
-            stats->max_dispatch_width = max_dispatch_width;
          stats = stats ? stats + 1 : NULL;
-         max_dispatch_width = 8u << simd;
       }
    }
 
@@ -7994,9 +7921,7 @@ compile_single_bs(const struct brw_compiler *compiler, void *log_data,
 
       v[simd] = std::make_unique<fs_visitor>(compiler, log_data, mem_ctx, &key->base,
                                              &prog_data->base, shader,
-                                             dispatch_width,
-                                             stats != NULL,
-                                             debug_enabled);
+                                             dispatch_width, debug_enabled);
 
       const bool allow_spilling = !brw_simd_any_compiled(simd_state);
       if (v[simd]->run_bs(allow_spilling)) {

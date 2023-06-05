@@ -73,10 +73,6 @@ util_framebuffer_state_equal(const struct pipe_framebuffer_state *dst,
       return FALSE;
    }
 
-   if (dst->resolve != src->resolve) {
-      return FALSE;
-   }
-
    return TRUE;
 }
 
@@ -107,7 +103,6 @@ util_copy_framebuffer_state(struct pipe_framebuffer_state *dst,
       dst->nr_cbufs = src->nr_cbufs;
 
       pipe_surface_reference(&dst->zsbuf, src->zsbuf);
-      pipe_resource_reference(&dst->resolve, src->resolve);
    } else {
       dst->width = 0;
       dst->height = 0;
@@ -121,7 +116,6 @@ util_copy_framebuffer_state(struct pipe_framebuffer_state *dst,
       dst->nr_cbufs = 0;
 
       pipe_surface_reference(&dst->zsbuf, NULL);
-      pipe_resource_reference(&dst->resolve, NULL);
    }
 }
 
@@ -136,7 +130,6 @@ util_unreference_framebuffer_state(struct pipe_framebuffer_state *fb)
    }
 
    pipe_surface_reference(&fb->zsbuf, NULL);
-   pipe_resource_reference(&fb->resolve, NULL);
 
    fb->samples = fb->layers = 0;
    fb->width = fb->height = 0;

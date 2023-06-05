@@ -41,7 +41,6 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "cso_cache/cso_context.h"
-#include "main/context.h"
 
 
 static GLuint
@@ -222,7 +221,7 @@ st_update_rasterizer(struct st_context *st)
 
       raster->point_quad_rasterization = 1;
 
-      raster->point_tri_clip = _mesa_is_gles2(st->ctx);
+      raster->point_tri_clip = st->ctx->API == API_OPENGLES2;
    }
 
    /* ST_NEW_VERTEX_PROGRAM

@@ -218,6 +218,7 @@ if with_gallium_xa
 endif
 if with_platform_haiku
   subdir('frontends/hgl')
+  subdir('targets/haiku-softpipe')
 endif
 if with_gallium_st_nine
   subdir('frontends/nine')
@@ -235,9 +236,7 @@ if with_platform_windows
     winsys_d3d12_wgl = declare_dependency()
   endif
   subdir('targets/wgl')
-  if with_opengl
-    subdir('targets/libgl-gdi')
-  endif
+  subdir('targets/libgl-gdi')
 endif
 if with_tests
   subdir('tests')

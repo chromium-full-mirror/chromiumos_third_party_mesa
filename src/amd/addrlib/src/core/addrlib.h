@@ -34,7 +34,6 @@
 #define __ADDR_LIB_H__
 
 #include "addrinterface.h"
-#include "addrtypes.h"
 #include "addrobject.h"
 #include "addrelemlib.h"
 
@@ -267,7 +266,7 @@ public:
     }
 
     /// Returns asic chip family name defined by AddrLib
-    ChipFamily GetChipFamily() const
+    ChipFamily GetChipFamily()
     {
         return m_chipFamily;
     }
@@ -315,21 +314,6 @@ protected:
 #if DEBUG
         ADDR_ASSERT(metaAlignment <= m_maxMetaBaseAlign);
 #endif
-    }
-
-    static BOOL_32 IsTex1d(AddrResourceType resourceType)
-    {
-        return (resourceType == ADDR_RSRC_TEX_1D);
-    }
-
-    static BOOL_32 IsTex2d(AddrResourceType resourceType)
-    {
-        return (resourceType == ADDR_RSRC_TEX_2D);
-    }
-
-    static BOOL_32 IsTex3d(AddrResourceType resourceType)
-    {
-        return (resourceType == ADDR_RSRC_TEX_3D);
     }
 
     //

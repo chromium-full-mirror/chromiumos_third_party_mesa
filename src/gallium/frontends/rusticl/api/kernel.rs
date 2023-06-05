@@ -89,10 +89,11 @@ impl CLInfoObj<cl_kernel_work_group_info, cl_device_id> for cl_kernel {
             CL_KERNEL_COMPILE_WORK_GROUP_SIZE => cl_prop::<[usize; 3]>(kernel.work_group_size),
             CL_KERNEL_LOCAL_MEM_SIZE => cl_prop::<cl_ulong>(kernel.local_mem_size(&dev)),
             CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE => {
-                cl_prop::<usize>(kernel.preferred_simd_size(&dev))
+                cl_prop::<usize>(dev.subgroups() as usize)
             }
             CL_KERNEL_PRIVATE_MEM_SIZE => cl_prop::<cl_ulong>(kernel.priv_mem_size(&dev)),
-            CL_KERNEL_WORK_GROUP_SIZE => cl_prop::<usize>(kernel.max_threads_per_block(&dev)),
+            // TODO
+            CL_KERNEL_WORK_GROUP_SIZE => cl_prop::<usize>(dev.subgroups() as usize),
             // CL_INVALID_VALUE if param_name is not one of the supported values
             _ => return Err(CL_INVALID_VALUE),
         })
@@ -239,11 +240,7 @@ pub fn set_kernel_arg(
                     return Err(CL_INVALID_ARG_SIZE);
                 }
             }
-            KernelArgType::MemGlobal
-            | KernelArgType::MemConstant
-            | KernelArgType::Image
-            | KernelArgType::RWImage
-            | KernelArgType::Texture => {
+            KernelArgType::MemGlobal | KernelArgType::MemConstant => {
                 if arg_size != std::mem::size_of::<cl_mem>() {
                     return Err(CL_INVALID_ARG_SIZE);
                 }

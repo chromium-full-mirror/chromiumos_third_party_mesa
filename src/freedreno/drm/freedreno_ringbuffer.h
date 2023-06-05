@@ -165,7 +165,7 @@ unref(int32_t *ref)
 static inline void
 fd_ringbuffer_del(struct fd_ringbuffer *ring)
 {
-   if (--ring->refcnt > 0)
+   if (!unref(&ring->refcnt))
       return;
 
    ring->funcs->destroy(ring);
@@ -174,7 +174,7 @@ fd_ringbuffer_del(struct fd_ringbuffer *ring)
 static inline struct fd_ringbuffer *
 fd_ringbuffer_ref(struct fd_ringbuffer *ring)
 {
-   ring->refcnt++;
+   ref(&ring->refcnt);
    return ring;
 }
 

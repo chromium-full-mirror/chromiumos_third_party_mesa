@@ -830,15 +830,6 @@ disasm(struct emu *emu)
    }
 }
 
-static void
-disasm_raw(uint32_t *instrs, int sizedwords)
-{
-   setup_labels(instrs, sizedwords);
-
-   for (int i = 0; i < sizedwords; i++) {
-      disasm_instr(instrs, i);
-   }
-}
 
 static void
 disasm_legacy(uint32_t *buf, int sizedwords)
@@ -885,13 +876,11 @@ static void
 usage(void)
 {
    fprintf(stderr, "Usage:\n"
-                   "\tdisasm [-g GPUVER] [-v] [-c] [-r] filename.asm\n"
-                   "\t\t-c - use colors\n"
-                   "\t\t-e - emulator mode\n"
+                   "\tdisasm [-g GPUVER] [-v] [-c] filename.asm\n"
                    "\t\t-g - specify GPU version (5, etc)\n"
-                   "\t\t-r - raw disasm, don't try to find jumptable\n"
+                   "\t\t-c - use colors\n"
                    "\t\t-v - verbose output\n"
-           );
+                   "\t\t-e - emulator mode\n");
    exit(2);
 }
 
@@ -905,11 +894,16 @@ main(int argc, char **argv)
    size_t sz;
    int c, ret;
    bool unit_test = false;
-   bool raw = false;
 
    /* Argument parsing: */
-   while ((c = getopt(argc, argv, "ceg:rvu")) != -1) {
+   while ((c = getopt(argc, argv, "g:vceu")) != -1) {
       switch (c) {
+      case 'g':
+         gpu_id = atoi(optarg);
+         break;
+      case 'v':
+         verbose = true;
+         break;
       case 'c':
          colors = true;
          break;
@@ -917,19 +911,7 @@ main(int argc, char **argv)
          emulator = true;
          verbose  = true;
          break;
-      case 'g':
-         gpu_id = atoi(optarg);
-         break;
-      case 'r':
-         raw = true;
-         break;
-      case 'v':
-         verbose = true;
-         break;
       case 'u':
-         /* special "hidden" flag for unit tests, to avoid file paths (which
-          * can differ from reference output)
-          */
          unit_test = true;
          break;
       default:
@@ -982,9 +964,7 @@ main(int argc, char **argv)
       printf("; Disassembling microcode: %s\n", file);
    printf("; Version: %08x\n\n", buf[1]);
 
-   if (raw) {
-      disasm_raw(buf, sz / 4);
-   } else if (gpuver < 6) {
+   if (gpuver < 6) {
       disasm_legacy(&buf[1], sz / 4 - 1);
    } else {
       struct emu emu = {

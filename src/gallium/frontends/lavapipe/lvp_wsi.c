@@ -39,8 +39,7 @@ lvp_init_wsi(struct lvp_physical_device *physical_device)
                             lvp_physical_device_to_handle(physical_device),
                             lvp_wsi_proc_addr,
                             &physical_device->vk.instance->alloc,
-                            -1, NULL,
-                            &(struct wsi_device_options){.sw_device = true});
+                            -1, NULL, true);
    if (result != VK_SUCCESS)
       return result;
 

@@ -66,9 +66,6 @@ struct sw_winsys
    void 
    (*destroy)( struct sw_winsys *ws );
 
-   int
-   (*get_fd)( struct sw_winsys *ws );
-
    bool
    (*is_displaytarget_format_supported)( struct sw_winsys *ws,
                                          unsigned tex_usage,

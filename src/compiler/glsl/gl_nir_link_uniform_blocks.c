@@ -326,7 +326,7 @@ iterate_type_count_variables(const struct glsl_type *type,
       else
          field_type = glsl_get_array_element(type);
 
-      if (glsl_type_is_leaf(field_type) || glsl_type_is_unsized_array(field_type))
+      if (glsl_type_is_leaf(field_type))
          (*num_variables)++;
       else
          iterate_type_count_variables(field_type, num_variables);
@@ -374,13 +374,17 @@ iterate_type_fill_variables(const struct glsl_type *type,
                             struct gl_shader_program *prog,
                             struct gl_uniform_block *block)
 {
+   unsigned length = glsl_get_length(type);
+   if (length == 0)
+      return;
+
    unsigned struct_base_offset;
 
    bool struct_or_ifc = glsl_type_is_struct_or_ifc(type);
    if (struct_or_ifc)
       struct_base_offset = *offset;
 
-   for (unsigned i = 0; i < glsl_get_length(type); i++) {
+   for (unsigned i = 0; i < length; i++) {
       const struct glsl_type *field_type;
 
       if (struct_or_ifc) {
@@ -391,7 +395,7 @@ iterate_type_fill_variables(const struct glsl_type *type,
          field_type = glsl_get_array_element(type);
       }
 
-      if (glsl_type_is_leaf(field_type) || glsl_type_is_unsized_array(field_type)) {
+      if (glsl_type_is_leaf(field_type)) {
          fill_individual_variable(field_type, variables, variable_index,
                                   offset, prog, block);
       } else {

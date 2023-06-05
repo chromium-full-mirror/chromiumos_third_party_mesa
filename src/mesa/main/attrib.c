@@ -944,8 +944,8 @@ _mesa_PopAttrib(void)
       TEST_AND_UPDATE(ctx->Point.PointSprite, attr->Point.PointSprite,
                       GL_POINT_SPRITE);
 
-      if ((_mesa_is_desktop_gl_compat(ctx) && ctx->Version >= 20)
-          || _mesa_is_desktop_gl_core(ctx))
+      if ((ctx->API == API_OPENGL_COMPAT && ctx->Version >= 20)
+          || ctx->API == API_OPENGL_CORE)
          TEST_AND_CALL1_SEL(Point.SpriteOrigin, PointParameterf, GL_POINT_SPRITE_COORD_ORIGIN);
    }
 
@@ -1313,8 +1313,6 @@ restore_array_attrib(struct gl_context *ctx,
    }
 
    _mesa_update_edgeflag_state_vao(ctx);
-   _mesa_set_varying_vp_inputs(ctx, ctx->VertexProgram._VPModeInputFilter &
-                               ctx->Array.VAO->_EnabledWithMapMode);
 }
 
 

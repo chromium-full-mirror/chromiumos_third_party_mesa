@@ -1,7 +1,25 @@
 /*
- * Copyright 2021 Alyssa Rosenzweig
- * Copyright 2019 Collabora, Ltd.
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+ * © Copyright 2019 Collabora, Ltd.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef __AGX_BO_H
@@ -36,15 +54,6 @@ enum agx_bo_flags {
 
    /* BO should be mapped write-back on the CPU (else, write combine) */
    AGX_BO_WRITEBACK = 1 << 3,
-
-   /* BO could potentially be shared (imported or exported) and therefore cannot
-    * be allocated as private
-    */
-   AGX_BO_SHAREABLE = 1 << 4,
-
-   /* BO is read-only from the GPU side
-    */
-   AGX_BO_READONLY = 1 << 5,
 };
 
 struct agx_ptr {
@@ -76,12 +85,6 @@ struct agx_bo {
 
    /* Index unique only up to type, process-local */
    uint32_t handle;
-
-   /* DMA-BUF fd clone for adding fences to imports/exports */
-   int prime_fd;
-
-   /* Syncobj handle of the current writer, if any */
-   int writer_syncobj;
 
    /* Globally unique value (system wide) for tracing. Exists for resources,
     * command buffers, GPU submissions, segments, segmentent lists, encoders,

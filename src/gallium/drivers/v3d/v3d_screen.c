@@ -146,8 +146,6 @@ v3d_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_ANISOTROPIC_FILTER:
         case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
         case PIPE_CAP_INDEP_BLEND_FUNC:
-        case PIPE_CAP_CONDITIONAL_RENDER:
-        case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
                 return 1;
 
         case PIPE_CAP_POLYGON_OFFSET_CLAMP:
@@ -589,15 +587,12 @@ v3d_screen_is_format_supported(struct pipe_screen *pscreen,
                 case PIPE_FORMAT_R32G32_SSCALED:
                 case PIPE_FORMAT_R32_SSCALED:
                 case PIPE_FORMAT_R16G16B16A16_UNORM:
-                case PIPE_FORMAT_R16G16B16A16_FLOAT:
                 case PIPE_FORMAT_R16G16B16_UNORM:
                 case PIPE_FORMAT_R16G16_UNORM:
                 case PIPE_FORMAT_R16_UNORM:
-                case PIPE_FORMAT_R16_FLOAT:
                 case PIPE_FORMAT_R16G16B16A16_SNORM:
                 case PIPE_FORMAT_R16G16B16_SNORM:
                 case PIPE_FORMAT_R16G16_SNORM:
-                case PIPE_FORMAT_R16G16_FLOAT:
                 case PIPE_FORMAT_R16_SNORM:
                 case PIPE_FORMAT_R16G16B16A16_USCALED:
                 case PIPE_FORMAT_R16G16B16_USCALED:
@@ -879,14 +874,6 @@ v3d_screen_get_disk_shader_cache(struct pipe_screen *pscreen)
         return screen->disk_cache;
 }
 
-static int
-v3d_screen_get_fd(struct pipe_screen *pscreen)
-{
-        struct v3d_screen *screen = v3d_screen(pscreen);
-
-        return screen->fd;
-}
-
 struct pipe_screen *
 v3d_screen_create(int fd, const struct pipe_screen_config *config,
                   struct renderonly *ro)
@@ -897,7 +884,6 @@ v3d_screen_create(int fd, const struct pipe_screen_config *config,
         pscreen = &screen->base;
 
         pscreen->destroy = v3d_screen_destroy;
-        pscreen->get_screen_fd = v3d_screen_get_fd;
         pscreen->get_param = v3d_screen_get_param;
         pscreen->get_paramf = v3d_screen_get_paramf;
         pscreen->get_shader_param = v3d_screen_get_shader_param;

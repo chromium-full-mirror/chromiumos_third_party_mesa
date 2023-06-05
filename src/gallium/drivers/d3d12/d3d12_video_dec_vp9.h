@@ -27,8 +27,7 @@
 
 #include "d3d12_video_types.h"
 
-constexpr uint16_t DXVA_VP9_INVALID_PICTURE_INDEX = 0x7F;
-constexpr uint16_t DXVA_VP9_INVALID_PICTURE_ENTRY = 0xFF;
+constexpr uint16_t DXVA_VP9_INVALID_PICTURE_INDEX = 0xFF;
 
 #pragma pack(push, BeforeDXVApacking, 1)
 

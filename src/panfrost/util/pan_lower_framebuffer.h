@@ -34,8 +34,7 @@ nir_alu_type
 pan_unpacked_type_for_format(const struct util_format_description *desc);
 
 bool pan_lower_framebuffer(nir_shader *shader, const enum pipe_format *rt_fmts,
-                           uint8_t raw_fmt_mask,
-                           unsigned blend_shader_nr_samples,
+                           uint8_t raw_fmt_mask, bool is_blend,
                            bool broken_ld_special);
 
 #endif

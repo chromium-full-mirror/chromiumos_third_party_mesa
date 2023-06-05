@@ -202,7 +202,7 @@ IfInstr::set_predicate(AluInstr *new_predicate)
 }
 
 Instr::Pointer
-IfInstr::from_string(std::istream& is, ValueFactory& value_factory, bool is_cayman)
+IfInstr::from_string(std::istream& is, ValueFactory& value_factory)
 {
    std::string pred_start;
    is >> pred_start;
@@ -226,7 +226,7 @@ IfInstr::from_string(std::istream& is, ValueFactory& value_factory, bool is_caym
    if (instr_type != "ALU")
       return nullptr;
 
-   auto pred = AluInstr::from_string(bufstr, value_factory, nullptr, is_cayman);
+   auto pred = AluInstr::from_string(bufstr, value_factory, nullptr);
    return new IfInstr(static_cast<AluInstr *>(pred));
 }
 

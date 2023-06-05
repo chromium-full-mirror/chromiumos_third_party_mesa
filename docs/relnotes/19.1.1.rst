@@ -77,7 +77,7 @@ Haihao Xiang (1):
 
 -  i965: support UYVY for external import only
 
-Faith Ekstrand (1):
+Jason Ekstrand (1):
 
 -  anv: Set STATE_BASE_ADDRESS upper bounds on gen7
 

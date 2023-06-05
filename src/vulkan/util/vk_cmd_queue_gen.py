@@ -33,8 +33,7 @@ from mako.template import Template
 
 # Mesa-local imports must be declared in meson variable
 # '{file_without_suffix}_depend_files'.
-from vk_entrypoints import EntrypointParam, get_entrypoints_from_xml
-from vk_extensions import filter_api, get_all_required
+from vk_entrypoints import get_entrypoints_from_xml, EntrypointParam
 
 # These have hand-typed implementations in vk_cmd_enqueue.c
 MANUAL_COMMANDS = [
@@ -68,7 +67,7 @@ TEMPLATE_H = Template(COPYRIGHT + """\
 #include "util/list.h"
 
 #define VK_PROTOTYPES
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -190,7 +189,7 @@ TEMPLATE_C = Template(COPYRIGHT + """
 #include "${header}"
 
 #define VK_PROTOTYPES
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.h>
 
 #include "vk_alloc.h"
 #include "vk_cmd_enqueue_entrypoints.h"
@@ -528,26 +527,16 @@ def get_types_defines(doc):
 
     return types_to_defines
 
-def get_types(doc, api, types_to_defines):
+def get_types(doc, types_to_defines):
     """Extract the types from the registry."""
     types = {}
-
-    required = get_all_required(doc, 'type', api)
 
     for _type in doc.findall('./types/type'):
         if _type.attrib.get('category') != 'struct':
             continue
-        if not filter_api(_type, api):
-            continue
-        if _type.attrib['name'] not in required:
-            continue
-
         members = []
         type_enum = None
         for p in _type.findall('./member'):
-            if not filter_api(p, api):
-                continue
-
             mem_type = p.find('./type').text
             mem_name = p.find('./name').text
             mem_decl = ''.join(p.itertext())
@@ -568,10 +557,6 @@ def get_types(doc, api, types_to_defines):
     for _type in doc.findall('./types/type'):
         if _type.attrib.get('category') != 'struct':
             continue
-        if not filter_api(_type, api):
-            continue
-        if _type.attrib['name'] not in required:
-            continue
         if _type.attrib.get('structextends') is None:
             continue
         for extended in _type.attrib.get('structextends').split(','):
@@ -579,12 +564,12 @@ def get_types(doc, api, types_to_defines):
 
     return types
 
-def get_types_from_xml(xml_files, api='vulkan'):
+def get_types_from_xml(xml_files):
     types = {}
 
     for filename in xml_files:
         doc = et.parse(filename)
-        types.update(get_types(doc, api, get_types_defines(doc)))
+        types.update(get_types(doc, get_types_defines(doc)))
 
     return types
 

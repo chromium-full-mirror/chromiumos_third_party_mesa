@@ -106,15 +106,14 @@ tu_framebuffer_tiling_config(struct tu_framebuffer *fb,
 
 #define tu_foreach_stage(stage, stage_bits)                                  \
    for (gl_shader_stage stage,                                               \
-        __tmp = (gl_shader_stage) ((stage_bits) &TU_STAGE_MASK);             \
-        stage = (gl_shader_stage) (__builtin_ffs(__tmp) - 1), __tmp;         \
-        __tmp = (gl_shader_stage) (__tmp & ~(1 << (stage))))
+        __tmp = (gl_shader_stage)((stage_bits) &TU_STAGE_MASK);              \
+        stage = __builtin_ffs(__tmp) - 1, __tmp; __tmp &= ~(1 << (stage)))
 
 static inline enum a3xx_msaa_samples
 tu_msaa_samples(uint32_t samples)
 {
    assert(__builtin_popcount(samples) == 1);
-   return (enum a3xx_msaa_samples) util_logbase2(samples);
+   return util_logbase2(samples);
 }
 
 static inline uint32_t
@@ -128,20 +127,20 @@ tu6_stage2opcode(gl_shader_stage stage)
 static inline enum a6xx_state_block
 tu6_stage2texsb(gl_shader_stage stage)
 {
-   return (enum a6xx_state_block) (SB6_VS_TEX + stage);
+   return SB6_VS_TEX + stage;
 }
 
 static inline enum a6xx_state_block
 tu6_stage2shadersb(gl_shader_stage stage)
 {
-   return (enum a6xx_state_block) (SB6_VS_SHADER + stage);
+   return SB6_VS_SHADER + stage;
 }
 
 static inline enum a3xx_rop_code
 tu6_rop(VkLogicOp op)
 {
    /* note: hw enum matches the VK enum, but with the 4 bits reversed */
-   static const enum a3xx_rop_code lookup[] = {
+   static const uint8_t lookup[] = {
       [VK_LOGIC_OP_CLEAR]           = ROP_CLEAR,
       [VK_LOGIC_OP_AND]             = ROP_AND,
       [VK_LOGIC_OP_AND_REVERSE]     = ROP_AND_REVERSE,
@@ -186,7 +185,7 @@ tu6_primtype_patches(enum pc_di_primtype type)
 static inline enum pc_di_primtype
 tu6_primtype(VkPrimitiveTopology topology)
 {
-   static const enum pc_di_primtype lookup[] = {
+   static const uint8_t lookup[] = {
       [VK_PRIMITIVE_TOPOLOGY_POINT_LIST]                    = DI_PT_POINTLIST,
       [VK_PRIMITIVE_TOPOLOGY_LINE_LIST]                     = DI_PT_LINELIST,
       [VK_PRIMITIVE_TOPOLOGY_LINE_STRIP]                    = DI_PT_LINESTRIP,
@@ -219,7 +218,7 @@ tu6_stencil_op(VkStencilOp op)
 static inline enum adreno_rb_blend_factor
 tu6_blend_factor(VkBlendFactor factor)
 {
-   static const enum adreno_rb_blend_factor lookup[] = {
+   static const uint8_t lookup[] = {
       [VK_BLEND_FACTOR_ZERO]                    = FACTOR_ZERO,
       [VK_BLEND_FACTOR_ONE]                     = FACTOR_ONE,
       [VK_BLEND_FACTOR_SRC_COLOR]               = FACTOR_SRC_COLOR,
@@ -286,7 +285,7 @@ tu6_tex_type(VkImageViewType type, bool storage)
 static inline enum a6xx_tex_clamp
 tu6_tex_wrap(VkSamplerAddressMode address_mode)
 {
-   static const enum a6xx_tex_clamp lookup[] = {
+   uint8_t lookup[] = {
       [VK_SAMPLER_ADDRESS_MODE_REPEAT]                = A6XX_TEX_REPEAT,
       [VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT]       = A6XX_TEX_MIRROR_REPEAT,
       [VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE]         = A6XX_TEX_CLAMP_TO_EDGE,
@@ -333,7 +332,7 @@ tu6_pipe2depth(VkFormat format)
    case VK_FORMAT_S8_UINT:
       return DEPTH6_32;
    default:
-      return DEPTH6_NONE;
+      return ~0;
    }
 }
 
@@ -431,10 +430,5 @@ tu_dbg_log_gmem_load_store_skips(struct tu_device *device);
    if (TU_DEBUG(PERF))                                                  \
       mesa_log(MESA_LOG_WARN, (MESA_LOG_TAG), (fmt), ##__VA_ARGS__);    \
 } while(0)
-
-#define sizeof_field(s, field) sizeof(((s *) NULL)->field)
-
-#define offsetof_arr(s, field, idx)                                          \
-   (offsetof(s, field) + sizeof_field(s, field[0]) * (idx))
 
 #endif /* TU_UTIL_H */

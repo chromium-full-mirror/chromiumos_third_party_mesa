@@ -19,6 +19,8 @@
 # SOFTWARE.
 
 files_libsthgl = files(
+  'bitmap_wrapper.cpp',
+  'bitmap_wrapper.h',
   'hgl_context.h',
   'hgl.c',
 )
@@ -32,7 +34,7 @@ libsthgl = static_library(
   'sthgl',
   files_libsthgl,
   include_directories : [
-    inc_include, inc_util, inc_mesa, inc_mapi, inc_src,
+    inc_include, inc_haikugl, inc_util, inc_mesa, inc_mapi, inc_src,
     inc_gallium, inc_gallium_aux
   ],
   c_args : [libsthgl_c_args],

@@ -317,7 +317,6 @@ convert_to_lcssa(nir_cf_node *cf_node, lcssa_state *state)
 
       /* first, convert inner loops */
       nir_loop *loop = nir_cf_node_as_loop(cf_node);
-      assert(!nir_loop_has_continue_construct(loop));
       foreach_list_typed(nir_cf_node, nested_node, node, &loop->body)
          convert_to_lcssa(nested_node, state);
 
@@ -371,7 +370,6 @@ end:
 void
 nir_convert_loop_to_lcssa(nir_loop *loop)
 {
-   assert(!nir_loop_has_continue_construct(loop));
    nir_function_impl *impl = nir_cf_node_get_function(&loop->cf_node);
 
    nir_metadata_require(impl, nir_metadata_block_index);

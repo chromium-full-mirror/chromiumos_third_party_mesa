@@ -32,14 +32,12 @@
 static struct gl_buffer_object *
 new_upload_buffer(struct gl_context *ctx, GLsizeiptr size, uint8_t **ptr)
 {
-   /* id 0 is used to avoid returning invalid binding values to apps */
    struct gl_buffer_object *obj =
-      _mesa_bufferobj_alloc(ctx, 0);
+      _mesa_bufferobj_alloc(ctx, -1);
    if (!obj)
       return NULL;
 
    obj->Immutable = true;
-   obj->GLThreadInternal = true;
 
    if (!_mesa_bufferobj_data(ctx, GL_ARRAY_BUFFER, size, NULL,
                           GL_WRITE_ONLY,
@@ -89,7 +87,7 @@ _mesa_glthread_upload(struct gl_context *ctx, const void *data,
       return;
 
    /* The alignment was chosen arbitrarily. */
-   unsigned offset = align(glthread->upload_offset, size <= 4 ? 4 : 8) + start_offset;
+   unsigned offset = align(glthread->upload_offset, 8) + start_offset;
 
    /* Allocate a new buffer if needed. */
    if (unlikely(!glthread->upload_buffer || offset + size > default_size)) {
@@ -233,12 +231,12 @@ struct marshal_cmd_BindBuffer
 
 uint32_t
 _mesa_unmarshal_BindBuffer(struct gl_context *ctx,
-                           const struct marshal_cmd_BindBuffer *restrict cmd)
+                           const struct marshal_cmd_BindBuffer *cmd)
 {
-   CALL_BindBuffer(ctx->Dispatch.Current, (cmd->target[0], cmd->buffer[0]));
+   CALL_BindBuffer(ctx->CurrentServerDispatch, (cmd->target[0], cmd->buffer[0]));
 
    if (cmd->target[1])
-      CALL_BindBuffer(ctx->Dispatch.Current, (cmd->target[1], cmd->buffer[1]));
+      CALL_BindBuffer(ctx->CurrentServerDispatch, (cmd->target[1], cmd->buffer[1]));
 
    const unsigned cmd_size = (align(sizeof(struct marshal_cmd_BindBuffer), 8) / 8);
    assert (cmd_size == cmd->cmd_base.cmd_size);
@@ -331,7 +329,7 @@ struct marshal_cmd_BufferData
 
 uint32_t
 _mesa_unmarshal_BufferData(struct gl_context *ctx,
-                           const struct marshal_cmd_BufferData *restrict cmd)
+                           const struct marshal_cmd_BufferData *cmd)
 {
    const GLuint target_or_name = cmd->target_or_name;
    const GLsizei size = cmd->size;
@@ -346,13 +344,13 @@ _mesa_unmarshal_BufferData(struct gl_context *ctx,
       data = (const void *) (cmd + 1);
 
    if (cmd->ext_dsa) {
-      CALL_NamedBufferDataEXT(ctx->Dispatch.Current,
+      CALL_NamedBufferDataEXT(ctx->CurrentServerDispatch,
                               (target_or_name, size, data, usage));
    } else if (cmd->named) {
-      CALL_NamedBufferData(ctx->Dispatch.Current,
+      CALL_NamedBufferData(ctx->CurrentServerDispatch,
                            (target_or_name, size, data, usage));
    } else {
-      CALL_BufferData(ctx->Dispatch.Current,
+      CALL_BufferData(ctx->CurrentServerDispatch,
                       (target_or_name, size, data, usage));
    }
    return cmd->cmd_base.cmd_size;
@@ -360,7 +358,7 @@ _mesa_unmarshal_BufferData(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_NamedBufferData(struct gl_context *ctx,
-                                const struct marshal_cmd_NamedBufferData *restrict cmd)
+                                const struct marshal_cmd_NamedBufferData *cmd)
 {
    unreachable("never used - all BufferData variants use DISPATCH_CMD_BufferData");
    return 0;
@@ -368,7 +366,7 @@ _mesa_unmarshal_NamedBufferData(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_NamedBufferDataEXT(struct gl_context *ctx,
-                                   const struct marshal_cmd_NamedBufferDataEXT *restrict cmd)
+                                   const struct marshal_cmd_NamedBufferDataEXT *cmd)
 {
    unreachable("never used - all BufferData variants use DISPATCH_CMD_BufferData");
    return 0;
@@ -389,10 +387,10 @@ _mesa_marshal_BufferData_merged(GLuint target_or_name, GLsizeiptr size,
                 (named && target_or_name == 0))) {
       _mesa_glthread_finish_before(ctx, func);
       if (named) {
-         CALL_NamedBufferData(ctx->Dispatch.Current,
+         CALL_NamedBufferData(ctx->CurrentServerDispatch,
                               (target_or_name, size, data, usage));
       } else {
-         CALL_BufferData(ctx->Dispatch.Current,
+         CALL_BufferData(ctx->CurrentServerDispatch,
                          (target_or_name, size, data, usage));
       }
       return;
@@ -455,7 +453,7 @@ struct marshal_cmd_BufferSubData
 
 uint32_t
 _mesa_unmarshal_BufferSubData(struct gl_context *ctx,
-                              const struct marshal_cmd_BufferSubData *restrict cmd)
+                              const struct marshal_cmd_BufferSubData *cmd)
 {
    const GLenum target_or_name = cmd->target_or_name;
    const GLintptr offset = cmd->offset;
@@ -463,13 +461,13 @@ _mesa_unmarshal_BufferSubData(struct gl_context *ctx,
    const void *data = (const void *) (cmd + 1);
 
    if (cmd->ext_dsa) {
-      CALL_NamedBufferSubDataEXT(ctx->Dispatch.Current,
+      CALL_NamedBufferSubDataEXT(ctx->CurrentServerDispatch,
                                  (target_or_name, offset, size, data));
    } else if (cmd->named) {
-      CALL_NamedBufferSubData(ctx->Dispatch.Current,
+      CALL_NamedBufferSubData(ctx->CurrentServerDispatch,
                               (target_or_name, offset, size, data));
    } else {
-      CALL_BufferSubData(ctx->Dispatch.Current,
+      CALL_BufferSubData(ctx->CurrentServerDispatch,
                          (target_or_name, offset, size, data));
    }
    return cmd->cmd_base.cmd_size;
@@ -477,7 +475,7 @@ _mesa_unmarshal_BufferSubData(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_NamedBufferSubData(struct gl_context *ctx,
-                                   const struct marshal_cmd_NamedBufferSubData *restrict cmd)
+                                   const struct marshal_cmd_NamedBufferSubData *cmd)
 {
    unreachable("never used - all BufferSubData variants use DISPATCH_CMD_BufferSubData");
    return 0;
@@ -485,7 +483,7 @@ _mesa_unmarshal_NamedBufferSubData(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_NamedBufferSubDataEXT(struct gl_context *ctx,
-                                      const struct marshal_cmd_NamedBufferSubDataEXT *restrict cmd)
+                                      const struct marshal_cmd_NamedBufferSubDataEXT *cmd)
 {
    unreachable("never used - all BufferSubData variants use DISPATCH_CMD_BufferSubData");
    return 0;
@@ -507,7 +505,6 @@ _mesa_marshal_BufferSubData_merged(GLuint target_or_name, GLintptr offset,
     *       the buffer storage, but we don't know the buffer size in glthread.
     */
    if (ctx->Const.AllowGLThreadBufferSubDataOpt &&
-       ctx->Dispatch.Current != ctx->Dispatch.ContextLost &&
        data && offset > 0 && size > 0) {
       struct gl_buffer_object *upload_buffer = NULL;
       unsigned upload_offset = 0;
@@ -530,10 +527,10 @@ _mesa_marshal_BufferSubData_merged(GLuint target_or_name, GLintptr offset,
                 (named && target_or_name == 0))) {
       _mesa_glthread_finish_before(ctx, func);
       if (named) {
-         CALL_NamedBufferSubData(ctx->Dispatch.Current,
+         CALL_NamedBufferSubData(ctx->CurrentServerDispatch,
                                  (target_or_name, offset, size, data));
       } else {
-         CALL_BufferSubData(ctx->Dispatch.Current,
+         CALL_BufferSubData(ctx->CurrentServerDispatch,
                             (target_or_name, offset, size, data));
       }
       return;

@@ -78,7 +78,7 @@ Illia Iorin (1):
 
 -  Revert "mesa/main: Fix multisample texture initialize"
 
-Faith Ekstrand (2):
+Jason Ekstrand (2):
 
 -  anv: Fix a potential BO handle leak
 -  anv/tests: Zero-initialize instances

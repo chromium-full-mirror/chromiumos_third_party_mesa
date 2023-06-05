@@ -28,7 +28,6 @@ apt-get install -y --no-remove \
         bison \
         ccache \
 	curl \
-        clang-format-13 \
         dpkg-cross \
         findutils \
         flex \

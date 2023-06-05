@@ -28,4 +28,3 @@
 bool bifrost_nir_lower_algebraic_late(nir_shader *shader);
 bool bifrost_nir_lower_xfb(nir_shader *shader);
 bool bifrost_nir_opt_boolean_bitwise(nir_shader *shader);
-bool bifrost_nir_lower_load_output(nir_shader *nir);

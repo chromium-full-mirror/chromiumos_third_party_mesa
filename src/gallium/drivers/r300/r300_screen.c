@@ -812,13 +812,6 @@ static bool r300_fence_finish(struct pipe_screen *screen,
     return rws->fence_wait(rws, fence, timeout);
 }
 
-static int r300_screen_get_fd(struct pipe_screen *screen)
-{
-    struct radeon_winsys *rws = r300_screen(screen)->rws;
-
-    return rws->get_fd(rws);
-}
-
 struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
                                        const struct pipe_screen_config *config)
 {
@@ -829,7 +822,7 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         return NULL;
     }
 
-    rws->query_info(rws, &r300screen->info);
+    rws->query_info(rws, &r300screen->info, false, false);
 
     r300_init_debug(r300screen);
     r300_parse_chipset(r300screen->info.pci_id, &r300screen->caps);
@@ -848,7 +841,6 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
     r300screen->screen.get_compiler_options = r300_get_compiler_options;
     r300screen->screen.get_device_vendor = r300_get_device_vendor;
     r300screen->screen.get_disk_shader_cache = r300_get_disk_shader_cache;
-    r300screen->screen.get_screen_fd = r300_screen_get_fd;
     r300screen->screen.get_param = r300_get_param;
     r300screen->screen.get_shader_param = r300_get_shader_param;
     r300screen->screen.get_paramf = r300_get_paramf;

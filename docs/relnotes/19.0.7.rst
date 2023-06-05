@@ -75,7 +75,7 @@ Haihao Xiang (1):
 
 -  i965: support UYVY for external import only
 
-Faith Ekstrand (2):
+Jason Ekstrand (2):
 
 -  nir/propagate_invariant: Don't add NULL vars to the hash table
 -  anv: Set STATE_BASE_ADDRESS upper bounds on gen7

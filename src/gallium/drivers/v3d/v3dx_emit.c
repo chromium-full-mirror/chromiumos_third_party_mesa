@@ -97,7 +97,8 @@ swizzled_border_color(const struct v3d_device_info *devinfo,
          * For swizzling in the shader, we don't do any pre-swizzling of the
          * border color.
          */
-        if (v3d_get_tex_return_size(devinfo, sview->base.format) != 32)
+        if (v3d_get_tex_return_size(devinfo, sview->base.format,
+                                    sampler->compare_mode) != 32)
                 swiz = desc->swizzle[swiz];
 
         switch (swiz) {
@@ -130,7 +131,8 @@ emit_one_texture(struct v3d_context *v3d, struct v3d_texture_stateobj *stage_tex
         v3d_bo_set_reference(&stage_tex->texture_state[i].bo,
                              job->indirect.bo);
 
-        uint32_t return_size = v3d_get_tex_return_size(devinfo, psview->format);
+        uint32_t return_size = v3d_get_tex_return_size(devinfo, psview->format,
+                                                       psampler->compare_mode);
 
         struct V3D33_TEXTURE_SHADER_STATE unpacked = {
                 /* XXX */
@@ -778,14 +780,14 @@ v3dX(emit_state)(struct pipe_context *pctx)
                 struct v3d_uncompiled_shader *tf_shader = get_tf_shader(v3d);
                 struct v3d_streamout_stateobj *so = &v3d->streamout;
                 for (int i = 0; i < so->num_targets; i++) {
-                        struct pipe_stream_output_target *target =
+                        const struct pipe_stream_output_target *target =
                                 so->targets[i];
                         struct v3d_resource *rsc = target ?
                                 v3d_resource(target->buffer) : NULL;
                         struct pipe_shader_state *ss = &tf_shader->base;
                         struct pipe_stream_output_info *info = &ss->stream_output;
-                        uint32_t offset = target ?
-                                v3d_stream_output_target(target)->offset * info->stride[i] * 4 : 0;
+                        uint32_t offset = (v3d->streamout.offsets[i] *
+                                           info->stride[i] * 4);
 
 #if V3D_VERSION >= 40
                         if (!target)

@@ -1530,13 +1530,6 @@ emit_3dstate_gs(struct anv_graphics_pipeline *pipeline)
    }
 }
 
-static bool
-rp_has_ds_self_dep(const struct vk_render_pass_state *rp)
-{
-   return rp->pipeline_flags &
-      VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
-}
-
 static void
 emit_3dstate_wm(struct anv_graphics_pipeline *pipeline,
                 const struct vk_input_assembly_state *ia,
@@ -1602,9 +1595,9 @@ emit_3dstate_wm(struct anv_graphics_pipeline *pipeline,
        * may get the depth or stencil value from the current draw rather
        * than the previous one.
        */
-      wm.PixelShaderKillsPixel         = rp_has_ds_self_dep(rp) ||
-                                         wm_prog_data->uses_kill ||
-                                         wm_prog_data->uses_omask;
+      wm.PixelShaderKillsPixel         = rp->depth_self_dependency ||
+                                         rp->stencil_self_dependency ||
+                                         wm_prog_data->uses_kill;
 
       pipeline->force_fragment_thread_dispatch =
          wm.PixelShaderComputedDepthMode != PSCDEPTH_OFF ||
@@ -1759,7 +1752,8 @@ emit_3dstate_ps_extra(struct anv_graphics_pipeline *pipeline,
        * around to fetching from the input attachment and we may get the depth
        * or stencil value from the current draw rather than the previous one.
        */
-      ps.PixelShaderKillsPixel         = rp_has_ds_self_dep(rp) ||
+      ps.PixelShaderKillsPixel         = rp->depth_self_dependency ||
+                                         rp->stencil_self_dependency ||
                                          wm_prog_data->uses_kill;
 
       ps.PixelShaderUsesInputCoverageMask = wm_prog_data->uses_sample_mask;
@@ -1802,7 +1796,8 @@ compute_kill_pixel(struct anv_graphics_pipeline *pipeline,
     * of an alpha test.
     */
    pipeline->kill_pixel =
-      rp_has_ds_self_dep(rp) ||
+      rp->depth_self_dependency ||
+      rp->stencil_self_dependency ||
       wm_prog_data->uses_kill ||
       wm_prog_data->uses_omask ||
       (ms && ms->alpha_to_coverage_enable);

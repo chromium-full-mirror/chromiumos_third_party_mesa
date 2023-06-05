@@ -114,8 +114,7 @@ libvulkan_virtio = shared_library(
   link_with : vn_libs,
   dependencies : [vn_deps],
   c_args : [vn_flags],
-  link_args : [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections],
-  link_depends : vulkan_icd_link_depends,
+  link_args : [ld_args_bsymbolic, ld_args_gc_sections],
   gnu_symbol_visibility : 'hidden',
   install : true,
 )

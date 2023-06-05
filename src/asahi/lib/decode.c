@@ -1,8 +1,26 @@
 /*
- * Copyright 2017-2019 Alyssa Rosenzweig
- * Copyright 2017-2019 Connor Abbott
- * Copyright 2019 Collabora, Ltd.
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2017-2019 Alyssa Rosenzweig
+ * Copyright (C) 2017-2019 Connor Abbott
+ * Copyright (C) 2019 Collabora, Ltd.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include <ctype.h>
@@ -16,12 +34,11 @@
 
 #include "decode.h"
 #include "hexdump.h"
-#ifdef __APPLE__
+#ifdef  __APPLE__
 #include "agx_iokit.h"
 #endif
 
-UNUSED static const char *agx_alloc_types[AGX_NUM_ALLOC] = {"mem", "map",
-                                                            "cmd"};
+UNUSED static const char *agx_alloc_types[AGX_NUM_ALLOC] = {"mem", "map", "cmd"};
 
 static void
 agx_disassemble(void *_code, size_t maxlen, FILE *fp)
@@ -274,7 +291,7 @@ agxdecode_stateful(uint64_t va, const char *label, decode_cmd decoder,
                    bool verbose, void *data)
 {
    struct agx_bo *alloc = agxdecode_find_mapped_gpu_mem_containing(va);
-   assert(alloc != NULL && "nonexistent object");
+   assert(alloc != NULL && "nonexistant object");
    fprintf(agxdecode_dump_stream, "%s (%" PRIx64 ", handle %u)\n", label, va,
            alloc->handle);
    fflush(agxdecode_dump_stream);
@@ -494,38 +511,12 @@ agxdecode_cdm(const uint8_t *map, uint64_t *link, bool verbose,
    enum agx_cdm_block_type block_type = (map[3] >> 5);
 
    switch (block_type) {
-   case AGX_CDM_BLOCK_TYPE_HEADER: {
-      size_t length = AGX_CDM_HEADER_LENGTH;
-
-#define CDM_PRINT(STRUCT_NAME, human)                                          \
-   DUMP_CL(CDM_##STRUCT_NAME, map, human);                                     \
-   map += AGX_CDM_##STRUCT_NAME##_LENGTH;                                      \
-   length += AGX_CDM_##STRUCT_NAME##_LENGTH;
-
-      agx_unpack(agxdecode_dump_stream, map, CDM_HEADER, hdr);
-      agxdecode_stateful(hdr.pipeline, "Pipeline", agxdecode_usc, verbose,
-                         &hdr.sampler_state_register_count);
-      DUMP_UNPACKED(CDM_HEADER, hdr, "Compute\n");
-      map += AGX_CDM_HEADER_LENGTH;
-
-      switch (hdr.mode) {
-      case AGX_CDM_MODE_DIRECT:
-         CDM_PRINT(GLOBAL_SIZE, "Global size");
-         CDM_PRINT(LOCAL_SIZE, "Local size");
-         break;
-      case AGX_CDM_MODE_INDIRECT_GLOBAL:
-         CDM_PRINT(INDIRECT, "Indirect buffer");
-         CDM_PRINT(LOCAL_SIZE, "Local size");
-         break;
-      case AGX_CDM_MODE_INDIRECT_LOCAL:
-         CDM_PRINT(INDIRECT, "Indirect buffer");
-         break;
-      default:
-         fprintf(agxdecode_dump_stream, "Unknown CDM mode: %u\n", hdr.mode);
-         break;
-      }
-
-      return length;
+   case AGX_CDM_BLOCK_TYPE_COMPUTE_KERNEL: {
+      agx_unpack(agxdecode_dump_stream, map, LAUNCH, cmd);
+      agxdecode_stateful(cmd.pipeline, "Pipeline", agxdecode_usc, verbose,
+                         &cmd.sampler_state_register_count);
+      DUMP_UNPACKED(LAUNCH, cmd, "Launch\n");
+      return AGX_LAUNCH_LENGTH;
    }
 
    case AGX_CDM_BLOCK_TYPE_STREAM_LINK: {
@@ -538,11 +529,6 @@ agxdecode_cdm(const uint8_t *map, uint64_t *link, bool verbose,
    case AGX_CDM_BLOCK_TYPE_STREAM_TERMINATE: {
       DUMP_CL(CDM_STREAM_TERMINATE, map, "Stream Terminate");
       return STATE_DONE;
-   }
-
-   case AGX_CDM_BLOCK_TYPE_LAUNCH: {
-      DUMP_CL(CDM_LAUNCH, map, "Launch");
-      return AGX_CDM_LAUNCH_LENGTH;
    }
 
    default:
@@ -561,11 +547,6 @@ agxdecode_vdm(const uint8_t *map, uint64_t *link, bool verbose,
    enum agx_vdm_block_type block_type = (map[3] >> 5);
 
    switch (block_type) {
-   case AGX_VDM_BLOCK_TYPE_BARRIER: {
-      agx_unpack(agxdecode_dump_stream, map, VDM_BARRIER, cmd);
-      return AGX_VDM_BARRIER_LENGTH;
-   }
-
    case AGX_VDM_BLOCK_TYPE_PPP_STATE_UPDATE: {
       agx_unpack(agxdecode_dump_stream, map, PPP_STATE, cmd);
 
@@ -575,7 +556,7 @@ agxdecode_vdm(const uint8_t *map, uint64_t *link, bool verbose,
       if (mem)
          agxdecode_record(address, cmd.size_words * 4, verbose);
       else
-         DUMP_UNPACKED(PPP_STATE, cmd, "Non-existent record (XXX)\n");
+         DUMP_UNPACKED(PPP_STATE, cmd, "Non-existant record (XXX)\n");
 
       return AGX_PPP_STATE_LENGTH;
    }
@@ -641,11 +622,10 @@ agxdecode_vdm(const uint8_t *map, uint64_t *link, bool verbose,
       IDX_PRINT(index_count, COUNT, "Index count");
       IDX_PRINT(instance_count, INSTANCES, "Instance count");
       IDX_PRINT(start, START, "Start");
-      IDX_PRINT(indirect_buffer, INDIRECT_BUFFER, "Indirect buffer");
       IDX_PRINT(index_buffer_size, BUFFER_SIZE, "Index buffer size");
 
 #undef IDX_PRINT
-      return length;
+      return ALIGN_POT(length, 8);
    }
 
    case AGX_VDM_BLOCK_TYPE_STREAM_LINK: {
@@ -723,8 +703,8 @@ agxdecode_cmdstream(unsigned cmdbuf_handle, unsigned map_handle, bool verbose)
    struct agx_bo *cmdbuf =
       agxdecode_find_handle(cmdbuf_handle, AGX_ALLOC_CMDBUF);
    struct agx_bo *map = agxdecode_find_handle(map_handle, AGX_ALLOC_MEMMAP);
-   assert(cmdbuf != NULL && "nonexistent command buffer");
-   assert(map != NULL && "nonexistent mapping");
+   assert(cmdbuf != NULL && "nonexistant command buffer");
+   assert(map != NULL && "nonexistant mapping");
 
    /* Before decoding anything, validate the map. Set bo->mapped fields */
    agxdecode_decode_segment_list(map->ptr.cpu);
@@ -759,7 +739,7 @@ agxdecode_dump_mappings(unsigned map_handle)
    agxdecode_dump_file_open();
 
    struct agx_bo *map = agxdecode_find_handle(map_handle, AGX_ALLOC_MEMMAP);
-   assert(map != NULL && "nonexistent mapping");
+   assert(map != NULL && "nonexistant mapping");
    agxdecode_decode_segment_list(map->ptr.cpu);
 
    for (unsigned i = 0; i < mmap_count; ++i) {

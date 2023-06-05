@@ -35,11 +35,13 @@ Linux, FreeBSD, and other operating systems.
 
    self
    history
+   developers
    amber
    systems
    license
    faq
    relnotes
+   thanks
 
 .. toctree::
    :maxdepth: 2

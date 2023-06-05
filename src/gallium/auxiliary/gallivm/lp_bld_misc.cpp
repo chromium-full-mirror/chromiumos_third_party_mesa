@@ -56,22 +56,16 @@
 #include <llvm-c/ExecutionEngine.h>
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
+#include <llvm/ADT/Triple.h>
 #include <llvm/Analysis/TargetLibraryInfo.h>
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include <llvm/Support/CommandLine.h>
+#include <llvm/Support/Host.h>
 #include <llvm/Support/PrettyStackTrace.h>
 #include <llvm/ExecutionEngine/ObjectCache.h>
 #include <llvm/Support/TargetSelect.h>
 #if LLVM_VERSION_MAJOR >= 15
 #include <llvm/Support/MemoryBuffer.h>
-#endif
-
-#if LLVM_VERSION_MAJOR >= 17
-#include <llvm/TargetParser/Host.h>
-#include <llvm/TargetParser/Triple.h>
-#else
-#include <llvm/Support/Host.h>
-#include <llvm/ADT/Triple.h>
 #endif
 
 #if LLVM_VERSION_MAJOR < 11
@@ -368,7 +362,7 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
           .setTargetOptions(options)
           .setOptLevel((CodeGenOpt::Level)OptLevel);
 
-#if DETECT_OS_WINDOWS
+#ifdef _WIN32
     /*
      * MCJIT works on Windows, but currently only through ELF object format.
      *
@@ -376,14 +370,10 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
      * different strings for MinGW/MSVC, so better play it safe and be
      * explicit.
      */
-#  if DETECT_ARCH_X86_64
+#  ifdef _WIN64
     LLVMSetTarget(M, "x86_64-pc-win32-elf");
-#  elif DETECT_ARCH_X86
-    LLVMSetTarget(M, "i686-pc-win32-elf");
-#  elif DETECT_ARCH_AARCH64
-    LLVMSetTarget(M, "aarch64-pc-win32-elf");
 #  else
-#    error Unsupported architecture for MCJIT on Windows.
+    LLVMSetTarget(M, "i686-pc-win32-elf");
 #  endif
 #endif
 

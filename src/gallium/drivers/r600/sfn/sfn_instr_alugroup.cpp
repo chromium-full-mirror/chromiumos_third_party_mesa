@@ -102,6 +102,9 @@ AluGroup::add_trans_instructions(AluInstr *instr)
    if (m_slots[4] || s_max_slots < 5)
       return false;
 
+   if (!update_indirect_access(instr))
+      return false;
+
    /* LDS instructions have to be scheduled in X */
    if (instr->has_alu_flag(alu_is_lds))
       return false;
@@ -148,13 +151,9 @@ AluGroup::add_trans_instructions(AluInstr *instr)
       }
    }
 
-   if (!instr->has_alu_flag(alu_is_trans) && !m_slots[instr->dest_chan()])
-      return false;
-
    for (AluBankSwizzle i = sq_alu_scl_201; i != sq_alu_scl_unknown; ++i) {
       AluReadportReservation readports_evaluator = m_readports_evaluator;
-      if (readports_evaluator.schedule_trans_instruction(*instr, i) &&
-          update_indirect_access(instr)) {
+      if (readports_evaluator.schedule_trans_instruction(*instr, i)) {
          m_readports_evaluator = readports_evaluator;
          m_slots[4] = instr;
          instr->pin_sources_to_chan();
@@ -162,7 +161,8 @@ AluGroup::add_trans_instructions(AluInstr *instr)
 
          /* We added a vector op in the trans channel, so we have to
           * make sure the corresponding vector channel is used */
-         assert(instr->has_alu_flag(alu_is_trans) || m_slots[instr->dest_chan()]);
+         if (!instr->has_alu_flag(alu_is_trans) && !m_slots[instr->dest_chan()])
+            m_slots[instr->dest_chan()] = new AluInstr(op0_nop, instr->dest_chan());
          return true;
       }
    }
@@ -183,6 +183,9 @@ AluGroup::free_slots() const
 bool
 AluGroup::add_vec_instructions(AluInstr *instr)
 {
+   if (!update_indirect_access(instr))
+      return false;
+
    int param_src = -1;
    for (auto& s : instr->sources()) {
       auto is = s->as_inline_const();
@@ -251,48 +254,12 @@ AluGroup::add_vec_instructions(AluInstr *instr)
    return false;
 }
 
-void AluGroup::update_readport_reserver()
-{
-   AluReadportReservation readports_evaluator;
-   for (int i = 0; i < 4;  ++i) {
-      if (!m_slots[i])
-         continue;
-
-      AluReadportReservation re = readports_evaluator;
-      AluBankSwizzle bs = alu_vec_012;
-      while (bs != alu_vec_unknown) {
-         if (re.schedule_vec_instruction(*m_slots[i], bs)) {
-            readports_evaluator = re;
-            break;
-         }
-         ++bs;
-      }
-      if (bs == alu_vec_unknown)
-         unreachable("Bank swizzle should have been checked before");
-   }
-
-   if (s_max_slots == 5 && m_slots[4]) {
-      AluReadportReservation re = readports_evaluator;
-      AluBankSwizzle bs = sq_alu_scl_201;
-      while (bs != sq_alu_scl_unknown) {
-         if (re.schedule_vec_instruction(*m_slots[4], bs)) {
-            readports_evaluator = re;
-            break;
-         }
-         ++bs;
-      }
-      if (bs == sq_alu_scl_unknown)
-         unreachable("Bank swizzle should have been checked before");
-   }
-}
-
 bool
 AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
 {
    int preferred_chan = instr->dest_chan();
    AluReadportReservation readports_evaluator = m_readports_evaluator;
-   if (readports_evaluator.schedule_vec_instruction(*instr, cycle) &&
-       update_indirect_access(instr)) {
+   if (readports_evaluator.schedule_vec_instruction(*instr, cycle)) {
       m_readports_evaluator = readports_evaluator;
       m_slots[preferred_chan] = instr;
       m_has_lds_op |= instr->has_lds_access();
@@ -308,62 +275,6 @@ AluGroup::try_readport(AluInstr *instr, AluBankSwizzle cycle)
       return true;
    }
    return false;
-}
-
-bool AluGroup::replace_source(PRegister old_src, PVirtualValue new_src)
-{
-   AluReadportReservation rpr_sum;
-
-   // At this point we should not have anything in slot 4
-   assert(s_max_slots == 4 || !m_slots[4]);
-
-   for (int slot = 0; slot < 4; ++slot) {
-      if (!m_slots[slot])
-         continue;
-
-      assert(m_slots[slot]->alu_slots() == 1);
-
-      if (!m_slots[slot]->can_replace_source(old_src, new_src))
-         return false;
-
-      auto& srcs = m_slots[slot]->sources();
-
-      PVirtualValue test_src[3];
-      std::transform(srcs.begin(), srcs.end(), test_src,
-                     [old_src, new_src](PVirtualValue s) {
-         return old_src->equal_to(*s) ? new_src : s;
-      });
-
-      AluBankSwizzle bs = alu_vec_012;
-      while (bs != alu_vec_unknown) {
-         AluReadportReservation rpr = rpr_sum;
-         if (rpr.schedule_vec_src(test_src,srcs.size(), bs)) {
-            rpr_sum = rpr;
-            break;
-         }
-         ++bs;
-      }
-
-      if (bs == alu_vec_unknown)
-         return false;
-   }
-
-   bool success = false;
-
-   for (int slot = 0; slot < 4; ++slot) {
-      if (!m_slots[slot])
-         continue;
-      success |= m_slots[slot]->do_replace_source(old_src, new_src);
-      for (auto& s : m_slots[slot]->sources()) {
-         if (s->pin() == pin_free)
-            s->set_pin(pin_chan);
-         else if (s->pin() == pin_group)
-               s->set_pin(pin_chgr);
-      }
-   }
-
-   m_readports_evaluator = rpr_sum;
-   return success;
 }
 
 bool
@@ -403,8 +314,6 @@ AluGroup::set_scheduled()
       if (m_slots[i])
          m_slots[i]->set_scheduled();
    }
-   if (m_origin)
-      m_origin->set_scheduled();
 }
 
 void

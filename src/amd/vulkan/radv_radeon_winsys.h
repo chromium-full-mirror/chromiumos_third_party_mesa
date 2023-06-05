@@ -283,10 +283,6 @@ struct radeon_winsys {
 
    void (*cs_reset)(struct radeon_cmdbuf *cs);
 
-   bool (*cs_chain)(struct radeon_cmdbuf *cs, struct radeon_cmdbuf *next_cs, bool pre_en);
-
-   void (*cs_unchain)(struct radeon_cmdbuf *cs);
-
    VkResult (*cs_finalize)(struct radeon_cmdbuf *cs);
 
    void (*cs_grow)(struct radeon_cmdbuf *cs, size_t min_size);
@@ -294,7 +290,7 @@ struct radeon_winsys {
    VkResult (*cs_submit)(struct radeon_winsys_ctx *ctx,
                          const struct radv_winsys_submit_info *submits, uint32_t wait_count,
                          const struct vk_sync_wait *waits, uint32_t signal_count,
-                         const struct vk_sync_signal *signals);
+                         const struct vk_sync_signal *signals, bool can_patch);
 
    void (*cs_add_buffer)(struct radeon_cmdbuf *cs, struct radeon_winsys_bo *bo);
 

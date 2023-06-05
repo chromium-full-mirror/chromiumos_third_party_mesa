@@ -27,8 +27,6 @@
 
 #include "util/macros.h"
 
-#include "genxml/gen_macros.h"
-
 #include "pan_cs.h"
 #include "pan_encoder.h"
 #include "pan_texture.h"
@@ -624,8 +622,8 @@ pan_emit_midgard_tiler(const struct panfrost_device *dev,
          cfg.heap_start = tiler_ctx->midgard.polygon_list->ptr.gpu;
          cfg.heap_end = tiler_ctx->midgard.polygon_list->ptr.gpu;
       } else {
-         cfg.hierarchy_mask = panfrost_choose_hierarchy_mask(
-            fb->width, fb->height, tiler_ctx->vertex_count, hierarchy);
+         cfg.hierarchy_mask =
+            panfrost_choose_hierarchy_mask(fb->width, fb->height, 1, hierarchy);
          header_size = panfrost_tiler_header_size(
             fb->width, fb->height, cfg.hierarchy_mask, hierarchy);
          cfg.polygon_list_size = panfrost_tiler_full_size(
@@ -719,6 +717,7 @@ GENX(pan_emit_fbd)(const struct panfrost_device *dev,
                    const struct pan_fb_info *fb, const struct pan_tls_info *tls,
                    const struct pan_tiler_context *tiler_ctx, void *out)
 {
+   unsigned tags = MALI_FBD_TAG_IS_MFBD;
    void *fbd = out;
    void *rtd = out + pan_size(FRAMEBUFFER);
 
@@ -816,6 +815,7 @@ GENX(pan_emit_fbd)(const struct panfrost_device *dev,
    if (has_zs_crc_ext) {
       pan_emit_zs_crc_ext(fb, crc_rt, out + pan_size(FRAMEBUFFER));
       rtd += pan_size(ZS_CRC_EXTENSION);
+      tags |= MALI_FBD_TAG_HAS_ZS_RT;
    }
 
    unsigned rt_count = MAX2(fb->rt_count, 1);
@@ -832,13 +832,9 @@ GENX(pan_emit_fbd)(const struct panfrost_device *dev,
       if (i != crc_rt)
          *(fb->rts[i].crc_valid) = false;
    }
+   tags |= MALI_POSITIVE(MAX2(fb->rt_count, 1)) << 2;
 
-   struct mali_framebuffer_pointer_packed tag;
-   pan_pack(tag.opaque, FRAMEBUFFER_POINTER, cfg) {
-      cfg.zs_crc_extension_present = has_zs_crc_ext;
-      cfg.render_target_count = MAX2(fb->rt_count, 1);
-   }
-   return tag.opaque[0];
+   return tags;
 }
 #else /* PAN_ARCH == 4 */
 unsigned

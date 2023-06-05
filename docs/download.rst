@@ -48,13 +48,13 @@ Demos, GLUT, and GLU
 --------------------
 
 A package of SGI's GLU library is available
-`here <https://archive.mesa3d.org/glu/>`__
+`here <ftp://ftp.freedesktop.org/pub/mesa/glu/>`__
 
 A package of Mark Kilgard's GLUT library is available
-`here <https://archive.mesa3d.org/glut/>`__
+`here <ftp://ftp.freedesktop.org/pub/mesa/glut/>`__
 
 The Mesa demos collection is available
-`here <https://archive.mesa3d.org/demos/>`__
+`here <ftp://ftp.freedesktop.org/pub/mesa/demos/>`__
 
 In the past, GLUT, GLU and the Mesa demos were released in conjunction
 with Mesa releases. But since GLUT, GLU and the demos change

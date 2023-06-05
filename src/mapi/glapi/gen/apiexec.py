@@ -306,22 +306,22 @@ def get_api_condition(f):
         unconditional_count = 0
 
         if ex.compatibility is not None:
-            condition_parts.append('_mesa_is_desktop_gl_compat(ctx)')
+            condition_parts.append('ctx->API == API_OPENGL_COMPAT')
             unconditional_count += 1
 
         if ex.core is not None:
-            condition_parts.append('_mesa_is_desktop_gl_core(ctx)')
+            condition_parts.append('ctx->API == API_OPENGL_CORE')
             unconditional_count += 1
 
         if ex.es1 is not None:
-            condition_parts.append('_mesa_is_gles1(ctx)')
+            condition_parts.append('ctx->API == API_OPENGLES')
             unconditional_count += 1
 
         if ex.es2 is not None:
             if ex.es2 > 20:
-                condition_parts.append('(_mesa_is_gles2(ctx) && ctx->Version >= {0})'.format(ex.es2))
+                condition_parts.append('(ctx->API == API_OPENGLES2 && ctx->Version >= {0})'.format(ex.es2))
             else:
-                condition_parts.append('_mesa_is_gles2(ctx)')
+                condition_parts.append('ctx->API == API_OPENGLES2')
                 unconditional_count += 1
 
         # If the function is unconditionally available in all four
@@ -333,16 +333,16 @@ def get_api_condition(f):
     else:
         if f.desktop:
             if f.deprecated:
-                condition_parts.append('_mesa_is_desktop_gl_compat(ctx)')
+                condition_parts.append('ctx->API == API_OPENGL_COMPAT')
             else:
                 condition_parts.append('_mesa_is_desktop_gl(ctx)')
         if 'es1' in f.api_map:
-            condition_parts.append('_mesa_is_gles1(ctx)')
+            condition_parts.append('ctx->API == API_OPENGLES')
         if 'es2' in f.api_map:
             if f.api_map['es2'] > 2.0:
-                condition_parts.append('(_mesa_is_gles2(ctx) && ctx->Version >= {0})'.format(int(f.api_map['es2'] * 10)))
+                condition_parts.append('(ctx->API == API_OPENGLES2 && ctx->Version >= {0})'.format(int(f.api_map['es2'] * 10)))
             else:
-                condition_parts.append('_mesa_is_gles2(ctx)')
+                condition_parts.append('ctx->API == API_OPENGLES2')
 
     if not condition_parts:
         # This function does not exist in any API.

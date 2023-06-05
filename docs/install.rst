@@ -86,7 +86,7 @@ The general approach is:
 
 .. code-block:: console
 
-     meson setup builddir/
+     meson builddir/
      ninja -C builddir/
      sudo ninja -C builddir/ install
 
@@ -94,7 +94,7 @@ On Windows you can also use the Visual Studio backend
 
 .. code-block:: console
 
-     meson setup builddir --backend=vs
+     meson builddir --backend=vs
      cd builddir
      msbuild mesa.sln /m
 
@@ -115,7 +115,7 @@ First, configure Mesa and install in the temporary location:
 
 .. code-block:: console
 
-   meson setup builddir/ -Dprefix="$MESA_INSTALLDIR" OTHER_OPTIONS
+   meson builddir/ -Dprefix="$MESA_INSTALLDIR" OTHER_OPTIONS
    ninja -C builddir/ install
 
 where ``OTHER_OPTIONS`` is replaced by any meson configuration options you may
@@ -124,7 +124,7 @@ like this:
 
 .. code-block:: console
 
-   meson setup builddir/ -Dprefix="$MESA_INSTALLDIR" \
+   meson builddir/ -Dprefix="$MESA_INSTALLDIR" \
       -Dgallium-drivers=swrast -Dvulkan-drivers=swrast
    ninja -C builddir/ install
 

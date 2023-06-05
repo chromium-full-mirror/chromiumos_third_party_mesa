@@ -96,7 +96,7 @@ James Clarke (1):
 
 -  meson: GNU/kFreeBSD has DRM/KMS and requires -D_GNU_SOURCE
 
-Faith Ekstrand (2):
+Jason Ekstrand (2):
 
 -  anv/descriptor_set: Only write texture swizzles if we have an image
    view

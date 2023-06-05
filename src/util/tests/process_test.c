@@ -36,7 +36,7 @@
 #define PATH_MAX MAX_PATH
 #endif
 
-static bool error = false;
+bool error = false;
 
 static void
 expect_equal_str(const char *expected, const char *actual, const char *test)

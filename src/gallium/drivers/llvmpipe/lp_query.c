@@ -93,11 +93,12 @@ static bool
 llvmpipe_get_query_result(struct pipe_context *pipe,
                           struct pipe_query *q,
                           bool wait,
-                          union pipe_query_result *result)
+                          union pipe_query_result *vresult)
 {
-   const struct llvmpipe_screen *screen = llvmpipe_screen(pipe->screen);
-   const unsigned num_threads = MAX2(1, screen->num_threads);
+   struct llvmpipe_screen *screen = llvmpipe_screen(pipe->screen);
+   unsigned num_threads = MAX2(1, screen->num_threads);
    struct llvmpipe_query *pq = llvmpipe_query(q);
+   uint64_t *result = (uint64_t *)vresult;
 
    if (pq->fence) {
       /* only have a fence if there was a scene */
@@ -112,102 +113,83 @@ llvmpipe_get_query_result(struct pipe_context *pipe,
       }
    }
 
-   /* Always initialize the first 64-bit result word to zero since some
-    * callers don't consider whether the result is actually a 1-byte or 4-byte
-    * quantity.
+   /* Sum the results from each of the threads:
     */
-   result->u64 = 0;
+   *result = 0;
 
-   /* Combine the per-thread results */
    switch (pq->type) {
    case PIPE_QUERY_OCCLUSION_COUNTER:
-      {
-         uint64_t sum = 0;
-         for (unsigned i = 0; i < num_threads; i++) {
-            sum += pq->end[i];
-         }
-         result->u64 = sum;
+      for (unsigned i = 0; i < num_threads; i++) {
+         *result += pq->end[i];
       }
       break;
    case PIPE_QUERY_OCCLUSION_PREDICATE:
    case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
-      result->b = false;
       for (unsigned i = 0; i < num_threads; i++) {
          /* safer (still not guaranteed) when there's an overflow */
-         if (pq->end[i] > 0) {
-            result->b = true;
-            break;
-         }
+         vresult->b = vresult->b || pq->end[i];
       }
       break;
    case PIPE_QUERY_TIMESTAMP:
-      {
-         uint64_t max_time = 0;
-         for (unsigned i = 0; i < num_threads; i++) {
-            max_time = MAX2(max_time, pq->end[i]);
+      for (unsigned i = 0; i < num_threads; i++) {
+         if (pq->end[i] > *result) {
+            *result = pq->end[i];
          }
-         result->u64 = max_time;
       }
       break;
-   case PIPE_QUERY_TIME_ELAPSED:
-      {
-         uint64_t start = UINT64_MAX, end = 0;
-         for (unsigned i = 0; i < num_threads; i++) {
-            if (pq->start[i]) {
-               start = MIN2(start, pq->start[i]);
-            }
-            if (pq->end[i]) {
-               end = MAX2(end, pq->end[i]);
-            }
-         }
-         result->u64 = end - start;
+   case PIPE_QUERY_TIME_ELAPSED: {
+      uint64_t start = (uint64_t)-1, end = 0;
+      for (unsigned i = 0; i < num_threads; i++) {
+         if (pq->start[i] && pq->start[i] < start)
+            start = pq->start[i];
+         if (pq->end[i] && pq->end[i] > end)
+            end = pq->end[i];
       }
+      *result = end - start;
       break;
-   case PIPE_QUERY_TIMESTAMP_DISJOINT:
+   }
+   case PIPE_QUERY_TIMESTAMP_DISJOINT: {
+      struct pipe_query_data_timestamp_disjoint *td =
+         (struct pipe_query_data_timestamp_disjoint *)vresult;
       /* os_get_time_nano return nanoseconds */
-      result->timestamp_disjoint.frequency = UINT64_C(1000000000);
-      result->timestamp_disjoint.disjoint = false;
+      td->frequency = UINT64_C(1000000000);
+      td->disjoint = false;
+   }
       break;
    case PIPE_QUERY_GPU_FINISHED:
-      result->b = true;
+      vresult->b = true;
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
-      result->u64 = pq->num_primitives_generated[0];
+      *result = pq->num_primitives_generated[0];
       break;
    case PIPE_QUERY_PRIMITIVES_EMITTED:
-      result->u64 = pq->num_primitives_written[0];
+      *result = pq->num_primitives_written[0];
       break;
    case PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE:
-      result->b = false;
-      for (unsigned s = 0; s < PIPE_MAX_VERTEX_STREAMS; s++) {
-         if (pq->num_primitives_generated[s] > pq->num_primitives_written[s]) {
-            result->b = true;
-            break;
-         }
-      }
+      vresult->b = false;
+      for (unsigned s = 0; s < PIPE_MAX_VERTEX_STREAMS; s++)
+         vresult->b |= pq->num_primitives_generated[s] > pq->num_primitives_written[s];
       break;
    case PIPE_QUERY_SO_OVERFLOW_PREDICATE:
-      result->b = pq->num_primitives_generated[0] > pq->num_primitives_written[0];
+      vresult->b = pq->num_primitives_generated[0] > pq->num_primitives_written[0];
       break;
-   case PIPE_QUERY_SO_STATISTICS:
-      result->so_statistics.num_primitives_written = pq->num_primitives_written[0];
-      result->so_statistics.primitives_storage_needed = pq->num_primitives_generated[0];
+   case PIPE_QUERY_SO_STATISTICS: {
+      struct pipe_query_data_so_statistics *stats =
+         (struct pipe_query_data_so_statistics *)vresult;
+      stats->num_primitives_written = pq->num_primitives_written[0];
+      stats->primitives_storage_needed = pq->num_primitives_generated[0];
+   }
       break;
-   case PIPE_QUERY_PIPELINE_STATISTICS:
-      {
-         /* only ps_invocations are per-bin/thread */
-         uint64_t sum = 0;
-         for (unsigned i = 0; i < num_threads; i++) {
-            sum += pq->end[i];
-         }
-         /* The FS/PS operates on a block of pixels at a time.  The counter is
-          * incremented per block so we multiply by pixels per block here.
-          * This will not be a pixel-exact result.
-          */
-         pq->stats.ps_invocations =
-            sum * LP_RASTER_BLOCK_SIZE * LP_RASTER_BLOCK_SIZE;
-         result->pipeline_statistics = pq->stats;
+   case PIPE_QUERY_PIPELINE_STATISTICS: {
+      struct pipe_query_data_pipeline_statistics *stats =
+         (struct pipe_query_data_pipeline_statistics *)vresult;
+      /* only ps_invocations come from binned query */
+      for (unsigned i = 0; i < num_threads; i++) {
+         pq->stats.ps_invocations += pq->end[i];
       }
+      pq->stats.ps_invocations *= LP_RASTER_BLOCK_SIZE * LP_RASTER_BLOCK_SIZE;
+      *stats = pq->stats;
+   }
       break;
    default:
       assert(0);

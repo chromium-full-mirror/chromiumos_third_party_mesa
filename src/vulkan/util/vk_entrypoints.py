@@ -26,7 +26,7 @@ from collections import OrderedDict, namedtuple
 
 # Mesa-local imports must be declared in meson variable
 # '{file_without_suffix}_depend_files'.
-from vk_extensions import get_all_required, filter_api
+from vk_extensions import Extension, VkVersion
 
 EntrypointParam = namedtuple('EntrypointParam', 'type name decl len')
 
@@ -45,11 +45,11 @@ class EntrypointBase:
         return prefix + '_' + self.name
 
 class Entrypoint(EntrypointBase):
-    def __init__(self, name, return_type, params):
+    def __init__(self, name, return_type, params, guard=None):
         super(Entrypoint, self).__init__(name)
         self.return_type = return_type
         self.params = params
-        self.guard = None
+        self.guard = guard
         self.aliases = []
         self.disp_table_index = None
 
@@ -98,20 +98,15 @@ class EntrypointAlias(EntrypointBase):
     def call_params(self):
         return self.alias.call_params()
 
-def get_entrypoints(doc, api):
+def get_entrypoints(doc, entrypoints_to_defines):
     """Extract the entry points from the registry."""
     entrypoints = OrderedDict()
 
-    required = get_all_required(doc, 'command', api)
-
     for command in doc.findall('./commands/command'):
-        if not filter_api(command, api):
-            continue
-
         if 'alias' in command.attrib:
-            name = command.attrib['name']
+            alias = command.attrib['name']
             target = command.attrib['alias']
-            e = EntrypointAlias(name, entrypoints[target])
+            entrypoints[alias] = EntrypointAlias(alias, entrypoints[target])
         else:
             name = command.find('./proto/name').text
             ret_type = command.find('./proto/type').text
@@ -120,28 +115,62 @@ def get_entrypoints(doc, api):
                 name=p.find('./name').text,
                 decl=''.join(p.itertext()),
                 len=p.attrib.get('altlen', p.attrib.get('len', None))
-            ) for p in command.findall('./param') if filter_api(p, api)]
+            ) for p in command.findall('./param')]
+            guard = entrypoints_to_defines.get(name)
             # They really need to be unique
-            e = Entrypoint(name, ret_type, params)
+            assert name not in entrypoints
+            entrypoints[name] = Entrypoint(name, ret_type, params, guard)
 
-        if name not in required:
+    for feature in doc.findall('./feature'):
+        assert feature.attrib['api'] == 'vulkan'
+        version = VkVersion(feature.attrib['number'])
+        for command in feature.findall('./require/command'):
+            e = entrypoints[command.attrib['name']]
+            assert e.core_version is None
+            e.core_version = version
+
+    for extension in doc.findall('.extensions/extension'):
+        if extension.attrib['supported'] != 'vulkan':
             continue
 
-        r = required[name]
-        e.core_version = r.core_version
-        e.extensions = r.extensions
-        e.guard = r.guard
+        ext_name = extension.attrib['name']
 
-        assert name not in entrypoints, name
-        entrypoints[name] = e
+        ext = Extension(ext_name, 1, True)
+        ext.type = extension.attrib['type']
+
+        for command in extension.findall('./require/command'):
+            e = entrypoints[command.attrib['name']]
+            assert e.core_version is None
+            e.extensions.append(ext)
 
     return entrypoints.values()
 
-def get_entrypoints_from_xml(xml_files, api='vulkan'):
+
+def get_entrypoints_defines(doc):
+    """Maps entry points to extension defines."""
+    entrypoints_to_defines = {}
+
+    platform_define = {}
+    for platform in doc.findall('./platforms/platform'):
+        name = platform.attrib['name']
+        define = platform.attrib['protect']
+        platform_define[name] = define
+
+    for extension in doc.findall('./extensions/extension[@platform]'):
+        platform = extension.attrib['platform']
+        define = platform_define[platform]
+
+        for entrypoint in extension.findall('./require/command'):
+            fullname = entrypoint.attrib['name']
+            entrypoints_to_defines[fullname] = define
+
+    return entrypoints_to_defines
+
+def get_entrypoints_from_xml(xml_files):
     entrypoints = []
 
     for filename in xml_files:
         doc = et.parse(filename)
-        entrypoints += get_entrypoints(doc, api)
+        entrypoints += get_entrypoints(doc, get_entrypoints_defines(doc))
 
     return entrypoints

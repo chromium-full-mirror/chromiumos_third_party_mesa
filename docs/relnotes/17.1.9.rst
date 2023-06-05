@@ -92,7 +92,7 @@ Ilia Mirkin (2):
    vars
 -  st/mesa: fix handling of vertex array double inputs
 
-Faith Ekstrand (2):
+Jason Ekstrand (2):
 
 -  anv/formats: Nicely handle unknown VkFormat enums
 -  spirv: Add support for the HelperInvocation builtin

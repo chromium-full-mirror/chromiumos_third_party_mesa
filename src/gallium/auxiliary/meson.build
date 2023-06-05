@@ -534,7 +534,7 @@ if with_tests
       dependencies : [idep_gtest],
     ),
     suite: 'gallium',
-    protocol : 'gtest',
+    protocol : gtest_test_protocol,
   )
 endif
 

@@ -75,6 +75,7 @@ struct shader {
 
 bool validate = false, debug = false;
 enum dxil_validator_version val_ver = DXIL_VALIDATOR_1_4;
+enum dxil_shader_model shader_model = SHADER_MODEL_6_2;
 
 struct nir_shader_compiler_options nir_options;
 
@@ -186,8 +187,6 @@ main(int argc, char **argv)
    conf.runtime_data_cbv.base_shader_register = 0;
    conf.runtime_data_cbv.register_space = 31;
    conf.zero_based_vertex_instance_id = true;
-   conf.declared_read_only_images_as_srvs = true;
-   conf.shader_model_max = SHADER_MODEL_6_2;
 
    bool any_shaders = false;
    while ((ch = getopt_long(argc, argv, "-s:e:o:m:x:vd", long_options, NULL)) !=
@@ -214,8 +213,8 @@ main(int argc, char **argv)
          debug = true;
          break;
       case 'm':
-         conf.shader_model_max = SHADER_MODEL_6_0 + atoi(optarg);
-         nir_options.lower_helper_invocation = conf.shader_model_max < SHADER_MODEL_6_6;
+         shader_model = SHADER_MODEL_6_0 + atoi(optarg);
+         nir_options.lower_helper_invocation = shader_model < SHADER_MODEL_6_6;
          break;
       case 'x':
          val_ver = DXIL_VALIDATOR_1_0 + atoi(optarg);
@@ -251,7 +250,7 @@ main(int argc, char **argv)
 
    struct nir_to_dxil_options opts = {
       .environment = DXIL_ENVIRONMENT_VULKAN,
-      .shader_model_max = conf.shader_model_max,
+      .shader_model_max = shader_model,
       .validator_version_max = val_ver,
    };
 

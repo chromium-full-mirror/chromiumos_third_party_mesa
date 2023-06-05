@@ -134,10 +134,10 @@ class PrintGlOffsets(gl_XML.gl_print_base):
  *   #define KEYWORD2
  *   #define NAME(func)  gl##func
  *   #define DISPATCH(func, args, msg)                             \\
- *          struct _glapi_table *dispatch = GLApi; \\
+ *          struct _glapi_table *dispatch = CurrentClientDispatch; \\
  *          (*dispatch->func) args
  *   #define RETURN DISPATCH(func, args, msg)                      \\
- *          struct _glapi_table *dispatch = GLApi; \\
+ *          struct _glapi_table *dispatch = CurrentClientDispatch; \\
  *          return (*dispatch->func) args
  *
  */

@@ -625,9 +625,6 @@ compile_vertex_list(struct gl_context *ctx)
       GLubyte mode = original_prims[i].mode;
       bool converted_prim = false;
       unsigned index_size;
-      bool outputting_quads = !!(ctx->Const.DriverSupportedPrimMask &
-                                 (BITFIELD_MASK(PIPE_PRIM_QUADS) | BITFIELD_MASK(PIPE_PRIM_QUAD_STRIP)));
-      unsigned verts_per_primitive = outputting_quads ? 4 : 3;
 
       int vertex_count = original_prims[i].count;
       if (!vertex_count) {
@@ -635,8 +632,8 @@ compile_vertex_list(struct gl_context *ctx)
       }
 
       /* Increase indices storage if the original estimation was too small. */
-      if (idx + verts_per_primitive * vertex_count > max_index_count) {
-         max_index_count = max_index_count + verts_per_primitive * vertex_count;
+      if (idx + 3 * vertex_count > max_index_count) {
+         max_index_count = max_index_count + 3 * vertex_count;
          indices = (uint32_t*) realloc(indices, max_index_count * sizeof(uint32_t));
          tmp_indices = all_prims_supported ? NULL : realloc(tmp_indices, max_index_count * sizeof(uint32_t));
       }
@@ -1324,10 +1321,10 @@ do {                                                            \
                                                                 \
    if (save->active_sz[A] != N) {                               \
       bool had_dangling_ref = save->dangling_attr_ref;          \
+      fi_type *dest = save->vertex_store->buffer_in_ram;        \
       if (fixup_vertex(ctx, A, N * sz, T) &&                    \
           !had_dangling_ref && save->dangling_attr_ref &&       \
           A != VBO_ATTRIB_POS) {                                \
-         fi_type *dest = save->vertex_store->buffer_in_ram;     \
          /* Copy the new attr values to the already copied      \
           * vertices.                                           \
           */                                                    \
@@ -1484,7 +1481,7 @@ _save_EvalCoord1f(GLfloat u)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_EvalCoord1f(ctx->Dispatch.Save, (u));
+   CALL_EvalCoord1f(ctx->Save, (u));
 }
 
 static void GLAPIENTRY
@@ -1492,7 +1489,7 @@ _save_EvalCoord1fv(const GLfloat * v)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_EvalCoord1fv(ctx->Dispatch.Save, (v));
+   CALL_EvalCoord1fv(ctx->Save, (v));
 }
 
 static void GLAPIENTRY
@@ -1500,7 +1497,7 @@ _save_EvalCoord2f(GLfloat u, GLfloat v)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_EvalCoord2f(ctx->Dispatch.Save, (u, v));
+   CALL_EvalCoord2f(ctx->Save, (u, v));
 }
 
 static void GLAPIENTRY
@@ -1508,7 +1505,7 @@ _save_EvalCoord2fv(const GLfloat * v)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_EvalCoord2fv(ctx->Dispatch.Save, (v));
+   CALL_EvalCoord2fv(ctx->Save, (v));
 }
 
 static void GLAPIENTRY
@@ -1516,7 +1513,7 @@ _save_EvalPoint1(GLint i)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_EvalPoint1(ctx->Dispatch.Save, (i));
+   CALL_EvalPoint1(ctx->Save, (i));
 }
 
 static void GLAPIENTRY
@@ -1524,7 +1521,7 @@ _save_EvalPoint2(GLint i, GLint j)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_EvalPoint2(ctx->Dispatch.Save, (i, j));
+   CALL_EvalPoint2(ctx->Save, (i, j));
 }
 
 static void GLAPIENTRY
@@ -1532,7 +1529,7 @@ _save_CallList(GLuint l)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_CallList(ctx->Dispatch.Save, (l));
+   CALL_CallList(ctx->Save, (l));
 }
 
 static void GLAPIENTRY
@@ -1540,7 +1537,7 @@ _save_CallLists(GLsizei n, GLenum type, const GLvoid * v)
 {
    GET_CURRENT_CONTEXT(ctx);
    dlist_fallback(ctx);
-   CALL_CallLists(ctx->Dispatch.Save, (n, type, v));
+   CALL_CallLists(ctx->Save, (n, type, v));
 }
 
 
@@ -1627,7 +1624,7 @@ _save_PrimitiveRestartNV(void)
       bool no_current_update = save->no_current_update;
 
       /* restart primitive */
-      CALL_End(ctx->Dispatch.Current, ());
+      CALL_End(ctx->CurrentServerDispatch, ());
       vbo_save_NotifyBegin(ctx, curPrim, no_current_update);
    }
 }
@@ -1637,7 +1634,7 @@ void GLAPIENTRY
 save_Rectf(GLfloat x1, GLfloat y1, GLfloat x2, GLfloat y2)
 {
    GET_CURRENT_CONTEXT(ctx);
-   struct _glapi_table *dispatch = ctx->Dispatch.Current;
+   struct _glapi_table *dispatch = ctx->CurrentServerDispatch;
 
    vbo_save_NotifyBegin(ctx, GL_QUADS, false);
    CALL_Vertex2f(dispatch, (x1, y1));
@@ -1715,7 +1712,7 @@ save_DrawArrays(GLenum mode, GLint start, GLsizei count)
 
    for (i = 0; i < count; i++)
       _mesa_array_element(ctx, start + i);
-   CALL_End(ctx->Dispatch.Current, ());
+   CALL_End(ctx->CurrentServerDispatch, ());
 
    _mesa_vao_unmap_arrays(ctx, vao);
 }
@@ -1774,7 +1771,7 @@ array_element(struct gl_context *ctx,
     */
    if (ctx->Array._PrimitiveRestart[index_size_shift] &&
        elt == ctx->Array._RestartIndex[index_size_shift]) {
-      CALL_PrimitiveRestartNV(ctx->Dispatch.Current, ());
+      CALL_PrimitiveRestartNV(ctx->CurrentServerDispatch, ());
       return;
    }
 
@@ -1844,7 +1841,7 @@ save_DrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type,
       break;
    }
 
-   CALL_End(ctx->Dispatch.Current, ());
+   CALL_End(ctx->CurrentServerDispatch, ());
 
    _mesa_vao_unmap(ctx, vao);
 }
@@ -1913,7 +1910,7 @@ save_MultiDrawElements(GLenum mode, const GLsizei *count, GLenum type,
                        const GLvoid * const *indices, GLsizei primcount)
 {
    GET_CURRENT_CONTEXT(ctx);
-   struct _glapi_table *dispatch = ctx->Dispatch.Current;
+   struct _glapi_table *dispatch = ctx->CurrentServerDispatch;
    GLsizei i;
 
    int vertcount = 0;
@@ -1938,7 +1935,7 @@ save_MultiDrawElementsBaseVertex(GLenum mode, const GLsizei *count,
                                   const GLint *basevertex)
 {
    GET_CURRENT_CONTEXT(ctx);
-   struct _glapi_table *dispatch = ctx->Dispatch.Current;
+   struct _glapi_table *dispatch = ctx->CurrentServerDispatch;
    GLsizei i;
 
    int vertcount = 0;
@@ -1965,7 +1962,7 @@ vbo_init_dispatch_save_begin_end(struct gl_context *ctx)
 #define NAME(x) _save_##x
 #define NAME_ES(x) _save_##x
 
-   struct _glapi_table *tab = ctx->Dispatch.Save;
+   struct _glapi_table *tab = ctx->Save;
    #include "api_beginend_init.h"
 }
 

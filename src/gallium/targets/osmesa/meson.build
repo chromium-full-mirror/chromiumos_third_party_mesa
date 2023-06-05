@@ -64,18 +64,6 @@ libosmesa = shared_library(
   install : true,
 )
 
-if with_symbols_check
-  test('osmesa-symbols-check',
-    symbols_check,
-    args : [
-      '--lib', libosmesa,
-      '--symbols-file', files('osmesa-symbols.txt'),
-      symbols_check_args,
-    ],
-    suite : ['gallium'],
-  )
-endif
-
 pkg.generate(
   name : 'osmesa',
   description : 'Mesa Off-screen Rendering Library',
@@ -94,6 +82,6 @@ if with_tests
       dependencies : [idep_gtest],
     ),
     suite: 'gallium',
-    protocol : 'gtest',
+    protocol : gtest_test_protocol,
   )
 endif

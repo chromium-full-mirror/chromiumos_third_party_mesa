@@ -161,7 +161,6 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .EXT_graphics_pipeline_library         = true,
    .EXT_host_query_reset                  = true,
    .EXT_image_2d_view_of_3d               = true,
-   .EXT_image_sliced_view_of_3d           = true,
    .EXT_image_robustness                  = true,
    .EXT_index_type_uint8                  = true,
    .EXT_inline_uniform_block              = true,
@@ -181,7 +180,6 @@ static const struct vk_device_extension_table lvp_device_extensions_supported = 
    .EXT_shader_atomic_float               = true,
    .EXT_shader_atomic_float2              = true,
    .EXT_shader_demote_to_helper_invocation= true,
-   .EXT_shader_object                     = true,
    .EXT_shader_stencil_export             = true,
    .EXT_shader_subgroup_ballot            = true,
    .EXT_shader_subgroup_vote              = true,
@@ -203,8 +201,8 @@ static int
 min_vertex_pipeline_param(struct pipe_screen *pscreen, enum pipe_shader_cap param)
 {
    int val = INT_MAX;
-   for (int i = 0; i < MESA_SHADER_COMPUTE; ++i) {
-      if (i == MESA_SHADER_FRAGMENT ||
+   for (int i = 0; i < PIPE_SHADER_COMPUTE; ++i) {
+      if (i == PIPE_SHADER_FRAGMENT ||
           !pscreen->get_shader_param(pscreen, i,
                                      PIPE_SHADER_CAP_MAX_INSTRUCTIONS))
          continue;
@@ -218,8 +216,8 @@ static int
 min_shader_param(struct pipe_screen *pscreen, enum pipe_shader_cap param)
 {
    return MIN3(min_vertex_pipeline_param(pscreen, param),
-               pscreen->get_shader_param(pscreen, MESA_SHADER_FRAGMENT, param),
-               pscreen->get_shader_param(pscreen, MESA_SHADER_COMPUTE, param));
+               pscreen->get_shader_param(pscreen, PIPE_SHADER_FRAGMENT, param),
+               pscreen->get_shader_param(pscreen, PIPE_SHADER_COMPUTE, param));
 }
 
 static VkResult VKAPI_CALL
@@ -254,7 +252,7 @@ lvp_physical_device_init(struct lvp_physical_device *device,
    device->sync_types[2] = NULL;
    device->vk.supported_sync_types = device->sync_types;
 
-   device->max_images = device->pscreen->get_shader_param(device->pscreen, MESA_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_SHADER_IMAGES);
+   device->max_images = device->pscreen->get_shader_param(device->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_SHADER_IMAGES);
    device->vk.supported_extensions = lvp_device_extensions_supported;
 
    VkSampleCountFlags sample_counts = VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT;
@@ -326,9 +324,9 @@ lvp_physical_device_init(struct lvp_physical_device *device,
       .maxFragmentOutputAttachments             = 8,
       .maxFragmentDualSrcAttachments            = 2,
       .maxFragmentCombinedOutputResources       = max_render_targets +
-                                                  device->pscreen->get_shader_param(device->pscreen, MESA_SHADER_FRAGMENT,
+                                                  device->pscreen->get_shader_param(device->pscreen, PIPE_SHADER_FRAGMENT,
                                                      PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) +
-                                                  device->pscreen->get_shader_param(device->pscreen, MESA_SHADER_FRAGMENT,
+                                                  device->pscreen->get_shader_param(device->pscreen, PIPE_SHADER_FRAGMENT,
                                                      PIPE_SHADER_CAP_MAX_SHADER_IMAGES),
       .maxComputeSharedMemorySize               = max_local_size,
       .maxComputeWorkGroupCount                 = { grid_size[0], grid_size[1], grid_size[2] },
@@ -551,8 +549,8 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures(
       .fullDrawIndexUint32                      = true,
       .imageCubeArray                           = (pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_CUBE_MAP_ARRAY) != 0),
       .independentBlend                         = true,
-      .geometryShader                           = (pdevice->pscreen->get_shader_param(pdevice->pscreen, MESA_SHADER_GEOMETRY, PIPE_SHADER_CAP_MAX_INSTRUCTIONS) != 0),
-      .tessellationShader                       = (pdevice->pscreen->get_shader_param(pdevice->pscreen, MESA_SHADER_TESS_EVAL, PIPE_SHADER_CAP_MAX_INSTRUCTIONS) != 0),
+      .geometryShader                           = (pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_GEOMETRY, PIPE_SHADER_CAP_MAX_INSTRUCTIONS) != 0),
+      .tessellationShader                       = (pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_TESS_EVAL, PIPE_SHADER_CAP_MAX_INSTRUCTIONS) != 0),
       .sampleRateShading                        = (pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_SAMPLE_SHADING) != 0),
       .dualSrcBlend                             = (pdevice->pscreen->get_param(pdevice->pscreen, PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS) != 0),
       .logicOp                                  = true,
@@ -573,7 +571,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures(
       .occlusionQueryPrecise                    = true,
       .pipelineStatisticsQuery                  = true,
       .vertexPipelineStoresAndAtomics           = (min_vertex_pipeline_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) != 0),
-      .fragmentStoresAndAtomics                 = (pdevice->pscreen->get_shader_param(pdevice->pscreen, MESA_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) != 0),
+      .fragmentStoresAndAtomics                 = (pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) != 0),
       .shaderTessellationAndGeometryPointSize   = true,
       .shaderImageGatherExtended                = true,
       .shaderStorageImageExtendedFormats        = (min_shader_param(pdevice->pscreen, PIPE_SHADER_CAP_MAX_SHADER_IMAGES) != 0),
@@ -627,7 +625,7 @@ lvp_get_physical_device_features_1_2(struct lvp_physical_device *pdevice,
    f->storagePushConstant8 = true;
    f->shaderBufferInt64Atomics = true;
    f->shaderSharedInt64Atomics = true;
-   f->shaderFloat16 = pdevice->pscreen->get_shader_param(pdevice->pscreen, MESA_SHADER_FRAGMENT, PIPE_SHADER_CAP_FP16) != 0;
+   f->shaderFloat16 = pdevice->pscreen->get_shader_param(pdevice->pscreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_FP16) != 0;
    f->shaderInt8 = true;
 
    f->descriptorIndexing = false;
@@ -833,12 +831,7 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          features->maintenance4 = true;
          break;
       }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_SLICED_VIEW_OF_3D_FEATURES_EXT: {
-         VkPhysicalDeviceImageSlicedViewOf3DFeaturesEXT *features =
-            (VkPhysicalDeviceImageSlicedViewOf3DFeaturesEXT *)ext;
-         features->imageSlicedViewOf3D = true;
-         break;
-      }
+
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES: {
          VkPhysicalDeviceSubgroupSizeControlFeatures *features =
             (VkPhysicalDeviceSubgroupSizeControlFeatures *)ext;
@@ -851,12 +844,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceFeatures2(
          VkPhysicalDeviceDepthClipControlFeaturesEXT *features =
             (VkPhysicalDeviceDepthClipControlFeaturesEXT *)ext;
          features->depthClipControl = true;
-         break;
-      }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT: {
-         VkPhysicalDeviceShaderObjectFeaturesEXT *features =
-            (VkPhysicalDeviceShaderObjectFeaturesEXT *)ext;
-         features->shaderObject = true;
          break;
       }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ZERO_INITIALIZE_WORKGROUP_MEMORY_FEATURES: {
@@ -1384,13 +1371,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_GetPhysicalDeviceProperties2(
          props->graphicsPipelineLibraryIndependentInterpolationDecoration = VK_TRUE;
          break;
       }
-      case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_PROPERTIES_EXT: {
-         VkPhysicalDeviceShaderObjectPropertiesEXT *props = (VkPhysicalDeviceShaderObjectPropertiesEXT *)ext;
-         /* this is basically unsupported */
-         lvp_device_get_cache_uuid(props->shaderBinaryUUID);
-         props->shaderBinaryVersion = 1;
-         break;
-      }
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_PROPERTIES_EXT: {
          VkPhysicalDeviceRobustness2PropertiesEXT *props =
             (VkPhysicalDeviceRobustness2PropertiesEXT *)ext;
@@ -1621,7 +1601,6 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreateDevice(
 
    device->queue.state = device + 1;
    device->poison_mem = debug_get_bool_option("LVP_POISON_MEMORY", false);
-   device->print_cmds = debug_get_bool_option("LVP_CMD_DEBUG", false);
 
    struct vk_device_dispatch_table dispatch_table;
    vk_device_dispatch_table_from_entrypoints(&dispatch_table,
