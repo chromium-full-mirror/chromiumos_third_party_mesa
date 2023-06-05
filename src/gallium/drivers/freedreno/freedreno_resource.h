@@ -410,8 +410,6 @@ fd_dirty_resource(struct fd_context *ctx, struct pipe_resource *prsc,
                   BITMASK_ENUM(fd_dirty_3d_state) dirty, bool write)
    assert_dt
 {
-   fd_context_dirty(ctx, dirty);
-
    if (ctx->dirty_resource & dirty)
       return;
 
@@ -428,8 +426,6 @@ fd_dirty_shader_resource(struct fd_context *ctx, struct pipe_resource *prsc,
                          bool write)
    assert_dt
 {
-   fd_context_dirty_shader(ctx, shader, dirty);
-
    if (ctx->dirty_shader_resource[shader] & dirty)
       return;
 
