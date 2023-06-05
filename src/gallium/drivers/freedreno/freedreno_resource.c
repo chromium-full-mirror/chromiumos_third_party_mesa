@@ -81,7 +81,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
       for (unsigned i = 0; i < vb->count && !(ctx->dirty & FD_DIRTY_VTXBUF);
            i++) {
          if (vb->vb[i].buffer.resource == prsc)
-            fd_dirty_resource(ctx, prsc, FD_DIRTY_VTXBUF, false);
+            fd_context_dirty(ctx, FD_DIRTY_VTXBUF);
       }
    }
 
@@ -93,7 +93,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
             i < so->num_targets && !(ctx->dirty & FD_DIRTY_STREAMOUT);
             i++) {
          if (so->targets[i]->buffer == prsc)
-            fd_dirty_resource(ctx, prsc, FD_DIRTY_STREAMOUT, true);
+            fd_context_dirty(ctx, FD_DIRTY_STREAMOUT);
       }
    }
 
@@ -114,8 +114,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          const unsigned num_ubos = util_last_bit(cb->enabled_mask);
          for (unsigned i = 1; i < num_ubos; i++) {
             if (cb->cb[i].buffer == prsc) {
-               fd_dirty_shader_resource(ctx, prsc, stage,
-                                        FD_DIRTY_SHADER_CONST, false);
+               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_CONST);
                break;
             }
          }
@@ -127,8 +126,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          struct fd_texture_stateobj *tex = &ctx->tex[stage];
          for (unsigned i = 0; i < tex->num_textures; i++) {
             if (tex->textures[i] && (tex->textures[i]->texture == prsc)) {
-               fd_dirty_shader_resource(ctx, prsc, stage,
-                                        FD_DIRTY_SHADER_TEX, false);
+               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_TEX);
                break;
             }
          }
@@ -141,9 +139,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          const unsigned num_images = util_last_bit(si->enabled_mask);
          for (unsigned i = 0; i < num_images; i++) {
             if (si->si[i].resource == prsc) {
-               bool write = si->si[i].access & PIPE_IMAGE_ACCESS_WRITE;
-               fd_dirty_shader_resource(ctx, prsc, stage,
-                                        FD_DIRTY_SHADER_IMAGE, write);
+               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_IMAGE);
                break;
             }
          }
@@ -156,9 +152,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          const unsigned num_ssbos = util_last_bit(sb->enabled_mask);
          for (unsigned i = 0; i < num_ssbos; i++) {
             if (sb->sb[i].buffer == prsc) {
-               bool write = sb->writable_mask & BIT(i);
-               fd_dirty_shader_resource(ctx, prsc, stage,
-                                        FD_DIRTY_SHADER_SSBO, write);
+               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_SSBO);
                break;
             }
          }
@@ -1565,13 +1559,13 @@ fd_invalidate_resource(struct pipe_context *pctx,
 
       if (pfb->zsbuf && pfb->zsbuf->texture == prsc) {
          batch->resolve &= ~(FD_BUFFER_DEPTH | FD_BUFFER_STENCIL);
-         fd_dirty_resource(ctx, prsc, FD_DIRTY_ZSA, true);
+         fd_context_dirty(ctx, FD_DIRTY_ZSA);
       }
 
       for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
          if (pfb->cbufs[i] && pfb->cbufs[i]->texture == prsc) {
             batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
-            fd_dirty_resource(ctx, prsc, FD_DIRTY_FRAMEBUFFER, true);
+            fd_context_dirty(ctx, FD_DIRTY_FRAMEBUFFER);
          }
       }
    }
