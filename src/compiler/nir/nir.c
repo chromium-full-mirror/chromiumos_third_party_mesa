@@ -87,8 +87,6 @@ static const struct debug_named_value nir_debug_control[] = {
      "Dump resulting kernel shader after each successful lowering/optimization call" },
    { "print_consts", NIR_DEBUG_PRINT_CONSTS,
      "Print const value near each use of const SSA variable" },
-   { "print_internal", NIR_DEBUG_PRINT_INTERNAL,
-     "Print shaders even if they are marked as internal" },
    DEBUG_NAMED_VALUE_END
 };
 
@@ -648,8 +646,6 @@ nir_loop_create(nir_shader *shader)
 
    body->successors[0] = body;
    _mesa_set_add(body->predecessors, body);
-
-   exec_list_make_empty(&loop->continue_list);
 
    return loop;
 }
@@ -1919,28 +1915,23 @@ nir_block_cf_tree_next(nir_block *block)
       return nir_cf_node_cf_tree_first(cf_next);
 
    nir_cf_node *parent = block->cf_node.parent;
-   if (parent->type == nir_cf_node_function)
-      return NULL;
-
-   /* Is this the last block of a cf_node? Return the following block */
-   if (block == nir_cf_node_cf_tree_last(parent))
-      return nir_cf_node_as_block(nir_cf_node_next(parent));
 
    switch (parent->type) {
    case nir_cf_node_if: {
-      /* We are at the end of the if. Go to the beginning of the else */
+      /* Are we at the end of the if? Go to the beginning of the else */
       nir_if *if_stmt = nir_cf_node_as_if(parent);
-      assert(block == nir_if_last_then_block(if_stmt));
-      return nir_if_first_else_block(if_stmt);
-   }
+      if (block == nir_if_last_then_block(if_stmt))
+         return nir_if_first_else_block(if_stmt);
 
-   case nir_cf_node_loop: {
-      /* We are at the end of the body and there is a continue construct */
-      nir_loop *loop = nir_cf_node_as_loop(parent);
-      assert(block == nir_loop_last_block(loop) &&
-             nir_loop_has_continue_construct(loop));
-      return nir_loop_first_continue_block(loop);
+      assert(block == nir_if_last_else_block(if_stmt));
    }
+   FALLTHROUGH;
+
+   case nir_cf_node_loop:
+      return nir_cf_node_as_block(nir_cf_node_next(parent));
+
+   case nir_cf_node_function:
+      return NULL;
 
    default:
       unreachable("unknown cf node type");
@@ -1962,27 +1953,23 @@ nir_block_cf_tree_prev(nir_block *block)
       return nir_cf_node_cf_tree_last(cf_prev);
 
    nir_cf_node *parent = block->cf_node.parent;
-   if (parent->type == nir_cf_node_function)
-      return NULL;
-
-   /* Is this the first block of a cf_node? Return the previous block */
-   if (block == nir_cf_node_cf_tree_first(parent))
-      return nir_cf_node_as_block(nir_cf_node_prev(parent));
 
    switch (parent->type) {
    case nir_cf_node_if: {
-      /* We are at the beginning of the else. Go to the end of the if */
+      /* Are we at the beginning of the else? Go to the end of the if */
       nir_if *if_stmt = nir_cf_node_as_if(parent);
-      assert(block == nir_if_first_else_block(if_stmt));
-      return nir_if_last_then_block(if_stmt);
+      if (block == nir_if_first_else_block(if_stmt))
+         return nir_if_last_then_block(if_stmt);
+
+      assert(block == nir_if_first_then_block(if_stmt));
    }
-   case nir_cf_node_loop: {
-      /* We are at the beginning of the continue construct. */
-      nir_loop *loop = nir_cf_node_as_loop(parent);
-      assert(nir_loop_has_continue_construct(loop) &&
-             block == nir_loop_first_continue_block(loop));
-      return nir_loop_last_block(loop);
-   }
+   FALLTHROUGH;
+
+   case nir_cf_node_loop:
+      return nir_cf_node_as_block(nir_cf_node_prev(parent));
+
+   case nir_cf_node_function:
+      return NULL;
 
    default:
       unreachable("unknown cf node type");
@@ -2031,10 +2018,7 @@ nir_block *nir_cf_node_cf_tree_last(nir_cf_node *node)
 
    case nir_cf_node_loop: {
       nir_loop *loop = nir_cf_node_as_loop(node);
-      if (nir_loop_has_continue_construct(loop))
-         return nir_loop_last_continue_block(loop);
-      else
-         return nir_loop_last_block(loop);
+      return nir_loop_last_block(loop);
    }
 
    case nir_cf_node_block: {
@@ -2501,12 +2485,6 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_mesh_view_count;
    case SYSTEM_VALUE_FRAG_SHADING_RATE:
       return nir_intrinsic_load_frag_shading_rate;
-   case SYSTEM_VALUE_FULLY_COVERED:
-      return nir_intrinsic_load_fully_covered;
-   case SYSTEM_VALUE_FRAG_SIZE:
-      return nir_intrinsic_load_frag_size;
-   case SYSTEM_VALUE_FRAG_INVOCATION_COUNT:
-      return nir_intrinsic_load_frag_invocation_count;
    default:
       unreachable("system value does not directly correspond to intrinsic");
    }
@@ -2654,12 +2632,6 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_FRAG_SHADING_RATE;
    case nir_intrinsic_load_mesh_view_count:
       return SYSTEM_VALUE_MESH_VIEW_COUNT;
-   case nir_intrinsic_load_fully_covered:
-      return SYSTEM_VALUE_FULLY_COVERED;
-   case nir_intrinsic_load_frag_size:
-      return SYSTEM_VALUE_FRAG_SIZE;
-   case nir_intrinsic_load_frag_invocation_count:
-      return SYSTEM_VALUE_FRAG_INVOCATION_COUNT;
    default:
       unreachable("intrinsic doesn't produce a system value");
    }
@@ -3253,7 +3225,6 @@ nir_tex_instr_result_size(const nir_tex_instr *instr)
    case nir_texop_query_levels:
    case nir_texop_samples_identical:
    case nir_texop_fragment_mask_fetch_amd:
-   case nir_texop_lod_bias_agx:
       return 1;
 
    case nir_texop_descriptor_amd:
@@ -3280,7 +3251,6 @@ nir_tex_instr_is_query(const nir_tex_instr *instr)
    case nir_texop_query_levels:
    case nir_texop_descriptor_amd:
    case nir_texop_sampler_descriptor_amd:
-   case nir_texop_lod_bias_agx:
       return true;
    case nir_texop_tex:
    case nir_texop_txb:

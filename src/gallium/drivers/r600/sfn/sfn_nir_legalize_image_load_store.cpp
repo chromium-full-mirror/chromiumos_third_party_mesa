@@ -26,8 +26,6 @@
 
 #include "nir.h"
 #include "nir_builder.h"
-#include "nir_intrinsics.h"
-#include "nir_intrinsics_indices.h"
 #include "sfn_nir.h"
 
 static nir_ssa_def *
@@ -59,9 +57,7 @@ r600_legalize_image_load_store_impl(nir_builder *b,
 
       /*  Image exists start */
       auto new_index =
-         nir_umin(b,
-                  ir->src[0].ssa,
-                  nir_imm_int(b, b->shader->info.num_images - 1));
+         nir_umin(b, ir->src[0].ssa, nir_imm_int(b, b->shader->info.num_images - 1));
       nir_instr_rewrite_src_ssa(instr, &ir->src[0], new_index);
 
       enum glsl_sampler_dim dim = nir_intrinsic_image_dim(ir);
@@ -96,8 +92,7 @@ r600_legalize_image_load_store_impl(nir_builder *b,
                                      dim,
                                      nir_intrinsic_image_array(ir),
                                      nir_intrinsic_format(ir),
-                                     nir_intrinsic_access(ir),
-                                     nir_intrinsic_range_base(ir));
+                                     nir_intrinsic_access(ir));
 
       unsigned mask = (1 << num_components) - 1;
       unsigned num_src1_comp = MIN2(ir->src[1].ssa->num_components, num_components);
@@ -192,9 +187,8 @@ r600_legalize_image_load_store_filter(const nir_instr *instr, UNUSED const void 
 bool
 r600_legalize_image_load_store(nir_shader *shader)
 {
-   bool progress = nir_shader_lower_instructions(shader,
+   return nir_shader_lower_instructions(shader,
                                         r600_legalize_image_load_store_filter,
                                         r600_legalize_image_load_store_impl,
                                         nullptr);
-   return progress;
 };

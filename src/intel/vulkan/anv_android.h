@@ -44,12 +44,14 @@ VkResult anv_image_bind_from_gralloc(struct anv_device *device,
                                      struct anv_image *image,
                                      const VkNativeBufferANDROID *gralloc_info);
 
-unsigned anv_ahb_format_for_vk_format(VkFormat vk_format);
+uint64_t anv_ahw_usage_from_vk_usage(const VkImageCreateFlags vk_create,
+                                     const VkImageUsageFlags vk_usage);
 
 VkResult anv_import_ahw_memory(VkDevice device_h,
-                               struct anv_device_memory *mem);
+                               struct anv_device_memory *mem,
+                               const VkImportAndroidHardwareBufferInfoANDROID *info);
 
 VkResult anv_create_ahw_memory(VkDevice device_h,
                                struct anv_device_memory *mem,
-                               const VkMemoryDedicatedAllocateInfo *dedicated_info);
+                               const VkMemoryAllocateInfo *pAllocateInfo);
 #endif /* ANV_ANDROID_H */

@@ -287,19 +287,12 @@ static VkResult pvr_srv_sync_export_sync_file(struct vk_device *device,
                                               int *sync_file)
 {
    struct pvr_srv_sync *srv_sync = to_srv_sync(sync);
-   VkResult result;
    int fd;
 
    if (srv_sync->fd < 0) {
-      struct pvr_device *driver_device =
-         container_of(device, struct pvr_device, vk);
-
-      result = pvr_srv_sync_get_presignaled_sync(driver_device, &srv_sync);
-      if (result != VK_SUCCESS)
-         return result;
+      *sync_file = -1;
+      return VK_SUCCESS;
    }
-
-   assert(srv_sync->fd >= 0);
 
    fd = dup(srv_sync->fd);
    if (fd < 0)

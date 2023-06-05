@@ -73,7 +73,7 @@ Ilia Mirkin (5):
 -  st/mesa: avoid integer overflows with buffers >= 512MB
 -  nv50, nvc0: fix max texture buffer size to 128M elements
 
-Faith Ekstrand (1):
+Jason Ekstrand (1):
 
 -  i965/vec4: Don't reswizzle hardware registers
 

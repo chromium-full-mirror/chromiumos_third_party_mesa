@@ -14,6 +14,7 @@ STABLE_EPHEMERAL=" \
       bzip2 \
       libtool \
       libssl-dev \
+      python3-pip \
       "
 
 apt-get update
@@ -42,8 +43,8 @@ apt-get install -y --no-remove \
       llvm-13-dev \
       llvm-11-dev \
       ocl-icd-opencl-dev \
-      python3-pip \
-      python3-venv \
+      python3-freezegun \
+      python3-pytest \
       procps \
       spirv-tools \
       shellcheck \
@@ -92,7 +93,7 @@ ninja install
 popd
 rm -rf DirectX-Headers
 
-python3 -m pip install -r .gitlab-ci/lava/requirements.txt
+pip3 install lavacli==1.5.2
 
 # install bindgen
 RUSTFLAGS='-L native=/usr/local/lib' cargo install \

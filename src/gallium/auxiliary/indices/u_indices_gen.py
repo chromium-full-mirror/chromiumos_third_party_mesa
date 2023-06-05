@@ -51,8 +51,6 @@ PRIMS=('points',
        'trisadj',
        'tristripadj')
 
-OUT_TRIS, OUT_QUADS = 'tris', 'quads'
-
 LONGPRIMS=('PIPE_PRIM_POINTS',
            'PIPE_PRIM_LINES',
            'PIPE_PRIM_LINE_STRIP',
@@ -93,9 +91,6 @@ def prolog(f: 'T.TextIO') -> None:
 static u_translate_func translate[IN_COUNT][OUT_COUNT][PV_COUNT][PV_COUNT][PR_COUNT][PRIM_COUNT];
 static u_generate_func  generate[OUT_COUNT][PV_COUNT][PV_COUNT][PRIM_COUNT];
 
-static u_translate_func translate_quads[IN_COUNT][OUT_COUNT][PV_COUNT][PV_COUNT][PR_COUNT][PRIM_COUNT];
-static u_generate_func  generate_quads[OUT_COUNT][PV_COUNT][PV_COUNT][PRIM_COUNT];
-
 
 ''')
 
@@ -126,21 +121,13 @@ def do_tri(f: 'T.TextIO', intype, outtype, ptr, v0, v1, v2, inpv, outpv ):
     else:
         shape(f, intype, outtype, ptr, v2, v0, v1 )
 
-def do_quad(f: 'T.TextIO', intype, outtype, ptr, v0, v1, v2, v3, inpv, outpv, out_prim ):
-    if out_prim == OUT_TRIS:
-        if inpv == LAST:
-            do_tri(f, intype, outtype, ptr+'+0',  v0, v1, v3, inpv, outpv );
-            do_tri(f, intype, outtype, ptr+'+3',  v1, v2, v3, inpv, outpv );
-        else:
-            do_tri(f, intype, outtype, ptr+'+0',  v0, v1, v2, inpv, outpv );
-            do_tri(f, intype, outtype, ptr+'+3',  v0, v2, v3, inpv, outpv );
+def do_quad(f: 'T.TextIO', intype, outtype, ptr, v0, v1, v2, v3, inpv, outpv ):
+    if inpv == LAST:
+        do_tri(f, intype, outtype, ptr+'+0',  v0, v1, v3, inpv, outpv );
+        do_tri(f, intype, outtype, ptr+'+3',  v1, v2, v3, inpv, outpv );
     else:
-        if inpv == outpv:
-            shape(f, intype, outtype, ptr, v0, v1, v2, v3)
-        elif inpv == FIRST:
-            shape(f, intype, outtype, ptr, v1, v2, v3, v0)
-        else:
-            shape(f, intype, outtype, ptr, v3, v0, v1, v2)
+        do_tri(f, intype, outtype, ptr+'+0',  v0, v1, v2, inpv, outpv );
+        do_tri(f, intype, outtype, ptr+'+3',  v0, v2, v3, inpv, outpv );
 
 def do_lineadj(f: 'T.TextIO', intype, outtype, ptr, v0, v1, v2, v3, inpv, outpv ):
     if inpv == outpv:
@@ -154,14 +141,14 @@ def do_triadj(f: 'T.TextIO', intype, outtype, ptr, v0, v1, v2, v3, v4, v5, inpv,
     else:
         shape(f, intype, outtype, ptr, v4, v5, v0, v1, v2, v3 )
 
-def name(intype, outtype, inpv, outpv, pr, prim, out_prim):
+def name(intype, outtype, inpv, outpv, pr, prim):
     if intype == GENERATE:
-        return 'generate_' + prim + '_' + outtype + '_' + inpv + '2' + outpv + '_' + str(out_prim)
+        return 'generate_' + prim + '_' + outtype + '_' + inpv + '2' + outpv
     else:
-        return 'translate_' + prim + '_' + intype + '2' + outtype + '_' + inpv + '2' + outpv + '_' + pr + '_' + str(out_prim)
+        return 'translate_' + prim + '_' + intype + '2' + outtype + '_' + inpv + '2' + outpv + '_' + pr
 
-def preamble(f: 'T.TextIO', intype, outtype, inpv, outpv, pr, prim, out_prim):
-    f.write('static void ' + name( intype, outtype, inpv, outpv, pr, prim, out_prim ) + '(\n')
+def preamble(f: 'T.TextIO', intype, outtype, inpv, outpv, pr, prim):
+    f.write('static void ' + name( intype, outtype, inpv, outpv, pr, prim ) + '(\n')
     if intype != GENERATE:
         f.write('    const void * restrict _in,\n')
     f.write('    unsigned start,\n')
@@ -199,28 +186,28 @@ def prim_restart(f: 'T.TextIO', in_verts, out_verts, out_prims, close_func = Non
         f.write('      }\n')
 
 def points(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='points')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='points')
     f.write('  for (i = start, j = 0; j < out_nr; j++, i++) {\n')
     do_point(f, intype, outtype, 'out+j',  'i' );
     f.write('   }\n')
     postamble(f)
 
 def lines(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='lines')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='lines')
     f.write('  for (i = start, j = 0; j < out_nr; j+=2, i+=2) {\n')
     do_line(f,  intype, outtype, 'out+j',  'i', 'i+1', inpv, outpv );
     f.write('   }\n')
     postamble(f)
 
 def linestrip(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='linestrip')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='linestrip')
     f.write('  for (i = start, j = 0; j < out_nr; j+=2, i++) {\n')
     do_line(f, intype, outtype, 'out+j',  'i', 'i+1', inpv, outpv );
     f.write('   }\n')
     postamble(f)
 
 def lineloop(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='lineloop')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='lineloop')
     f.write('  unsigned end = start;\n')
     f.write('  for (i = start, j = 0; j < out_nr - 2; j+=2, i++) {\n')
     if pr == PRENABLE:
@@ -239,7 +226,7 @@ def lineloop(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
     postamble(f)
 
 def tris(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='tris')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='tris')
     f.write('  for (i = start, j = 0; j < out_nr; j+=3, i+=3) {\n')
     do_tri(f, intype, outtype, 'out+j',  'i', 'i+1', 'i+2', inpv, outpv );
     f.write('   }\n')
@@ -247,7 +234,7 @@ def tris(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
 
 
 def tristrip(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='tristrip')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='tristrip')
     f.write('  for (i = start, j = 0; j < out_nr; j+=3, i++) {\n')
     if inpv == FIRST:
         do_tri(f, intype, outtype, 'out+j',  'i', 'i+1+(i&1)', 'i+2-(i&1)', inpv, outpv );
@@ -258,7 +245,7 @@ def tristrip(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
 
 
 def trifan(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='trifan')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='trifan')
     f.write('  for (i = start, j = 0; j < out_nr; j+=3, i++) {\n')
 
     if pr == PRENABLE:
@@ -277,7 +264,7 @@ def trifan(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
 
 
 def polygon(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='polygon')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='polygon')
     f.write('  for (i = start, j = 0; j < out_nr; j+=3, i++) {\n')
     if pr == PRENABLE:
         def close_func(index):
@@ -292,43 +279,33 @@ def polygon(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
     postamble(f)
 
 
-def quads(f: 'T.TextIO', intype, outtype, inpv, outpv, pr, out_prim):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=out_prim, prim='quads')
-    if out_prim == OUT_TRIS:
-        f.write('  for (i = start, j = 0; j < out_nr; j+=6, i+=4) {\n')
-    else:
-        f.write('  for (i = start, j = 0; j < out_nr; j+=4, i+=4) {\n')
-    if pr == PRENABLE and out_prim == OUT_TRIS:
+def quads(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='quads')
+    f.write('  for (i = start, j = 0; j < out_nr; j+=6, i+=4) {\n')
+    if pr == PRENABLE:
         prim_restart(f, 4, 3, 2)
-    elif pr == PRENABLE:
-        prim_restart(f, 4, 4, 1)
 
-    do_quad(f, intype, outtype, 'out+j', 'i+0', 'i+1', 'i+2', 'i+3', inpv, outpv, out_prim );
+    do_quad(f, intype, outtype, 'out+j', 'i+0', 'i+1', 'i+2', 'i+3', inpv, outpv );
     f.write('   }\n')
     postamble(f)
 
 
-def quadstrip(f: 'T.TextIO', intype, outtype, inpv, outpv, pr, out_prim):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=out_prim, prim='quadstrip')
-    if out_prim == OUT_TRIS:
-        f.write('  for (i = start, j = 0; j < out_nr; j+=6, i+=2) {\n')
-    else:
-        f.write('  for (i = start, j = 0; j < out_nr; j+=4, i+=2) {\n')
-    if pr == PRENABLE and out_prim == OUT_TRIS:
+def quadstrip(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='quadstrip')
+    f.write('  for (i = start, j = 0; j < out_nr; j+=6, i+=2) {\n')
+    if pr == PRENABLE:
         prim_restart(f, 4, 3, 2)
-    elif pr == PRENABLE:
-        prim_restart(f, 4, 4, 1)
 
     if inpv == LAST:
-        do_quad(f, intype, outtype, 'out+j', 'i+2', 'i+0', 'i+1', 'i+3', inpv, outpv, out_prim );
+        do_quad(f, intype, outtype, 'out+j', 'i+2', 'i+0', 'i+1', 'i+3', inpv, outpv );
     else:
-        do_quad(f, intype, outtype, 'out+j', 'i+0', 'i+1', 'i+3', 'i+2', inpv, outpv, out_prim );
+        do_quad(f, intype, outtype, 'out+j', 'i+0', 'i+1', 'i+3', 'i+2', inpv, outpv );
     f.write('   }\n')
     postamble(f)
 
 
 def linesadj(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='linesadj')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='linesadj')
     f.write('  for (i = start, j = 0; j < out_nr; j+=4, i+=4) {\n')
     do_lineadj(f, intype, outtype, 'out+j',  'i+0', 'i+1', 'i+2', 'i+3', inpv, outpv )
     f.write('  }\n')
@@ -336,7 +313,7 @@ def linesadj(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
 
 
 def linestripadj(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='linestripadj')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='linestripadj')
     f.write('  for (i = start, j = 0; j < out_nr; j+=4, i++) {\n')
     do_lineadj(f, intype, outtype, 'out+j',  'i+0', 'i+1', 'i+2', 'i+3', inpv, outpv )
     f.write('  }\n')
@@ -344,7 +321,7 @@ def linestripadj(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
 
 
 def trisadj(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='trisadj')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='trisadj')
     f.write('  for (i = start, j = 0; j < out_nr; j+=6, i+=6) {\n')
     do_triadj(f, intype, outtype, 'out+j',  'i+0', 'i+1', 'i+2', 'i+3',
               'i+4', 'i+5', inpv, outpv )
@@ -353,7 +330,7 @@ def trisadj(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
 
 
 def tristripadj(f: 'T.TextIO', intype, outtype, inpv, outpv, pr):
-    preamble(f, intype, outtype, inpv, outpv, pr, out_prim=OUT_TRIS, prim='tristripadj')
+    preamble(f, intype, outtype, inpv, outpv, pr, prim='tristripadj')
     f.write('  for (i = start, j = 0; j < out_nr; i+=2, j+=6) {\n')
     f.write('    if (i % 4 == 0) {\n')
     f.write('      /* even triangle */\n')
@@ -380,54 +357,37 @@ def emit_funcs(f: 'T.TextIO') -> None:
         tris(f, intype, outtype, inpv, outpv, pr)
         tristrip(f, intype, outtype, inpv, outpv, pr)
         trifan(f, intype, outtype, inpv, outpv, pr)
-        quads(f, intype, outtype, inpv, outpv, pr, OUT_TRIS)
-        quadstrip(f, intype, outtype, inpv, outpv, pr, OUT_TRIS)
+        quads(f, intype, outtype, inpv, outpv, pr)
+        quadstrip(f, intype, outtype, inpv, outpv, pr)
         polygon(f, intype, outtype, inpv, outpv, pr)
         linesadj(f, intype, outtype, inpv, outpv, pr)
         linestripadj(f, intype, outtype, inpv, outpv, pr)
         trisadj(f, intype, outtype, inpv, outpv, pr)
         tristripadj(f, intype, outtype, inpv, outpv, pr)
 
-    for intype, outtype, inpv, outpv, pr in itertools.product(
-            INTYPES, OUTTYPES, [FIRST, LAST], [FIRST, LAST], [PRDISABLE, PRENABLE]):
-        if pr == PRENABLE and intype == GENERATE:
-            continue
-        quads(f, intype, outtype, inpv, outpv, pr, OUT_QUADS)
-        quadstrip(f, intype, outtype, inpv, outpv, pr, OUT_QUADS)
-
-def init(f: 'T.TextIO', intype, outtype, inpv, outpv, pr, prim, out_prim=OUT_TRIS):
-    generate_name = 'generate'
-    translate_name = 'translate'
-    if out_prim == OUT_QUADS:
-        generate_name = 'generate_quads'
-        translate_name = 'translate_quads'
-
+def init(f: 'T.TextIO', intype, outtype, inpv, outpv, pr, prim):
     if intype == GENERATE:
-        f.write(f'{generate_name}[' +
+        f.write('generate[' +
                 outtype_idx[outtype] +
                 '][' + pv_idx[inpv] +
                 '][' + pv_idx[outpv] +
                 '][' + longprim[prim] +
-                '] = ' + name( intype, outtype, inpv, outpv, pr, prim, out_prim ) + ';\n')
+                '] = ' + name( intype, outtype, inpv, outpv, pr, prim ) + ';\n')
     else:
-        f.write(f'{translate_name}[' +
+        f.write('translate[' +
                 intype_idx[intype] +
                 '][' + outtype_idx[outtype] +
                 '][' + pv_idx[inpv] +
                 '][' + pv_idx[outpv] +
                 '][' + pr_idx[pr] +
                 '][' + longprim[prim] +
-                '] = ' + name( intype, outtype, inpv, outpv, pr, prim, out_prim ) + ';\n')
+                '] = ' + name( intype, outtype, inpv, outpv, pr, prim ) + ';\n')
 
 
 def emit_all_inits(f: 'T.TextIO'):
     for intype, outtype, inpv, outpv, pr, prim in itertools.product(
             INTYPES, OUTTYPES, PVS, PVS, PRS, PRIMS):
         init(f,intype, outtype, inpv, outpv, pr, prim)
-
-    for intype, outtype, inpv, outpv, pr, prim in itertools.product(
-            INTYPES, OUTTYPES, PVS, PVS, PRS, ['quads', 'quadstrip']):
-        init(f,intype, outtype, inpv, outpv, pr, prim, OUT_QUADS)
 
 def emit_init(f: 'T.TextIO'):
     f.write('void u_index_init( void )\n')

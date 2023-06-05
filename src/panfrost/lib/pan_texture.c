@@ -633,10 +633,9 @@ GENX(panfrost_new_texture)(const struct panfrost_device *dev,
       cfg.surfaces = payload->gpu;
 
       /* We specify API-level LOD clamps in the sampler descriptor
-       * and use these clamps simply for bounds checking.
-       */
-      cfg.minimum_lod = 0;
-      cfg.maximum_lod = cfg.levels - 1;
+       * and use these clamps simply for bounds checking */
+      cfg.minimum_lod = FIXED_16(0, false);
+      cfg.maximum_lod = FIXED_16(cfg.levels - 1, false);
 #else
       cfg.manual_stride = true;
 #endif

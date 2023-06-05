@@ -262,9 +262,6 @@ glx_display_free(struct glx_display *priv)
 
    gc = __glXGetCurrentContext();
    if (priv->dpy == gc->currentDpy) {
-      if (gc != &dummyContext)
-         gc->vtable->unbind(gc);
-
       gc->vtable->destroy(gc);
       __glXSetCurrentContextNull();
    }
@@ -816,17 +813,10 @@ AllocAndFetchScreenConfigs(Display * dpy, struct glx_display * priv)
       if (psc == NULL)
          psc = applegl_create_screen(i, priv);
 #else
-      bool indirect = false;
       if (psc == NULL)
-      {
-         psc = indirect_create_screen(i, priv);
-         indirect = true;
-      }
+	 psc = indirect_create_screen(i, priv);
 #endif
       priv->screens[i] = psc;
-
-      if(indirect) /* Load extensions required only for indirect glx */
-         glxSendClientInfo(priv, i);
    }
    SyncHandle();
    return GL_TRUE;

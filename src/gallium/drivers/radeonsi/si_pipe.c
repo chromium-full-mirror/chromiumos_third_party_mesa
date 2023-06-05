@@ -55,12 +55,10 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    {"tcs", DBG(TCS), "Print tessellation control shaders"},
    {"tes", DBG(TES), "Print tessellation evaluation shaders"},
    {"cs", DBG(CS), "Print compute shaders"},
-
-   {"initnir", DBG(INIT_NIR), "Print initial input NIR when shaders are created"},
-   {"nir", DBG(NIR), "Print final NIR after lowering when shader variants are created"},
-   {"initllvm", DBG(INIT_LLVM), "Print initial LLVM IR before optimizations"},
-   {"llvm", DBG(LLVM), "Print final LLVM IR"},
-   {"asm", DBG(ASM), "Print final shaders in asm"},
+   {"noir", DBG(NO_IR), "Don't print the LLVM IR"},
+   {"nonir", DBG(NO_NIR), "Don't print NIR when printing shaders"},
+   {"noasm", DBG(NO_ASM), "Don't print disassembled shaders"},
+   {"preoptir", DBG(PREOPT_IR), "Print the LLVM IR before initial optimizations"},
 
    /* Shader compiler options the shader cache should be aware of: */
    {"w32ge", DBG(W32_GE), "Use Wave32 for vertex, tessellation, and geometry shaders."},
@@ -87,7 +85,6 @@ static const struct debug_named_value radeonsi_debug_options[] = {
 
    /* Driver options: */
    {"nowc", DBG(NO_WC), "Disable GTT write combining"},
-   {"nowcstream", DBG(NO_WC_STREAM), "Disable GTT write combining for streaming uploads"},
    {"check_vm", DBG(CHECK_VM), "Check VM faults and dump debug info."},
    {"reserve_vmid", DBG(RESERVE_VMID), "Force VMID reservation per context."},
    {"shadowregs", DBG(SHADOW_REGS), "Enable CP register shadowing."},
@@ -118,8 +115,6 @@ static const struct debug_named_value radeonsi_debug_options[] = {
    {"nodccmsaa", DBG(NO_DCC_MSAA), "Disable DCC for MSAA"},
    {"nofmask", DBG(NO_FMASK), "Disable MSAA compression"},
    {"nodma", DBG(NO_DMA), "Disable SDMA-copy for DRI_PRIME"},
-
-   {"extra_md", DBG(EXTRA_METADATA), "Set UMD metadata for all textures and with additional fields for umr"},
 
    {"tmz", DBG(TMZ), "Force allocation of scanout/depth/stencil buffer as encrypted"},
    {"sqtt", DBG(SQTT), "Enable SQTT"},
@@ -560,22 +555,24 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
       goto fail;
    }
 
-   /* Initialize public allocators. Unify uploaders as follows:
-    * - dGPUs: The const uploader writes to VRAM and the stream uploader writes to RAM.
+   /* Initialize public allocators. */
+   /* Unify uploaders as follows:
+    * - dGPUs with Smart Access Memory: there is only one uploader instance writing to VRAM.
     * - APUs: There is only one uploader instance writing to RAM. VRAM has the same perf on APUs.
+    * - Other chips: The const uploader writes to VRAM and the stream uploader writes to RAM.
     */
+   bool smart_access_memory = sscreen->info.smart_access_memory;
    bool is_apu = !sscreen->info.has_dedicated_vram;
    sctx->b.stream_uploader =
       u_upload_create(&sctx->b, 1024 * 1024, 0,
-                      sscreen->debug_flags & DBG(NO_WC_STREAM) ? PIPE_USAGE_STAGING
-                                                               : PIPE_USAGE_STREAM,
+                      smart_access_memory && !is_apu ? PIPE_USAGE_DEFAULT : PIPE_USAGE_STREAM,
                       SI_RESOURCE_FLAG_32BIT); /* same flags as const_uploader */
    if (!sctx->b.stream_uploader) {
       fprintf(stderr, "radeonsi: can't create stream_uploader\n");
       goto fail;
    }
 
-   if (is_apu) {
+   if (smart_access_memory || is_apu) {
       sctx->b.const_uploader = sctx->b.stream_uploader;
    } else {
       sctx->b.const_uploader =
@@ -760,7 +757,9 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen, unsign
    /* The remainder of this function initializes the gfx CS and must be last. */
    assert(sctx->gfx_cs.current.cdw == 0);
 
-   si_init_cp_reg_shadowing(sctx);
+   if (sctx->has_graphics) {
+      si_init_cp_reg_shadowing(sctx);
+   }
 
    /* Set immutable fields of shader keys. */
    if (sctx->gfx_level >= GFX9) {
@@ -1137,7 +1136,9 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
    }
 
    sscreen->ws = ws;
-   ws->query_info(ws, &sscreen->info);
+   ws->query_info(ws, &sscreen->info,
+                  sscreen->options.enable_sam,
+                  sscreen->options.disable_sam);
 
    if (sscreen->info.gfx_level >= GFX9) {
       sscreen->se_tile_repeat = 32 * sscreen->info.max_se;
@@ -1311,8 +1312,8 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
       (sscreen->info.gfx_level == GFX6 && sscreen->info.pfp_fw_version >= 79 &&
        sscreen->info.me_fw_version >= 142);
 
-   if (sscreen->debug_flags & DBG(NO_OUT_OF_ORDER))
-      sscreen->info.has_out_of_order_rast = false;
+   sscreen->has_out_of_order_rast =
+      sscreen->info.has_out_of_order_rast && !(sscreen->debug_flags & DBG(NO_OUT_OF_ORDER));
 
    if (sscreen->info.gfx_level >= GFX11) {
       sscreen->use_ngg = true;
@@ -1359,13 +1360,23 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
                             sscreen->debug_flags & DBG(DPBB));
 
    if (sscreen->dpbb_allowed) {
-      /* Only bin draws that have no CONTEXT and SH register changes between them because higher
-       * settings cause hangs. We've only been able to reproduce hangs on smaller chips
-       * (e.g. Navi24, GFX1103), though all chips might have them. What we see may be due to
-       * a driver bug.
-       */
-      sscreen->pbb_context_states_per_bin = 1;
-      sscreen->pbb_persistent_states_per_bin = 1;
+      if (sscreen->info.has_dedicated_vram && sscreen->info.max_render_backends > 4) {
+         sscreen->pbb_context_states_per_bin = 1;
+         sscreen->pbb_persistent_states_per_bin = 1;
+      } else {
+         /* This is a workaround for:
+          *    https://bugs.freedesktop.org/show_bug.cgi?id=110214
+          * (an alternative is to insert manual BATCH_BREAK event when
+          *  a context_roll is detected). */
+         sscreen->pbb_context_states_per_bin = sscreen->info.has_gfx9_scissor_bug ? 1 : 3;
+         sscreen->pbb_persistent_states_per_bin = 8;
+      }
+
+      if (!sscreen->info.has_gfx9_scissor_bug)
+         sscreen->pbb_context_states_per_bin =
+            debug_get_num_option("AMD_DEBUG_DPBB_CS", sscreen->pbb_context_states_per_bin);
+      sscreen->pbb_persistent_states_per_bin =
+         debug_get_num_option("AMD_DEBUG_DPBB_PS", sscreen->pbb_persistent_states_per_bin);
 
       assert(sscreen->pbb_context_states_per_bin >= 1 &&
              sscreen->pbb_context_states_per_bin <= 6);
@@ -1409,6 +1420,8 @@ static struct pipe_screen *radeonsi_screen_create_impl(struct radeon_winsys *ws,
          sscreen->eqaa_force_color_samples = f;
       }
    }
+
+   sscreen->ngg_subgroup_size = 128;
 
    if (sscreen->info.gfx_level >= GFX11) {
       unsigned attr_ring_size = sscreen->info.attribute_ring_size_per_se * sscreen->info.max_se;

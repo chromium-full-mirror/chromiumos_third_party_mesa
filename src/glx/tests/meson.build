@@ -50,6 +50,6 @@ if with_shared_glapi
       dependencies : [dep_libdrm, dep_glproto, dep_thread, idep_gtest]
     ),
     suite : ['glx'],
-    protocol : 'gtest',
+    protocol : gtest_test_protocol,
   )
 endif

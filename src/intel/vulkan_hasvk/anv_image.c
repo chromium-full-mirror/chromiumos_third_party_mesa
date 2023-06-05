@@ -375,13 +375,6 @@ can_fast_clear_with_non_zero_color(const struct intel_device_info *devinfo,
                                    uint32_t plane,
                                    const VkImageFormatListCreateInfo *fmt_list)
 {
-   /* Triangles rendered on non-zero fast cleared images with 8xMSAA can get
-    * black pixels around them on Haswell.
-    */
-   if (devinfo->ver == 7 && image->vk.samples == 8) {
-      return false;
-   }
-
    /* If we don't have an AUX surface where fast clears apply, we can return
     * early.
     */
@@ -1281,10 +1274,6 @@ anv_image_init(struct anv_device *device, struct anv_image *image,
    if (image->vk.external_handle_types &
        VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID) {
       image->from_ahb = true;
-#ifdef ANDROID
-      image->vk.ahardware_buffer_format =
-         anv_ahb_format_for_vk_format(image->vk.format);
-#endif
       return VK_SUCCESS;
    }
 

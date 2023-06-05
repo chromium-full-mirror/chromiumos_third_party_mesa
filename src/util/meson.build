@@ -329,7 +329,7 @@ if with_tests
                                  'tests', 'drirc_home'),
             'DRIRC_CONFIGDIR=' + join_paths(meson.current_source_dir(),
                                             'tests', 'drirc_configdir')],
-      protocol : 'gtest',
+      protocol : gtest_test_protocol,
     )
   endif
 
@@ -381,7 +381,7 @@ if with_tests
       dependencies : [idep_mesautil, idep_gtest],
     ),
     suite : ['util'],
-    protocol : 'gtest',
+    protocol : gtest_test_protocol,
     timeout : 180,
   )
 

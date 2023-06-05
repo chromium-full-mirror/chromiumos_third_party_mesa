@@ -19,23 +19,7 @@
 # SOFTWARE.
 
 vk_api_xml = files('registry/vk.xml')
-
-vulkan_icd_link_args = []
-vulkan_icd_link_depends = []
-
-if with_platform_android
-  vulkan_icd_symbols = files('vulkan-icd-android-symbols.txt')
-  if with_ld_version_script
-    vulkan_icd_link_args += ['-Wl,--version-script', join_paths(meson.current_source_dir(), 'vulkan-android.sym')]
-    vulkan_icd_link_depends += files('vulkan-android.sym')
-  endif
-else
-  vulkan_icd_symbols = files('vulkan-icd-symbols.txt')
-  if with_ld_version_script
-    vulkan_icd_link_args += ['-Wl,--version-script', join_paths(meson.current_source_dir(), 'vulkan.sym')]
-    vulkan_icd_link_depends += files('vulkan.sym')
-  endif
-endif
+vulkan_icd_symbols = files('vulkan-icd-symbols.txt')
 
 inc_vulkan_util = include_directories('util')
 
@@ -61,36 +45,21 @@ if with_platform_x11
     dep_xcb_shm,
     dep_xshmfence,
   ]
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_XCB_KHR'
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_XLIB_KHR'
+  vulkan_wsi_list += ['xcb', 'x11']
 endif
 if with_platform_wayland
   vulkan_wsi_deps += dep_wayland_client
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_WAYLAND_KHR'
+  vulkan_wsi_list += ['wayland']
 endif
 if system_has_kms_drm and not with_platform_android
   vulkan_wsi_deps += [dep_libdrm]
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+  vulkan_wsi_list += ['drm']
 endif
 if with_xlib_lease
   vulkan_wsi_deps += [dep_xlib_xrandr]
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_XLIB_XRANDR_EXT'
-endif
-if with_platform_android
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_ANDROID_KHR'
-endif
-if with_platform_windows
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_WIN32_KHR'
-endif
-if host_machine.system() == 'darwin'
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_MACOS_MVK'
-  vulkan_wsi_list += '-DVK_USE_PLATFORM_METAL_EXT'
+  vulkan_wsi_list += ['xlib_xrandr']
 endif
 
-idep_vulkan_wsi_defines = declare_dependency(
-  compile_args : vulkan_wsi_list,
-)
-vulkan_wsi_deps += idep_vulkan_wsi_defines
 
 subdir('util')
 subdir('runtime')

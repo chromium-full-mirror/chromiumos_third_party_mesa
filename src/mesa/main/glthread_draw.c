@@ -99,11 +99,8 @@ upload_multi_indices(struct gl_context *ctx, unsigned total_count,
    }
 
    for (unsigned i = 0, offset = 0; i < draw_count; i++) {
-      if (!count[i]) {
-         /* Set some valid value so as not to leave it uninitialized. */
-         out_indices[i] = (const GLvoid*)(intptr_t)upload_offset;
+      if (count[i] == 0)
          continue;
-      }
 
       unsigned size = count[i] * index_size;
 
@@ -215,6 +212,7 @@ upload_vertices(struct gl_context *ctx, unsigned user_buffer_mask,
 
          buffers[num_buffers].buffer = upload_buffer;
          buffers[num_buffers].offset = upload_offset - start;
+         buffers[num_buffers].original_pointer = ptr;
          num_buffers++;
       }
 
@@ -275,6 +273,7 @@ upload_vertices(struct gl_context *ctx, unsigned user_buffer_mask,
 
       buffers[num_buffers].buffer = upload_buffer;
       buffers[num_buffers].offset = upload_offset - offset;
+      buffers[num_buffers].original_pointer = ptr;
       num_buffers++;
    }
 
@@ -292,13 +291,13 @@ struct marshal_cmd_DrawArrays
 
 uint32_t
 _mesa_unmarshal_DrawArrays(struct gl_context *ctx,
-                           const struct marshal_cmd_DrawArrays *restrict cmd)
+                           const struct marshal_cmd_DrawArrays *cmd)
 {
    const GLenum mode = cmd->mode;
    const GLint first = cmd->first;
    const GLsizei count = cmd->count;
 
-   CALL_DrawArrays(ctx->Dispatch.Current, (mode, first, count));
+   CALL_DrawArrays(ctx->CurrentServerDispatch, (mode, first, count));
    const unsigned cmd_size = align(sizeof(*cmd), 8) / 8;
    assert(cmd_size == cmd->cmd_base.cmd_size);
    return cmd_size;
@@ -317,7 +316,7 @@ struct marshal_cmd_DrawArraysInstancedBaseInstance
 
 uint32_t
 _mesa_unmarshal_DrawArraysInstancedBaseInstance(struct gl_context *ctx,
-                                                const struct marshal_cmd_DrawArraysInstancedBaseInstance *restrict cmd)
+                                                const struct marshal_cmd_DrawArraysInstancedBaseInstance *cmd)
 {
    const GLenum mode = cmd->mode;
    const GLint first = cmd->first;
@@ -325,7 +324,7 @@ _mesa_unmarshal_DrawArraysInstancedBaseInstance(struct gl_context *ctx,
    const GLsizei instance_count = cmd->instance_count;
    const GLuint baseinstance = cmd->baseinstance;
 
-   CALL_DrawArraysInstancedBaseInstance(ctx->Dispatch.Current,
+   CALL_DrawArraysInstancedBaseInstance(ctx->CurrentServerDispatch,
                                         (mode, first, count, instance_count,
                                          baseinstance));
    const unsigned cmd_size = align(sizeof(*cmd), 8) / 8;
@@ -333,36 +332,29 @@ _mesa_unmarshal_DrawArraysInstancedBaseInstance(struct gl_context *ctx,
    return cmd_size;
 }
 
-struct marshal_cmd_DrawArraysInstancedBaseInstanceDrawID
+static ALWAYS_INLINE void
+draw_arrays_async(struct gl_context *ctx, GLenum mode, GLint first,
+                  GLsizei count, GLsizei instance_count, GLuint baseinstance)
 {
-   struct marshal_cmd_base cmd_base;
-   GLenum mode;
-   GLint first;
-   GLsizei count;
-   GLsizei instance_count;
-   GLuint baseinstance;
-   GLuint drawid;
-};
+   if (instance_count == 1 && baseinstance == 0) {
+      int cmd_size = sizeof(struct marshal_cmd_DrawArrays);
+      struct marshal_cmd_DrawArrays *cmd =
+         _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawArrays, cmd_size);
 
-uint32_t
-_mesa_unmarshal_DrawArraysInstancedBaseInstanceDrawID(struct gl_context *ctx,
-                                                const struct marshal_cmd_DrawArraysInstancedBaseInstanceDrawID *cmd)
-{
-   const GLenum mode = cmd->mode;
-   const GLint first = cmd->first;
-   const GLsizei count = cmd->count;
-   const GLsizei instance_count = cmd->instance_count;
-   const GLuint baseinstance = cmd->baseinstance;
+      cmd->mode = mode;
+      cmd->first = first;
+      cmd->count = count;
+   } else {
+      int cmd_size = sizeof(struct marshal_cmd_DrawArraysInstancedBaseInstance);
+      struct marshal_cmd_DrawArraysInstancedBaseInstance *cmd =
+         _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawArraysInstancedBaseInstance, cmd_size);
 
-   ctx->DrawID = cmd->drawid;
-   CALL_DrawArraysInstancedBaseInstance(ctx->Dispatch.Current,
-                                        (mode, first, count, instance_count,
-                                         baseinstance));
-   ctx->DrawID = 0;
-
-   const unsigned cmd_size = align(sizeof(*cmd), 8) / 8;
-   assert(cmd_size == cmd->cmd_base.cmd_size);
-   return cmd_size;
+      cmd->mode = mode;
+      cmd->first = first;
+      cmd->count = count;
+      cmd->instance_count = instance_count;
+      cmd->baseinstance = baseinstance;
+   }
 }
 
 /* DrawArraysInstancedBaseInstance with user buffers. */
@@ -374,120 +366,46 @@ struct marshal_cmd_DrawArraysUserBuf
    GLsizei count;
    GLsizei instance_count;
    GLuint baseinstance;
-   GLuint drawid;
    GLuint user_buffer_mask;
 };
 
 uint32_t
 _mesa_unmarshal_DrawArraysUserBuf(struct gl_context *ctx,
-                                  const struct marshal_cmd_DrawArraysUserBuf *restrict cmd)
+                                  const struct marshal_cmd_DrawArraysUserBuf *cmd)
 {
-   const GLuint user_buffer_mask = cmd->user_buffer_mask;
-   const struct glthread_attrib_binding *buffers =
-      (const struct glthread_attrib_binding *)(cmd + 1);
-
-   /* Bind uploaded buffers if needed. */
-   if (user_buffer_mask)
-      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask);
-
    const GLenum mode = cmd->mode;
    const GLint first = cmd->first;
    const GLsizei count = cmd->count;
    const GLsizei instance_count = cmd->instance_count;
    const GLuint baseinstance = cmd->baseinstance;
+   const GLuint user_buffer_mask = cmd->user_buffer_mask;
+   const struct glthread_attrib_binding *buffers =
+      (const struct glthread_attrib_binding *)(cmd + 1);
 
-   ctx->DrawID = cmd->drawid;
-   CALL_DrawArraysInstancedBaseInstance(ctx->Dispatch.Current,
+   /* Bind uploaded buffers if needed. */
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      false);
+   }
+
+   CALL_DrawArraysInstancedBaseInstance(ctx->CurrentServerDispatch,
                                         (mode, first, count, instance_count,
                                          baseinstance));
-   ctx->DrawID = 0;
+
+   /* Restore states. */
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      true);
+   }
    return cmd->cmd_base.cmd_size;
 }
 
-static inline unsigned
-get_user_buffer_mask(struct gl_context *ctx)
-{
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-
-   /* BufferEnabled means which attribs are enabled in terms of buffer
-    * binding slots (not attrib slots).
-    *
-    * UserPointerMask means which buffer bindings don't have a buffer bound.
-    *
-    * NonNullPointerMask means which buffer bindings have a NULL pointer.
-    * Those are not uploaded. This can happen when an attrib is enabled, but
-    * the shader doesn't use it, so it's ignored by mesa/state_tracker.
-    */
-   return vao->BufferEnabled & vao->UserPointerMask & vao->NonNullPointerMask;
-}
-
 static ALWAYS_INLINE void
-draw_arrays(GLuint drawid, GLenum mode, GLint first, GLsizei count,
-            GLsizei instance_count, GLuint baseinstance,
-            bool compiled_into_dlist)
+draw_arrays_async_user(struct gl_context *ctx, GLenum mode, GLint first,
+                       GLsizei count, GLsizei instance_count, GLuint baseinstance,
+                       unsigned user_buffer_mask,
+                       const struct glthread_attrib_binding *buffers)
 {
-   GET_CURRENT_CONTEXT(ctx);
-
-   if (unlikely(compiled_into_dlist && ctx->GLThread.ListMode)) {
-      _mesa_glthread_finish_before(ctx, "DrawArrays");
-      /* Use the function that's compiled into a display list. */
-      CALL_DrawArrays(ctx->Dispatch.Current, (mode, first, count));
-      return;
-   }
-
-   unsigned user_buffer_mask =
-      _mesa_is_desktop_gl_core(ctx) ? 0 : get_user_buffer_mask(ctx);
-
-   /* Fast path when nothing needs to be done.
-    *
-    * This is also an error path. Zero counts should still call the driver
-    * for possible GL errors.
-    */
-   if (!user_buffer_mask || count <= 0 || instance_count <= 0 ||
-       /* This will just generate GL_INVALID_OPERATION, as it should. */
-       ctx->GLThread.inside_begin_end ||
-       ctx->Dispatch.Current == ctx->Dispatch.ContextLost ||
-       ctx->GLThread.ListMode) {
-      if (instance_count == 1 && baseinstance == 0 && drawid == 0) {
-         int cmd_size = sizeof(struct marshal_cmd_DrawArrays);
-         struct marshal_cmd_DrawArrays *cmd =
-            _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawArrays, cmd_size);
-
-         cmd->mode = mode;
-         cmd->first = first;
-         cmd->count = count;
-      } else if (drawid == 0) {
-         int cmd_size = sizeof(struct marshal_cmd_DrawArraysInstancedBaseInstance);
-         struct marshal_cmd_DrawArraysInstancedBaseInstance *cmd =
-            _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawArraysInstancedBaseInstance, cmd_size);
-
-         cmd->mode = mode;
-         cmd->first = first;
-         cmd->count = count;
-         cmd->instance_count = instance_count;
-         cmd->baseinstance = baseinstance;
-      } else {
-         int cmd_size = sizeof(struct marshal_cmd_DrawArraysInstancedBaseInstanceDrawID);
-         struct marshal_cmd_DrawArraysInstancedBaseInstanceDrawID *cmd =
-            _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawArraysInstancedBaseInstanceDrawID, cmd_size);
-
-         cmd->mode = mode;
-         cmd->first = first;
-         cmd->count = count;
-         cmd->instance_count = instance_count;
-         cmd->baseinstance = baseinstance;
-         cmd->drawid = drawid;
-      }
-      return;
-   }
-
-   /* Upload and draw. */
-   struct glthread_attrib_binding buffers[VERT_ATTRIB_MAX];
-
-   if (!upload_vertices(ctx, user_buffer_mask, first, count, baseinstance,
-                        instance_count, buffers))
-      return; /* the error is set by upload_vertices */
-
    int buffers_size = util_bitcount(user_buffer_mask) * sizeof(buffers[0]);
    int cmd_size = sizeof(struct marshal_cmd_DrawArraysUserBuf) +
                   buffers_size;
@@ -500,11 +418,50 @@ draw_arrays(GLuint drawid, GLenum mode, GLint first, GLsizei count,
    cmd->count = count;
    cmd->instance_count = instance_count;
    cmd->baseinstance = baseinstance;
-   cmd->drawid = drawid;
    cmd->user_buffer_mask = user_buffer_mask;
 
    if (user_buffer_mask)
       memcpy(cmd + 1, buffers, buffers_size);
+}
+
+static ALWAYS_INLINE void
+draw_arrays(GLenum mode, GLint first, GLsizei count, GLsizei instance_count,
+            GLuint baseinstance, bool compiled_into_dlist)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
+   unsigned user_buffer_mask = vao->UserPointerMask & vao->BufferEnabled;
+
+   if (compiled_into_dlist && ctx->GLThread.ListMode) {
+      _mesa_glthread_finish_before(ctx, "DrawArrays");
+      /* Use the function that's compiled into a display list. */
+      CALL_DrawArrays(ctx->CurrentServerDispatch, (mode, first, count));
+      return;
+   }
+
+   /* Fast path when nothing needs to be done.
+    *
+    * This is also an error path. Zero counts should still call the driver
+    * for possible GL errors.
+    */
+   if (ctx->API == API_OPENGL_CORE || !user_buffer_mask ||
+       count <= 0 || instance_count <= 0 ||
+       /* This will just generate GL_INVALID_OPERATION, as it should. */
+       (!compiled_into_dlist && ctx->GLThread.ListMode)) {
+      draw_arrays_async(ctx, mode, first, count, instance_count, baseinstance);
+      return;
+   }
+
+   /* Upload and draw. */
+   struct glthread_attrib_binding buffers[VERT_ATTRIB_MAX];
+
+   if (!upload_vertices(ctx, user_buffer_mask, first, count, baseinstance,
+                        instance_count, buffers))
+      return; /* the error is set by upload_vertices */
+
+   draw_arrays_async_user(ctx, mode, first, count, instance_count, baseinstance,
+                          user_buffer_mask, buffers);
 }
 
 /* MultiDrawArrays with user buffers. */
@@ -518,7 +475,7 @@ struct marshal_cmd_MultiDrawArraysUserBuf
 
 uint32_t
 _mesa_unmarshal_MultiDrawArraysUserBuf(struct gl_context *ctx,
-                                       const struct marshal_cmd_MultiDrawArraysUserBuf *restrict cmd)
+                                       const struct marshal_cmd_MultiDrawArraysUserBuf *cmd)
 {
    const GLenum mode = cmd->mode;
    const GLsizei draw_count = cmd->draw_count;
@@ -533,66 +490,28 @@ _mesa_unmarshal_MultiDrawArraysUserBuf(struct gl_context *ctx,
       (const struct glthread_attrib_binding *)variable_data;
 
    /* Bind uploaded buffers if needed. */
-   if (user_buffer_mask)
-      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask);
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      false);
+   }
 
-   CALL_MultiDrawArrays(ctx->Dispatch.Current,
+   CALL_MultiDrawArrays(ctx->CurrentServerDispatch,
                         (mode, first, count, draw_count));
+
+   /* Restore states. */
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      true);
+   }
    return cmd->cmd_base.cmd_size;
 }
 
-void GLAPIENTRY
-_mesa_marshal_MultiDrawArrays(GLenum mode, const GLint *first,
-                              const GLsizei *count, GLsizei draw_count)
+static ALWAYS_INLINE bool
+multi_draw_arrays_async(struct gl_context *ctx, GLenum mode,
+                        const GLint *first, const GLsizei *count,
+                        GLsizei draw_count, unsigned user_buffer_mask,
+                        const struct glthread_attrib_binding *buffers)
 {
-   GET_CURRENT_CONTEXT(ctx);
-
-   if (unlikely(ctx->GLThread.ListMode)) {
-      _mesa_glthread_finish_before(ctx, "MultiDrawArrays");
-      CALL_MultiDrawArrays(ctx->Dispatch.Current,
-                           (mode, first, count, draw_count));
-      return;
-   }
-
-   struct glthread_attrib_binding buffers[VERT_ATTRIB_MAX];
-   unsigned user_buffer_mask =
-      _mesa_is_desktop_gl_core(ctx) || draw_count <= 0 ||
-      ctx->Dispatch.Current == ctx->Dispatch.ContextLost ||
-      ctx->GLThread.inside_begin_end ? 0 : get_user_buffer_mask(ctx);
-
-   if (user_buffer_mask) {
-      unsigned min_index = ~0;
-      unsigned max_index_exclusive = 0;
-
-      for (int i = 0; i < draw_count; i++) {
-         GLsizei vertex_count = count[i];
-
-         if (vertex_count < 0) {
-            /* This will just call the driver to set the GL error. */
-            min_index = ~0;
-            break;
-         }
-         if (vertex_count == 0)
-            continue;
-
-         min_index = MIN2(min_index, first[i]);
-         max_index_exclusive = MAX2(max_index_exclusive, first[i] + vertex_count);
-      }
-
-      if (min_index >= max_index_exclusive) {
-         /* Nothing to do, but call the driver to set possible GL errors. */
-         user_buffer_mask = 0;
-      } else {
-         /* Upload. */
-         unsigned num_vertices = max_index_exclusive - min_index;
-
-         if (!upload_vertices(ctx, user_buffer_mask, min_index, num_vertices,
-                              0, 1, buffers))
-            return; /* the error is set by upload_vertices */
-      }
-   }
-
-   /* Add the call into the batch buffer. */
    int real_draw_count = MAX2(draw_count, 0);
    int first_size = sizeof(GLint) * real_draw_count;
    int count_size = sizeof(GLsizei) * real_draw_count;
@@ -601,33 +520,93 @@ _mesa_marshal_MultiDrawArrays(GLenum mode, const GLint *first,
                   first_size + count_size + buffers_size;
    struct marshal_cmd_MultiDrawArraysUserBuf *cmd;
 
-   /* Make sure cmd can fit in the batch buffer */
-   if (cmd_size <= MARSHAL_MAX_CMD_SIZE) {
-      cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_MultiDrawArraysUserBuf,
-                                            cmd_size);
-      cmd->mode = mode;
-      cmd->draw_count = draw_count;
-      cmd->user_buffer_mask = user_buffer_mask;
-
-      char *variable_data = (char*)(cmd + 1);
-      memcpy(variable_data, first, first_size);
-      variable_data += first_size;
-      memcpy(variable_data, count, count_size);
-
-      if (user_buffer_mask) {
-         variable_data += count_size;
-         memcpy(variable_data, buffers, buffers_size);
-      }
-   } else {
-      /* The call is too large, so sync and execute the unmarshal code here. */
-      _mesa_glthread_finish_before(ctx, "MultiDrawArrays");
-
-      if (user_buffer_mask)
-         _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask);
-
-      CALL_MultiDrawArrays(ctx->Dispatch.Current,
-                           (mode, first, count, draw_count));
+   /* Make sure cmd can fit the queue buffer */
+   if (cmd_size > MARSHAL_MAX_CMD_SIZE) {
+      return false;
    }
+
+   cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_MultiDrawArraysUserBuf,
+                                         cmd_size);
+   cmd->mode = mode;
+   cmd->draw_count = draw_count;
+   cmd->user_buffer_mask = user_buffer_mask;
+
+   char *variable_data = (char*)(cmd + 1);
+   memcpy(variable_data, first, first_size);
+   variable_data += first_size;
+   memcpy(variable_data, count, count_size);
+
+   if (user_buffer_mask) {
+      variable_data += count_size;
+      memcpy(variable_data, buffers, buffers_size);
+   }
+
+   return true;
+}
+
+void GLAPIENTRY
+_mesa_marshal_MultiDrawArrays(GLenum mode, const GLint *first,
+                              const GLsizei *count, GLsizei draw_count)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
+   unsigned user_buffer_mask =
+      draw_count <= 0 ? 0 : vao->UserPointerMask & vao->BufferEnabled;
+
+   if (ctx->GLThread.ListMode)
+      goto sync;
+
+   if ((ctx->API == API_OPENGL_CORE || !user_buffer_mask) &&
+       multi_draw_arrays_async(ctx, mode, first, count, draw_count, 0, NULL)) {
+      return;
+   }
+
+   assert(draw_count > 0);
+
+   /* If the draw count is too high, the queue can't be used. */
+   if (draw_count > MARSHAL_MAX_CMD_SIZE / 16)
+      goto sync;
+
+   unsigned min_index = ~0;
+   unsigned max_index_exclusive = 0;
+
+   for (unsigned i = 0; i < draw_count; i++) {
+      GLsizei vertex_count = count[i];
+
+      if (vertex_count < 0) {
+         /* Just call the driver to set the error. */
+         multi_draw_arrays_async(ctx, mode, first, count, draw_count, 0, NULL);
+         return;
+      }
+      if (vertex_count == 0)
+         continue;
+
+      min_index = MIN2(min_index, first[i]);
+      max_index_exclusive = MAX2(max_index_exclusive, first[i] + vertex_count);
+   }
+
+   unsigned num_vertices = max_index_exclusive - min_index;
+   if (num_vertices == 0) {
+      /* Nothing to do, but call the driver to set possible GL errors. */
+      multi_draw_arrays_async(ctx, mode, first, count, draw_count, 0, NULL);
+      return;
+   }
+
+   /* Upload and draw. */
+   struct glthread_attrib_binding buffers[VERT_ATTRIB_MAX];
+   if (!upload_vertices(ctx, user_buffer_mask, min_index, num_vertices,
+                        0, 1, buffers))
+      return; /* the error is set by upload_vertices */
+
+   multi_draw_arrays_async(ctx, mode, first, count, draw_count,
+                           user_buffer_mask, buffers);
+   return;
+
+sync:
+   _mesa_glthread_finish_before(ctx, "MultiDrawArrays");
+   CALL_MultiDrawArrays(ctx->CurrentServerDispatch,
+                        (mode, first, count, draw_count));
 }
 
 /* DrawElementsInstanced without user buffers. */
@@ -643,7 +622,7 @@ struct marshal_cmd_DrawElementsInstanced
 
 uint32_t
 _mesa_unmarshal_DrawElementsInstanced(struct gl_context *ctx,
-                                      const struct marshal_cmd_DrawElementsInstanced *restrict cmd)
+                                      const struct marshal_cmd_DrawElementsInstanced *cmd)
 {
    const GLenum mode = cmd->mode;
    const GLsizei count = cmd->count;
@@ -651,7 +630,7 @@ _mesa_unmarshal_DrawElementsInstanced(struct gl_context *ctx,
    const GLvoid *indices = cmd->indices;
    const GLsizei instance_count = cmd->instance_count;
 
-   CALL_DrawElementsInstanced(ctx->Dispatch.Current,
+   CALL_DrawElementsInstanced(ctx->CurrentServerDispatch,
                               (mode, count, type, indices, instance_count));
    const unsigned cmd_size = align(sizeof(*cmd), 8) / 8;
    assert(cmd_size == cmd->cmd_base.cmd_size);
@@ -671,7 +650,7 @@ struct marshal_cmd_DrawElementsBaseVertex
 
 uint32_t
 _mesa_unmarshal_DrawElementsBaseVertex(struct gl_context *ctx,
-                                       const struct marshal_cmd_DrawElementsBaseVertex *restrict cmd)
+                                       const struct marshal_cmd_DrawElementsBaseVertex *cmd)
 {
    const GLenum mode = cmd->mode;
    const GLsizei count = cmd->count;
@@ -679,7 +658,7 @@ _mesa_unmarshal_DrawElementsBaseVertex(struct gl_context *ctx,
    const GLvoid *indices = cmd->indices;
    const GLint basevertex = cmd->basevertex;
 
-   CALL_DrawElementsBaseVertex(ctx->Dispatch.Current,
+   CALL_DrawElementsBaseVertex(ctx->CurrentServerDispatch,
                                (mode, count, type, indices, basevertex));
    const unsigned cmd_size = align(sizeof(*cmd), 8) / 8;
    assert(cmd_size == cmd->cmd_base.cmd_size);
@@ -701,7 +680,7 @@ struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstance
 
 uint32_t
 _mesa_unmarshal_DrawElementsInstancedBaseVertexBaseInstance(struct gl_context *ctx,
-                                                            const struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstance *restrict cmd)
+                                                            const struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstance *cmd)
 {
    const GLenum mode = cmd->mode;
    const GLsizei count = cmd->count;
@@ -711,7 +690,7 @@ _mesa_unmarshal_DrawElementsInstancedBaseVertexBaseInstance(struct gl_context *c
    const GLint basevertex = cmd->basevertex;
    const GLuint baseinstance = cmd->baseinstance;
 
-   CALL_DrawElementsInstancedBaseVertexBaseInstance(ctx->Dispatch.Current,
+   CALL_DrawElementsInstancedBaseVertexBaseInstance(ctx->CurrentServerDispatch,
                                                     (mode, count, type, indices,
                                                      instance_count, basevertex,
                                                      baseinstance));
@@ -720,154 +699,58 @@ _mesa_unmarshal_DrawElementsInstancedBaseVertexBaseInstance(struct gl_context *c
    return cmd_size;
 }
 
-struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstanceDrawID
+struct marshal_cmd_DrawRangeElementsBaseVertex
 {
    struct marshal_cmd_base cmd_base;
    GLenum16 mode;
    GLenum16 type;
    GLsizei count;
-   GLsizei instance_count;
    GLint basevertex;
-   GLuint baseinstance;
-   GLuint drawid;
+   GLuint min_index;
+   GLuint max_index;
    const GLvoid *indices;
 };
 
 uint32_t
-_mesa_unmarshal_DrawElementsInstancedBaseVertexBaseInstanceDrawID(struct gl_context *ctx,
-                                                                  const struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstanceDrawID *restrict cmd)
+_mesa_unmarshal_DrawRangeElementsBaseVertex(struct gl_context *ctx,
+                                            const struct marshal_cmd_DrawRangeElementsBaseVertex *cmd)
 {
    const GLenum mode = cmd->mode;
    const GLsizei count = cmd->count;
    const GLenum type = cmd->type;
    const GLvoid *indices = cmd->indices;
-   const GLsizei instance_count = cmd->instance_count;
    const GLint basevertex = cmd->basevertex;
-   const GLuint baseinstance = cmd->baseinstance;
+   const GLuint min_index = cmd->min_index;
+   const GLuint max_index = cmd->max_index;
 
-   ctx->DrawID = cmd->drawid;
-   CALL_DrawElementsInstancedBaseVertexBaseInstance(ctx->Dispatch.Current,
-                                                    (mode, count, type, indices,
-                                                     instance_count, basevertex,
-                                                     baseinstance));
-   ctx->DrawID = 0;
-
+   CALL_DrawRangeElementsBaseVertex(ctx->CurrentServerDispatch,
+                                    (mode, min_index, max_index, count,
+                                     type, indices, basevertex));
    const unsigned cmd_size = align(sizeof(*cmd), 8) / 8;
    assert(cmd_size == cmd->cmd_base.cmd_size);
    return cmd_size;
 }
 
-struct marshal_cmd_DrawElementsUserBuf
+static ALWAYS_INLINE void
+draw_elements_async(struct gl_context *ctx, GLenum mode, GLsizei count,
+                    GLenum type, const GLvoid *indices, GLsizei instance_count,
+                    GLint basevertex, GLuint baseinstance,
+                    bool index_bounds_valid, GLuint min_index, GLuint max_index)
 {
-   struct marshal_cmd_base cmd_base;
-   GLenum16 mode;
-   GLenum16 type;
-   GLsizei count;
-   GLsizei instance_count;
-   GLint basevertex;
-   GLuint baseinstance;
-   GLuint drawid;
-   GLuint user_buffer_mask;
-   const GLvoid *indices;
-   struct gl_buffer_object *index_buffer;
-};
+   if (instance_count == 1 && baseinstance == 0) {
+      if (index_bounds_valid) {
+         int cmd_size = sizeof(struct marshal_cmd_DrawRangeElementsBaseVertex);
+         struct marshal_cmd_DrawRangeElementsBaseVertex *cmd =
+            _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawRangeElementsBaseVertex, cmd_size);
 
-uint32_t
-_mesa_unmarshal_DrawElementsUserBuf(struct gl_context *ctx,
-                                    const struct marshal_cmd_DrawElementsUserBuf *restrict cmd)
-{
-   const GLuint user_buffer_mask = cmd->user_buffer_mask;
-   const struct glthread_attrib_binding *buffers =
-      (const struct glthread_attrib_binding *)(cmd + 1);
-
-   /* Bind uploaded buffers if needed. */
-   if (user_buffer_mask)
-      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask);
-
-   /* Draw. */
-   const GLenum mode = cmd->mode;
-   const GLsizei count = cmd->count;
-   const GLenum type = cmd->type;
-   const GLvoid *indices = cmd->indices;
-   const GLsizei instance_count = cmd->instance_count;
-   const GLint basevertex = cmd->basevertex;
-   const GLuint baseinstance = cmd->baseinstance;
-   struct gl_buffer_object *index_buffer = cmd->index_buffer;
-
-   ctx->DrawID = cmd->drawid;
-   CALL_DrawElementsUserBuf(ctx->Dispatch.Current,
-                            ((GLintptr)index_buffer, mode, count, type,
-                             indices, instance_count, basevertex,
-                             baseinstance));
-   ctx->DrawID = 0;
-   _mesa_reference_buffer_object(ctx, &index_buffer, NULL);
-   return cmd->cmd_base.cmd_size;
-}
-
-static inline bool
-should_convert_to_begin_end(struct gl_context *ctx, unsigned count,
-                            unsigned num_upload_vertices,
-                            unsigned instance_count, struct glthread_vao *vao)
-{
-   /* Some of these are limitations of _mesa_glthread_UnrollDrawElements.
-    * Others prevent syncing, such as disallowing buffer objects because we
-    * can't map them without syncing.
-    */
-   return util_is_vbo_upload_ratio_too_large(count, num_upload_vertices) &&
-          instance_count == 1 &&                /* no instancing */
-          vao->CurrentElementBufferName == 0 && /* only user indices */
-          !ctx->GLThread._PrimitiveRestart &&   /* no primitive restart */
-          vao->UserPointerMask == vao->BufferEnabled && /* no VBOs */
-          !(vao->NonZeroDivisorMask & vao->BufferEnabled); /* no instanced attribs */
-}
-
-static void
-draw_elements(GLuint drawid, GLenum mode, GLsizei count, GLenum type,
-              const GLvoid *indices, GLsizei instance_count, GLint basevertex,
-              GLuint baseinstance, bool index_bounds_valid, GLuint min_index,
-              GLuint max_index, bool compiled_into_dlist)
-{
-   GET_CURRENT_CONTEXT(ctx);
-
-   if (unlikely(compiled_into_dlist && ctx->GLThread.ListMode)) {
-      _mesa_glthread_finish_before(ctx, "DrawElements");
-
-      /* Only use the ones that are compiled into display lists. */
-      if (basevertex) {
-         CALL_DrawElementsBaseVertex(ctx->Dispatch.Current,
-                                     (mode, count, type, indices, basevertex));
-      } else if (index_bounds_valid) {
-         CALL_DrawRangeElements(ctx->Dispatch.Current,
-                                (mode, min_index, max_index, count, type, indices));
+         cmd->mode = MIN2(mode, 0xffff);
+         cmd->type = MIN2(type, 0xffff);
+         cmd->count = count;
+         cmd->indices = indices;
+         cmd->basevertex = basevertex;
+         cmd->min_index = min_index;
+         cmd->max_index = max_index;
       } else {
-         CALL_DrawElements(ctx->Dispatch.Current, (mode, count, type, indices));
-      }
-      return;
-   }
-
-   if (unlikely(index_bounds_valid && max_index < min_index)) {
-      _mesa_marshal_InternalSetError(GL_INVALID_VALUE);
-      return;
-   }
-
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask =
-      _mesa_is_desktop_gl_core(ctx) ? 0 : get_user_buffer_mask(ctx);
-   bool has_user_indices = vao->CurrentElementBufferName == 0 && indices;
-
-   /* Fast path when nothing needs to be done.
-    *
-    * This is also an error path. Zero counts should still call the driver
-    * for possible GL errors.
-    */
-   if (count <= 0 || instance_count <= 0 ||
-       !is_index_type_valid(type) ||
-       (!user_buffer_mask && !has_user_indices) ||
-       ctx->Dispatch.Current == ctx->Dispatch.ContextLost ||
-       /* This will just generate GL_INVALID_OPERATION, as it should. */
-       ctx->GLThread.inside_begin_end ||
-       ctx->GLThread.ListMode) {
-      if (instance_count == 1 && baseinstance == 0 && drawid == 0) {
          int cmd_size = sizeof(struct marshal_cmd_DrawElementsBaseVertex);
          struct marshal_cmd_DrawElementsBaseVertex *cmd =
             _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsBaseVertex, cmd_size);
@@ -877,44 +760,162 @@ draw_elements(GLuint drawid, GLenum mode, GLsizei count, GLenum type,
          cmd->count = count;
          cmd->indices = indices;
          cmd->basevertex = basevertex;
-      } else {
-         if (basevertex == 0 && baseinstance == 0 && drawid == 0) {
-            int cmd_size = sizeof(struct marshal_cmd_DrawElementsInstanced);
-            struct marshal_cmd_DrawElementsInstanced *cmd =
-               _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsInstanced, cmd_size);
-
-            cmd->mode = MIN2(mode, 0xffff);
-            cmd->type = MIN2(type, 0xffff);
-            cmd->count = count;
-            cmd->instance_count = instance_count;
-            cmd->indices = indices;
-         } else if (drawid == 0) {
-            int cmd_size = sizeof(struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstance);
-            struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstance *cmd =
-               _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsInstancedBaseVertexBaseInstance, cmd_size);
-
-            cmd->mode = MIN2(mode, 0xffff);
-            cmd->type = MIN2(type, 0xffff);
-            cmd->count = count;
-            cmd->instance_count = instance_count;
-            cmd->basevertex = basevertex;
-            cmd->baseinstance = baseinstance;
-            cmd->indices = indices;
-         } else {
-            int cmd_size = sizeof(struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstanceDrawID);
-            struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstanceDrawID *cmd =
-               _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsInstancedBaseVertexBaseInstanceDrawID, cmd_size);
-
-            cmd->mode = MIN2(mode, 0xffff);
-            cmd->type = MIN2(type, 0xffff);
-            cmd->count = count;
-            cmd->instance_count = instance_count;
-            cmd->basevertex = basevertex;
-            cmd->baseinstance = baseinstance;
-            cmd->drawid = drawid;
-            cmd->indices = indices;
-         }
       }
+   } else {
+      if (basevertex == 0 && baseinstance == 0) {
+         int cmd_size = sizeof(struct marshal_cmd_DrawElementsInstanced);
+         struct marshal_cmd_DrawElementsInstanced *cmd =
+            _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsInstanced, cmd_size);
+
+         cmd->mode = MIN2(mode, 0xffff);
+         cmd->type = MIN2(type, 0xffff);
+         cmd->count = count;
+         cmd->instance_count = instance_count;
+         cmd->indices = indices;
+      } else {
+         int cmd_size = sizeof(struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstance);
+         struct marshal_cmd_DrawElementsInstancedBaseVertexBaseInstance *cmd =
+            _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsInstancedBaseVertexBaseInstance, cmd_size);
+
+         cmd->mode = MIN2(mode, 0xffff);
+         cmd->type = MIN2(type, 0xffff);
+         cmd->count = count;
+         cmd->instance_count = instance_count;
+         cmd->basevertex = basevertex;
+         cmd->baseinstance = baseinstance;
+         cmd->indices = indices;
+      }
+   }
+}
+
+struct marshal_cmd_DrawElementsUserBuf
+{
+   struct marshal_cmd_base cmd_base;
+   bool index_bounds_valid;
+   GLenum8 mode;
+   GLenum16 type;
+   GLsizei count;
+   GLsizei instance_count;
+   GLint basevertex;
+   GLuint baseinstance;
+   GLuint min_index;
+   GLuint max_index;
+   GLuint user_buffer_mask;
+   const GLvoid *indices;
+   struct gl_buffer_object *index_buffer;
+};
+
+uint32_t
+_mesa_unmarshal_DrawElementsUserBuf(struct gl_context *ctx,
+                                    const struct marshal_cmd_DrawElementsUserBuf *cmd)
+{
+   const GLenum mode = cmd->mode;
+   const GLsizei count = cmd->count;
+   const GLenum type = cmd->type;
+   const GLvoid *indices = cmd->indices;
+   const GLsizei instance_count = cmd->instance_count;
+   const GLint basevertex = cmd->basevertex;
+   const GLuint baseinstance = cmd->baseinstance;
+   const GLuint min_index = cmd->min_index;
+   const GLuint max_index = cmd->max_index;
+   const GLuint user_buffer_mask = cmd->user_buffer_mask;
+   struct gl_buffer_object *index_buffer = cmd->index_buffer;
+   const struct glthread_attrib_binding *buffers =
+      (const struct glthread_attrib_binding *)(cmd + 1);
+
+   /* Bind uploaded buffers if needed. */
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      false);
+   }
+   if (index_buffer) {
+      _mesa_InternalBindElementBuffer(ctx, index_buffer);
+   }
+
+   /* Draw. */
+   if (cmd->index_bounds_valid && instance_count == 1 && baseinstance == 0) {
+      CALL_DrawRangeElementsBaseVertex(ctx->CurrentServerDispatch,
+                                       (mode, min_index, max_index, count,
+                                        type, indices, basevertex));
+   } else {
+      CALL_DrawElementsInstancedBaseVertexBaseInstance(ctx->CurrentServerDispatch,
+                                                       (mode, count, type, indices,
+                                                        instance_count, basevertex,
+                                                        baseinstance));
+   }
+
+   /* Restore states. */
+   if (index_buffer) {
+      _mesa_InternalBindElementBuffer(ctx, NULL);
+   }
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      true);
+   }
+   return cmd->cmd_base.cmd_size;
+}
+
+static ALWAYS_INLINE void
+draw_elements_async_user(struct gl_context *ctx, GLenum mode, GLsizei count,
+                         GLenum type, const GLvoid *indices, GLsizei instance_count,
+                         GLint basevertex, GLuint baseinstance,
+                         bool index_bounds_valid, GLuint min_index, GLuint max_index,
+                         struct gl_buffer_object *index_buffer,
+                         unsigned user_buffer_mask,
+                         const struct glthread_attrib_binding *buffers)
+{
+   int buffers_size = util_bitcount(user_buffer_mask) * sizeof(buffers[0]);
+   int cmd_size = sizeof(struct marshal_cmd_DrawElementsUserBuf) +
+                  buffers_size;
+   struct marshal_cmd_DrawElementsUserBuf *cmd;
+
+   cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsUserBuf, cmd_size);
+   cmd->mode = MIN2(mode, 0xff); /* primitive types go from 0 to 14 */
+   cmd->type = MIN2(type, 0xffff);
+   cmd->count = count;
+   cmd->indices = indices;
+   cmd->instance_count = instance_count;
+   cmd->basevertex = basevertex;
+   cmd->baseinstance = baseinstance;
+   cmd->min_index = min_index;
+   cmd->max_index = max_index;
+   cmd->user_buffer_mask = user_buffer_mask;
+   cmd->index_bounds_valid = index_bounds_valid;
+   cmd->index_buffer = index_buffer;
+
+   if (user_buffer_mask)
+      memcpy(cmd + 1, buffers, buffers_size);
+}
+
+static void
+draw_elements(GLenum mode, GLsizei count, GLenum type, const GLvoid *indices,
+              GLsizei instance_count, GLint basevertex, GLuint baseinstance,
+              bool index_bounds_valid, GLuint min_index, GLuint max_index,
+              bool compiled_into_dlist)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
+   unsigned user_buffer_mask = vao->UserPointerMask & vao->BufferEnabled;
+   bool has_user_indices = vao->CurrentElementBufferName == 0;
+
+   if (compiled_into_dlist && ctx->GLThread.ListMode)
+      goto sync;
+
+   /* Fast path when nothing needs to be done.
+    *
+    * This is also an error path. Zero counts should still call the driver
+    * for possible GL errors.
+    */
+   if (ctx->API == API_OPENGL_CORE ||
+       count <= 0 || instance_count <= 0 || max_index < min_index ||
+       !is_index_type_valid(type) ||
+       (!user_buffer_mask && !has_user_indices) ||
+       /* This will just generate GL_INVALID_OPERATION, as it should. */
+       (!compiled_into_dlist && ctx->GLThread.ListMode)) {
+      draw_elements_async(ctx, mode, count, type, indices, instance_count,
+                          basevertex, baseinstance, index_bounds_valid,
+                          min_index, max_index);
       return;
    }
 
@@ -945,20 +946,10 @@ draw_elements(GLuint drawid, GLenum mode, GLsizei count, GLenum type,
    unsigned start_vertex = min_index + basevertex;
    unsigned num_vertices = max_index + 1 - min_index;
 
-   /* If the vertex range to upload is much greater than the vertex count (e.g.
-    * only 3 vertices with indices 0, 1, 999999), uploading the whole range
-    * would take too much time. If all buffers are user buffers, have glthread
-    * fetch all indices and vertices and convert the draw into glBegin/glEnd.
-    * For such pathological cases, it's the fastest way.
-    *
-    * The game Cogs benefits from this - its FPS increases from 0 to 197.
-    */
-   if (should_convert_to_begin_end(ctx, count, num_vertices, instance_count,
-                                   vao)) {
-      _mesa_glthread_UnrollDrawElements(ctx, mode, count, type, indices,
-                                        basevertex);
-      return;
-   }
+   /* If there is too much data to upload, sync and let the driver unroll
+    * indices. */
+   if (util_is_vbo_upload_ratio_too_large(count, num_vertices))
+      goto sync;
 
    struct glthread_attrib_binding buffers[VERT_ATTRIB_MAX];
    if (user_buffer_mask) {
@@ -976,25 +967,36 @@ draw_elements(GLuint drawid, GLenum mode, GLsizei count, GLenum type,
    }
 
    /* Draw asynchronously. */
-   int buffers_size = util_bitcount(user_buffer_mask) * sizeof(buffers[0]);
-   int cmd_size = sizeof(struct marshal_cmd_DrawElementsUserBuf) +
-                  buffers_size;
-   struct marshal_cmd_DrawElementsUserBuf *cmd;
+   draw_elements_async_user(ctx, mode, count, type, indices, instance_count,
+                            basevertex, baseinstance, index_bounds_valid,
+                            min_index, max_index, index_buffer,
+                            user_buffer_mask, buffers);
+   return;
 
-   cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsUserBuf, cmd_size);
-   cmd->mode = MIN2(mode, 0xffff);
-   cmd->type = MIN2(type, 0xffff);
-   cmd->count = count;
-   cmd->indices = indices;
-   cmd->instance_count = instance_count;
-   cmd->basevertex = basevertex;
-   cmd->baseinstance = baseinstance;
-   cmd->user_buffer_mask = user_buffer_mask;
-   cmd->index_buffer = index_buffer;
-   cmd->drawid = drawid;
+sync:
+   _mesa_glthread_finish_before(ctx, "DrawElements");
 
-   if (user_buffer_mask)
-      memcpy(cmd + 1, buffers, buffers_size);
+   if (compiled_into_dlist && ctx->GLThread.ListMode) {
+      /* Only use the ones that are compiled into display lists. */
+      if (basevertex) {
+         CALL_DrawElementsBaseVertex(ctx->CurrentServerDispatch,
+                                     (mode, count, type, indices, basevertex));
+      } else if (index_bounds_valid) {
+         CALL_DrawRangeElements(ctx->CurrentServerDispatch,
+                                (mode, min_index, max_index, count, type, indices));
+      } else {
+         CALL_DrawElements(ctx->CurrentServerDispatch, (mode, count, type, indices));
+      }
+   } else if (index_bounds_valid && instance_count == 1 && baseinstance == 0) {
+      CALL_DrawRangeElementsBaseVertex(ctx->CurrentServerDispatch,
+                                       (mode, min_index, max_index, count,
+                                        type, indices, basevertex));
+   } else {
+      CALL_DrawElementsInstancedBaseVertexBaseInstance(ctx->CurrentServerDispatch,
+                                                       (mode, count, type, indices,
+                                                        instance_count, basevertex,
+                                                        baseinstance));
+   }
 }
 
 struct marshal_cmd_MultiDrawElementsUserBuf
@@ -1010,10 +1012,13 @@ struct marshal_cmd_MultiDrawElementsUserBuf
 
 uint32_t
 _mesa_unmarshal_MultiDrawElementsUserBuf(struct gl_context *ctx,
-                                         const struct marshal_cmd_MultiDrawElementsUserBuf *restrict cmd)
+                                         const struct marshal_cmd_MultiDrawElementsUserBuf *cmd)
 {
+   const GLenum mode = cmd->mode;
+   const GLenum type = cmd->type;
    const GLsizei draw_count = cmd->draw_count;
    const GLuint user_buffer_mask = cmd->user_buffer_mask;
+   struct gl_buffer_object *index_buffer = cmd->index_buffer;
    const bool has_base_vertex = cmd->has_base_vertex;
 
    const char *variable_data = (const char *)(cmd + 1);
@@ -1030,18 +1035,32 @@ _mesa_unmarshal_MultiDrawElementsUserBuf(struct gl_context *ctx,
       (const struct glthread_attrib_binding *)variable_data;
 
    /* Bind uploaded buffers if needed. */
-   if (user_buffer_mask)
-      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask);
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      false);
+   }
+   if (index_buffer) {
+      _mesa_InternalBindElementBuffer(ctx, index_buffer);
+   }
 
    /* Draw. */
-   const GLenum mode = cmd->mode;
-   const GLenum type = cmd->type;
-   struct gl_buffer_object *index_buffer = cmd->index_buffer;
+   if (has_base_vertex) {
+      CALL_MultiDrawElementsBaseVertex(ctx->CurrentServerDispatch,
+                                       (mode, count, type, indices, draw_count,
+                                        basevertex));
+   } else {
+      CALL_MultiDrawElements(ctx->CurrentServerDispatch,
+                             (mode, count, type, indices, draw_count));
+   }
 
-   CALL_MultiDrawElementsUserBuf(ctx->Dispatch.Current,
-                                 ((GLintptr)index_buffer, mode, count, type,
-                                  indices, draw_count, basevertex));
-   _mesa_reference_buffer_object(ctx, &index_buffer, NULL);
+   /* Restore states. */
+   if (index_buffer) {
+      _mesa_InternalBindElementBuffer(ctx, NULL);
+   }
+   if (user_buffer_mask) {
+      _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                      true);
+   }
    return cmd->cmd_base.cmd_size;
 }
 
@@ -1054,10 +1073,9 @@ multi_draw_elements_async(struct gl_context *ctx, GLenum mode,
                           unsigned user_buffer_mask,
                           const struct glthread_attrib_binding *buffers)
 {
-   int real_draw_count = MAX2(draw_count, 0);
-   int count_size = sizeof(GLsizei) * real_draw_count;
-   int indices_size = sizeof(indices[0]) * real_draw_count;
-   int basevertex_size = basevertex ? sizeof(GLsizei) * real_draw_count : 0;
+   int count_size = sizeof(GLsizei) * draw_count;
+   int indices_size = sizeof(indices[0]) * draw_count;
+   int basevertex_size = basevertex ? sizeof(GLsizei) * draw_count : 0;
    int buffers_size = util_bitcount(user_buffer_mask) * sizeof(buffers[0]);
    int cmd_size = sizeof(struct marshal_cmd_MultiDrawElementsUserBuf) +
                   count_size + indices_size + basevertex_size + buffers_size;
@@ -1091,14 +1109,33 @@ multi_draw_elements_async(struct gl_context *ctx, GLenum mode,
       _mesa_glthread_finish_before(ctx, "DrawElements");
 
       /* Bind uploaded buffers if needed. */
-      if (user_buffer_mask)
-         _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask);
+      if (user_buffer_mask) {
+         _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                         false);
+      }
+      if (index_buffer) {
+         _mesa_InternalBindElementBuffer(ctx, index_buffer);
+      }
 
       /* Draw. */
-      CALL_MultiDrawElementsUserBuf(ctx->Dispatch.Current,
-                                    ((GLintptr)index_buffer, mode, count,
-                                     type, indices, draw_count, basevertex));
-      _mesa_reference_buffer_object(ctx, &index_buffer, NULL);
+      if (basevertex != NULL) {
+         CALL_MultiDrawElementsBaseVertex(ctx->CurrentServerDispatch,
+                                          (mode, count, type, indices, draw_count,
+                                           basevertex));
+      } else {
+         CALL_MultiDrawElements(ctx->CurrentServerDispatch,
+                                (mode, count, type, indices, draw_count));
+      }
+
+      /* Restore states. */
+      /* TODO: remove this after glthread takes over all uploading */
+      if (index_buffer) {
+         _mesa_InternalBindElementBuffer(ctx, NULL);
+      }
+      if (user_buffer_mask) {
+         _mesa_InternalBindVertexBuffers(ctx, buffers, user_buffer_mask,
+                                         true);
+      }
    }
 }
 
@@ -1111,43 +1148,29 @@ _mesa_marshal_MultiDrawElementsBaseVertex(GLenum mode, const GLsizei *count,
 {
    GET_CURRENT_CONTEXT(ctx);
 
-   if (unlikely(ctx->GLThread.ListMode)) {
-      _mesa_glthread_finish_before(ctx, "MultiDrawElements");
-
-      if (basevertex) {
-         CALL_MultiDrawElementsBaseVertex(ctx->Dispatch.Current,
-                                          (mode, count, type, indices, draw_count,
-                                           basevertex));
-      } else {
-         CALL_MultiDrawElements(ctx->Dispatch.Current,
-                                (mode, count, type, indices, draw_count));
-      }
-      return;
-   }
-
    struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask = 0;
-   bool has_user_indices = false;
+   unsigned user_buffer_mask = vao->UserPointerMask & vao->BufferEnabled;
+   bool has_user_indices = vao->CurrentElementBufferName == 0;
 
-   /* Non-VBO vertex arrays are used only if this is true.
-    * When nothing needs to be uploaded or the draw is no-op or generates
-    * a GL error, we don't upload anything.
-    */
-   if (draw_count > 0 && is_index_type_valid(type) &&
-       ctx->Dispatch.Current != ctx->Dispatch.ContextLost &&
-       !ctx->GLThread.inside_begin_end) {
-      user_buffer_mask = _mesa_is_desktop_gl_core(ctx) ? 0 : get_user_buffer_mask(ctx);
-      has_user_indices = vao->CurrentElementBufferName == 0;
-   }
+   if (ctx->GLThread.ListMode)
+      goto sync;
 
-   /* Fast path when we don't need to upload anything. */
-   if (!user_buffer_mask && !has_user_indices) {
+   /* Fast path when nothing needs to be done. */
+   if (draw_count >= 0 &&
+       (ctx->API == API_OPENGL_CORE ||
+        !is_index_type_valid(type) ||
+        (!user_buffer_mask && !has_user_indices))) {
       multi_draw_elements_async(ctx, mode, count, type, indices,
                                 draw_count, basevertex, NULL, 0, NULL);
       return;
    }
 
    bool need_index_bounds = user_buffer_mask & ~vao->NonZeroDivisorMask;
+
+   /* If the draw count is negative, the queue can't be used. */
+   if (draw_count < 0)
+      goto sync;
+
    unsigned index_size = get_index_size(type);
    unsigned min_index = ~0;
    unsigned max_index = 0;
@@ -1259,479 +1282,32 @@ _mesa_marshal_MultiDrawElementsBaseVertex(GLenum mode, const GLsizei *count,
    multi_draw_elements_async(ctx, mode, count, type, indices, draw_count,
                              basevertex, index_buffer, user_buffer_mask,
                              buffers);
-}
+   return;
 
-void GLAPIENTRY
-_mesa_marshal_MultiModeDrawArraysIBM(const GLenum *mode, const GLint *first,
-                                     const GLsizei *count, GLsizei primcount,
-                                     GLint modestride)
-{
-   for (int i = 0 ; i < primcount; i++) {
-      if (count[i] > 0) {
-         GLenum m = *((GLenum *)((GLubyte *)mode + i * modestride));
-         _mesa_marshal_DrawArrays(m, first[i], count[i]);
-      }
+sync:
+   _mesa_glthread_finish_before(ctx, "MultiDrawElements");
+
+   if (basevertex) {
+      CALL_MultiDrawElementsBaseVertex(ctx->CurrentServerDispatch,
+                                       (mode, count, type, indices, draw_count,
+                                        basevertex));
+   } else {
+      CALL_MultiDrawElements(ctx->CurrentServerDispatch,
+                             (mode, count, type, indices, draw_count));
    }
-}
-
-void GLAPIENTRY
-_mesa_marshal_MultiModeDrawElementsIBM(const GLenum *mode,
-                                       const GLsizei *count, GLenum type,
-                                       const GLvoid * const *indices,
-                                       GLsizei primcount, GLint modestride)
-{
-   for (int i = 0 ; i < primcount; i++) {
-      if (count[i] > 0) {
-         GLenum m = *((GLenum *)((GLubyte *)mode + i * modestride));
-         _mesa_marshal_DrawElements(m, count[i], type, indices[i]);
-      }
-   }
-}
-
-static const void *
-map_draw_indirect_params(struct gl_context *ctx, GLintptr offset,
-                         unsigned count, unsigned stride)
-{
-   struct gl_buffer_object *obj = ctx->DrawIndirectBuffer;
-
-   if (!obj)
-      return (void*)offset;
-
-   return _mesa_bufferobj_map_range(ctx, offset,
-                                    MIN2((size_t)count * stride, obj->Size),
-                                    GL_MAP_READ_BIT, obj, MAP_INTERNAL);
-}
-
-static void
-unmap_draw_indirect_params(struct gl_context *ctx)
-{
-   if (ctx->DrawIndirectBuffer)
-      _mesa_bufferobj_unmap(ctx, ctx->DrawIndirectBuffer, MAP_INTERNAL);
-}
-
-static unsigned
-read_draw_indirect_count(struct gl_context *ctx, GLintptr offset)
-{
-   unsigned result = 0;
-
-   if (ctx->ParameterBuffer) {
-      _mesa_bufferobj_get_subdata(ctx, offset, sizeof(result), &result,
-                                  ctx->ParameterBuffer);
-   }
-   return result;
-}
-
-static void
-lower_draw_arrays_indirect(struct gl_context *ctx, GLenum mode,
-                           GLintptr indirect, GLsizei stride,
-                           unsigned draw_count)
-{
-   /* If <stride> is zero, the elements are tightly packed. */
-   if (stride == 0)
-      stride = 4 * sizeof(GLuint);      /* sizeof(DrawArraysIndirectCommand) */
-
-   const uint32_t *params =
-      map_draw_indirect_params(ctx, indirect, draw_count, stride);
-
-   for (unsigned i = 0; i < draw_count; i++) {
-      draw_arrays(i, mode,
-                  params[i * stride / 4 + 2],
-                  params[i * stride / 4 + 0],
-                  params[i * stride / 4 + 1],
-                  params[i * stride / 4 + 3], false);
-   }
-
-   unmap_draw_indirect_params(ctx);
-}
-
-static void
-lower_draw_elements_indirect(struct gl_context *ctx, GLenum mode, GLenum type,
-                             GLintptr indirect, GLsizei stride,
-                             unsigned draw_count)
-{
-   /* If <stride> is zero, the elements are tightly packed. */
-   if (stride == 0)
-      stride = 5 * sizeof(GLuint);      /* sizeof(DrawArraysIndirectCommand) */
-
-   const uint32_t *params =
-      map_draw_indirect_params(ctx, indirect, draw_count, stride);
-
-   for (unsigned i = 0; i < draw_count; i++) {
-      draw_elements(i, mode,
-                    params[i * stride / 4 + 0],
-                    type,
-                    (GLvoid*)((uintptr_t)params[i * stride / 4 + 2] *
-                              get_index_size(type)),
-                    params[i * stride / 4 + 1],
-                    params[i * stride / 4 + 3],
-                    params[i * stride / 4 + 4],
-                    false, 0, 0, false);
-   }
-   unmap_draw_indirect_params(ctx);
-}
-
-static inline bool
-draw_indirect_async_allowed(struct gl_context *ctx, unsigned user_buffer_mask)
-{
-   return ctx->API != API_OPENGL_COMPAT ||
-          /* This will just generate GL_INVALID_OPERATION, as it should. */
-          ctx->GLThread.inside_begin_end ||
-          ctx->GLThread.ListMode ||
-          ctx->Dispatch.Current == ctx->Dispatch.ContextLost ||
-          /* If the DrawIndirect buffer is bound, it behaves like profile != compat
-           * if there are no user VBOs. */
-          (ctx->GLThread.CurrentDrawIndirectBufferName && !user_buffer_mask);
-}
-
-struct marshal_cmd_DrawArraysIndirect
-{
-   struct marshal_cmd_base cmd_base;
-   GLenum16 mode;
-   const GLvoid * indirect;
-};
-
-uint32_t
-_mesa_unmarshal_DrawArraysIndirect(struct gl_context *ctx,
-                                   const struct marshal_cmd_DrawArraysIndirect *cmd)
-{
-   GLenum mode = cmd->mode;
-   const GLvoid * indirect = cmd->indirect;
-
-   CALL_DrawArraysIndirect(ctx->Dispatch.Current, (mode, indirect));
-
-   const unsigned cmd_size =
-      (align(sizeof(struct marshal_cmd_DrawArraysIndirect), 8) / 8);
-   assert(cmd_size == cmd->cmd_base.cmd_size);
-   return cmd_size;
-}
-
-void GLAPIENTRY
-_mesa_marshal_DrawArraysIndirect(GLenum mode, const GLvoid *indirect)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask =
-      _mesa_is_gles31(ctx) ? 0 : vao->UserPointerMask & vao->BufferEnabled;
-
-   if (draw_indirect_async_allowed(ctx, user_buffer_mask)) {
-      int cmd_size = sizeof(struct marshal_cmd_DrawArraysIndirect);
-      struct marshal_cmd_DrawArraysIndirect *cmd;
-
-      cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawArraysIndirect, cmd_size);
-      cmd->mode = MIN2(mode, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->indirect = indirect;
-      return;
-   }
-
-   _mesa_glthread_finish_before(ctx, "DrawArraysIndirect");
-   lower_draw_arrays_indirect(ctx, mode, (GLintptr)indirect, 0, 1);
-}
-
-struct marshal_cmd_DrawElementsIndirect
-{
-   struct marshal_cmd_base cmd_base;
-   GLenum16 mode;
-   GLenum16 type;
-   const GLvoid * indirect;
-};
-
-uint32_t
-_mesa_unmarshal_DrawElementsIndirect(struct gl_context *ctx,
-                                     const struct marshal_cmd_DrawElementsIndirect *cmd)
-{
-   GLenum mode = cmd->mode;
-   GLenum type = cmd->type;
-   const GLvoid * indirect = cmd->indirect;
-
-   CALL_DrawElementsIndirect(ctx->Dispatch.Current, (mode, type, indirect));
-
-   const unsigned cmd_size =
-      (align(sizeof(struct marshal_cmd_DrawElementsIndirect), 8) / 8);
-   assert(cmd_size == cmd->cmd_base.cmd_size);
-   return cmd_size;
-}
-
-void GLAPIENTRY
-_mesa_marshal_DrawElementsIndirect(GLenum mode, GLenum type, const GLvoid *indirect)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask =
-      _mesa_is_gles31(ctx) ? 0 : vao->UserPointerMask & vao->BufferEnabled;
-
-   if (draw_indirect_async_allowed(ctx, user_buffer_mask) ||
-       !is_index_type_valid(type)) {
-      int cmd_size = sizeof(struct marshal_cmd_DrawElementsIndirect);
-      struct marshal_cmd_DrawElementsIndirect *cmd;
-
-      cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_DrawElementsIndirect, cmd_size);
-      cmd->mode = MIN2(mode, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->type = MIN2(type, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->indirect = indirect;
-      return;
-   }
-
-   _mesa_glthread_finish_before(ctx, "DrawElementsIndirect");
-   lower_draw_elements_indirect(ctx, mode, type, (GLintptr)indirect, 0, 1);
-}
-
-struct marshal_cmd_MultiDrawArraysIndirect
-{
-   struct marshal_cmd_base cmd_base;
-   GLenum16 mode;
-   GLsizei primcount;
-   GLsizei stride;
-   const GLvoid * indirect;
-};
-
-uint32_t
-_mesa_unmarshal_MultiDrawArraysIndirect(struct gl_context *ctx,
-                                        const struct marshal_cmd_MultiDrawArraysIndirect *cmd)
-{
-   GLenum mode = cmd->mode;
-   const GLvoid * indirect = cmd->indirect;
-   GLsizei primcount = cmd->primcount;
-   GLsizei stride = cmd->stride;
-
-   CALL_MultiDrawArraysIndirect(ctx->Dispatch.Current,
-                                (mode, indirect, primcount, stride));
-
-   const unsigned cmd_size =
-      (align(sizeof(struct marshal_cmd_MultiDrawArraysIndirect), 8) / 8);
-   assert(cmd_size == cmd->cmd_base.cmd_size);
-   return cmd_size;
-}
-
-void GLAPIENTRY
-_mesa_marshal_MultiDrawArraysIndirect(GLenum mode, const GLvoid *indirect,
-                                      GLsizei primcount, GLsizei stride)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask =
-      _mesa_is_gles31(ctx) ? 0 : vao->UserPointerMask & vao->BufferEnabled;
-
-   if (draw_indirect_async_allowed(ctx, user_buffer_mask) ||
-       primcount <= 0) {
-      int cmd_size = sizeof(struct marshal_cmd_MultiDrawArraysIndirect);
-      struct marshal_cmd_MultiDrawArraysIndirect *cmd;
-
-      cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_MultiDrawArraysIndirect,
-                                            cmd_size);
-      cmd->mode = MIN2(mode, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->indirect = indirect;
-      cmd->primcount = primcount;
-      cmd->stride = stride;
-      return;
-   }
-
-   /* Lower the draw to direct due to non-VBO vertex arrays. */
-   _mesa_glthread_finish_before(ctx, "MultiDrawArraysIndirect");
-   lower_draw_arrays_indirect(ctx, mode, (GLintptr)indirect, stride, primcount);
-}
-
-struct marshal_cmd_MultiDrawElementsIndirect
-{
-   struct marshal_cmd_base cmd_base;
-   GLenum16 mode;
-   GLenum16 type;
-   GLsizei primcount;
-   GLsizei stride;
-   const GLvoid * indirect;
-};
-
-uint32_t
-_mesa_unmarshal_MultiDrawElementsIndirect(struct gl_context *ctx,
-                                          const struct marshal_cmd_MultiDrawElementsIndirect *cmd)
-{
-   GLenum mode = cmd->mode;
-   GLenum type = cmd->type;
-   const GLvoid * indirect = cmd->indirect;
-   GLsizei primcount = cmd->primcount;
-   GLsizei stride = cmd->stride;
-
-   CALL_MultiDrawElementsIndirect(ctx->Dispatch.Current,
-                                  (mode, type, indirect, primcount, stride));
-
-   const unsigned cmd_size =
-      (align(sizeof(struct marshal_cmd_MultiDrawElementsIndirect), 8) / 8);
-   assert(cmd_size == cmd->cmd_base.cmd_size);
-   return cmd_size;
-}
-
-void GLAPIENTRY
-_mesa_marshal_MultiDrawElementsIndirect(GLenum mode, GLenum type,
-                                        const GLvoid *indirect,
-                                        GLsizei primcount, GLsizei stride)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask =
-      _mesa_is_gles31(ctx) ? 0 : vao->UserPointerMask & vao->BufferEnabled;
-
-   if (draw_indirect_async_allowed(ctx, user_buffer_mask) ||
-       primcount <= 0 ||
-       !is_index_type_valid(type)) {
-      int cmd_size = sizeof(struct marshal_cmd_MultiDrawElementsIndirect);
-      struct marshal_cmd_MultiDrawElementsIndirect *cmd;
-
-      cmd = _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_MultiDrawElementsIndirect,
-                                            cmd_size);
-      cmd->mode = MIN2(mode, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->type = MIN2(type, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->indirect = indirect;
-      cmd->primcount = primcount;
-      cmd->stride = stride;
-      return;
-   }
-
-   /* Lower the draw to direct due to non-VBO vertex arrays. */
-   _mesa_glthread_finish_before(ctx, "MultiDrawElementsIndirect");
-   lower_draw_elements_indirect(ctx, mode, type, (GLintptr)indirect, stride,
-                                primcount);
-}
-
-struct marshal_cmd_MultiDrawArraysIndirectCountARB
-{
-   struct marshal_cmd_base cmd_base;
-   GLenum16 mode;
-   GLsizei maxdrawcount;
-   GLsizei stride;
-   GLintptr indirect;
-   GLintptr drawcount;
-};
-
-uint32_t
-_mesa_unmarshal_MultiDrawArraysIndirectCountARB(struct gl_context *ctx,
-                                                const struct marshal_cmd_MultiDrawArraysIndirectCountARB *cmd)
-{
-   GLenum mode = cmd->mode;
-   GLintptr indirect = cmd->indirect;
-   GLintptr drawcount = cmd->drawcount;
-   GLsizei maxdrawcount = cmd->maxdrawcount;
-   GLsizei stride = cmd->stride;
-
-   CALL_MultiDrawArraysIndirectCountARB(ctx->Dispatch.Current,
-                                        (mode, indirect, drawcount,
-                                         maxdrawcount, stride));
-
-   const unsigned cmd_size =
-      (align(sizeof(struct marshal_cmd_MultiDrawArraysIndirectCountARB), 8) / 8);
-   assert(cmd_size == cmd->cmd_base.cmd_size);
-   return cmd_size;
-}
-
-void GLAPIENTRY
-_mesa_marshal_MultiDrawArraysIndirectCountARB(GLenum mode, GLintptr indirect,
-                                              GLintptr drawcount,
-                                              GLsizei maxdrawcount,
-                                              GLsizei stride)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask =
-      _mesa_is_gles31(ctx) ? 0 : vao->UserPointerMask & vao->BufferEnabled;
-
-   if (draw_indirect_async_allowed(ctx, user_buffer_mask) ||
-       /* This will just generate GL_INVALID_OPERATION because Draw*IndirectCount
-        * functions forbid a user indirect buffer in the Compat profile. */
-       !ctx->GLThread.CurrentDrawIndirectBufferName) {
-      int cmd_size =
-         sizeof(struct marshal_cmd_MultiDrawArraysIndirectCountARB);
-      struct marshal_cmd_MultiDrawArraysIndirectCountARB *cmd =
-         _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_MultiDrawArraysIndirectCountARB,
-                                         cmd_size);
-
-      cmd->mode = MIN2(mode, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->indirect = indirect;
-      cmd->drawcount = drawcount;
-      cmd->maxdrawcount = maxdrawcount;
-      cmd->stride = stride;
-      return;
-   }
-
-   /* Lower the draw to direct due to non-VBO vertex arrays. */
-   _mesa_glthread_finish_before(ctx, "MultiDrawArraysIndirectCountARB");
-   lower_draw_arrays_indirect(ctx, mode, indirect, stride,
-                              read_draw_indirect_count(ctx, drawcount));
-}
-
-struct marshal_cmd_MultiDrawElementsIndirectCountARB
-{
-   struct marshal_cmd_base cmd_base;
-   GLenum16 mode;
-   GLenum16 type;
-   GLsizei maxdrawcount;
-   GLsizei stride;
-   GLintptr indirect;
-   GLintptr drawcount;
-};
-
-uint32_t
-_mesa_unmarshal_MultiDrawElementsIndirectCountARB(struct gl_context *ctx,
-                                                  const struct marshal_cmd_MultiDrawElementsIndirectCountARB *cmd)
-{
-   GLenum mode = cmd->mode;
-   GLenum type = cmd->type;
-   GLintptr indirect = cmd->indirect;
-   GLintptr drawcount = cmd->drawcount;
-   GLsizei maxdrawcount = cmd->maxdrawcount;
-   GLsizei stride = cmd->stride;
-
-   CALL_MultiDrawElementsIndirectCountARB(ctx->Dispatch.Current, (mode, type, indirect, drawcount, maxdrawcount, stride));
-
-   const unsigned cmd_size = (align(sizeof(struct marshal_cmd_MultiDrawElementsIndirectCountARB), 8) / 8);
-   assert(cmd_size == cmd->cmd_base.cmd_size);
-   return cmd_size;
-}
-
-void GLAPIENTRY
-_mesa_marshal_MultiDrawElementsIndirectCountARB(GLenum mode, GLenum type,
-                                                GLintptr indirect,
-                                                GLintptr drawcount,
-                                                GLsizei maxdrawcount,
-                                                GLsizei stride)
-{
-   GET_CURRENT_CONTEXT(ctx);
-   struct glthread_vao *vao = ctx->GLThread.CurrentVAO;
-   unsigned user_buffer_mask =
-      _mesa_is_gles31(ctx) ? 0 : vao->UserPointerMask & vao->BufferEnabled;
-
-   if (draw_indirect_async_allowed(ctx, user_buffer_mask) ||
-       /* This will just generate GL_INVALID_OPERATION because Draw*IndirectCount
-        * functions forbid a user indirect buffer in the Compat profile. */
-       !ctx->GLThread.CurrentDrawIndirectBufferName ||
-       !is_index_type_valid(type)) {
-      int cmd_size = sizeof(struct marshal_cmd_MultiDrawElementsIndirectCountARB);
-      struct marshal_cmd_MultiDrawElementsIndirectCountARB *cmd =
-         _mesa_glthread_allocate_command(ctx, DISPATCH_CMD_MultiDrawElementsIndirectCountARB, cmd_size);
-
-      cmd->mode = MIN2(mode, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->type = MIN2(type, 0xffff); /* clamped to 0xffff (invalid enum) */
-      cmd->indirect = indirect;
-      cmd->drawcount = drawcount;
-      cmd->maxdrawcount = maxdrawcount;
-      cmd->stride = stride;
-      return;
-   }
-
-   /* Lower the draw to direct due to non-VBO vertex arrays. */
-   _mesa_glthread_finish_before(ctx, "MultiDrawElementsIndirectCountARB");
-   lower_draw_elements_indirect(ctx, mode, type, indirect, stride,
-                                read_draw_indirect_count(ctx, drawcount));
 }
 
 void GLAPIENTRY
 _mesa_marshal_DrawArrays(GLenum mode, GLint first, GLsizei count)
 {
-   draw_arrays(0, mode, first, count, 1, 0, true);
+   draw_arrays(mode, first, count, 1, 0, true);
 }
 
 void GLAPIENTRY
 _mesa_marshal_DrawArraysInstanced(GLenum mode, GLint first, GLsizei count,
                                   GLsizei instance_count)
 {
-   draw_arrays(0, mode, first, count, instance_count, 0, false);
+   draw_arrays(mode, first, count, instance_count, 0, false);
 }
 
 void GLAPIENTRY
@@ -1739,14 +1315,14 @@ _mesa_marshal_DrawArraysInstancedBaseInstance(GLenum mode, GLint first,
                                               GLsizei count, GLsizei instance_count,
                                               GLuint baseinstance)
 {
-   draw_arrays(0, mode, first, count, instance_count, baseinstance, false);
+   draw_arrays(mode, first, count, instance_count, baseinstance, false);
 }
 
 void GLAPIENTRY
 _mesa_marshal_DrawElements(GLenum mode, GLsizei count, GLenum type,
                            const GLvoid *indices)
 {
-   draw_elements(0, mode, count, type, indices, 1, 0, 0, false, 0, 0, true);
+   draw_elements(mode, count, type, indices, 1, 0, 0, false, 0, 0, true);
 }
 
 void GLAPIENTRY
@@ -1754,21 +1330,21 @@ _mesa_marshal_DrawRangeElements(GLenum mode, GLuint start, GLuint end,
                                 GLsizei count, GLenum type,
                                 const GLvoid *indices)
 {
-   draw_elements(0, mode, count, type, indices, 1, 0, 0, true, start, end, true);
+   draw_elements(mode, count, type, indices, 1, 0, 0, true, start, end, true);
 }
 
 void GLAPIENTRY
 _mesa_marshal_DrawElementsInstanced(GLenum mode, GLsizei count, GLenum type,
                                     const GLvoid *indices, GLsizei instance_count)
 {
-   draw_elements(0, mode, count, type, indices, instance_count, 0, 0, false, 0, 0, false);
+   draw_elements(mode, count, type, indices, instance_count, 0, 0, false, 0, 0, false);
 }
 
 void GLAPIENTRY
 _mesa_marshal_DrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type,
                                      const GLvoid *indices, GLint basevertex)
 {
-   draw_elements(0, mode, count, type, indices, 1, basevertex, 0, false, 0, 0, true);
+   draw_elements(mode, count, type, indices, 1, basevertex, 0, false, 0, 0, true);
 }
 
 void GLAPIENTRY
@@ -1776,7 +1352,7 @@ _mesa_marshal_DrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end,
                                           GLsizei count, GLenum type,
                                           const GLvoid *indices, GLint basevertex)
 {
-   draw_elements(0, mode, count, type, indices, 1, basevertex, 0, true, start, end, true);
+   draw_elements(mode, count, type, indices, 1, basevertex, 0, true, start, end, true);
 }
 
 void GLAPIENTRY
@@ -1784,7 +1360,7 @@ _mesa_marshal_DrawElementsInstancedBaseVertex(GLenum mode, GLsizei count,
                                               GLenum type, const GLvoid *indices,
                                               GLsizei instance_count, GLint basevertex)
 {
-   draw_elements(0, mode, count, type, indices, instance_count, basevertex, 0, false, 0, 0, false);
+   draw_elements(mode, count, type, indices, instance_count, basevertex, 0, false, 0, 0, false);
 }
 
 void GLAPIENTRY
@@ -1792,7 +1368,7 @@ _mesa_marshal_DrawElementsInstancedBaseInstance(GLenum mode, GLsizei count,
                                                 GLenum type, const GLvoid *indices,
                                                 GLsizei instance_count, GLuint baseinstance)
 {
-   draw_elements(0, mode, count, type, indices, instance_count, 0, baseinstance, false, 0, 0, false);
+   draw_elements(mode, count, type, indices, instance_count, 0, baseinstance, false, 0, 0, false);
 }
 
 void GLAPIENTRY
@@ -1801,7 +1377,7 @@ _mesa_marshal_DrawElementsInstancedBaseVertexBaseInstance(GLenum mode, GLsizei c
                                                           GLsizei instance_count, GLint basevertex,
                                                           GLuint baseinstance)
 {
-   draw_elements(0, mode, count, type, indices, instance_count, basevertex, baseinstance, false, 0, 0, false);
+   draw_elements(mode, count, type, indices, instance_count, basevertex, baseinstance, false, 0, 0, false);
 }
 
 void GLAPIENTRY
@@ -1815,7 +1391,7 @@ _mesa_marshal_MultiDrawElements(GLenum mode, const GLsizei *count,
 
 uint32_t
 _mesa_unmarshal_DrawArraysInstanced(struct gl_context *ctx,
-                                    const struct marshal_cmd_DrawArraysInstanced *restrict cmd)
+                                    const struct marshal_cmd_DrawArraysInstanced *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1823,7 +1399,7 @@ _mesa_unmarshal_DrawArraysInstanced(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_MultiDrawArrays(struct gl_context *ctx,
-                                const struct marshal_cmd_MultiDrawArrays *restrict cmd)
+                                const struct marshal_cmd_MultiDrawArrays *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1831,7 +1407,7 @@ _mesa_unmarshal_MultiDrawArrays(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_DrawElements(struct gl_context *ctx,
-                             const struct marshal_cmd_DrawElements *restrict cmd)
+                             const struct marshal_cmd_DrawElements *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1839,15 +1415,7 @@ _mesa_unmarshal_DrawElements(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_DrawRangeElements(struct gl_context *ctx,
-                                  const struct marshal_cmd_DrawRangeElements *restrict cmd)
-{
-   unreachable("should never end up here");
-   return 0;
-}
-
-uint32_t
-_mesa_unmarshal_DrawRangeElementsBaseVertex(struct gl_context *ctx,
-                                            const struct marshal_cmd_DrawRangeElementsBaseVertex *cmd)
+                                  const struct marshal_cmd_DrawRangeElements *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1855,7 +1423,7 @@ _mesa_unmarshal_DrawRangeElementsBaseVertex(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_DrawElementsInstancedBaseVertex(struct gl_context *ctx,
-                                                const struct marshal_cmd_DrawElementsInstancedBaseVertex *restrict cmd)
+                                                const struct marshal_cmd_DrawElementsInstancedBaseVertex *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1863,7 +1431,7 @@ _mesa_unmarshal_DrawElementsInstancedBaseVertex(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_DrawElementsInstancedBaseInstance(struct gl_context *ctx,
-                                                  const struct marshal_cmd_DrawElementsInstancedBaseInstance *restrict cmd)
+                                                  const struct marshal_cmd_DrawElementsInstancedBaseInstance *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1871,7 +1439,7 @@ _mesa_unmarshal_DrawElementsInstancedBaseInstance(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_MultiDrawElements(struct gl_context *ctx,
-                                  const struct marshal_cmd_MultiDrawElements *restrict cmd)
+                                  const struct marshal_cmd_MultiDrawElements *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1879,23 +1447,7 @@ _mesa_unmarshal_MultiDrawElements(struct gl_context *ctx,
 
 uint32_t
 _mesa_unmarshal_MultiDrawElementsBaseVertex(struct gl_context *ctx,
-                                            const struct marshal_cmd_MultiDrawElementsBaseVertex *restrict cmd)
-{
-   unreachable("should never end up here");
-   return 0;
-}
-
-uint32_t
-_mesa_unmarshal_MultiModeDrawArraysIBM(struct gl_context *ctx,
-                                       const struct marshal_cmd_MultiModeDrawArraysIBM *cmd)
-{
-   unreachable("should never end up here");
-   return 0;
-}
-
-uint32_t
-_mesa_unmarshal_MultiModeDrawElementsIBM(struct gl_context *ctx,
-                                         const struct marshal_cmd_MultiModeDrawElementsIBM *cmd)
+                                            const struct marshal_cmd_MultiDrawElementsBaseVertex *cmd)
 {
    unreachable("should never end up here");
    return 0;
@@ -1908,10 +1460,7 @@ _mesa_marshal_DrawArraysUserBuf(void)
 }
 
 void GLAPIENTRY
-_mesa_marshal_DrawElementsUserBuf(GLintptr indexBuf, GLenum mode,
-                                  GLsizei count, GLenum type,
-                                  const GLvoid *indices, GLsizei numInstances,
-                                  GLint basevertex, GLuint baseInstance)
+_mesa_marshal_DrawElementsUserBuf(void)
 {
    unreachable("should never end up here");
 }
@@ -1923,23 +1472,7 @@ _mesa_marshal_MultiDrawArraysUserBuf(void)
 }
 
 void GLAPIENTRY
-_mesa_marshal_MultiDrawElementsUserBuf(GLintptr indexBuf, GLenum mode,
-                                       const GLsizei *count, GLenum type,
-                                       const GLvoid * const *indices,
-                                       GLsizei primcount,
-                                       const GLint *basevertex)
-{
-   unreachable("should never end up here");
-}
-
-void GLAPIENTRY
-_mesa_marshal_DrawArraysInstancedBaseInstanceDrawID(void)
-{
-   unreachable("should never end up here");
-}
-
-void GLAPIENTRY
-_mesa_marshal_DrawElementsInstancedBaseVertexBaseInstanceDrawID(void)
+_mesa_marshal_MultiDrawElementsUserBuf(void)
 {
    unreachable("should never end up here");
 }
@@ -1951,19 +1484,19 @@ _mesa_DrawArraysUserBuf(void)
 }
 
 void GLAPIENTRY
+_mesa_DrawElementsUserBuf(void)
+{
+   unreachable("should never end up here");
+}
+
+void GLAPIENTRY
 _mesa_MultiDrawArraysUserBuf(void)
 {
    unreachable("should never end up here");
 }
 
 void GLAPIENTRY
-_mesa_DrawArraysInstancedBaseInstanceDrawID(void)
-{
-   unreachable("should never end up here");
-}
-
-void GLAPIENTRY
-_mesa_DrawElementsInstancedBaseVertexBaseInstanceDrawID(void)
+_mesa_MultiDrawElementsUserBuf(void)
 {
    unreachable("should never end up here");
 }

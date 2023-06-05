@@ -2411,7 +2411,6 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlComputeBlock256Equation(
     ADDR_E_RETURNCODE ret = ADDR_OK;
 
     pEquation->numBits = 8;
-    pEquation->numBitComponents = 1;
 
     UINT_32 i = 0;
     for (; i < elementBytesLog2; i++)
@@ -2738,7 +2737,6 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlComputeThinEquation(
             }
         }
 
-        FillEqBitComponents(pEquation);
         pEquation->numBits = blockSizeLog2;
     }
 
@@ -3016,7 +3014,6 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlComputeThickEquation(
             }
         }
 
-        FillEqBitComponents(pEquation);
         pEquation->numBits = blockSizeLog2;
     }
 
@@ -3727,9 +3724,7 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlGetPreferredSurfaceSetting(
             // Apply optional restrictions
             if (pIn->flags.needEquation)
             {
-                UINT_32 components = pIn->flags.allowExtEquation ?  ADDR_MAX_EQUATION_COMP :
-                                                                    ADDR_MAX_LEGACY_EQUATION_COMP;
-                FilterInvalidEqSwizzleMode(allowedSwModeSet, pIn->resourceType, Log2(bpp >> 3), components);
+                FilterInvalidEqSwizzleMode(allowedSwModeSet, pIn->resourceType, Log2(bpp >> 3));
             }
 
             if (allowedSwModeSet.value == Gfx9LinearSwModeMask)
@@ -3778,7 +3773,7 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlGetPreferredSurfaceSetting(
 
                     for (UINT_32 i = AddrBlockLinear; i < AddrBlockMaxTiledType; i++)
                     {
-                        if (Addr2IsBlockTypeAvailable(allowedBlockSet, static_cast<::AddrBlockType>(i)))
+                        if (IsBlockTypeAvaiable(allowedBlockSet, static_cast<AddrBlockType>(i)))
                         {
                             localIn.swizzleMode = swMode[i];
 
@@ -3796,7 +3791,7 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlGetPreferredSurfaceSetting(
                                 padSize[i] = localOut.surfSize;
 
                                 if ((minSize == 0) ||
-                                    Addr2BlockTypeWithinMemoryBudget(minSize, padSize[i], ratioLow, ratioHi))
+                                    BlockTypeWithinMemoryBudget(minSize, padSize[i], ratioLow, ratioHi))
                                 {
                                     minSize    = padSize[i];
                                     minSizeBlk = i;
@@ -3837,9 +3832,9 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlGetPreferredSurfaceSetting(
                         for (UINT_32 i = AddrBlockMicro; i < AddrBlockMaxTiledType; i++)
                         {
                             if ((i != minSizeBlk) &&
-                                Addr2IsBlockTypeAvailable(allowedBlockSet, static_cast<::AddrBlockType>(i)))
+                                IsBlockTypeAvaiable(allowedBlockSet, static_cast<AddrBlockType>(i)))
                             {
-                                if (Addr2BlockTypeWithinMemoryBudget(minSize, padSize[i], 0, 0, pIn->memoryBudget) == FALSE)
+                                if (BlockTypeWithinMemoryBudget(minSize, padSize[i], 0, 0, pIn->memoryBudget) == FALSE)
                                 {
                                     // Clear the block type if the memory waste is unacceptable
                                     allowedBlockSet.value &= ~(1u << (i - 1));

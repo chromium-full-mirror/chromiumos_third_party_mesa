@@ -30,10 +30,7 @@
 #include "pipe/p_context.h"
 #include "util/u_queue.h"
 
-#include "common/freedreno_common.h"
 #include "drm/freedreno_drmif.h"
-
-BEGINC;
 
 struct pipe_fence_handle {
    struct pipe_reference reference;
@@ -79,7 +76,6 @@ struct pipe_fence_handle {
    struct fd_fence *fence;
 
    bool use_fence_fd;
-   bool flushed;
    uint32_t syncobj;
 };
 
@@ -112,7 +108,5 @@ struct tc_unflushed_batch_token;
 struct pipe_fence_handle *
 fd_pipe_fence_create_unflushed(struct pipe_context *pctx,
                                struct tc_unflushed_batch_token *tc_token);
-
-ENDC;
 
 #endif /* FREEDRENO_FENCE_H_ */

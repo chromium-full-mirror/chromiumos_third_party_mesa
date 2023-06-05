@@ -94,7 +94,7 @@ _mesa_update_allow_draw_out_of_order(struct gl_context *ctx)
    if (!ctx->Const.AllowDrawOutOfOrder)
       return;
 
-   assert(_mesa_is_desktop_gl_compat(ctx));
+   assert(ctx->API == API_OPENGL_COMPAT);
 
    /* If all of these are NULL, GLSL is disabled. */
    struct gl_program *vs =
@@ -440,7 +440,7 @@ update_program_constants(struct gl_context *ctx)
       update_single_program_constants(ctx, ctx->FragmentProgram._Current,
                                       MESA_SHADER_FRAGMENT);
 
-   if (_mesa_is_desktop_gl_compat(ctx) &&
+   if (ctx->API == API_OPENGL_COMPAT &&
        ctx->Const.GLSLVersionCompat >= 150) {
       new_state |=
          update_single_program_constants(ctx, ctx->GeometryProgram._Current,
@@ -510,8 +510,8 @@ _mesa_update_state_locked( struct gl_context *ctx )
       _mesa_update_framebuffer(ctx, ctx->ReadBuffer, ctx->DrawBuffer);
 
    /* Handle Core and Compatibility contexts separately. */
-   if (_mesa_is_desktop_gl_compat(ctx) ||
-       _mesa_is_gles1(ctx)) {
+   if (ctx->API == API_OPENGL_COMPAT ||
+       ctx->API == API_OPENGLES) {
       /* Update derived state. */
       if (new_state & (_NEW_MODELVIEW|_NEW_PROJECTION))
          _mesa_update_modelview_project( ctx, new_state );
@@ -680,7 +680,7 @@ set_vertex_processing_mode(struct gl_context *ctx, gl_vertex_processing_mode m)
        * ES 2.0+ or OpenGL core profile, none of these arrays should ever
        * be enabled.
        */
-      if (_mesa_is_desktop_gl_compat(ctx))
+      if (ctx->API == API_OPENGL_COMPAT)
          ctx->VertexProgram._VPModeInputFilter = VERT_BIT_ALL;
       else
          ctx->VertexProgram._VPModeInputFilter = VERT_BIT_GENERIC_ALL;

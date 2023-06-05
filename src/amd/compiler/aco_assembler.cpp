@@ -29,7 +29,6 @@
 
 #include "util/memstream.h"
 
-#include "ac_shader_util.h"
 #include <algorithm>
 #include <map>
 #include <vector>
@@ -101,7 +100,7 @@ reg(asm_context& ctx, Definition def, unsigned width = 32)
 }
 
 bool
-needs_vop3_gfx11(asm_context& ctx, Instruction* instr)
+needs_vop3_gfx11(asm_context& ctx, Instruction* instr, Operand *dpp_op)
 {
    if (ctx.gfx_level <= GFX10_3)
       return false;
@@ -111,6 +110,8 @@ needs_vop3_gfx11(asm_context& ctx, Instruction* instr)
       return false;
 
    u_foreach_bit (i, mask & 0x3) {
+      if (i == 0 && dpp_op && dpp_op->physReg().reg() >= (256 + 128))
+         return true;
       if (instr->operands[i].physReg().reg() >= (256 + 128))
          return true;
    }
@@ -120,7 +121,8 @@ needs_vop3_gfx11(asm_context& ctx, Instruction* instr)
 }
 
 void
-emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* instr)
+emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* instr,
+                 Operand *dpp_op_ptr = NULL, DPP16_instruction *dpp16_ptr = NULL)
 {
    /* lower remaining pseudo-instructions */
    if (instr->opcode == aco_opcode::p_constaddr_getpc) {
@@ -136,21 +138,6 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
       assert(instr->operands[1].isConstant());
       /* in case it's an inline constant, make it a literal */
       instr->operands[1] = Operand::literal32(instr->operands[1].constantValue());
-   }
-
-   /* Promote VOP12C to VOP3 if necessary. */
-   if ((instr->isVOP1() || instr->isVOP2() || instr->isVOPC()) && !instr->isVOP3() &&
-       needs_vop3_gfx11(ctx, instr)) {
-      instr->format = asVOP3(instr->format);
-      if (instr->opcode == aco_opcode::v_fmaak_f16) {
-         instr->opcode = aco_opcode::v_fma_f16;
-         instr->format = (Format)((uint32_t)instr->format & ~(uint32_t)Format::VOP2);
-      } else if (instr->opcode == aco_opcode::v_fmamk_f16) {
-         std::swap(instr->operands[1], instr->operands[2]);
-         instr->valu().opsel[1].swap(instr->valu().opsel[2]);
-         instr->opcode = aco_opcode::v_fma_f16;
-         instr->format = (Format)((uint32_t)instr->format & ~(uint32_t)Format::VOP2);
-      }
    }
 
    uint32_t opcode = ctx.opcode[(int)instr->opcode];
@@ -334,42 +321,80 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
       return;
    }
    case Format::VOP2: {
-      VALU_instruction& valu = instr->valu();
-      uint32_t encoding = 0;
-      encoding |= opcode << 25;
-      encoding |= reg(ctx, instr->definitions[0], 8) << 17;
-      encoding |= (valu.opsel[3] ? 128 : 0) << 17;
-      encoding |= reg(ctx, instr->operands[1], 8) << 9;
-      encoding |= (valu.opsel[1] ? 128 : 0) << 9;
-      encoding |= reg(ctx, instr->operands[0]);
-      encoding |= valu.opsel[0] ? 128 : 0;
-      out.push_back(encoding);
+      if (needs_vop3_gfx11(ctx, instr, dpp_op_ptr)) {
+         if (instr->opcode == aco_opcode::v_fmaak_f16) {
+            opcode = ctx.opcode[(int)aco_opcode::v_fma_f16];
+         } else if (instr->opcode == aco_opcode::v_fmamk_f16) {
+            std::swap(instr->operands[1], instr->operands[2]);
+            opcode = ctx.opcode[(int)aco_opcode::v_fma_f16];
+         } else {
+            opcode += 0x100;
+         }
+
+         uint32_t encoding = (0b110101 << 26);
+         encoding |= opcode << 16;
+         encoding |= reg(ctx, instr->definitions[0], 8);
+         encoding |= dpp16_ptr ? (dpp16_ptr->abs[0] << 8) | (dpp16_ptr->abs[1] << 9) : 0;
+         out.push_back(encoding);
+
+         encoding = reg(ctx, instr->operands[0]);
+         encoding |= reg(ctx, instr->operands[1]) << 9;
+         if (instr->opcode == aco_opcode::v_fmaak_f16 ||
+             instr->opcode == aco_opcode::v_fmamk_f16)
+            encoding |= reg(ctx, instr->operands[2]) << 18;
+         encoding |= dpp16_ptr ? (dpp16_ptr->neg[0] << 29) | (dpp16_ptr->neg[1] << 30) : 0;
+         out.push_back(encoding);
+      } else {
+         uint32_t encoding = 0;
+         encoding |= opcode << 25;
+         encoding |= reg(ctx, instr->definitions[0], 8) << 17;
+         encoding |= reg(ctx, instr->operands[1], 8) << 9;
+         encoding |= reg(ctx, instr->operands[0]);
+         out.push_back(encoding);
+      }
       break;
    }
    case Format::VOP1: {
-      VALU_instruction& valu = instr->valu();
-      uint32_t encoding = (0b0111111 << 25);
-      if (!instr->definitions.empty()) {
-         encoding |= reg(ctx, instr->definitions[0], 8) << 17;
-         encoding |= (valu.opsel[3] ? 128 : 0) << 17;
+      if (needs_vop3_gfx11(ctx, instr, dpp_op_ptr)) {
+         uint32_t encoding = (0b110101 << 26);
+         encoding |= (opcode + 0x180) << 16;
+         encoding |= reg(ctx, instr->definitions[0], 8);
+         encoding |= dpp16_ptr ? dpp16_ptr->abs[0] << 8 : 0;
+         out.push_back(encoding);
+
+         encoding = reg(ctx, instr->operands[0]);
+         encoding |= dpp16_ptr ? dpp16_ptr->neg[0] << 29 : 0;
+         out.push_back(encoding);
+      } else {
+         uint32_t encoding = (0b0111111 << 25);
+         if (!instr->definitions.empty())
+            encoding |= reg(ctx, instr->definitions[0], 8) << 17;
+         encoding |= opcode << 9;
+         if (!instr->operands.empty())
+            encoding |= reg(ctx, instr->operands[0]);
+         out.push_back(encoding);
       }
-      encoding |= opcode << 9;
-      if (!instr->operands.empty()) {
-         encoding |= reg(ctx, instr->operands[0]);
-         encoding |= valu.opsel[0] ? 128 : 0;
-      }
-      out.push_back(encoding);
       break;
    }
    case Format::VOPC: {
-      VALU_instruction& valu = instr->valu();
-      uint32_t encoding = (0b0111110 << 25);
-      encoding |= opcode << 17;
-      encoding |= reg(ctx, instr->operands[1], 8) << 9;
-      encoding |= (valu.opsel[1] ? 128 : 0) << 9;
-      encoding |= reg(ctx, instr->operands[0]);
-      encoding |= valu.opsel[0] ? 128 : 0;
-      out.push_back(encoding);
+      if (needs_vop3_gfx11(ctx, instr, dpp_op_ptr)) {
+         uint32_t encoding = (0b110101 << 26);
+         encoding |= opcode << 16;
+         encoding |= reg(ctx, instr->definitions[0], 8);
+         encoding |= dpp16_ptr ? (dpp16_ptr->abs[0] << 8) | (dpp16_ptr->abs[1] << 9) : 0;
+         out.push_back(encoding);
+
+         encoding = reg(ctx, instr->operands[0]);
+         encoding |= reg(ctx, instr->operands[1]) << 9;
+         encoding |= dpp16_ptr ? (dpp16_ptr->neg[0] << 29) | (dpp16_ptr->neg[1] << 30) : 0;
+         out.push_back(encoding);
+      } else {
+         uint32_t encoding = (0b0111110 << 25);
+         encoding |= opcode << 17;
+         encoding |= reg(ctx, instr->operands[1], 8) << 9;
+         encoding |= reg(ctx, instr->operands[0]);
+         out.push_back(encoding);
+      }
       break;
    }
    case Format::VINTRP: {
@@ -754,8 +779,8 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
       /* TODO: VOP3/VOP3P can use DPP8/16 on GFX11 (encoding of src0 and DPP8/16 word seems same
        * except abs/neg is ignored). src2 cannot be literal and src0/src1 must be VGPR.
        */
-      if (instr->isVOP3() && !instr->isDPP()) {
-         VALU_instruction& vop3 = instr->valu();
+      if (instr->isVOP3()) {
+         VOP3_instruction& vop3 = instr->vop3();
 
          if (instr->isVOP2()) {
             opcode = opcode + 0x100;
@@ -815,7 +840,7 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
          out.push_back(encoding);
 
       } else if (instr->isVOP3P()) {
-         VALU_instruction& vop3 = instr->valu();
+         VOP3P_instruction& vop3 = instr->vop3p();
 
          uint32_t encoding;
          if (ctx.gfx_level == GFX9) {
@@ -850,7 +875,7 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
          Operand dpp_op = instr->operands[0];
          instr->operands[0] = Operand(PhysReg{250}, v1);
          instr->format = (Format)((uint16_t)instr->format & ~(uint16_t)Format::DPP16);
-         emit_instruction(ctx, out, instr);
+         emit_instruction(ctx, out, instr, &dpp_op, &dpp);
          uint32_t encoding = (0xF & dpp.row_mask) << 28;
          encoding |= (0xF & dpp.bank_mask) << 24;
          encoding |= dpp.abs[1] << 23;
@@ -862,7 +887,6 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
          encoding |= dpp.bound_ctrl << 19;
          encoding |= dpp.dpp_ctrl << 8;
          encoding |= reg(ctx, dpp_op, 8);
-         encoding |= dpp.opsel[0] && !instr->isVOP3() ? 128 : 0;
          out.push_back(encoding);
          return;
       } else if (instr->isDPP8()) {
@@ -873,9 +897,8 @@ emit_instruction(asm_context& ctx, std::vector<uint32_t>& out, Instruction* inst
          Operand dpp_op = instr->operands[0];
          instr->operands[0] = Operand(PhysReg{234}, v1);
          instr->format = (Format)((uint16_t)instr->format & ~(uint16_t)Format::DPP8);
-         emit_instruction(ctx, out, instr);
+         emit_instruction(ctx, out, instr, &dpp_op);
          uint32_t encoding = reg(ctx, dpp_op, 8);
-         encoding |= dpp.opsel[0] && !instr->isVOP3() ? 128 : 0;
          for (unsigned i = 0; i < 8; ++i)
             encoding |= dpp.lane_sel[i] << (8 + i * 3);
          out.push_back(encoding);

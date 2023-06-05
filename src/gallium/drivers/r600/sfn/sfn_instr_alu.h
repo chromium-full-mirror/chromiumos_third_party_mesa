@@ -105,9 +105,6 @@ public:
    bool replace_source(PRegister old_src, PVirtualValue new_src) override;
    bool replace_dest(PRegister new_dest, AluInstr *move_instr) override;
 
-   bool can_replace_source(PRegister old_src, PVirtualValue new_src);
-   bool do_replace_source(PRegister old_src, PVirtualValue new_src);
-
    void set_op(EAluOp op) { m_opcode = op; }
 
    PRegister dest() const { return m_dest; }
@@ -153,7 +150,7 @@ public:
    static const std::map<ECFAluOpCode, std::string> cf_map;
    static const std::map<AluBankSwizzle, std::string> bank_swizzle_map;
    static Instr::Pointer
-   from_string(std::istream& is, ValueFactory& value_factory, AluGroup *, bool is_cayman);
+   from_string(std::istream& is, ValueFactory& value_factory, AluGroup *);
    static bool from_nir(nir_alu_instr *alu, Shader& shader);
 
    int alu_slots() const { return m_alu_slots; }
@@ -179,7 +176,6 @@ public:
    void inc_priority() { ++m_priority; }
 
    void set_parent_group(AluGroup *group) { m_parent_group = group; }
-   AluGroup *parent_group() { return m_parent_group;}
 
    AluInstr *as_alu() override { return this; }
 

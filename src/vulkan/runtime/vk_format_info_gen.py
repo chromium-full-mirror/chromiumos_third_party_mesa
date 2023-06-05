@@ -36,7 +36,7 @@ TEMPLATE_H = Template(COPYRIGHT + """\
 #ifndef VK_FORMAT_INFO_H
 #define VK_FORMAT_INFO_H
 
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.h>
 
 #ifdef __cplusplus
 extern "C" {

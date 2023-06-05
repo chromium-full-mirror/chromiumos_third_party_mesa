@@ -107,7 +107,6 @@ struct pvr_render_job {
                          [ROGUE_NUM_PBESTATE_REG_WORDS];
 
    uint64_t pds_bgnd_reg_values[ROGUE_NUM_CR_PDS_BGRND_WORDS];
-   uint64_t pds_pr_bgnd_reg_values[ROGUE_NUM_CR_PDS_BGRND_WORDS];
 };
 
 VkResult pvr_free_list_create(struct pvr_device *device,
@@ -130,8 +129,11 @@ void pvr_render_target_dataset_destroy(struct pvr_rt_dataset *dataset);
 
 VkResult pvr_render_job_submit(struct pvr_render_ctx *ctx,
                                struct pvr_render_job *job,
-                               struct vk_sync *wait_geom,
-                               struct vk_sync *wait_frag,
+                               struct vk_sync *barrier_geom,
+                               struct vk_sync *barrier_frag,
+                               struct vk_sync **waits,
+                               uint32_t wait_count,
+                               uint32_t *stage_flags,
                                struct vk_sync *signal_sync_geom,
                                struct vk_sync *signal_sync_frag);
 

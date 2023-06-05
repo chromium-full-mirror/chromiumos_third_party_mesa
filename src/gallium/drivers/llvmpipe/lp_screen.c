@@ -41,7 +41,6 @@
 #include "util/disk_cache.h"
 #include "util/os_misc.h"
 #include "util/os_time.h"
-#include "util/u_helpers.h"
 #include "lp_texture.h"
 #include "lp_fence.h"
 #include "lp_jit.h"
@@ -226,10 +225,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 64;
    case PIPE_CAP_TEXTURE_BUFFER_OBJECTS:
       return 1;
-   case PIPE_CAP_LINEAR_IMAGE_PITCH_ALIGNMENT:
-      return 1;
-   case PIPE_CAP_LINEAR_IMAGE_BASE_ADDRESS_ALIGNMENT:
-      return 1;
    /* Adressing that many 64bpp texels fits in an i32 so this is a reasonable value */
    case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
       return 134217728;
@@ -288,8 +283,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return (int)(system_memory >> 20);
    }
    case PIPE_CAP_UMA:
-      return 1;
-   case PIPE_CAP_QUERY_MEMORY_INFO:
       return 1;
    case PIPE_CAP_CLIP_HALFZ:
       return 1;
@@ -569,7 +562,7 @@ llvmpipe_get_compute_param(struct pipe_screen *_screen,
    case PIPE_COMPUTE_CAP_ADDRESS_BITS:
       if (ret) {
          uint32_t *address_bits = ret;
-         *address_bits = sizeof(void*) * 8;
+         *address_bits = 64;
       }
       return sizeof(uint32_t);
    }
@@ -964,18 +957,6 @@ lp_get_disk_shader_cache(struct pipe_screen *_screen)
    return screen->disk_shader_cache;
 }
 
-static int
-llvmpipe_screen_get_fd(struct pipe_screen *_screen)
-{
-   struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
-   struct sw_winsys *winsys = screen->winsys;
-
-   if (winsys->get_fd)
-      return winsys->get_fd(winsys);
-   else
-      return -1;
-}
-
 
 void
 lp_disk_cache_find_shader(struct llvmpipe_screen *screen,
@@ -1078,7 +1059,6 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->base.get_name = llvmpipe_get_name;
    screen->base.get_vendor = llvmpipe_get_vendor;
    screen->base.get_device_vendor = llvmpipe_get_vendor; // TODO should be the CPU vendor
-   screen->base.get_screen_fd = llvmpipe_screen_get_fd;
    screen->base.get_param = llvmpipe_get_param;
    screen->base.get_shader_param = llvmpipe_get_shader_param;
    screen->base.get_compute_param = llvmpipe_get_compute_param;
@@ -1092,8 +1072,6 @@ llvmpipe_create_screen(struct sw_winsys *winsys)
    screen->base.fence_finish = llvmpipe_fence_finish;
 
    screen->base.get_timestamp = u_default_get_timestamp;
-
-   screen->base.query_memory_info = util_sw_query_memory_info;
 
    screen->base.get_driver_uuid = llvmpipe_get_driver_uuid;
    screen->base.get_device_uuid = llvmpipe_get_device_uuid;

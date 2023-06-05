@@ -487,9 +487,6 @@ iris_resource_alloc_flags(const struct iris_screen *screen,
    if (templ->bind & PIPE_BIND_PROTECTED)
       flags |= BO_ALLOC_PROTECTED;
 
-   if (templ->bind & PIPE_BIND_SHARED)
-      flags |= BO_ALLOC_SHARED;
-
    return flags;
 }
 
@@ -1424,15 +1421,13 @@ iris_resource_from_handle(struct pipe_screen *pscreen,
          modifier = tiling_to_modifier(tiling);
       }
 
-      const bool isl_surf_created_successfully =
+      UNUSED const bool isl_surf_created_successfully =
          iris_resource_configure_main(screen, res, templ, modifier,
                                       whandle->stride);
-      if (!isl_surf_created_successfully)
-         goto fail;
+      assert(isl_surf_created_successfully);
 
-      if (!iris_resource_configure_aux(screen, res, true))
-         goto fail;
-
+      UNUSED const bool ok = iris_resource_configure_aux(screen, res, true);
+      assert(ok);
       /* The gallium dri layer will create a separate plane resource for the
        * aux image. iris_resource_finish_aux_import will merge the separate aux
        * parameters back into a single iris_resource.

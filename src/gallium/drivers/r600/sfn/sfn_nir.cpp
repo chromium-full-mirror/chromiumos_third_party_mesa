@@ -402,7 +402,7 @@ r600_lower_deref_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
 
    b->cursor = nir_before_instr(&instr->instr);
 
-   nir_ssa_def *offset = nir_imm_int(b, 0);
+   nir_ssa_def *offset = nir_imm_int(b, var->data.index);
    for (nir_deref_instr *d = deref; d->deref_type != nir_deref_type_var;
         d = nir_deref_instr_parent(d)) {
       assert(d->deref_type == nir_deref_type_array);
@@ -423,7 +423,6 @@ r600_lower_deref_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
    instr->intrinsic = op;
    nir_instr_rewrite_src(&instr->instr, &instr->src[0], nir_src_for_ssa(offset));
    nir_intrinsic_set_base(instr, idx);
-   nir_intrinsic_set_range_base(instr, var->data.index);
 
    nir_deref_instr_remove_if_unused(deref);
 
@@ -444,30 +443,23 @@ r600_lower_clipvertex_to_clipdist(nir_shader *sh, pipe_stream_output_info& so_in
 static bool
 r600_nir_lower_atomics(nir_shader *shader)
 {
-   /* In Hardware we start at a zero index for each new
-    * binding, and we use an offset of one per counter. We also
-    * need to sort the atomics according to binding and offset. */
-   std::map<unsigned, unsigned> binding_offset;
-   std::map<unsigned, nir_variable *> sorted_var;
+   /* First re-do the offsets, in Hardware we start at zero for each new
+    * binding, and we use an offset of one per counter */
+   int current_binding = -1;
+   int current_offset = 0;
+   nir_foreach_variable_with_modes(var, shader, nir_var_uniform)
+   {
+      if (!var->type->contains_atomic())
+         continue;
 
-   nir_foreach_variable_with_modes_safe(var, shader, nir_var_uniform) {
-      if (var->type->contains_atomic()) {
-         sorted_var[(var->data.binding << 16) | var->data.offset] = var;
-         exec_node_remove(&var->node);
-      }
-   }
-
-   for (auto& [dummy, var] : sorted_var) {
-      auto iindex = binding_offset.find(var->data.binding);
-      unsigned offset_update = var->type->atomic_size() / ATOMIC_COUNTER_SIZE;
-      if (iindex == binding_offset.end()) {
-         var->data.index = 0;
-         binding_offset[var->data.binding] = offset_update;
+      if (current_binding == (int)var->data.binding) {
+         var->data.index = current_offset;
+         current_offset += var->type->atomic_size() / ATOMIC_COUNTER_SIZE;
       } else {
-         var->data.index = iindex->second;
-         iindex->second += offset_update;
+         current_binding = var->data.binding;
+         var->data.index = 0;
+         current_offset = var->type->atomic_size() / ATOMIC_COUNTER_SIZE;
       }
-      shader->variables.push_tail(&var->node);
    }
 
    return nir_shader_instructions_pass(shader,

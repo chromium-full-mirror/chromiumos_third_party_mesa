@@ -84,7 +84,7 @@ foreach g : [['70', ['gfx7_cmd_buffer.c']],
       inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_compiler, inc_intel,
     ],
     c_args : [
-      no_override_init_args, sse2_args,
+      no_override_init_args, c_sse2_args,
       '-DGFX_VERx10=@0@'.format(_gfx_ver),
     ],
     gnu_symbol_visibility : 'hidden',
@@ -138,7 +138,7 @@ anv_deps = [
 ]
 anv_flags = [
   no_override_init_args,
-  sse2_args,
+  c_sse2_args,
 ]
 
 anv_cpp_flags = []
@@ -187,13 +187,13 @@ libvulkan_intel_hasvk = shared_library(
   ],
   link_whole : [libanv_hasvk_common, libanv_per_hw_ver_libs],
   link_with : [
-    libintel_compiler, libisl, libblorp, libintel_perf,
+    libintel_compiler, libintel_dev, libisl, libblorp, libintel_perf,
   ],
   dependencies : [
     dep_thread, dep_dl, dep_m, anv_deps, idep_libintel_common,
     idep_nir, idep_genxml, idep_vulkan_util, idep_vulkan_wsi,
     idep_vulkan_runtime, idep_mesautil, idep_xmlconfig,
-    idep_intel_driver_ds, idep_intel_dev,
+    idep_intel_driver_ds,
   ],
   c_args : anv_flags,
   gnu_symbol_visibility : 'hidden',
@@ -223,13 +223,13 @@ if with_tests
     ],
     link_whole : libanv_hasvk_common,
     link_with : [
-      libanv_per_hw_ver_libs, libintel_compiler, libintel_common,
+      libanv_per_hw_ver_libs, libintel_compiler, libintel_common, libintel_dev,
       libisl, libblorp, libintel_perf,
     ],
     dependencies : [
       dep_thread, dep_dl, dep_m, anv_deps,
       idep_nir, idep_vulkan_util, idep_vulkan_wsi, idep_vulkan_runtime,
-      idep_mesautil, idep_intel_dev,
+      idep_mesautil,
     ],
     c_args : anv_flags,
     gnu_symbol_visibility : 'hidden',
@@ -243,7 +243,7 @@ if with_tests
       executable(
         t,
         ['tests/@0@.c'.format(t), anv_hasvk_entrypoints[0]],
-        c_args : [ sse2_args ],
+        c_args : [ c_sse2_args ],
         link_with : libvulkan_intel_hasvk_test,
         dependencies : [
           dep_libdrm, dep_thread, dep_m, dep_valgrind,

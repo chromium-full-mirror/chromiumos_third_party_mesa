@@ -568,7 +568,6 @@ XXX do this once swapinterval is hooked up
       unsigned bind;
 
       dri_drawable_get_format(drawable, statts[i], &format, &bind);
-      templ.format = format;
 
       /* the texture already exists or not requested */
       if (!drawable->textures[statts[i]]) {
@@ -580,6 +579,7 @@ XXX do this once swapinterval is hooked up
          if (format == PIPE_FORMAT_NONE)
             continue;
 
+         templ.format = format;
          templ.bind = bind;
          templ.nr_samples = 0;
          templ.nr_storage_samples = 0;
@@ -606,7 +606,7 @@ XXX do this once swapinterval is hooked up
          }
       }
       if (drawable->stvis.samples > 1 && !drawable->msaa_textures[statts[i]]) {
-         templ.bind = bind &
+         templ.bind = templ.bind &
             ~(PIPE_BIND_SCANOUT | PIPE_BIND_SHARED | PIPE_BIND_DISPLAY_TARGET);
          templ.nr_samples = drawable->stvis.samples;
          templ.nr_storage_samples = drawable->stvis.samples;
@@ -840,7 +840,7 @@ kopper_create_drawable(struct dri_screen *screen, const struct gl_config *visual
 }
 
 static int64_t
-kopperSwapBuffers(__DRIdrawable *dPriv, uint32_t flush_flags)
+kopperSwapBuffers(__DRIdrawable *dPriv)
 {
    struct dri_drawable *drawable = dri_drawable(dPriv);
    struct dri_context *ctx = dri_get_current();
@@ -853,10 +853,6 @@ kopperSwapBuffers(__DRIdrawable *dPriv, uint32_t flush_flags)
    if (!ptex)
       return 0;
 
-   /* ensure invalidation is applied before renderpass ends */
-   if (flush_flags & __DRI2_FLUSH_INVALIDATE_ANCILLARY)
-      _mesa_glthread_invalidate_zsbuf(ctx->st->ctx);
-
    /* Wait for glthread to finish because we can't use pipe_context from
     * multiple threads.
     */
@@ -865,7 +861,7 @@ kopperSwapBuffers(__DRIdrawable *dPriv, uint32_t flush_flags)
    drawable->texture_stamp = drawable->lastStamp - 1;
 
    dri_flush(opaque_dri_context(ctx), opaque_dri_drawable(drawable),
-             __DRI2_FLUSH_DRAWABLE | __DRI2_FLUSH_CONTEXT | flush_flags,
+             __DRI2_FLUSH_DRAWABLE | __DRI2_FLUSH_CONTEXT,
              __DRI2_THROTTLE_SWAPBUFFER);
 
    kopper_copy_to_front(ctx->st->pipe, drawable, ptex);
@@ -885,7 +881,7 @@ kopperSwapBuffers(__DRIdrawable *dPriv, uint32_t flush_flags)
 static void
 kopper_swap_buffers(struct dri_drawable *drawable)
 {
-   kopperSwapBuffers(opaque_dri_drawable(drawable), 0);
+   kopperSwapBuffers(opaque_dri_drawable(drawable));
 }
 
 static __DRIdrawable *

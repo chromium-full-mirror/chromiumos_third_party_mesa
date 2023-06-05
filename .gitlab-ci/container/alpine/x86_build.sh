@@ -10,6 +10,7 @@ EPHEMERAL="
         automake
         bzip2
         cmake
+	curl
         git
         libtool
         libepoxy-dev
@@ -22,12 +23,9 @@ EPHEMERAL="
         "
 
 apk add \
-    bash \
     bison \
     ccache \
     clang-dev \
-    coreutils \
-    curl \
     flex \
     gcc \
     g++ \

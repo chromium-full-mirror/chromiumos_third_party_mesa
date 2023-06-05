@@ -28,16 +28,6 @@ bvh_shaders = [
   [
     'encode.comp',
     'encode',
-    ['COMPACT=0'],
-  ],
-  [
-    'encode.comp',
-    'encode_compact',
-    ['COMPACT=1'],
-  ],
-  [
-    'header.comp',
-    'header',
     [],
   ],
   [

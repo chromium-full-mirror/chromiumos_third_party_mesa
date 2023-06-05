@@ -24,8 +24,8 @@
 #include "nir.h"
 
 static bool
-nir_opt_combine_barriers_impl(
-   nir_function_impl *impl, nir_combine_barrier_cb combine_cb, void *data)
+nir_opt_combine_memory_barriers_impl(
+   nir_function_impl *impl, nir_combine_memory_barrier_cb combine_cb, void *data)
 {
    bool progress = false;
 
@@ -39,7 +39,8 @@ nir_opt_combine_barriers_impl(
          }
 
          nir_intrinsic_instr *current = nir_instr_as_intrinsic(instr);
-         if (current->intrinsic != nir_intrinsic_scoped_barrier) {
+         if (current->intrinsic != nir_intrinsic_scoped_barrier ||
+             nir_intrinsic_execution_scope(current) != NIR_SCOPE_NONE) {
             prev = NULL;
             continue;
          }
@@ -64,10 +65,10 @@ nir_opt_combine_barriers_impl(
    return progress;
 }
 
-/* Combine adjacent scoped barriers. */
+/* Combine adjacent scoped memory barriers. */
 bool
-nir_opt_combine_barriers(
-   nir_shader *shader, nir_combine_barrier_cb combine_cb, void *data)
+nir_opt_combine_memory_barriers(
+   nir_shader *shader, nir_combine_memory_barrier_cb combine_cb, void *data)
 {
    assert(combine_cb);
 
@@ -75,7 +76,7 @@ nir_opt_combine_barriers(
 
    nir_foreach_function(function, shader) {
       if (function->impl &&
-          nir_opt_combine_barriers_impl(function->impl, combine_cb, data)) {
+          nir_opt_combine_memory_barriers_impl(function->impl, combine_cb, data)) {
          progress = true;
       }
    }

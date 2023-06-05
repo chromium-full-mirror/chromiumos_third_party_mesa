@@ -32,7 +32,6 @@
 #include "util/u_upload_mgr.h"
 #include "util/u_thread.h"
 #include "util/os_time.h"
-#include "util/perf/cpu_trace.h"
 #include <inttypes.h>
 
 /**
@@ -397,8 +396,6 @@ util_throttle_memory_usage(struct pipe_context *pipe,
    if (!t->max_mem_usage)
       return;
 
-   MESA_TRACE_FUNC();
-
    struct pipe_screen *screen = pipe->screen;
    struct pipe_fence_handle **fence = NULL;
    unsigned ring_size = ARRAY_SIZE(t->ring);
@@ -461,21 +458,6 @@ util_throttle_memory_usage(struct pipe_context *pipe,
    }
 
    t->ring[t->flush_index].mem_usage += memory_size;
-}
-
-void
-util_sw_query_memory_info(struct pipe_screen *pscreen,
-                          struct pipe_memory_info *info)
-{
-   /* Provide query_memory_info from CPU reported memory */
-   uint64_t size;
-
-   if (!os_get_available_system_memory(&size))
-      return;
-   info->avail_staging_memory = size / 1024;
-   if (!os_get_total_physical_memory(&size))
-      return;
-   info->total_staging_memory = size / 1024;
 }
 
 bool

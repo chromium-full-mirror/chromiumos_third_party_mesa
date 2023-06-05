@@ -904,11 +904,12 @@ validate_sampler_array_indexing(const struct gl_constants *consts,
                            "expressions is forbidden in GLSL %s %u";
          /* Backend has indicated that it has no dynamic indexing support. */
          if (no_dynamic_indexing) {
-            linker_error(prog, msg, prog->IsES ? "ES" : "", prog->GLSL_Version);
+            linker_error(prog, msg, prog->IsES ? "ES" : "",
+                         prog->data->Version);
             return false;
          } else {
             linker_warning(prog, msg, prog->IsES ? "ES" : "",
-                           prog->GLSL_Version);
+                           prog->data->Version);
          }
       }
    }
@@ -932,8 +933,8 @@ gl_nir_link_glsl(const struct gl_constants *consts,
     * with loop induction variable. This check emits a warning or error
     * depending if backend can handle dynamic indexing.
     */
-   if ((!prog->IsES && prog->GLSL_Version < 130) ||
-       (prog->IsES && prog->GLSL_Version < 300)) {
+   if ((!prog->IsES && prog->data->Version < 130) ||
+       (prog->IsES && prog->data->Version < 300)) {
       if (!validate_sampler_array_indexing(consts, prog))
          return false;
    }

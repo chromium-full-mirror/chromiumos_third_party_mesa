@@ -42,13 +42,12 @@ struct blob;
  */
 enum dxil_environment {
    /* In the GL environment:
-    *   Samplers/textures are lowered, vars/intrinsics use binding to refer to them; dynamic array indexing supported with offset srcs
+    *   Samplers/textures are lowered, vars/intrinsics use binding to refer to them; dynamic array indexing not yet supported
     *     The lowering done by mesa/st assigns bindings from 0 -> N
     *   All other resource variables have driver_location set instead, assigned from 0 -> N
-    *   UBOs may or may not have interface variables, and are declared from ubo_binding_offset -> num_ubos
-    *   SSBOs may or may not have interface variables, and are declared from from 0 -> num_ssbos
+    *   UBOs may or may not have interface variables, and are declared from ubo_binding_offset -> num_ubos; no dynamic indexing yet
+    *   SSBOs may or may not have interface variables, and are declared from from 0 -> num_ssbos; no dynamic indexing yet
     *   Images are *not* lowered, so that dynamic indexing can deterministically get a base binding via the deref chain
-    *     TODO: Maybe support lowering and use nir_intrinsic_range_base to get the base
     *   No immediate constant buffer, or scratch
     */
    DXIL_ENVIRONMENT_GL,
@@ -64,12 +63,10 @@ enum dxil_environment {
    DXIL_ENVIRONMENT_CL,
    /* In the Vulkan environment:
     *   All resources use binding / descriptor_set for identification
-    *   Samplers/textures/images support two modes:
-    *     1. Derefs: deref chains are walked to emit the DXIL handle to the resource; dynamic indexing supported
-    *     2. Bindless: the resource source is assumed as an index into a descriptor heap
+    *   Samplers/textures/images are not lowered
+    *     Deref chains are walked to emit the DXIL handle to the resource; dynamic indexing supported
     *   UBOs/SSBOs are struct variables in the NIR, accessed via vulkan_resource_index/load_vulkan_descriptor; dynamic indexing supported
-    *     If load_vulkan_descriptor gets an index that didn't come from vulkan_resource_index, it is assumed to be an index into a descriptor heap
-    *   Read-only SSBOs, as declared in the SPIR-V, are bound as raw buffer SRVs instead of UAVs, unless they're lowered to bindless
+    *   Read-only SSBOs, as declared in the SPIR-V, are bound as raw buffer SRVs instead of UAVs
     *   No immediate constant buffer or scratch
     */
    DXIL_ENVIRONMENT_VULKAN,

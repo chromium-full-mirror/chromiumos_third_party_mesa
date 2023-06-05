@@ -25,7 +25,6 @@
 #include <fcntl.h>
 
 #include "util/os_file.h"
-#include "util/u_screen.h"
 
 #include "v3d_drm_public.h"
 
@@ -34,14 +33,12 @@
 struct pipe_screen *
 v3d_drm_screen_create(int fd, const struct pipe_screen_config *config)
 {
-   return u_pipe_screen_lookup_or_create(os_dupfd_cloexec(fd), config,
-                                         NULL, v3d_screen_create);
+   return v3d_screen_create(os_dupfd_cloexec(fd), config, NULL);
 }
 
 struct pipe_screen *
-v3d_drm_screen_create_renderonly(int fd, struct renderonly *ro,
+v3d_drm_screen_create_renderonly(struct renderonly *ro,
                                  const struct pipe_screen_config *config)
 {
-   return u_pipe_screen_lookup_or_create(fd, config,
-                                         ro, v3d_screen_create);
+   return v3d_screen_create(ro->gpu_fd, config, ro);
 }

@@ -38,21 +38,14 @@
 
 #include "a6xx.xml.h"
 
-BEGINC;
-
 struct fd6_lrz_state {
-   union {
-      struct {
-         bool enable : 1;
-         bool write : 1;
-         bool test : 1;
-         enum fd_lrz_direction direction : 2;
+   bool enable : 1;
+   bool write : 1;
+   bool test : 1;
+   enum fd_lrz_direction direction : 2;
 
-         /* this comes from the fs program state, rather than zsa: */
-         enum a6xx_ztest_mode z_mode : 2;
-      };
-      uint32_t val : 7;
-   };
+   /* this comes from the fs program state, rather than zsa: */
+   enum a6xx_ztest_mode z_mode : 2;
 };
 
 /**
@@ -76,7 +69,7 @@ struct fd6_descriptor_set {
    struct fd_bo *bo;
 };
 
-static inline void
+static void
 fd6_descriptor_set_invalidate(struct fd6_descriptor_set *set)
 {
    if (!set->bo)
@@ -126,9 +119,8 @@ struct fd6_context {
    struct hash_table *bcolor_cache;
    struct fd_bo *bcolor_mem;
 
-   seqno_t tex_seqno;
+   uint16_t tex_seqno;
    struct hash_table *tex_cache;
-   bool tex_cache_needs_invalidate;
 
    /**
     * Descriptor sets for 3d shader stages
@@ -196,7 +188,5 @@ fd6_vertex_stateobj(void *p)
 {
    return (struct fd6_vertex_stateobj *)p;
 }
-
-ENDC;
 
 #endif /* FD6_CONTEXT_H_ */

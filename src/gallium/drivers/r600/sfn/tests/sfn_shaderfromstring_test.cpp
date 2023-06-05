@@ -93,7 +93,7 @@ TestShaderFromString::from_string(const std::string& s)
       if (line[0] == '#')
          continue;
 
-      shader.push_back(m_instr_factory->from_string(line, 0, false));
+      shader.push_back(m_instr_factory->from_string(line, 0));
    }
 
    return shader;

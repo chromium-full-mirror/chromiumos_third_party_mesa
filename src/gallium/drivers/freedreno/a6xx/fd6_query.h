@@ -30,7 +30,6 @@
 
 #include "pipe/p_context.h"
 
-EXTERNC
 void fd6_query_context_init(struct pipe_context *pctx);
 
 #endif /* FD6_QUERY_H_ */

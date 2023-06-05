@@ -127,16 +127,16 @@ vbo_install_exec_vtxfmt_noop(struct gl_context *ctx)
 #define NAME(x) _mesa_noop_##x
 #define NAME_ES(x) _mesa_noop_##x
 
-   struct _glapi_table *tab = ctx->Dispatch.Exec;
+   struct _glapi_table *tab = ctx->Exec;
    #include "api_beginend_init.h"
 
-   if (ctx->Dispatch.BeginEnd) {
-      tab = ctx->Dispatch.BeginEnd;
+   if (ctx->BeginEnd) {
+      tab = ctx->BeginEnd;
       #include "api_beginend_init.h"
    }
 
-   if (ctx->Dispatch.HWSelectModeBeginEnd) {
-      tab = ctx->Dispatch.HWSelectModeBeginEnd;
+   if (ctx->HWSelectModeBeginEnd) {
+      tab = ctx->HWSelectModeBeginEnd;
       #include "api_beginend_init.h"
    }
 }
@@ -145,7 +145,7 @@ vbo_install_exec_vtxfmt_noop(struct gl_context *ctx)
 void
 vbo_install_save_vtxfmt_noop(struct gl_context *ctx)
 {
-   struct _glapi_table *tab = ctx->Dispatch.Save;
+   struct _glapi_table *tab = ctx->Save;
    #include "api_beginend_init.h"
 }
 

@@ -59,10 +59,7 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
    struct lima_screen *screen = lima_screen(pscreen);
    struct renderonly_scanout *scanout;
    struct winsys_handle handle;
-
-   struct lima_resource *res = CALLOC_STRUCT(lima_resource);
-   if (!res)
-      return NULL;
+   struct pipe_resource *pres;
 
    struct pipe_resource scanout_templat = *templat;
    scanout_templat.width0 = width;
@@ -74,31 +71,20 @@ lima_resource_create_scanout(struct pipe_screen *pscreen,
    if (!scanout)
       return NULL;
 
-   res->base = *templat;
-   res->base.screen = pscreen;
-   pipe_reference_init(&res->base.reference, 1);
-   res->levels[0].offset = handle.offset;
-   res->levels[0].stride = handle.stride;
-
    assert(handle.type == WINSYS_HANDLE_TYPE_FD);
-   res->bo = lima_bo_import(screen, &handle);
-   if (!res->bo) {
-      FREE(res);
-      return NULL;
-   }
-
-   res->modifier_constant = true;
+   pres = pscreen->resource_from_handle(pscreen, templat, &handle,
+                                        PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE);
 
    close(handle.handle);
-   if (!res->bo) {
+   if (!pres) {
       renderonly_scanout_destroy(scanout, screen->ro);
-      FREE(res);
       return NULL;
    }
 
+   struct lima_resource *res = lima_resource(pres);
    res->scanout = scanout;
 
-   return &res->base;
+   return pres;
 }
 
 static uint32_t

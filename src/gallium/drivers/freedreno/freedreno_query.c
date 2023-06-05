@@ -194,7 +194,7 @@ fd_set_active_query_state(struct pipe_context *pctx, bool enable) assert_dt
 {
    struct fd_context *ctx = fd_context(pctx);
    ctx->active_queries = enable;
-   fd_context_dirty(ctx, FD_DIRTY_QUERY);
+   ctx->update_active_queries = true;
 }
 
 static enum pipe_driver_query_type

@@ -35,13 +35,8 @@
 #include <llvm-c/Disassembler.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/Format.h>
-#include <llvm/IR/Module.h>
-
-#if LLVM_VERSION_MAJOR >= 17
-#include <llvm/TargetParser/Host.h>
-#else
 #include <llvm/Support/Host.h>
-#endif
+#include <llvm/IR/Module.h>
 
 #include "util/u_math.h"
 #include "util/u_debug.h"

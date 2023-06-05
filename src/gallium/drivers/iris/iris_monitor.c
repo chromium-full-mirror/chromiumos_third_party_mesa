@@ -62,8 +62,7 @@ iris_get_monitor_info(struct pipe_screen *pscreen, unsigned index,
    intel_perf_query_result_clear(&results);
 
    info->group_id = counter_info->location.group_idx;
-   info->name = INTEL_DEBUG(DEBUG_PERF_SYMBOL_NAMES) ?
-      counter->symbol_name : counter->name;
+   info->name = counter->name;
    info->query_type = PIPE_QUERY_DRIVER_SPECIFIC + index;
 
    if (counter->type == INTEL_PERF_COUNTER_TYPE_THROUGHPUT)

@@ -241,8 +241,6 @@ nouveau_pushbuf_create(struct nouveau_screen *screen, struct nouveau_context *co
 void
 nouveau_pushbuf_destroy(struct nouveau_pushbuf **push)
 {
-   if (!*push)
-      return;
    FREE((*push)->user_priv);
    nouveau_pushbuf_del(push);
 }
@@ -257,14 +255,6 @@ nouveau_check_for_uma(int chipset, struct nouveau_object *obj)
    nouveau_object_mthd(obj, NV_DEVICE_V0_INFO, &info, sizeof(info));
 
    return (info.platform == NV_DEVICE_INFO_V0_IGP) || (info.platform == NV_DEVICE_INFO_V0_SOC);
-}
-
-static int
-nouveau_screen_get_fd(struct pipe_screen *pscreen)
-{
-   const struct nouveau_screen *screen = nouveau_screen(pscreen);
-
-   return screen->drm->fd;
 }
 
 int
@@ -396,7 +386,6 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
 
    snprintf(screen->chipset_name, sizeof(screen->chipset_name), "NV%02X", dev->chipset);
    pscreen->get_name = nouveau_screen_get_name;
-   pscreen->get_screen_fd = nouveau_screen_get_fd;
    pscreen->get_vendor = nouveau_screen_get_vendor;
    pscreen->get_device_vendor = nouveau_screen_get_device_vendor;
    pscreen->get_disk_shader_cache = nouveau_screen_get_disk_shader_cache;

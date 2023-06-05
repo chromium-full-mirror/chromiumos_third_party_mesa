@@ -1356,7 +1356,7 @@ unpack_channel(union isl_color_value *value,
 }
 
 /**
- * Unpack an isl_color_value from the actual bits as specified by
+ * Take unpack an isl_color_value from the actual bits as specified by
  * the isl_format.  This function is very slow for a format conversion
  * function but should be fine for a single pixel worth of data.
  */

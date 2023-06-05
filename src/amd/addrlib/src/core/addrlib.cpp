@@ -228,8 +228,8 @@ ADDR_E_RETURNCODE Lib::Create(
                     case FAMILY_NV:
                     case FAMILY_VGH:
                     case FAMILY_RMB:
-                    case FAMILY_RPL:
-                    case FAMILY_MDN:
+                    case FAMILY_GC_10_3_6:
+                    case FAMILY_GC_10_3_7:
                         pLib = Gfx10HwlInit(&client);
                         break;
                     case FAMILY_GFX1100:

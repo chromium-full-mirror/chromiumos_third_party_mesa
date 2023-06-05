@@ -88,7 +88,7 @@ Hal Gentz (1):
 
 -  glx: Fix SEGV due to dereferencing a NULL ptr from XCB-GLX.
 
-Faith Ekstrand (7):
+Jason Ekstrand (7):
 
 -  Revert "intel/fs: Move the scalar-region conversion to the
    generator."

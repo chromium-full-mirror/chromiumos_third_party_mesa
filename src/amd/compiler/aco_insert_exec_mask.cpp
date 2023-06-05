@@ -249,7 +249,7 @@ add_coupling_code(exec_ctx& ctx, Block* block, std::vector<aco_ptr<Instruction>>
    std::vector<unsigned>& preds = block->linear_preds;
 
    /* start block */
-   if (preds.empty()) {
+   if (idx == 0) {
       aco_ptr<Instruction>& startpgm = block->instructions[0];
       assert(startpgm->opcode == aco_opcode::p_startpgm);
       bld.insert(std::move(startpgm));
@@ -275,10 +275,10 @@ add_coupling_code(exec_ctx& ctx, Block* block, std::vector<aco_ptr<Instruction>>
          start_exec = Operand::c32_or_c64(-1u, bld.lm == s2);
 
       if (ctx.handle_wqm) {
-         ctx.info[idx].exec.emplace_back(start_exec, mask_type_global | mask_type_exact);
+         ctx.info[0].exec.emplace_back(start_exec, mask_type_global | mask_type_exact);
          /* if this block needs WQM, initialize already */
-         if (ctx.info[idx].block_needs & WQM)
-            transition_to_WQM(ctx, bld, idx);
+         if (ctx.info[0].block_needs & WQM)
+            transition_to_WQM(ctx, bld, 0);
       } else {
          uint8_t mask = mask_type_global;
          if (ctx.program->needs_wqm) {
@@ -288,7 +288,7 @@ add_coupling_code(exec_ctx& ctx, Block* block, std::vector<aco_ptr<Instruction>>
          } else {
             mask |= mask_type_exact;
          }
-         ctx.info[idx].exec.emplace_back(start_exec, mask);
+         ctx.info[0].exec.emplace_back(start_exec, mask);
       }
 
       return count;
@@ -708,7 +708,7 @@ add_branch_code(exec_ctx& ctx, Block* block)
    unsigned idx = block->index;
    Builder bld(ctx.program, block);
 
-   if (block->linear_succs.empty())
+   if (idx == ctx.program->blocks.size() - 1)
       return;
 
    /* try to disable wqm handling */
@@ -909,7 +909,8 @@ process_block(exec_ctx& ctx, Block* block)
 
    unsigned idx = add_coupling_code(ctx, block, instructions);
 
-   assert(!block->linear_succs.empty() || ctx.info[block->index].exec.size() <= 2);
+   assert(block->index != ctx.program->blocks.size() - 1 ||
+          ctx.info[block->index].exec.size() <= 2);
 
    process_instructions(ctx, block, instructions, idx);
 

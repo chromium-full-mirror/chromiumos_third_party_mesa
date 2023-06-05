@@ -1,6 +1,24 @@
 /*
- * Copyright 2021 Alyssa Rosenzweig
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "agx_compiler.h"
@@ -105,8 +123,6 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, unsigned srcs,
          continue;
 
       uint8_t value = def->imm;
-      uint16_t value_u16 = def->imm;
-
       bool float_src = is_float;
 
       /* cmpselsrc takes integer immediates only */
@@ -116,13 +132,7 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, unsigned srcs,
          continue;
       if (I->op == AGX_OPCODE_ZS_EMIT && s != 0)
          continue;
-      if ((I->op == AGX_OPCODE_DEVICE_STORE ||
-           I->op == AGX_OPCODE_LOCAL_STORE || I->op == AGX_OPCODE_ATOMIC ||
-           I->op == AGX_OPCODE_LOCAL_ATOMIC) &&
-          s != 2)
-         continue;
-      if ((I->op == AGX_OPCODE_LOCAL_LOAD || I->op == AGX_OPCODE_DEVICE_LOAD) &&
-          s != 1)
+      if (I->op == AGX_OPCODE_DEVICE_STORE && s != 2)
          continue;
 
       if (float_src) {
@@ -136,8 +146,6 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, unsigned srcs,
          I->src[s] = agx_immediate_f(f);
       } else if (value == def->imm) {
          I->src[s] = agx_immediate(value);
-      } else if (value_u16 == def->imm && agx_allows_16bit_immediate(I)) {
-         I->src[s] = agx_abs(agx_immediate(value_u16));
       }
    }
 }
@@ -182,8 +190,7 @@ agx_optimizer_copyprop(agx_instr **defs, agx_instr *I)
       /* ALU instructions cannot take 64-bit */
       if (def->src[0].size == AGX_SIZE_64 &&
           !(I->op == AGX_OPCODE_DEVICE_LOAD && s == 0) &&
-          !(I->op == AGX_OPCODE_DEVICE_STORE && s == 1) &&
-          !(I->op == AGX_OPCODE_ATOMIC && s == 1))
+          !(I->op == AGX_OPCODE_DEVICE_STORE && s == 1))
          continue;
 
       agx_replace_src(I, s, def->src[0]);

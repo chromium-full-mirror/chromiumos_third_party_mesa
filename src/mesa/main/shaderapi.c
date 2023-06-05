@@ -766,8 +766,8 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
    /* Is transform feedback available in this context?
     */
    const bool has_xfb =
-      (_mesa_is_desktop_gl_compat(ctx) && ctx->Extensions.EXT_transform_feedback)
-      || _mesa_is_desktop_gl_core(ctx)
+      (ctx->API == API_OPENGL_COMPAT && ctx->Extensions.EXT_transform_feedback)
+      || ctx->API == API_OPENGL_CORE
       || _mesa_is_gles3(ctx);
 
    /* True if geometry shaders (of the form that was adopted into GLSL 1.50
@@ -779,9 +779,9 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
    /* Are uniform buffer objects available in this context?
     */
    const bool has_ubo =
-      (_mesa_is_desktop_gl_compat(ctx) &&
+      (ctx->API == API_OPENGL_COMPAT &&
        ctx->Extensions.ARB_uniform_buffer_object)
-      || _mesa_is_desktop_gl_core(ctx)
+      || ctx->API == API_OPENGL_CORE
       || _mesa_is_gles3(ctx);
 
    if (!shProg) {
@@ -1389,8 +1389,8 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
       }
       if (file) {
          fprintf(file, "[require]\nGLSL%s >= %u.%02u\n",
-                 shProg->IsES ? " ES" : "", shProg->GLSL_Version / 100,
-                 shProg->GLSL_Version % 100);
+                 shProg->IsES ? " ES" : "",
+                 shProg->data->Version / 100, shProg->data->Version % 100);
          if (shProg->SeparateShader)
             fprintf(file, "GL_ARB_separate_shader_objects\nSSO ENABLED\n");
          fprintf(file, "\n");
@@ -2671,11 +2671,12 @@ _mesa_copy_linked_program_data(const struct gl_shader_program *src,
 /**
  * ARB_separate_shader_objects: Compile & Link Program
  */
-GLuint
-_mesa_CreateShaderProgramv_impl(struct gl_context *ctx,
-                                GLenum type, GLsizei count,
-                                const GLchar* const *strings)
+GLuint GLAPIENTRY
+_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
+                           const GLchar* const *strings)
 {
+   GET_CURRENT_CONTEXT(ctx);
+
    const GLuint shader = create_shader_err(ctx, type, "glCreateShaderProgramv");
    GLuint program = 0;
 
@@ -2727,17 +2728,6 @@ _mesa_CreateShaderProgramv_impl(struct gl_context *ctx,
    return program;
 }
 
-/**
- * ARB_separate_shader_objects: Compile & Link Program
- */
-GLuint GLAPIENTRY
-_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
-                           const GLchar* const *strings)
-{
-   GET_CURRENT_CONTEXT(ctx);
-
-   return _mesa_CreateShaderProgramv_impl(ctx, type, count, strings);
-}
 
 static void
 set_patch_vertices(struct gl_context *ctx, GLint value)
@@ -3294,7 +3284,6 @@ destroy_shader_include(struct hash_entry *entry)
    _mesa_hash_table_destroy(sh_incl_ht_entry->path, destroy_shader_include);
    free(sh_incl_ht_entry->shader_source);
    free(sh_incl_ht_entry);
-   free((void *)entry->key);
 }
 
 void
@@ -3381,7 +3370,7 @@ validate_and_tokenise_sh_incl(struct gl_context *ctx,
          struct sh_incl_path_entry *path =
             rzalloc(mem_ctx, struct sh_incl_path_entry);
 
-         path->path = ralloc_strdup(mem_ctx, path_str);
+         path->path = strdup(path_str);
          list_addtail(&path->list, &list->list);
       }
 
@@ -3569,8 +3558,7 @@ _mesa_NamedStringARB(GLenum type, GLint namelen, const GLchar *name,
          sh_incl_ht_entry->path =
             _mesa_hash_table_create(NULL, _mesa_hash_string,
                                     _mesa_key_string_equal);
-         _mesa_hash_table_insert(path_ht, strdup(entry->path),
-                                 sh_incl_ht_entry);
+         _mesa_hash_table_insert(path_ht, entry->path, sh_incl_ht_entry);
       } else {
          sh_incl_ht_entry = (struct sh_incl_path_ht_entry *) ht_entry->data;
       }

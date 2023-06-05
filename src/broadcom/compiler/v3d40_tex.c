@@ -30,27 +30,25 @@
 #define __gen_emit_reloc(cl, reloc)
 #include "cle/v3d_packet_v41_pack.h"
 
-static inline struct qinst *
+static inline void
 vir_TMU_WRITE(struct v3d_compile *c, enum v3d_qpu_waddr waddr, struct qreg val)
 {
         /* XXX perf: We should figure out how to merge ALU operations
          * producing the val with this MOV, when possible.
          */
-        return vir_MOV_dest(c, vir_reg(QFILE_MAGIC, waddr), val);
+        vir_MOV_dest(c, vir_reg(QFILE_MAGIC, waddr), val);
 }
 
-static inline struct qinst *
+static inline void
 vir_TMU_WRITE_or_count(struct v3d_compile *c,
                        enum v3d_qpu_waddr waddr,
                        struct qreg val,
                        uint32_t *tmu_writes)
 {
-        if (tmu_writes) {
+        if (tmu_writes)
                 (*tmu_writes)++;
-                return NULL;
-        } else {
-                return vir_TMU_WRITE(c, waddr, val);
-        }
+        else
+                vir_TMU_WRITE(c, waddr, val);
 }
 
 static void
@@ -236,7 +234,8 @@ v3d40_vir_emit_tex(struct v3d_compile *c, nir_tex_instr *instr)
          * parameter if the output is 32 bit
          */
         bool output_type_32_bit =
-                c->key->sampler[sampler_idx].return_size == 32;
+                c->key->sampler[sampler_idx].return_size == 32 &&
+                !instr->is_shadow;
 
         struct V3D41_TMU_CONFIG_PARAMETER_0 p0_unpacked = {
         };
@@ -382,19 +381,17 @@ v3d40_vir_emit_tex(struct v3d_compile *c, nir_tex_instr *instr)
                 vir_WRTMUC(c, QUNIFORM_CONSTANT, p2_packed);
 
         /* Emit retiring TMU write */
-        struct qinst *retiring;
         if (instr->op == nir_texop_txf) {
                 assert(instr->sampler_dim != GLSL_SAMPLER_DIM_CUBE);
-                retiring = vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUSF, s);
+                vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUSF, s);
         } else if (instr->sampler_dim == GLSL_SAMPLER_DIM_CUBE) {
-                retiring = vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUSCM, s);
+                vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUSCM, s);
         } else if (instr->op == nir_texop_txl) {
-                retiring = vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUSLOD, s);
+                vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUSLOD, s);
         } else {
-                retiring = vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUS, s);
+                vir_TMU_WRITE(c, V3D_QPU_WADDR_TMUS, s);
         }
 
-        retiring->ldtmu_count = p0_unpacked.return_words_of_texture_data;
         ntq_add_pending_tmu_flush(c, &instr->dest,
                                   p0_unpacked.return_words_of_texture_data);
 }
@@ -443,7 +440,7 @@ v3d40_image_load_store_tmu_op(nir_intrinsic_instr *instr)
  * which is why we always call ntq_get_src() even if we are only interested in
  * register write counts.
  */
-static struct qinst *
+static void
 vir_image_emit_register_writes(struct v3d_compile *c,
                                nir_intrinsic_instr *instr,
                                bool atomic_add_replaced,
@@ -510,8 +507,7 @@ vir_image_emit_register_writes(struct v3d_compile *c,
                            V3D_QPU_PF_PUSHZ);
         }
 
-        struct qinst *retiring =
-                vir_TMU_WRITE_or_count(c, V3D_QPU_WADDR_TMUSF, src_1_0, tmu_writes);
+        vir_TMU_WRITE_or_count(c, V3D_QPU_WADDR_TMUSF, src_1_0, tmu_writes);
 
         if (!tmu_writes && vir_in_nonuniform_control_flow(c) &&
             instr->intrinsic != nir_intrinsic_image_load) {
@@ -519,8 +515,6 @@ vir_image_emit_register_writes(struct v3d_compile *c,
                         (struct  qinst *)c->cur_block->instructions.prev;
                 vir_set_cond(last_inst, V3D_QPU_COND_IFA);
         }
-
-        return retiring;
 }
 
 static unsigned
@@ -618,9 +612,8 @@ v3d40_vir_emit_image_load_store(struct v3d_compile *c,
         if (memcmp(&p2_unpacked, &p2_unpacked_default, sizeof(p2_unpacked)))
                    vir_WRTMUC(c, QUNIFORM_CONSTANT, p2_packed);
 
-        struct qinst *retiring =
-                vir_image_emit_register_writes(c, instr, atomic_add_replaced, NULL);
-        retiring->ldtmu_count = p0_unpacked.return_words_of_texture_data;
+        vir_image_emit_register_writes(c, instr, atomic_add_replaced, NULL);
+
         ntq_add_pending_tmu_flush(c, &instr->dest,
                                   p0_unpacked.return_words_of_texture_data);
 }

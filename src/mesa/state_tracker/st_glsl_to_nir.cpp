@@ -408,12 +408,8 @@ st_nir_preprocess(struct st_context *st, struct gl_program *prog,
    }
 
    if (options->lower_to_scalar) {
-      NIR_PASS_V(nir, nir_remove_dead_variables,
-                 nir_var_function_temp | nir_var_shader_temp |
-                 nir_var_mem_shared, NULL);
-      NIR_PASS_V(nir, nir_opt_copy_prop_vars);
-      NIR_PASS_V(nir, nir_lower_alu_to_scalar,
-                 options->lower_to_scalar_filter, NULL);
+     NIR_PASS_V(nir, nir_lower_alu_to_scalar,
+                options->lower_to_scalar_filter, NULL);
    }
 
    /* before buffers and vars_to_ssa */
@@ -775,13 +771,6 @@ st_link_nir(struct gl_context *ctx,
       nir_opt_access_options opt_access_options;
       opt_access_options.is_vulkan = false;
       NIR_PASS_V(nir, nir_opt_access, &opt_access_options);
-
-      /* Combine clip and cull outputs into one array and set:
-       * - shader_info::clip_distance_array_size
-       * - shader_info::cull_distance_array_size
-       */
-      if (!st->screen->get_param(st->screen, PIPE_CAP_CULL_DISTANCE_NOCOMBINE))
-         NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
    }
 
    if (shader_program->data->spirv) {
@@ -848,6 +837,9 @@ st_link_nir(struct gl_context *ctx,
 
       NIR_PASS_V(nir, nir_lower_system_values);
       NIR_PASS_V(nir, nir_lower_compute_system_values, NULL);
+
+      if (!st->screen->get_param(st->screen, PIPE_CAP_CULL_DISTANCE_NOCOMBINE))
+         NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
 
       if (i >= 1) {
          struct gl_program *prev_shader = linked_shader[i - 1]->Program;

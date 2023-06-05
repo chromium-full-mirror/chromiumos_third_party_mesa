@@ -40,11 +40,11 @@ meson.build @dbaker @eric
 ##########
 
 # NIR
-/src/compiler/nir/ @gfxstrand
+/src/compiler/nir/ @jekstrand
 
 # Vulkan
-/src/vulkan/ @eric @gfxstrand
-/include/vulkan/ @eric @gfxstrand
+/src/vulkan/ @eric @jekstrand
+/include/vulkan/ @eric @jekstrand
 
 
 #############
@@ -79,9 +79,12 @@ meson.build @dbaker @eric
 /src/glx/*glvnd* @kbrenneman
 
 # Haiku
+/include/HaikuGL/ @kallisti5
 /src/egl/drivers/haiku/ @kallisti5
 /src/gallium/frontends/hgl/ @kallisti5
+/src/gallium/targets/haiku-softpipe/ @kallisti5
 /src/gallium/winsys/sw/hgl/ @kallisti5
+/src/hgl/ @kallisti5
 
 # Loader - DRI/classic
 /src/loader/ @xexaxo
@@ -125,11 +128,11 @@ meson.build @dbaker @eric
 /src/imagination/rogue/ @simon-perretta-img
 
 # Intel
-/include/drm-uapi/i915_drm.h @kwg @llandwerlin @gfxstrand @idr
-/include/pci_ids/i*_pci_ids.h @kwg @llandwerlin @gfxstrand @idr
-/src/intel/ @kwg @llandwerlin @gfxstrand @idr
-/src/gallium/winsys/iris/ @kwg @llandwerlin @gfxstrand @idr
-/src/gallium/drivers/iris/ @kwg @llandwerlin @gfxstrand @idr
+/include/drm-uapi/i915_drm.h @kwg @llandwerlin @jekstrand @idr
+/include/pci_ids/i*_pci_ids.h @kwg @llandwerlin @jekstrand @idr
+/src/intel/ @kwg @llandwerlin @jekstrand @idr
+/src/gallium/winsys/iris/ @kwg @llandwerlin @jekstrand @idr
+/src/gallium/drivers/iris/ @kwg @llandwerlin @jekstrand @idr
 /src/gallium/drivers/i915/ @anholt
 
 # Microsoft

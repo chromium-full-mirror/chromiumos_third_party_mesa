@@ -1,6 +1,24 @@
 /*
- * Copyright 2021 Alyssa Rosenzweig
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2021 Alyssa Rosenzweig
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "agx_formats.h"
@@ -116,11 +134,6 @@ const struct agx_pixel_format_entry agx_pixel_format[PIPE_FORMAT_COUNT] = {
 
    AGX_FMT(R11G11B10_FLOAT,         R11G11B10,     FLOAT,  T, RG11B10F),
    AGX_FMT(R9G9B9E5_FLOAT,          R9G9B9E5,      FLOAT,  F, RGB9E5),
-
-   /* These formats are emulated for texture buffers only */
-   AGX_FMT(R32G32B32_FLOAT,         R32G32B32_EMULATED,    FLOAT,  F, _),
-   AGX_FMT(R32G32B32_UINT,          R32G32B32_EMULATED,    UINT,   F, _),
-   AGX_FMT(R32G32B32_SINT,          R32G32B32_EMULATED,    SINT,   F, _),
 
    AGX_FMT(ETC1_RGB8,               ETC2_RGB8,     UNORM,  F,_),
    AGX_FMT(ETC2_RGB8,               ETC2_RGB8,     UNORM,  F,_),

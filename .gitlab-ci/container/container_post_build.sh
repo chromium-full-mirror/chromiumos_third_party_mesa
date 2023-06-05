@@ -7,6 +7,4 @@ fi
 # Clean up any build cache for rust.
 rm -rf /.cargo
 
-if test -x /usr/bin/ccache; then
-    ccache --show-stats
-fi
+ccache --show-stats

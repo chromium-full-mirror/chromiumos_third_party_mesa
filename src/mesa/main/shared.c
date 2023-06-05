@@ -141,8 +141,6 @@ _mesa_alloc_shared_state(struct gl_context *ctx)
    shared->MemoryObjects = _mesa_NewHashTable();
    shared->SemaphoreObjects = _mesa_NewHashTable();
 
-   shared->GLThread.NoLockDuration = ONE_SECOND_IN_NS;
-
    return shared;
 }
 

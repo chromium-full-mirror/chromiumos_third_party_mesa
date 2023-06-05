@@ -1,7 +1,25 @@
 /*
- * Copyright 2018 Alyssa Rosenzweig
- * Copyright 2019 Collabora, Ltd.
- * SPDX-License-Identifier: MIT
+ * © Copyright 2018 Alyssa Rosenzweig
+ * Copyright (C) 2019 Collabora, Ltd.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  */
 
@@ -10,7 +28,7 @@
 #include "agx_device.h"
 
 /* Transient command stream pooling: command stream uploads try to simply copy
- * into wherever we left off. If there isn't space, we allocate a new entry
+ * into whereever we left off. If there isn't space, we allocate a new entry
  * into the pool and copy there */
 
 #define POOL_SLAB_SIZE (256 * 1024)
@@ -35,7 +53,7 @@ agx_pool_init(struct agx_pool *pool, struct agx_device *dev,
    memset(pool, 0, sizeof(*pool));
    pool->dev = dev;
    pool->create_flags = create_flags;
-   util_dynarray_init(&pool->bos, NULL);
+   util_dynarray_init(&pool->bos, dev->memctx);
 
    if (prealloc)
       agx_pool_alloc_backing(pool, POOL_SLAB_SIZE);

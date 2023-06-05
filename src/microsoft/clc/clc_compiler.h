@@ -25,7 +25,6 @@
 #define CLC_COMPILER_H
 
 #include "clc/clc.h"
-#include "dxil_versions.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -123,9 +122,6 @@ struct clc_runtime_kernel_conf {
    unsigned lower_bit_size;
    unsigned support_global_work_id_offsets;
    unsigned support_workgroup_id_offsets;
-
-   enum dxil_shader_model max_shader_model;
-   enum dxil_validator_version validator_version;
 };
 
 struct clc_libclc_dxil_options {

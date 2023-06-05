@@ -1,7 +1,25 @@
 /*
- * Copyright 2021 Alyssa Rosenzweig
- * Copyright 2020 Collabora Ltd.
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
+ * Copyright (C) 2020 Collabora Ltd.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef __AGX_COMPILER_H
@@ -19,6 +37,21 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* clang-format off */
+enum agx_dbg {
+   AGX_DBG_MSGS        = BITFIELD_BIT(0),
+   AGX_DBG_SHADERS     = BITFIELD_BIT(1),
+   AGX_DBG_SHADERDB    = BITFIELD_BIT(2),
+   AGX_DBG_VERBOSE     = BITFIELD_BIT(3),
+   AGX_DBG_INTERNAL    = BITFIELD_BIT(4),
+   AGX_DBG_NOVALIDATE  = BITFIELD_BIT(5),
+   AGX_DBG_NOOPT       = BITFIELD_BIT(6),
+   AGX_DBG_WAIT        = BITFIELD_BIT(7),
+};
+/* clang-format on */
+
+extern int agx_debug;
 
 /* r0-r127 inclusive, as pairs of 16-bits, gives 256 registers */
 #define AGX_NUM_REGS (256)
@@ -288,7 +321,6 @@ typedef struct {
       enum agx_icond icond;
       enum agx_fcond fcond;
       enum agx_round round;
-      enum agx_atomic_opc atomic_opc;
       enum agx_lod_mode lod_mode;
       struct agx_block *target;
    };
@@ -303,10 +335,9 @@ typedef struct {
    bool invert_cond : 1;
 
    /* TODO: Handle tex ops more efficient */
-   enum agx_dim dim       : 4;
-   bool offset            : 1;
-   bool shadow            : 1;
-   enum agx_gather gather : 3;
+   enum agx_dim dim : 4;
+   bool offset      : 1;
+   bool shadow      : 1;
 
    /* Final st_vary op */
    bool last : 1;
@@ -325,7 +356,7 @@ typedef struct {
    bool saturate : 1;
    unsigned mask : 4;
 
-   unsigned padding : 8;
+   unsigned padding : 11;
 } agx_instr;
 
 static inline void
@@ -442,22 +473,21 @@ agx_size_for_bits(unsigned bits)
 }
 
 static inline agx_index
-agx_nir_ssa_index(nir_ssa_def *ssa)
-{
-   return agx_get_index(ssa->index, agx_size_for_bits(ssa->bit_size));
-}
-
-static inline agx_index
 agx_src_index(nir_src *src)
 {
    assert(src->is_ssa);
-   return agx_nir_ssa_index(src->ssa);
+
+   return agx_get_index(src->ssa->index,
+                        agx_size_for_bits(nir_src_bit_size(*src)));
 }
 
 static inline agx_index
 agx_dest_index(nir_dest *dst)
 {
-   return agx_nir_ssa_index(&dst->ssa);
+   assert(dst->is_ssa);
+
+   return agx_get_index(dst->ssa.index,
+                        agx_size_for_bits(nir_dest_bit_size(*dst)));
 }
 
 static inline agx_index
@@ -749,14 +779,14 @@ agx_builder_insert(agx_cursor *cursor, agx_instr *I)
 
 /* Routines defined for AIR */
 
-void agx_print_instr(const agx_instr *I, FILE *fp);
-void agx_print_block(const agx_block *block, FILE *fp);
-void agx_print_shader(const agx_context *ctx, FILE *fp);
+void agx_print_instr(agx_instr *I, FILE *fp);
+void agx_print_block(agx_block *block, FILE *fp);
+void agx_print_shader(agx_context *ctx, FILE *fp);
 void agx_optimizer(agx_context *ctx);
 void agx_lower_pseudo(agx_context *ctx);
 void agx_lower_uniform_sources(agx_context *ctx);
 void agx_opt_cse(agx_context *ctx);
-void agx_dce(agx_context *ctx, bool partial);
+void agx_dce(agx_context *ctx);
 void agx_ra(agx_context *ctx);
 void agx_lower_64bit_postra(agx_context *ctx);
 void agx_insert_waits(agx_context *ctx);
@@ -774,7 +804,6 @@ agx_validate(UNUSED agx_context *ctx, UNUSED const char *after_str)
 
 unsigned agx_read_registers(agx_instr *I, unsigned s);
 unsigned agx_write_registers(agx_instr *I, unsigned d);
-bool agx_allows_16bit_immediate(agx_instr *I);
 
 struct agx_copy {
    /* Base register destination of the copy */
@@ -794,13 +823,11 @@ void agx_compute_liveness(agx_context *ctx);
 void agx_liveness_ins_update(BITSET_WORD *live, agx_instr *I);
 
 bool agx_nir_lower_zs_emit(nir_shader *s);
-bool agx_nir_lower_texture(nir_shader *s, bool support_lod_bias);
+bool agx_nir_lower_texture(nir_shader *s);
 bool agx_nir_opt_preamble(nir_shader *s, unsigned *preamble_size);
 bool agx_nir_lower_load_mask(nir_shader *shader);
 bool agx_nir_lower_address(nir_shader *shader);
 bool agx_nir_lower_ubo(nir_shader *shader);
-bool agx_nir_lower_shared_bitsize(nir_shader *shader);
-bool agx_nir_lower_frag_sidefx(nir_shader *s);
 
 #ifdef __cplusplus
 } /* extern C */

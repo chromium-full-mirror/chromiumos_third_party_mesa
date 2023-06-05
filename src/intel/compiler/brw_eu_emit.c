@@ -1251,28 +1251,62 @@ brw_PLN(struct brw_codegen *p, struct brw_reg dest,
 brw_inst *
 brw_F32TO16(struct brw_codegen *p, struct brw_reg dst, struct brw_reg src)
 {
-   assert(p->devinfo->ver == 7);
-
+   const struct intel_device_info *devinfo = p->devinfo;
+   const bool align16 = brw_get_default_access_mode(p) == BRW_ALIGN_16;
    /* The F32TO16 instruction doesn't support 32-bit destination types in
-    * Align1 mode.  Gfx7 (only) does zero out the high 16 bits in Align16
-    * mode as an undocumented feature.
+    * Align1 mode, and neither does the Gfx8 implementation in terms of a
+    * converting MOV.  Gfx7 does zero out the high 16 bits in Align16 mode as
+    * an undocumented feature.
     */
-   if (BRW_ALIGN_16 == brw_get_default_access_mode(p)) {
+   const bool needs_zero_fill = (dst.type == BRW_REGISTER_TYPE_UD &&
+                                 (!align16 || devinfo->ver >= 8));
+   brw_inst *inst;
+
+   if (align16) {
       assert(dst.type == BRW_REGISTER_TYPE_UD);
    } else {
-      assert(dst.type == BRW_REGISTER_TYPE_W ||
-             dst.type == BRW_REGISTER_TYPE_UW);
+      if (devinfo->ver <= 7) {
+         assert(dst.type == BRW_REGISTER_TYPE_W ||
+                dst.type == BRW_REGISTER_TYPE_UW);
+      } else {
+         assert(dst.type == BRW_REGISTER_TYPE_HF);
+      }
    }
 
-   return brw_alu1(p, BRW_OPCODE_F32TO16, dst, src);
+   brw_push_insn_state(p);
+
+   if (needs_zero_fill) {
+      brw_set_default_access_mode(p, BRW_ALIGN_1);
+      dst = spread(retype(dst, BRW_REGISTER_TYPE_W), 2);
+   }
+
+   if (devinfo->ver >= 8) {
+      inst = brw_MOV(p, retype(dst, BRW_REGISTER_TYPE_HF), src);
+   } else {
+      assert(devinfo->ver == 7);
+      inst = brw_alu1(p, BRW_OPCODE_F32TO16, dst, src);
+   }
+
+   if (needs_zero_fill) {
+      if (devinfo->ver < 12)
+         brw_inst_set_no_dd_clear(devinfo, inst, true);
+      brw_set_default_swsb(p, tgl_swsb_null());
+      inst = brw_MOV(p, suboffset(dst, 1), brw_imm_w(0));
+      if (devinfo->ver < 12)
+         brw_inst_set_no_dd_check(devinfo, inst, true);
+   }
+
+   brw_pop_insn_state(p);
+   return inst;
 }
 
 brw_inst *
 brw_F16TO32(struct brw_codegen *p, struct brw_reg dst, struct brw_reg src)
 {
-   assert(p->devinfo->ver == 7);
+   const struct intel_device_info *devinfo = p->devinfo;
+   bool align16 = brw_get_default_access_mode(p) == BRW_ALIGN_16;
 
-   if (BRW_ALIGN_16 == brw_get_default_access_mode(p)) {
+   if (align16) {
       assert(src.type == BRW_REGISTER_TYPE_UD);
    } else {
       /* From the Ivybridge PRM, Vol4, Part3, Section 6.26 f16to32:
@@ -1281,11 +1315,20 @@ brw_F16TO32(struct brw_codegen *p, struct brw_reg dst, struct brw_reg src)
        *   type, the source data type must be Word (W). The destination type
        *   must be F (Float).
        */
+      if (src.type == BRW_REGISTER_TYPE_UD)
+         src = spread(retype(src, BRW_REGISTER_TYPE_W), 2);
+
       assert(src.type == BRW_REGISTER_TYPE_W ||
-             src.type == BRW_REGISTER_TYPE_UW);
+             src.type == BRW_REGISTER_TYPE_UW ||
+             src.type == BRW_REGISTER_TYPE_HF);
    }
 
-   return brw_alu1(p, BRW_OPCODE_F16TO32, dst, src);
+   if (devinfo->ver >= 8) {
+      return brw_MOV(p, dst, retype(src, BRW_REGISTER_TYPE_HF));
+   } else {
+      assert(devinfo->ver == 7);
+      return brw_alu1(p, BRW_OPCODE_F16TO32, dst, src);
+   }
 }
 
 

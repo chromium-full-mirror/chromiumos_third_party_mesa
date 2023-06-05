@@ -1779,16 +1779,9 @@ glXGetFBConfigFromVisualSGIX(Display * dpy, XVisualInfo * vis)
 {
    int attrib_list[] = { GLX_VISUAL_ID, vis->visualid, None };
    int nconfigs = 0;
-   GLXFBConfig *config_list;
-   GLXFBConfig config;
 
-   config_list = glXChooseFBConfig(dpy, vis->screen, attrib_list, &nconfigs);
-   if (nconfigs == 0)
-      return NULL;
-
-   config = config_list[0];
-   free(config_list);
-   return (GLXFBConfigSGIX)config;
+   return (GLXFBConfigSGIX)
+      glXChooseFBConfig(dpy, vis->screen, attrib_list, &nconfigs);
 }
 
 #ifndef GLX_USE_APPLEGL

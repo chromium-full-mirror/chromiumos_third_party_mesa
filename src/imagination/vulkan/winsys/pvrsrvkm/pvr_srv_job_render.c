@@ -22,7 +22,6 @@
  */
 
 #include <assert.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -43,6 +42,7 @@
 #include "pvr_srv_sync.h"
 #include "pvr_types.h"
 #include "pvr_winsys.h"
+#include "util/libsync.h"
 #include "util/log.h"
 #include "util/macros.h"
 #include "vk_alloc.h"
@@ -700,32 +700,60 @@ VkResult pvr_srv_winsys_render_submit(
    pvr_srv_geometry_cmd_init(submit_info, sync_prim, &geom_cmd, dev_info);
    pvr_srv_fragment_cmd_init(submit_info, &frag_cmd, dev_info);
 
-   if (submit_info->geometry.wait) {
+   for (uint32_t i = 0U; i < submit_info->wait_count; i++) {
+      struct pvr_srv_sync *srv_wait_sync = to_srv_sync(submit_info->waits[i]);
+      int ret;
+
+      if (!submit_info->waits[i] || srv_wait_sync->fd < 0)
+         continue;
+
+      if (submit_info->stage_flags[i] & PVR_PIPELINE_STAGE_GEOM_BIT) {
+         ret = sync_accumulate("", &in_geom_fd, srv_wait_sync->fd);
+         if (ret) {
+            result = vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
+            goto end_close_in_fds;
+         }
+
+         submit_info->stage_flags[i] &= ~PVR_PIPELINE_STAGE_GEOM_BIT;
+      }
+
+      if (submit_info->stage_flags[i] & PVR_PIPELINE_STAGE_FRAG_BIT) {
+         ret = sync_accumulate("", &in_frag_fd, srv_wait_sync->fd);
+         if (ret) {
+            result = vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
+            goto end_close_in_fds;
+         }
+
+         submit_info->stage_flags[i] &= ~PVR_PIPELINE_STAGE_FRAG_BIT;
+      }
+   }
+
+   if (submit_info->barrier_geom) {
       struct pvr_srv_sync *srv_wait_sync =
-         to_srv_sync(submit_info->geometry.wait);
+         to_srv_sync(submit_info->barrier_geom);
 
       if (srv_wait_sync->fd >= 0) {
-         in_geom_fd = dup(srv_wait_sync->fd);
-         if (in_geom_fd == -1) {
-            return vk_errorf(NULL,
-                             VK_ERROR_OUT_OF_HOST_MEMORY,
-                             "dup called on wait sync failed, Errno: %s",
-                             strerror(errno));
+         int ret;
+
+         ret = sync_accumulate("", &in_geom_fd, srv_wait_sync->fd);
+         if (ret) {
+            result = vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
+            goto end_close_in_fds;
          }
       }
    }
 
-   if (submit_info->fragment.wait) {
+   if (submit_info->barrier_frag) {
       struct pvr_srv_sync *srv_wait_sync =
-         to_srv_sync(submit_info->fragment.wait);
+         to_srv_sync(submit_info->barrier_frag);
 
       if (srv_wait_sync->fd >= 0) {
-         in_frag_fd = dup(srv_wait_sync->fd);
-         if (in_frag_fd == -1) {
-            return vk_errorf(NULL,
-                             VK_ERROR_OUT_OF_HOST_MEMORY,
-                             "dup called on wait sync failed, Errno: %s",
-                             strerror(errno));
+         int ret;
+
+         ret = sync_accumulate("", &in_frag_fd, srv_wait_sync->fd);
+         if (ret) {
+            result = vk_error(NULL, VK_ERROR_OUT_OF_HOST_MEMORY);
+            goto end_close_in_fds;
          }
       }
    }

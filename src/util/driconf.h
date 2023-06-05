@@ -302,10 +302,6 @@
    DRI_CONF_OPT_B(limit_trig_input_range, def, \
                   "Limit trig input range to [-2p : 2p] to improve sin/cos calculation precision on Intel")
 
-#define DRI_CONF_NO_16BIT(def) \
-   DRI_CONF_OPT_B(no_16bit, def, \
-                  "Disable 16-bit instructions")
-
 #define DRI_CONF_IGNORE_DISCARD_FRAMEBUFFER(def) \
    DRI_CONF_OPT_B(ignore_discard_framebuffer, def, \
                   "Ignore glDiscardFramebuffer/glInvalidateFramebuffer, workaround for games that use it incorrectly")
@@ -636,15 +632,6 @@
 #define DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(def) \
    DRI_CONF_OPT_B(anv_sample_mask_out_opengl_behaviour, def, \
                   "Ignore sample mask out when having single sampled target")
-
-#define DRI_CONF_ANV_MESH_CONV_PRIM_ATTRS_TO_VERT_ATTRS(def) \
-   DRI_CONF_OPT_E(anv_mesh_conv_prim_attrs_to_vert_attrs, def, -2, 2, \
-                  "Apply workaround for gfx12.5 per-prim attribute corruption HW bug", \
-                  DRI_CONF_ENUM(-2, "enable attribute conversion and vertex duplication ONLY if needed") \
-                  DRI_CONF_ENUM(-1, "enable attribute conversion ONLY if needed") \
-                  DRI_CONF_ENUM(0,  "disable workaround") \
-                  DRI_CONF_ENUM(1,  "enable attribute conversion ALWAYS") \
-                  DRI_CONF_ENUM(2,  "enable attribute conversion and vertex duplication ALWAYS") )
 
 #define DRI_CONF_ANV_FP64_WORKAROUND_ENABLED(def) \
    DRI_CONF_OPT_B(fp64_workaround_enabled, def, \

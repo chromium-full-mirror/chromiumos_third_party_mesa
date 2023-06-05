@@ -28,10 +28,6 @@
 #include "vk_format.h"
 #include "vk_util.h"
 
-#if defined(ANDROID) && ANDROID_API_LEVEL >= 26
-#include "vk_android.h"
-#endif
-
 /*
  * gcc-4 and earlier don't allow compound literals where a constant
  * is required in -std=c99/gnu99 mode, so we can't use ISL_SWIZZLE()
@@ -554,12 +550,6 @@ anv_get_image_format_features2(const struct intel_device_info *devinfo,
    }
 
    assert(aspects & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV);
-
-   if (vk_format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM) {
-      flags |= VK_FORMAT_FEATURE_2_VIDEO_DECODE_OUTPUT_BIT_KHR |
-               VK_FORMAT_FEATURE_2_VIDEO_DECODE_DPB_BIT_KHR;
-   }
-
    const struct anv_format_plane plane_format =
       anv_get_format_plane(devinfo, vk_format, 0, vk_tiling);
 
@@ -849,12 +839,6 @@ get_buffer_format_features2(const struct intel_device_info *devinfo,
       case VK_FORMAT_R16G16B16A16_SFLOAT:
       case VK_FORMAT_R16G16_SNORM:
       case VK_FORMAT_R16G16B16A16_SNORM:
-      case VK_FORMAT_R16G16B16A16_UNORM:
-      case VK_FORMAT_R16G16_UNORM:
-      case VK_FORMAT_R8G8B8A8_UNORM:
-      case VK_FORMAT_R8G8_UNORM:
-      case VK_FORMAT_R8G8B8A8_SNORM:
-      case VK_FORMAT_R8G8_SNORM:
          flags |= VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR;
          break;
       default:
@@ -984,9 +968,6 @@ void anv_GetPhysicalDeviceFormatProperties2(
          props->bufferFeatures = buffer2;
          break;
       }
-      case VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR:
-         /* don't have any thing to use this for yet */
-         break;
       default:
          anv_debug_ignored_stype(ext->sType);
          break;
@@ -1023,12 +1004,6 @@ anv_get_image_format_properties(
       isl_mod_info = isl_drm_modifier_get_info(vk_mod_info->drmFormatModifier);
       if (isl_mod_info == NULL)
          goto unsupported;
-
-      /* only allow Y-tiling/Tile4 for video decode. */
-      if (info->usage & VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR) {
-         if (isl_mod_info->tiling != ISL_TILING_Y0 && isl_mod_info->tiling != ISL_TILING_4)
-            goto unsupported;
-      }
    }
 
    assert(format->vk_format == info->format);
@@ -1387,7 +1362,7 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
    const VkPhysicalDeviceExternalImageFormatInfo *external_info = NULL;
    VkExternalImageFormatProperties *external_props = NULL;
    VkSamplerYcbcrConversionImageFormatProperties *ycbcr_props = NULL;
-   UNUSED VkAndroidHardwareBufferUsageANDROID *android_usage = NULL;
+   VkAndroidHardwareBufferUsageANDROID *android_usage = NULL;
    VkResult result;
    bool from_wsi = false;
 
@@ -1406,9 +1381,6 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
          break;
       case VK_STRUCTURE_TYPE_WSI_IMAGE_CREATE_INFO_MESA:
          from_wsi = true;
-         break;
-      case VK_STRUCTURE_TYPE_VIDEO_PROFILE_LIST_INFO_KHR:
-         /* Ignore but don't warn */
          break;
       default:
          anv_debug_ignored_stype(s->sType);
@@ -1442,15 +1414,14 @@ VkResult anv_GetPhysicalDeviceImageFormatProperties2(
    bool ahw_supported =
       physical_device->vk.supported_extensions.ANDROID_external_memory_android_hardware_buffer;
 
-#if defined(ANDROID) && ANDROID_API_LEVEL >= 26
    if (ahw_supported && android_usage) {
       android_usage->androidHardwareBufferUsage =
-         vk_image_usage_to_ahb_usage(base_info->flags, base_info->usage);
+         anv_ahw_usage_from_vk_usage(base_info->flags,
+                                     base_info->usage);
 
       /* Limit maxArrayLayers to 1 for AHardwareBuffer based images for now. */
       base_props->imageFormatProperties.maxArrayLayers = 1;
    }
-#endif
 
    /* From the Vulkan 1.0.42 spec:
     *

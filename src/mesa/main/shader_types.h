@@ -345,6 +345,8 @@ struct gl_shader_program_data
    enum gl_link_status LinkStatus;   /**< GL_LINK_STATUS */
    GLchar *InfoLog;
 
+   unsigned Version;       /**< GLSL version used for linking */
+
    /* Mask of stages this program was linked against */
    unsigned linked_stages;
 
@@ -487,8 +489,6 @@ struct gl_shader_program
     * #extension ARB_fragment_coord_conventions: enable
     */
    GLboolean ARB_fragment_coord_conventions_enable;
-
-   unsigned GLSL_Version; /**< GLSL version used for linking */
 };
 
 /**

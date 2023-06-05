@@ -167,7 +167,7 @@ Icecream95 (1):
 
 - panfrost: Stop overallocating compressed textures
 
-Faith Ekstrand (7):
+Jason Ekstrand (7):
 
 - v3dv/queue: Rework multisync_free
 - nir: Dont set coord_components on txs

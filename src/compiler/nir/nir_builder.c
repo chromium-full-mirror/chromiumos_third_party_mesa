@@ -117,7 +117,7 @@ nir_builder_alu_instr_finish_and_insert(nir_builder *build, nir_alu_instr *instr
 
    nir_ssa_dest_init(&instr->instr, &instr->dest.dest, num_components,
                      bit_size, NULL);
-   instr->dest.write_mask = nir_component_mask(num_components);
+   instr->dest.write_mask = (1 << num_components) - 1;
 
    nir_builder_instr_insert(build, &instr->instr);
 
@@ -338,7 +338,7 @@ nir_vec_scalars(nir_builder *build, nir_ssa_scalar *comp, unsigned num_component
     */
    nir_ssa_dest_init(&instr->instr, &instr->dest.dest, num_components,
                      comp[0].def->bit_size, NULL);
-   instr->dest.write_mask = nir_component_mask(num_components);
+   instr->dest.write_mask = (1 << num_components) - 1;
 
    nir_builder_instr_insert(build, &instr->instr);
 
@@ -496,22 +496,6 @@ nir_push_loop(nir_builder *build)
    nir_loop *loop = nir_loop_create(build->shader);
    nir_builder_cf_insert(build, &loop->cf_node);
    build->cursor = nir_before_cf_list(&loop->body);
-   return loop;
-}
-
-nir_loop *
-nir_push_continue(nir_builder *build, nir_loop *loop)
-{
-   if (loop) {
-      assert(nir_builder_is_inside_cf(build, &loop->cf_node));
-   } else {
-      nir_block *block = nir_cursor_current_block(build->cursor);
-      loop = nir_cf_node_as_loop(block->cf_node.parent);
-   }
-
-   nir_loop_add_continue_construct(loop);
-
-   build->cursor = nir_before_cf_list(&loop->continue_list);
    return loop;
 }
 

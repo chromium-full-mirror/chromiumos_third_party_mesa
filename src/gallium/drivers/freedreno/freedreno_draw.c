@@ -42,13 +42,6 @@
 #include "freedreno_state.h"
 #include "freedreno_util.h"
 
-static bool
-batch_references_resource(struct fd_batch *batch, struct pipe_resource *prsc)
-   assert_dt
-{
-   return fd_batch_references_resource(batch, fd_resource(prsc));
-}
-
 static void
 resource_read(struct fd_batch *batch, struct pipe_resource *prsc) assert_dt
 {
@@ -70,10 +63,9 @@ batch_draw_tracking_for_dirty_bits(struct fd_batch *batch) assert_dt
 {
    struct fd_context *ctx = batch->ctx;
    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
-   enum fd_dirty_3d_state dirty = ctx->dirty_resource;
    unsigned buffers = 0, restore_buffers = 0;
 
-   if (dirty & (FD_DIRTY_FRAMEBUFFER | FD_DIRTY_ZSA)) {
+   if (ctx->dirty & (FD_DIRTY_FRAMEBUFFER | FD_DIRTY_ZSA)) {
       if (fd_depth_enabled(ctx)) {
          if (fd_resource(pfb->zsbuf->texture)->valid) {
             restore_buffers |= FD_BUFFER_DEPTH;
@@ -111,7 +103,7 @@ batch_draw_tracking_for_dirty_bits(struct fd_batch *batch) assert_dt
       }
    }
 
-   if (dirty & FD_DIRTY_FRAMEBUFFER) {
+   if (ctx->dirty & FD_DIRTY_FRAMEBUFFER) {
       for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
          struct pipe_resource *surf;
 
@@ -128,52 +120,58 @@ batch_draw_tracking_for_dirty_bits(struct fd_batch *batch) assert_dt
 
          buffers |= PIPE_CLEAR_COLOR0 << i;
 
-         resource_written(batch, pfb->cbufs[i]->texture);
+         if (ctx->dirty & FD_DIRTY_FRAMEBUFFER)
+            resource_written(batch, pfb->cbufs[i]->texture);
       }
    }
 
-   if (dirty & (FD_DIRTY_CONST | FD_DIRTY_TEX | FD_DIRTY_SSBO | FD_DIRTY_IMAGE)) {
-      u_foreach_bit (s, ctx->bound_shader_stages) {
-         enum fd_dirty_shader_state dirty_shader = ctx->dirty_shader_resource[s];
+   if (ctx->dirty & FD_DIRTY_BLEND) {
+      if (ctx->blend->logicop_enable)
+         batch->gmem_reason |= FD_GMEM_LOGICOP_ENABLED;
+      for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
+         if (ctx->blend->rt[i].blend_enable)
+            batch->gmem_reason |= FD_GMEM_BLEND_ENABLED;
+      }
+   }
 
-         /* Mark constbuf as being read: */
-         if (dirty_shader & FD_DIRTY_SHADER_CONST) {
-            u_foreach_bit (i, ctx->constbuf[s].enabled_mask)
-                  resource_read(batch, ctx->constbuf[s].cb[i].buffer);
-         }
+   u_foreach_bit (s, ctx->bound_shader_stages) {
+      /* Mark constbuf as being read: */
+      if (ctx->dirty_shader[s] & FD_DIRTY_SHADER_CONST) {
+         u_foreach_bit (i, ctx->constbuf[s].enabled_mask)
+            resource_read(batch, ctx->constbuf[s].cb[i].buffer);
+      }
 
-         /* Mark textures as being read */
-         if (dirty_shader & FD_DIRTY_SHADER_TEX) {
-            u_foreach_bit (i, ctx->tex[s].valid_textures)
-                  resource_read(batch, ctx->tex[s].textures[i]->texture);
-         }
+      /* Mark textures as being read */
+      if (ctx->dirty_shader[s] & FD_DIRTY_SHADER_TEX) {
+         u_foreach_bit (i, ctx->tex[s].valid_textures)
+            resource_read(batch, ctx->tex[s].textures[i]->texture);
+      }
 
-         /* Mark SSBOs as being read or written: */
-         if (dirty_shader & FD_DIRTY_SHADER_SSBO) {
-            const struct fd_shaderbuf_stateobj *so = &ctx->shaderbuf[s];
+      /* Mark SSBOs as being read or written: */
+      if (ctx->dirty_shader[s] & FD_DIRTY_SHADER_SSBO) {
+         const struct fd_shaderbuf_stateobj *so = &ctx->shaderbuf[s];
 
-            u_foreach_bit (i, so->enabled_mask & so->writable_mask)
-               resource_written(batch, so->sb[i].buffer);
+         u_foreach_bit (i, so->enabled_mask & so->writable_mask)
+            resource_written(batch, so->sb[i].buffer);
 
-            u_foreach_bit (i, so->enabled_mask & ~so->writable_mask)
-               resource_read(batch, so->sb[i].buffer);
-         }
+         u_foreach_bit (i, so->enabled_mask & ~so->writable_mask)
+            resource_read(batch, so->sb[i].buffer);
+      }
 
-         /* Mark Images as being read or written: */
-         if (dirty_shader & FD_DIRTY_SHADER_IMAGE) {
-            u_foreach_bit (i, ctx->shaderimg[s].enabled_mask) {
-               struct pipe_image_view *img = &ctx->shaderimg[s].si[i];
-               if (img->access & PIPE_IMAGE_ACCESS_WRITE)
-                  resource_written(batch, img->resource);
-               else
-                  resource_read(batch, img->resource);
-            }
+      /* Mark Images as being read or written: */
+      if (ctx->dirty_shader[s] & FD_DIRTY_SHADER_IMAGE) {
+         u_foreach_bit (i, ctx->shaderimg[s].enabled_mask) {
+            struct pipe_image_view *img = &ctx->shaderimg[s].si[i];
+            if (img->access & PIPE_IMAGE_ACCESS_WRITE)
+               resource_written(batch, img->resource);
+            else
+               resource_read(batch, img->resource);
          }
       }
    }
 
    /* Mark VBOs as being read */
-   if (dirty & FD_DIRTY_VTXBUF) {
+   if (ctx->dirty & FD_DIRTY_VTXBUF) {
       u_foreach_bit (i, ctx->vtx.vertexbuf.enabled_mask) {
          assert(!ctx->vtx.vertexbuf.vb[i].is_user_buffer);
          resource_read(batch, ctx->vtx.vertexbuf.vb[i].buffer.resource);
@@ -181,45 +179,16 @@ batch_draw_tracking_for_dirty_bits(struct fd_batch *batch) assert_dt
    }
 
    /* Mark streamout buffers as being written.. */
-   if (dirty & FD_DIRTY_STREAMOUT) {
+   if (ctx->dirty & FD_DIRTY_STREAMOUT) {
       for (unsigned i = 0; i < ctx->streamout.num_targets; i++)
          if (ctx->streamout.targets[i])
             resource_written(batch, ctx->streamout.targets[i]->buffer);
-   }
-
-   if (dirty & FD_DIRTY_QUERY) {
-      list_for_each_entry (struct fd_acc_query, aq, &ctx->acc_active_queries, node) {
-         resource_written(batch, aq->prsc);
-      }
    }
 
    /* any buffers that haven't been cleared yet, we need to restore: */
    batch->restore |= restore_buffers & (FD_BUFFER_ALL & ~batch->invalidated);
    /* and any buffers used, need to be resolved: */
    batch->resolve |= buffers;
-}
-
-static bool
-needs_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
-                    const struct pipe_draw_indirect_info *indirect)
-   assert_dt
-{
-   struct fd_context *ctx = batch->ctx;
-
-   if (ctx->dirty_resource)
-      return true;
-
-   if (info->index_size && !batch_references_resource(batch, info->index.resource))
-      return true;
-
-   if (indirect) {
-      if (indirect->buffer && !batch_references_resource(batch, indirect->buffer))
-         return true;
-      if (indirect->count_from_stream_output)
-         return true;
-   }
-
-   return false;
 }
 
 static void
@@ -233,16 +202,13 @@ batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
     */
    fd_batch_update_queries(batch);
 
-   if (!needs_draw_tracking(batch, info, indirect))
-      return;
-
    /*
     * Figure out the buffers/features we need:
     */
 
    fd_screen_lock(ctx->screen);
 
-   if (ctx->dirty_resource)
+   if (ctx->dirty & FD_DIRTY_RESOURCE)
       batch_draw_tracking_for_dirty_bits(batch);
 
    /* Mark index buffer as being read */
@@ -260,6 +226,9 @@ batch_draw_tracking(struct fd_batch *batch, const struct pipe_draw_info *info,
    }
 
    resource_written(batch, batch->query_buf);
+
+   list_for_each_entry (struct fd_acc_query, aq, &ctx->acc_active_queries, node)
+      resource_written(batch, aq->prsc);
 
    fd_screen_unlock(ctx->screen);
 }
@@ -357,7 +326,7 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    batch_draw_tracking(batch, info, indirect);
 
-   while (unlikely(batch->flushed)) {
+   while (unlikely(!fd_batch_lock_submit(batch))) {
       /* The current batch was flushed in batch_draw_tracking()
        * so start anew.  We know this won't happen a second time
        * since we are dealing with a fresh batch:
@@ -384,7 +353,11 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    batch->cost += ctx->draw_cost;
 
-   ctx->draw_vbos(ctx, info, drawid_offset, indirect, draws, num_draws, index_offset);
+   for (unsigned i = 0; i < num_draws; i++) {
+      ctx->draw_vbo(ctx, info, drawid_offset, indirect, &draws[i], index_offset);
+
+      batch->num_vertices += draws[i].count * info->instance_count;
+   }
 
    if (unlikely(ctx->stats_users > 0))
       update_draw_stats(ctx, info, draws, num_draws);
@@ -394,29 +367,17 @@ fd_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       ctx->streamout.offsets[i] += draws[0].count;
    }
 
+   if (FD_DBG(DDRAW))
+      fd_context_all_dirty(ctx);
+
    assert(!batch->flushed);
 
+   fd_batch_unlock_submit(batch);
    fd_batch_check_size(batch);
    fd_batch_reference(&batch, NULL);
 
    if (info == &new_info)
       pipe_resource_reference(&indexbuf, NULL);
-}
-
-static void
-fd_draw_vbo_dbg(struct pipe_context *pctx, const struct pipe_draw_info *info,
-                unsigned drawid_offset,
-                const struct pipe_draw_indirect_info *indirect,
-                const struct pipe_draw_start_count_bias *draws, unsigned num_draws)
-   in_dt
-{
-   fd_draw_vbo(pctx, info, drawid_offset, indirect, draws, num_draws);
-
-   if (FD_DBG(DDRAW))
-      fd_context_all_dirty(fd_context(pctx));
-
-   if (FD_DBG(FLUSH))
-      pctx->flush(pctx, NULL, 0);
 }
 
 static void
@@ -483,7 +444,7 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 
    batch_clear_tracking(batch, buffers);
 
-   while (unlikely(batch->flushed)) {
+   while (unlikely(!fd_batch_lock_submit(batch))) {
       /* The current batch was flushed in batch_clear_tracking()
        * so start anew.  We know this won't happen a second time
        * since we are dealing with a fresh batch:
@@ -524,6 +485,8 @@ fd_clear(struct pipe_context *pctx, unsigned buffers,
 
    assert(!batch->flushed);
 
+   fd_batch_unlock_submit(batch);
+
    if (fallback) {
       fd_blitter_clear(pctx, buffers, color, depth, stencil);
    }
@@ -560,9 +523,6 @@ fd_launch_grid(struct pipe_context *pctx,
    const struct fd_shaderbuf_stateobj *so =
       &ctx->shaderbuf[PIPE_SHADER_COMPUTE];
    struct fd_batch *batch, *save_batch = NULL;
-
-   if (!fd_render_condition_check(pctx))
-      return;
 
    batch = fd_context_batch_nondraw(ctx);
    fd_batch_reference(&save_batch, ctx->batch);
@@ -626,12 +586,7 @@ fd_launch_grid(struct pipe_context *pctx,
 void
 fd_draw_init(struct pipe_context *pctx)
 {
-   if (FD_DBG(DDRAW) || FD_DBG(FLUSH)) {
-      pctx->draw_vbo = fd_draw_vbo_dbg;
-   } else {
-      pctx->draw_vbo = fd_draw_vbo;
-   }
-
+   pctx->draw_vbo = fd_draw_vbo;
    pctx->clear = fd_clear;
    pctx->clear_render_target = fd_clear_render_target;
    pctx->clear_depth_stencil = fd_clear_depth_stencil;

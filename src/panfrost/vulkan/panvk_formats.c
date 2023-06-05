@@ -82,8 +82,7 @@ get_format_properties(struct panvk_physical_device *physical_device,
       tex |= VK_FORMAT_FEATURE_BLIT_SRC_BIT;
    }
 
-   /* SNORM rendering isn't working yet, disable */
-   if (fmt.bind & PIPE_BIND_RENDER_TARGET && !util_format_is_snorm(pfmt)) {
+   if (fmt.bind & PIPE_BIND_RENDER_TARGET) {
       tex |= VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
              VK_FORMAT_FEATURE_BLIT_DST_BIT;
 

@@ -109,7 +109,7 @@ Ilia Mirkin (1):
 
 -  gallium/targets: fix bool setting on BE architectures
 
-Faith Ekstrand (1):
+Jason Ekstrand (1):
 
 -  anv/cmd_buffer: Use the device allocator for QueueSubmit
 

@@ -52,7 +52,7 @@ InstrFactory::InstrFactory():
 }
 
 PInst
-InstrFactory::from_string(const std::string& s, int nesting_depth, bool is_cayman)
+InstrFactory::from_string(const std::string& s, int nesting_depth)
 {
    string type;
    std::istringstream is(s);
@@ -72,7 +72,7 @@ InstrFactory::from_string(const std::string& s, int nesting_depth, bool is_cayma
       group = nullptr;
       return retval;
    } else if (type == "ALU") {
-      result = AluInstr::from_string(is, m_value_factory, group, is_cayman);
+      result = AluInstr::from_string(is, m_value_factory, group);
    } else if (type == "TEX") {
       result = TexInstr::from_string(is, m_value_factory);
    } else if (type == "EXPORT") {
@@ -88,7 +88,7 @@ InstrFactory::from_string(const std::string& s, int nesting_depth, bool is_cayma
    } else if (type == "READ_SCRATCH") {
       result = LoadFromScratch::from_string(is, m_value_factory);
    } else if (type == "IF") {
-      result = IfInstr::from_string(is, m_value_factory, is_cayman);
+      result = IfInstr::from_string(is, m_value_factory);
    } else if (type == "WRITE_SCRATCH") {
       result = ScratchIOInstr::from_string(is, m_value_factory);
    } else if (type == "MEM_RING") {

@@ -30,7 +30,6 @@ libfreedreno_common = static_library(
   'freedreno_common',
   [
     'disasm.h',
-    'fd6_pack.h',
     'freedreno_dev_info.c',
     'freedreno_dev_info.h',
     'freedreno_pm4.h',

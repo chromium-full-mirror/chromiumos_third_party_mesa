@@ -702,10 +702,6 @@ zink_bo_map(struct zink_screen *screen, struct zink_bo *bo)
             simple_mtx_unlock(&real->lock);
             return NULL;
          }
-         if (unlikely(zink_debug & ZINK_DEBUG_MAP)) {
-            p_atomic_add(&screen->mapped_vram, real->base.size);
-            mesa_loge("NEW MAP(%"PRIu64") TOTAL(%"PRIu64")", real->base.size, screen->mapped_vram);
-         }
          p_atomic_set(&real->u.real.cpu_ptr, cpu);
       }
       simple_mtx_unlock(&real->lock);
@@ -724,10 +720,6 @@ zink_bo_unmap(struct zink_screen *screen, struct zink_bo *bo)
 
    if (p_atomic_dec_zero(&real->u.real.map_count)) {
       p_atomic_set(&real->u.real.cpu_ptr, NULL);
-      if (unlikely(zink_debug & ZINK_DEBUG_MAP)) {
-         p_atomic_add(&screen->mapped_vram, -real->base.size);
-         mesa_loge("UNMAP(%"PRIu64") TOTAL(%"PRIu64")", real->base.size, screen->mapped_vram);
-      }
       VKSCR(UnmapMemory)(screen->dev, real->mem);
    }
 }
@@ -1282,7 +1274,7 @@ zink_bo_init(struct zink_screen *screen)
    for (uint32_t i = 0; i < screen->info.mem_props.memoryHeapCount; ++i)
       total_mem += screen->info.mem_props.memoryHeaps[i].size;
    /* Create managers. */
-   pb_cache_init(&screen->pb.bo_cache, screen->info.mem_props.memoryTypeCount,
+   pb_cache_init(&screen->pb.bo_cache, ZINK_HEAP_MAX,
                  500000, 2.0f, 0,
                  total_mem / 8, screen,
                  (void*)bo_destroy, (void*)bo_can_reclaim);
@@ -1300,7 +1292,7 @@ zink_bo_init(struct zink_screen *screen)
 
       if (!pb_slabs_init(&screen->pb.bo_slabs[i],
                          min_order, max_order,
-                         screen->info.mem_props.memoryTypeCount, true,
+                         ZINK_HEAP_MAX, true,
                          screen,
                          bo_can_reclaim_slab,
                          bo_slab_alloc_normal,

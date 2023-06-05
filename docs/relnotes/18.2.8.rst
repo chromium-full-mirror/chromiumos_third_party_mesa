@@ -99,7 +99,7 @@ Jan Vesely (1):
 
 -  clover: Fix build after clang r348827
 
-Faith Ekstrand (1):
+Jason Ekstrand (1):
 
 -  nir/constant_folding: Fix source bit size logic
 

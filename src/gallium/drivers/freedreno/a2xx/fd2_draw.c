@@ -39,14 +39,6 @@
 #include "fd2_util.h"
 #include "fd2_zsa.h"
 
-static inline uint32_t
-pack_rgba(enum pipe_format format, const float *rgba)
-{
-   union util_color uc;
-   util_pack_color(rgba, format, &uc);
-   return uc.ui[0];
-}
-
 static void
 emit_cacheflush(struct fd_ringbuffer *ring)
 {
@@ -161,7 +153,7 @@ draw_impl(struct fd_context *ctx, const struct pipe_draw_info *info,
 
 static bool
 fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *pinfo,
-             unsigned drawid_offset,
+			 unsigned drawid_offset,
              const struct pipe_draw_indirect_info *indirect,
              const struct pipe_draw_start_count_bias *pdraw,
              unsigned index_offset) assert_dt
@@ -175,8 +167,6 @@ fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *pinfo,
 
    if (ctx->dirty & FD_DIRTY_VTXBUF)
       emit_vertexbufs(ctx);
-
-   fd_blend_tracking(ctx);
 
    if (fd_binning_enabled)
       fd2_emit_state_binning(ctx, ctx->dirty);
@@ -201,7 +191,7 @@ fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *pinfo,
       };
       /* clang-format on */
 
-      struct pipe_draw_start_count_bias draw = *pdraw;
+		struct pipe_draw_start_count_bias draw = *pdraw;
       unsigned count = draw.count;
       unsigned step = step_tbl[pinfo->mode];
       unsigned num_vertices = ctx->batch->num_vertices;
@@ -225,22 +215,7 @@ fd2_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *pinfo,
 
    fd_context_all_clean(ctx);
 
-   ctx->batch->num_vertices += pdraw->count * pinfo->instance_count;
-
    return true;
-}
-
-static void
-fd2_draw_vbos(struct fd_context *ctx, const struct pipe_draw_info *info,
-              unsigned drawid_offset,
-              const struct pipe_draw_indirect_info *indirect,
-              const struct pipe_draw_start_count_bias *draws,
-              unsigned num_draws,
-              unsigned index_offset)
-   assert_dt
-{
-   for (unsigned i = 0; i < num_draws; i++)
-      fd2_draw_vbo(ctx, info, drawid_offset, indirect, &draws[i], index_offset);
 }
 
 static void
@@ -552,7 +527,7 @@ fd2_clear_fast(struct fd_context *ctx, unsigned buffers,
 }
 
 static bool
-fd2_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
+fd2_clear(struct fd_context *ctx, unsigned buffers,
           const union pipe_color_union *color, double depth,
           unsigned stencil) assert_dt
 {
@@ -564,7 +539,7 @@ fd2_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
 
    /* set clear value */
    if (is_a20x(ctx->screen)) {
-      if (buffers & FD_BUFFER_COLOR) {
+      if (buffers & PIPE_CLEAR_COLOR) {
          /* C0 used by fragment shader */
          OUT_PKT3(ring, CP_SET_CONSTANT, 5);
          OUT_RING(ring, 0x00000480);
@@ -574,7 +549,7 @@ fd2_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
          OUT_RING(ring, color->ui[3]);
       }
 
-      if (buffers & FD_BUFFER_DEPTH) {
+      if (buffers & PIPE_CLEAR_DEPTH) {
          /* use viewport to set depth value */
          OUT_PKT3(ring, CP_SET_CONSTANT, 3);
          OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_VPORT_ZSCALE));
@@ -582,7 +557,7 @@ fd2_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
          OUT_RING(ring, fui(depth));
       }
 
-      if (buffers & FD_BUFFER_STENCIL) {
+      if (buffers & PIPE_CLEAR_STENCIL) {
          OUT_PKT3(ring, CP_SET_CONSTANT, 3);
          OUT_RING(ring, CP_REG(REG_A2XX_RB_STENCILREFMASK_BF));
          OUT_RING(ring, 0xff000000 |
@@ -593,18 +568,18 @@ fd2_clear(struct fd_context *ctx, enum fd_buffer_mask buffers,
                            A2XX_RB_STENCILREFMASK_STENCILWRITEMASK(0xff));
       }
    } else {
-      if (buffers & FD_BUFFER_COLOR) {
+      if (buffers & PIPE_CLEAR_COLOR) {
          OUT_PKT3(ring, CP_SET_CONSTANT, 2);
          OUT_RING(ring, CP_REG(REG_A2XX_CLEAR_COLOR));
          OUT_RING(ring, pack_rgba(PIPE_FORMAT_R8G8B8A8_UNORM, color->f));
       }
 
-      if (buffers & (FD_BUFFER_DEPTH | FD_BUFFER_STENCIL)) {
+      if (buffers & (PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL)) {
          uint32_t clear_mask, depth_clear;
          switch (fd_pipe2depth(fb->zsbuf->format)) {
          case DEPTHX_24_8:
-            clear_mask = ((buffers & FD_BUFFER_DEPTH) ? 0xe : 0) |
-                         ((buffers & FD_BUFFER_STENCIL) ? 0x1 : 0);
+            clear_mask = ((buffers & PIPE_CLEAR_DEPTH) ? 0xe : 0) |
+                         ((buffers & PIPE_CLEAR_STENCIL) ? 0x1 : 0);
             depth_clear =
                (((uint32_t)(0xffffff * depth)) << 8) | (stencil & 0xff);
             break;
@@ -666,6 +641,6 @@ void
 fd2_draw_init(struct pipe_context *pctx) disable_thread_safety_analysis
 {
    struct fd_context *ctx = fd_context(pctx);
-   ctx->draw_vbos = fd2_draw_vbos;
+   ctx->draw_vbo = fd2_draw_vbo;
    ctx->clear = fd2_clear;
 }

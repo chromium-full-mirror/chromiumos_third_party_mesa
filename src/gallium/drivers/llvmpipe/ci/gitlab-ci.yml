@@ -16,13 +16,12 @@
     LP_NUM_THREADS: 1
     PIGLIT_PROFILES: cl
 
-# TODO: remove together with Clover
-.llvmpipe-piglit-clover:
+llvmpipe-piglit-clover:
   extends:
     - .llvmpipe-piglit-cl
     - .llvmpipe-clover-rules
   needs:
-    - .debian-clover-testing
+    - debian-clover-testing
     - debian/x86_test-gl
   variables:
     LP_CL: 1
@@ -39,7 +38,6 @@ llvmpipe-piglit-rusticl:
   variables:
     RUSTICL_ENABLE: "llvmpipe"
     DEQP_SUITE: llvmpipe-rusticl
-    DEQP_RUNNER_OPTIONS: "--timeout 120.0"
     GPU_VERSION: llvmpipe-rusticl
 
 llvmpipe-traces:
@@ -62,17 +60,16 @@ llvmpipe-traces:
     - .llvmpipe-test
 
 llvmpipe:
+  tags:
+    - mesa-swrast
   variables:
     DEQP_SUITE: llvmpipe
-    XVFB_SCRIPT: "install/deqp-runner.sh"
-    DEQP_FRACTION: 4
+    XDG_RUNTIME_DIR: /run/user
   extends: .llvmpipe-deqp-test
-  script: |
-    . "$SCRIPTS_DIR"/setup-test-env.sh
-    section_start weston "weston: prepare"
-    LD_LIBRARY_PATH="$PWD/install" weston -Bheadless-backend.so -Swayland-0 --idle-time=0 &
-    section_end weston
-    LD_LIBRARY_PATH="$PWD/install" WAYLAND_DISPLAY=wayland-0 xvfb-run --server-args='-noreset' bash -c ". $SCRIPTS_DIR/setup-test-env.sh && ${XVFB_SCRIPT}"
+  script:
+    - mkdir -p $XDG_RUNTIME_DIR
+    - LD_LIBRARY_PATH=`pwd`/install weston -Bheadless-backend.so -Swayland-0 &
+    - LD_LIBRARY_PATH=`pwd`/install WAYLAND_DISPLAY=wayland-0 xvfb-run --server-args='-noreset' install/deqp-runner.sh
 
 llvmpipe-deqp-asan:
   variables:

@@ -80,11 +80,6 @@ struct d3d12_screen {
    uint64_t residency_fence_value;
 
    struct list_head context_list;
-   unsigned context_id_list[16];
-   unsigned context_id_count;
-
-   struct set* varying_info_set;
-   mtx_t varying_info_mutex;
 
    struct slab_parent_pool transfer_pool;
    struct pb_manager *bufmgr;

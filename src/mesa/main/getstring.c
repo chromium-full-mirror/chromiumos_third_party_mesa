@@ -154,7 +154,7 @@ _mesa_GetString( GLenum name )
       case GL_VERSION:
          return (const GLubyte *) ctx->VersionString;
       case GL_EXTENSIONS:
-         if (_mesa_is_desktop_gl_core(ctx)) {
+         if (ctx->API == API_OPENGL_CORE) {
             _mesa_error(ctx, GL_INVALID_ENUM, "glGetString(GL_EXTENSIONS)");
             return (const GLubyte *) 0;
          }
@@ -162,11 +162,11 @@ _mesa_GetString( GLenum name )
             ctx->Extensions.String = _mesa_make_extension_string(ctx);
          return (const GLubyte *) ctx->Extensions.String;
       case GL_SHADING_LANGUAGE_VERSION:
-         if (_mesa_is_gles1(ctx))
+         if (ctx->API == API_OPENGLES)
             break;
 	 return shading_language_version(ctx);
       case GL_PROGRAM_ERROR_STRING_ARB:
-         if (_mesa_is_desktop_gl_compat(ctx) &&
+         if (ctx->API == API_OPENGL_COMPAT &&
              (ctx->Extensions.ARB_fragment_program ||
               ctx->Extensions.ARB_vertex_program)) {
             return (const GLubyte *) ctx->Program.ErrorString;

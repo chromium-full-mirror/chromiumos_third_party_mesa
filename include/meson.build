@@ -20,6 +20,7 @@
 
 inc_include = [include_directories('.')]
 inc_d3d9 = include_directories('D3D9')
+inc_haikugl = include_directories('HaikuGL')
 
 # Most things assume that Android headers are in the default include
 # path when compiling for Android so add the stub headers to
@@ -107,6 +108,13 @@ if with_gallium_st_nine
   install_headers(
     'd3dadapter/d3dadapter9.h', 'd3dadapter/drm.h', 'd3dadapter/present.h',
     subdir : 'd3dadapter',
+  )
+endif
+
+if with_platform_haiku
+  install_headers(
+    'HaikuGL/GLRenderer.h', 'HaikuGL/GLView.h', 'HaikuGL/OpenGLKit.h',
+    subdir : 'opengl',
   )
 endif
 

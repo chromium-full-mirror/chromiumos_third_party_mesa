@@ -1829,8 +1829,7 @@ dri2_swap_interval(_EGLDisplay *disp, _EGLSurface *surf, EGLint interval)
  * do our swapbuffers.
  */
 void
-dri2_flush_drawable_for_swapbuffers_flags(_EGLDisplay *disp, _EGLSurface *draw,
-                                          enum __DRI2throttleReason throttle_reason)
+dri2_flush_drawable_for_swapbuffers(_EGLDisplay *disp, _EGLSurface *draw)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    __DRIdrawable *dri_drawable = dri2_dpy->vtbl->get_dri_drawable(draw);
@@ -1854,17 +1853,11 @@ dri2_flush_drawable_for_swapbuffers_flags(_EGLDisplay *disp, _EGLSurface *draw,
                                            dri_drawable,
                                            __DRI2_FLUSH_DRAWABLE |
                                            __DRI2_FLUSH_INVALIDATE_ANCILLARY,
-                                           throttle_reason);
+                                           __DRI2_THROTTLE_SWAPBUFFER);
       } else {
          dri2_dpy->flush->flush(dri_drawable);
       }
    }
-}
-
-void
-dri2_flush_drawable_for_swapbuffers(_EGLDisplay *disp, _EGLSurface *draw)
-{
-   dri2_flush_drawable_for_swapbuffers_flags(disp, draw, __DRI2_THROTTLE_SWAPBUFFER);
 }
 
 static EGLBoolean

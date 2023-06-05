@@ -29,8 +29,6 @@
 
 #include "pipe/p_context.h"
 
-BEGINC;
-
 void fd_sampler_states_bind(struct pipe_context *pctx,
                             enum pipe_shader_type shader, unsigned start,
                             unsigned nr, void **hwcso);
@@ -73,7 +71,5 @@ struct fd_texture_stateobj;
 #define BORDERCOLOR_SIZE 0x40
 void fd_setup_border_colors(struct fd_texture_stateobj *tex, void *ptr,
                             unsigned offset);
-
-ENDC;
 
 #endif /* FREEDRENO_TEXTURE_H_ */

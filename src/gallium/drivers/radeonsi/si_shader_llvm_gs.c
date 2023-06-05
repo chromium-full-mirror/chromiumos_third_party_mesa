@@ -65,8 +65,8 @@ static void si_set_es_return_value_for_gs(struct si_shader_context *ctx)
    ret = si_insert_input_ptr(ctx, ret, ctx->args->internal_bindings, 8 + SI_SGPR_INTERNAL_BINDINGS);
    ret = si_insert_input_ptr(ctx, ret, ctx->args->bindless_samplers_and_images,
                              8 + SI_SGPR_BINDLESS_SAMPLERS_AND_IMAGES);
-   ret = si_insert_input_ptr(ctx, ret, ctx->args->vs_state_bits, 8 + SI_SGPR_VS_STATE_BITS);
    if (ctx->screen->use_ngg) {
+      ret = si_insert_input_ptr(ctx, ret, ctx->args->vs_state_bits, 8 + SI_SGPR_VS_STATE_BITS);
       ret = si_insert_input_ptr(ctx, ret, ctx->args->small_prim_cull_info, 8 + GFX9_SGPR_SMALL_PRIM_CULL_INFO);
       if (ctx->screen->info.gfx_level >= GFX11)
          ret = si_insert_input_ptr(ctx, ret, ctx->args->gs_attr_address, 8 + GFX9_SGPR_ATTRIBUTE_RING_ADDR);
@@ -94,6 +94,13 @@ static LLVMValueRef si_get_gs_wave_id(struct si_shader_context *ctx)
       return si_unpack_param(ctx, ctx->args->ac.merged_wave_info, 16, 8);
    else
       return ac_get_arg(&ctx->ac, ctx->args->ac.gs_wave_id);
+}
+
+static LLVMValueRef ngg_get_emulated_counters_buf(struct si_shader_context *ctx)
+{
+   return ac_build_load_to_sgpr(&ctx->ac,
+                                ac_get_ptr_arg(&ctx->ac, &ctx->args->ac, ctx->args->internal_bindings),
+                                LLVMConstInt(ctx->ac.i32, SI_GS_QUERY_EMULATED_COUNTERS_BUF, false));
 }
 
 void si_llvm_gs_build_end(struct si_shader_context *ctx)

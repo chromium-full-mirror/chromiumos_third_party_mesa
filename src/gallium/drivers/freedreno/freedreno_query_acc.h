@@ -33,8 +33,6 @@
 #include "freedreno_query.h"
 #include "freedreno_resource.h"
 
-BEGINC;
-
 /*
  * Accumulated HW Queries:
  *
@@ -143,7 +141,5 @@ copy_result(struct fd_ringbuffer *ring, enum pipe_query_value_type result_type,
    OUT_RELOC(ring, dst->bo, dst_offset, 0, 0);
    OUT_RELOC(ring, src->bo, src_offset, 0, 0);
 }
-
-ENDC;
 
 #endif /* FREEDRENO_QUERY_ACC_H_ */

@@ -70,29 +70,6 @@ do {                                       \
    _dst += _src_size;                      \
 } while (0);
 
-static bool
-disk_cache_init_queue(struct disk_cache *cache)
-{
-   if (util_queue_is_initialized(&cache->cache_queue))
-      return true;
-
-   /* 4 threads were chosen below because just about all modern CPUs currently
-    * available that run Mesa have *at least* 4 cores. For these CPUs allowing
-    * more threads can result in the queue being processed faster, thus
-    * avoiding excessive memory use due to a backlog of cache entrys building
-    * up in the queue. Since we set the UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY
-    * flag this should have little negative impact on low core systems.
-    *
-    * The queue will resize automatically when it's full, so adding new jobs
-    * doesn't stall.
-    */
-   return util_queue_init(&cache->cache_queue, "disk$", 32, 4,
-                          UTIL_QUEUE_INIT_SCALE_THREADS |
-                          UTIL_QUEUE_INIT_RESIZE_IF_FULL |
-                          UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY |
-                          UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL);
-}
-
 static struct disk_cache *
 disk_cache_type_create(const char *gpu_name,
                        const char *driver_id,
@@ -121,7 +98,6 @@ disk_cache_type_create(const char *gpu_name,
 
    /* Assume failure. */
    cache->path_init_failed = true;
-   cache->type = DISK_CACHE_NONE;
 
 #ifdef ANDROID
    /* Android needs the "disk cache" to be enabled for
@@ -216,7 +192,21 @@ disk_cache_type_create(const char *gpu_name,
    if (cache->type == DISK_CACHE_DATABASE)
       mesa_cache_db_multipart_set_size_limit(&cache->cache_db, cache->max_size);
 
-   if (!disk_cache_init_queue(cache))
+   /* 4 threads were chosen below because just about all modern CPUs currently
+    * available that run Mesa have *at least* 4 cores. For these CPUs allowing
+    * more threads can result in the queue being processed faster, thus
+    * avoiding excessive memory use due to a backlog of cache entrys building
+    * up in the queue. Since we set the UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY
+    * flag this should have little negative impact on low core systems.
+    *
+    * The queue will resize automatically when it's full, so adding new jobs
+    * doesn't stall.
+    */
+   if (!util_queue_init(&cache->cache_queue, "disk$", 32, 4,
+                        UTIL_QUEUE_INIT_SCALE_THREADS |
+                        UTIL_QUEUE_INIT_RESIZE_IF_FULL |
+                        UTIL_QUEUE_INIT_USE_MINIMUM_PRIORITY |
+                        UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL))
       goto fail;
 
    cache->path_init_failed = false;
@@ -317,7 +307,7 @@ disk_cache_destroy(struct disk_cache *cache)
              cache->stats.misses);
    }
 
-   if (cache && util_queue_is_initialized(&cache->cache_queue)) {
+   if (cache && !cache->path_init_failed) {
       util_queue_finish(&cache->cache_queue);
       util_queue_destroy(&cache->cache_queue);
 
@@ -427,10 +417,6 @@ destroy_put_job_nocopy(void *job, void *gdata, int thread_index)
 }
 
 static void
-blob_put_compressed(struct disk_cache *cache, const cache_key key,
-         const void *data, size_t size);
-
-static void
 cache_put(void *job, void *gdata, int thread_index)
 {
    assert(job);
@@ -439,9 +425,7 @@ cache_put(void *job, void *gdata, int thread_index)
    char *filename = NULL;
    struct disk_cache_put_job *dc_job = (struct disk_cache_put_job *) job;
 
-   if (dc_job->cache->blob_put_cb) {
-      blob_put_compressed(dc_job->cache, dc_job->key, dc_job->data, dc_job->size);
-   } else if (dc_job->cache->type == DISK_CACHE_SINGLE_FILE) {
+   if (dc_job->cache->type == DISK_CACHE_SINGLE_FILE) {
       disk_cache_write_item_to_disk_foz(dc_job);
    } else if (dc_job->cache->type == DISK_CACHE_DATABASE) {
       disk_cache_db_write_item_to_disk(dc_job);
@@ -552,7 +536,12 @@ disk_cache_put(struct disk_cache *cache, const cache_key key,
                const void *data, size_t size,
                struct cache_item_metadata *cache_item_metadata)
 {
-   if (!util_queue_is_initialized(&cache->cache_queue))
+   if (cache->blob_put_cb) {
+      blob_put_compressed(cache, key, data, size);
+      return;
+   }
+
+   if (cache->path_init_failed)
       return;
 
    struct disk_cache_put_job *dc_job =
@@ -570,7 +559,13 @@ disk_cache_put_nocopy(struct disk_cache *cache, const cache_key key,
                       void *data, size_t size,
                       struct cache_item_metadata *cache_item_metadata)
 {
-   if (!util_queue_is_initialized(&cache->cache_queue)) {
+   if (cache->blob_put_cb) {
+      blob_put_compressed(cache, key, data, size);
+      free(data);
+      return;
+   }
+
+   if (cache->path_init_failed) {
       free(data);
       return;
    }
@@ -686,7 +681,6 @@ disk_cache_set_callbacks(struct disk_cache *cache, disk_cache_put_cb put,
 {
    cache->blob_put_cb = put;
    cache->blob_get_cb = get;
-   disk_cache_init_queue(cache);
 }
 
 #endif /* ENABLE_SHADER_CACHE */

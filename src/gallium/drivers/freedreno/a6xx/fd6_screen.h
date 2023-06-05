@@ -30,6 +30,6 @@
 
 #include "pipe/p_screen.h"
 
-EXTERNC void fd6_screen_init(struct pipe_screen *pscreen);
+void fd6_screen_init(struct pipe_screen *pscreen);
 
 #endif /* FD6_SCREEN_H_ */
