@@ -3457,9 +3457,6 @@ radv_postprocess_nir(struct radv_pipeline *pipeline,
 
    NIR_PASS(_, stage->nir, nir_lower_alu_width, opt_vectorize_callback, device);
 
-   /* lower ALU operations */
-   NIR_PASS(_, stage->nir, nir_lower_int64);
-
    nir_move_options sink_opts = nir_move_const_undef | nir_move_copies;
 
    if (!pipeline_key->optimisations_disabled) {
@@ -3480,6 +3477,8 @@ radv_postprocess_nir(struct radv_pipeline *pipeline,
    if (stage->stage == last_vgt_api_stage && stage->stage != MESA_SHADER_GEOMETRY && !lowered_ngg)
       NIR_PASS_V(stage->nir, ac_nir_lower_legacy_vs,
                  stage->info.outinfo.export_prim_id ? VARYING_SLOT_PRIMITIVE_ID : -1, false);
+
+   NIR_PASS(_, stage->nir, nir_lower_int64);
 
    NIR_PASS(_, stage->nir, nir_opt_idiv_const, 8);
 
