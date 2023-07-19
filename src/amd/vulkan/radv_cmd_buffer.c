@@ -2798,7 +2798,8 @@ radv_emit_fb_ds_state(struct radv_cmd_buffer *cmd_buffer, struct radv_ds_buffer_
    uint32_t db_z_info = ds->db_z_info;
    uint32_t db_stencil_info = ds->db_stencil_info;
    uint32_t db_htile_surface = ds->db_htile_surface;
-   uint32_t db_render_control = ds->db_render_control | pipeline->db_render_control;
+   uint32_t db_render_control = ds->db_render_control |
+      (pipeline ? pipeline->db_render_control : 0);
 
    if (!radv_layout_is_htile_compressed(
           cmd_buffer->device, image, layout,
