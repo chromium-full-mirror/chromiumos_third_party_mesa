@@ -1718,7 +1718,8 @@ radv_CreateSamplerYcbcrConversion(VkDevice _device,
 
    vk_object_base_init(&device->vk, &conversion->base, VK_OBJECT_TYPE_SAMPLER_YCBCR_CONVERSION);
 
-   conversion->state.format = pCreateInfo->format;
+   conversion->state.format = radv_select_android_external_format(
+         pCreateInfo->pNext, pCreateInfo->format);
    conversion->state.ycbcr_model = pCreateInfo->ycbcrModel;
    conversion->state.ycbcr_range = pCreateInfo->ycbcrRange;
    conversion->state.components = pCreateInfo->components;
