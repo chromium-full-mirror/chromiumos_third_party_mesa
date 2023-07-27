@@ -259,7 +259,7 @@ try_lower_tex_ycbcr(const struct radv_pipeline_layout *layout, nir_builder *buil
    }
    const struct radv_sampler_ycbcr_conversion_state *ycbcr_sampler = ycbcr_samplers + array_index;
 
-   if (ycbcr_sampler->format == VK_FORMAT_UNDEFINED)
+   if (!util_format_is_yuv(vk_format_to_pipe_format(ycbcr_sampler->format)))
       return false;
 
    bool unnormalized_coordinates = immutable_samplers[4 * array_index + 0] & S_008F30_FORCE_UNNORMALIZED(1);
