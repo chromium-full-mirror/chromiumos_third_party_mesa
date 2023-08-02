@@ -545,9 +545,6 @@ radv_postprocess_nir(struct radv_device *device, const struct radv_pipeline_layo
 
    NIR_PASS(_, stage->nir, nir_lower_alu_width, opt_vectorize_callback, device);
 
-   /* lower ALU operations */
-   NIR_PASS(_, stage->nir, nir_lower_int64);
-
    nir_move_options sink_opts = nir_move_const_undef | nir_move_copies;
 
    if (!pipeline_key->optimisations_disabled) {
@@ -589,6 +586,8 @@ radv_postprocess_nir(struct radv_device *device, const struct radv_pipeline_layo
          NIR_PASS_V(stage->nir, ac_nir_lower_legacy_gs, false, false, &gs_out_info);
       }
    }
+
+   NIR_PASS(_, stage->nir, nir_lower_int64);
 
    NIR_PASS(_, stage->nir, nir_opt_idiv_const, 8);
 
