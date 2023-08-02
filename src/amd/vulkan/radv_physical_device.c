@@ -407,10 +407,10 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_bind_memory2 = true,
       .KHR_buffer_device_address = true,
       .KHR_copy_commands2 = true,
-      .KHR_create_renderpass2 = true,
+      .KHR_create_renderpass2 = CROS_SUPPORT_CREATE_RENDERPASS_2,
       .KHR_dedicated_allocation = true,
       .KHR_deferred_host_operations = true,
-      .KHR_depth_stencil_resolve = true,
+      .KHR_depth_stencil_resolve = CROS_SUPPORT_CREATE_RENDERPASS_2,
       .KHR_descriptor_update_template = true,
       .KHR_device_group = true,
       .KHR_draw_indirect_count = true,
@@ -590,7 +590,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .AMD_shader_trinary_minmax = true,
       .AMD_texture_gather_bias_lod = device->rad_info.gfx_level < GFX11,
 #ifdef ANDROID
-      .ANDROID_external_memory_android_hardware_buffer = RADV_SUPPORT_ANDROID_HARDWARE_BUFFER,
+      .ANDROID_external_memory_android_hardware_buffer = CROS_SUPPORT_ANDROID_HARDWARE_BUFFER,
       .ANDROID_native_buffer = true,
 #endif
       .GOOGLE_decorate_string = true,

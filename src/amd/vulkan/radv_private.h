@@ -127,8 +127,21 @@ extern "C"
 #define RADV_USE_WSI_PLATFORM
 #endif
 
+/* CrOS-specific hacks */
+#if !defined(ANDROID) || ANDROID_API_LEVEL >= 30
+#define CROS_ANDROID_API_VERSION_MINOR 1
+#define CROS_SUPPORT_ANDROID_HARDWARE_BUFFER true
+#define CROS_SUPPORT_CREATE_RENDERPASS_2 true
+#else
+/* LLVM is too old to support 1.1, despite we don't use LLVM by default */
+#define CROS_ANDROID_API_VERSION_MINOR 0
+/* ndk_translation is too old to support AHB and renderpass2 */
+#define CROS_SUPPORT_ANDROID_HARDWARE_BUFFER false
+#define CROS_SUPPORT_CREATE_RENDERPASS_2 false
+#endif
+
 #ifdef ANDROID
-#define RADV_API_VERSION VK_MAKE_VERSION(1, 1, VK_HEADER_VERSION)
+#define RADV_API_VERSION VK_MAKE_VERSION(1, CROS_ANDROID_API_VERSION_MINOR, VK_HEADER_VERSION)
 #else
 #define RADV_API_VERSION VK_MAKE_VERSION(1, 3, VK_HEADER_VERSION)
 #endif
