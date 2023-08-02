@@ -3334,7 +3334,7 @@ typedef enum {
    nir_lower_divmod64 = (1 << 2),
    /** Lower all 64-bit umul_high and imul_high opcodes */
    nir_lower_imul_high64 = (1 << 3),
-   nir_lower_mov64 = (1 << 4),
+   nir_lower_bcsel64 = (1 << 4),
    nir_lower_icmp64 = (1 << 5),
    nir_lower_iadd64 = (1 << 6),
    nir_lower_iabs64 = (1 << 7),
@@ -3353,6 +3353,7 @@ typedef enum {
    nir_lower_usub_sat64 = (1 << 20),
    nir_lower_iadd_sat64 = (1 << 21),
    nir_lower_find_lsb64 = (1 << 22),
+   nir_lower_conv64 = (1 << 23),
 } nir_lower_int64_options;
 
 typedef enum {
