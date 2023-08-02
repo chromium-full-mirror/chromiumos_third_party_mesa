@@ -227,6 +227,12 @@ stw_st_framebuffer_validate_locked(struct st_context *st,
       case ST_ATTACHMENT_DEPTH_STENCIL:
          format = stwfb->stvis.depth_stencil_format;
          bind = PIPE_BIND_DEPTH_STENCIL;
+
+#ifdef GALLIUM_ZINK
+         if (stw_dev->zink)
+            bind |= PIPE_BIND_DISPLAY_TARGET;
+#endif
+
          break;
       default:
          format = PIPE_FORMAT_NONE;
@@ -321,7 +327,8 @@ stw_st_framebuffer_validate(struct st_context *st,
                             struct pipe_frontend_drawable *drawable,
                             const enum st_attachment_type *statts,
                             unsigned count,
-                            struct pipe_resource **out)
+                            struct pipe_resource **out,
+                            struct pipe_resource **resolve)
 {
    struct stw_st_framebuffer *stwfb = stw_st_framebuffer(drawable);
    unsigned statt_mask, i;
@@ -354,6 +361,13 @@ stw_st_framebuffer_validate(struct st_context *st,
          texture = textures[statts[i]];
       }
       pipe_resource_reference(&out[i], texture);
+   }
+
+   if (resolve && stwfb->stvis.samples > 1) {
+      if (statt_mask & BITFIELD_BIT(ST_ATTACHMENT_FRONT_LEFT))
+         pipe_resource_reference(resolve, stwfb->textures[ST_ATTACHMENT_FRONT_LEFT]);
+      else if (statt_mask & BITFIELD_BIT(ST_ATTACHMENT_BACK_LEFT))
+         pipe_resource_reference(resolve, stwfb->textures[ST_ATTACHMENT_BACK_LEFT]);
    }
 
    stw_framebuffer_unlock(stwfb->fb);

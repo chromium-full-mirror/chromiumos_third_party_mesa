@@ -23,8 +23,6 @@
 
 #include "vk_image.h"
 
-#include <vulkan/vulkan_android.h>
-
 #ifndef _WIN32
 #include <drm-uapi/drm_fourcc.h>
 #endif
@@ -39,6 +37,11 @@
 #include "vk_render_pass.h"
 #include "vk_util.h"
 #include "vulkan/wsi/wsi_common.h"
+
+#ifdef ANDROID
+#include "vk_android.h"
+#include <vulkan/vulkan_android.h>
+#endif
 
 void
 vk_image_init(struct vk_device *device,
@@ -97,13 +100,17 @@ vk_image_init(struct vk_device *device,
 #endif
 
 #ifdef ANDROID
+   image->ahardware_buffer_format = 0;
+
    const VkExternalFormatANDROID *ext_format =
       vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_FORMAT_ANDROID);
    if (ext_format && ext_format->externalFormat != 0) {
       assert(image->format == VK_FORMAT_UNDEFINED);
       assert(image->external_handle_types &
              VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID);
-      vk_image_set_format(image, (VkFormat)ext_format->externalFormat);
+      image->android_external_format = ext_format->externalFormat;
+   } else {
+      image->android_external_format = 0;
    }
 #endif
 }
@@ -318,10 +325,7 @@ vk_image_view_init(struct vk_device *device,
    image_view->create_flags = pCreateInfo->flags;
    image_view->image = image;
    image_view->view_type = pCreateInfo->viewType;
-
    image_view->format = pCreateInfo->format;
-   if (image_view->format == VK_FORMAT_UNDEFINED)
-      image_view->format = image->format;
 
    if (!driver_internal) {
       switch (image_view->view_type) {
@@ -354,7 +358,7 @@ vk_image_view_init(struct vk_device *device,
 
    if (driver_internal) {
       image_view->aspects = range->aspectMask;
-      image_view->view_format = image_view->format;
+      image_view->view_format = pCreateInfo->format;
    } else {
       image_view->aspects =
          vk_image_expand_aspect_mask(image, range->aspectMask);
@@ -380,7 +384,7 @@ vk_image_view_init(struct vk_device *device,
        */
       if ((image->aspects & VK_IMAGE_ASPECT_PLANE_1_BIT) &&
           (range->aspectMask == VK_IMAGE_ASPECT_COLOR_BIT))
-         assert(image_view->format == image->format);
+         assert(pCreateInfo->format == image->format);
 
       /* From the Vulkan 1.2.184 spec:
        *
@@ -388,10 +392,10 @@ vk_image_view_init(struct vk_device *device,
        */
       if (image_view->aspects & (VK_IMAGE_ASPECT_DEPTH_BIT |
                                  VK_IMAGE_ASPECT_STENCIL_BIT))
-         assert(image_view->format == image->format);
+         assert(pCreateInfo->format == image->format);
 
       if (!(image->create_flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT))
-         assert(image_view->format == image->format);
+         assert(pCreateInfo->format == image->format);
 
       /* Restrict the format to only the planes chosen.
        *
@@ -414,11 +418,11 @@ vk_image_view_init(struct vk_device *device,
        *    enable sampler Y′CBCR conversion."
        */
       if (image_view->aspects == VK_IMAGE_ASPECT_STENCIL_BIT) {
-         image_view->view_format = vk_format_stencil_only(image_view->format);
+         image_view->view_format = vk_format_stencil_only(pCreateInfo->format);
       } else if (image_view->aspects == VK_IMAGE_ASPECT_DEPTH_BIT) {
-         image_view->view_format = vk_format_depth_only(image_view->format);
+         image_view->view_format = vk_format_depth_only(pCreateInfo->format);
       } else {
-         image_view->view_format = image_view->format;
+         image_view->view_format = pCreateInfo->format;
       }
    }
 
@@ -454,6 +458,14 @@ vk_image_view_init(struct vk_device *device,
    image_view->extent =
       vk_image_mip_level_extent(image, image_view->base_mip_level);
 
+   /* By default storage uses the same as the image properties, but it can be
+    * overriden with VkImageViewSlicedCreateInfoEXT.
+    */
+   image_view->storage.z_slice_offset = 0;
+   image_view->storage.z_slice_count = image_view->extent.depth;
+
+   const VkImageViewSlicedCreateInfoEXT *sliced_info =
+      vk_find_struct_const(pCreateInfo, IMAGE_VIEW_SLICED_CREATE_INFO_EXT);
    assert(image_view->base_mip_level + image_view->level_count
           <= image->mip_levels);
    switch (image->image_type) {
@@ -465,6 +477,21 @@ vk_image_view_init(struct vk_device *device,
              <= image->array_layers);
       break;
    case VK_IMAGE_TYPE_3D:
+      if (sliced_info && image_view->view_type == VK_IMAGE_VIEW_TYPE_3D) {
+         unsigned total = image_view->extent.depth;
+         image_view->storage.z_slice_offset = sliced_info->sliceOffset;
+         assert(image_view->storage.z_slice_offset < total);
+         if (sliced_info->sliceCount == VK_REMAINING_3D_SLICES_EXT) {
+            image_view->storage.z_slice_count = total - image_view->storage.z_slice_offset;
+         } else {
+            image_view->storage.z_slice_count = sliced_info->sliceCount;
+         }
+      } else if (image_view->view_type != VK_IMAGE_VIEW_TYPE_3D) {
+         image_view->storage.z_slice_offset = image_view->base_array_layer;
+         image_view->storage.z_slice_count = image_view->layer_count;
+      }
+      assert(image_view->storage.z_slice_offset + image_view->storage.z_slice_count
+             <= image->extent.depth);
       assert(image_view->base_array_layer + image_view->layer_count
              <= image_view->extent.depth);
       break;
@@ -934,15 +961,21 @@ vk_image_layout_to_usage_flags(VkImageLayout layout,
                 VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
       }
 
-   case VK_IMAGE_LAYOUT_MAX_ENUM:
    case VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR:
+      return VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR;
    case VK_IMAGE_LAYOUT_VIDEO_DECODE_SRC_KHR:
+      return VK_IMAGE_USAGE_VIDEO_DECODE_SRC_BIT_KHR;
    case VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR:
+      return VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
 #ifdef VK_ENABLE_BETA_EXTENSIONS
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_DST_KHR:
+      return VK_IMAGE_USAGE_VIDEO_ENCODE_DST_BIT_KHR;
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR:
+      return VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR;
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR:
+      return VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR;
 #endif
+   case VK_IMAGE_LAYOUT_MAX_ENUM:
       unreachable("Invalid image layout.");
    }
 

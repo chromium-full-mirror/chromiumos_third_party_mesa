@@ -76,7 +76,7 @@ panfrost_clear(struct pipe_context *pipe, unsigned buffers,
    }
 
    /* Once there is content, clear with a fullscreen quad */
-   panfrost_blitter_save(ctx, false /* render condition */);
+   panfrost_blitter_save(ctx, PAN_RENDER_CLEAR);
 
    perf_debug_ctx(ctx, "Clearing with quad");
    util_blitter_clear(
@@ -723,6 +723,11 @@ panfrost_get_query_result(struct pipe_context *pipe, struct pipe_query *q,
    return true;
 }
 
+/*
+ * Check the render condition for software condition rendering.
+ *
+ * Note: this may invalidate the batch!
+ */
 bool
 panfrost_render_condition_check(struct panfrost_context *ctx)
 {

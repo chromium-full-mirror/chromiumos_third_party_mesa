@@ -790,6 +790,7 @@ duplicate_loop_bodies(nir_function_impl *impl, nir_instr *resume_instr)
          continue;
 
       nir_loop *loop = nir_cf_node_as_loop(node);
+      assert(!nir_loop_has_continue_construct(loop));
 
       if (resume_reg == NULL) {
          /* We only create resume_reg if we encounter a loop.  This way we can
@@ -1038,6 +1039,7 @@ flatten_resume_if_ladder(nir_builder *b,
       case nir_cf_node_loop: {
          assert(!before_cursor);
          nir_loop *loop = nir_cf_node_as_loop(child);
+         assert(!nir_loop_has_continue_construct(loop));
 
          if (cf_node_contains_block(&loop->cf_node, resume_instr->block)) {
             /* Thanks to our loop body duplication pass, every level of loop
@@ -1113,6 +1115,21 @@ found_resume:
                                nir_after_cf_list(child_list));
    }
 
+   /* If the resume instruction is in the first block of the child_list,
+    * and the cursor is still before that block, the nir_cf_extract() may
+    * extract the block object pointed by the cursor, and instead create
+    * a new one for the code before the resume. In such case the cursor
+    * will be broken, as it will point to a block which is no longer
+    * in a function.
+    *
+    * Luckily, in both cases when this is possible, the intended cursor
+    * position is right before the child_list, so we can fix the cursor here.
+    */
+   if (child_list_contains_cursor &&
+       b->cursor.option == nir_cursor_before_block &&
+       b->cursor.block->cf_node.parent == NULL)
+      b->cursor = nir_before_cf_list(child_list);
+
    if (cursor_is_after_jump(b->cursor)) {
       /* If the resume instruction is in a loop, it's possible cf_list ends
        * in a break or continue instruction, in which case we don't want to
@@ -1181,13 +1198,6 @@ lower_resume(nir_shader *shader, int call_idx)
 
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
    nir_instr *resume_instr = find_resume_instr(impl, call_idx);
-
-   /* Deref chains contain metadata information that is needed by other passes
-    * after this one. If we don't rematerialize the derefs in the blocks where
-    * they're used here, the following lowerings will insert phis which can
-    * prevent other passes from chasing deref chains.
-    */
-   nir_rematerialize_derefs_in_use_blocks_impl(impl);
 
    if (duplicate_loop_bodies(impl, resume_instr)) {
       nir_validate_shader(shader, "after duplicate_loop_bodies in "
@@ -1943,6 +1953,13 @@ nir_lower_shader_calls(nir_shader *shader,
       if (progress)
          NIR_PASS(progress, shader, nir_opt_cse);
    }
+
+   /* Deref chains contain metadata information that is needed by other passes
+    * after this one. If we don't rematerialize the derefs in the blocks where
+    * they're used here, the following lowerings will insert phis which can
+    * prevent other passes from chasing deref chains.
+    */
+   nir_rematerialize_derefs_in_use_blocks_impl(impl);
 
    /* Save the start point of the call stack in scratch */
    unsigned start_call_scratch = shader->scratch_size;

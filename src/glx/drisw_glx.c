@@ -23,6 +23,7 @@
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
 
+#include <xcb/xcb.h>
 #include <xcb/xproto.h>
 #include <xcb/shm.h>
 #include <X11/Xlib.h>
@@ -33,7 +34,8 @@
 #include "drisw_priv.h"
 #include <X11/extensions/shmproto.h>
 #include <assert.h>
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan_xcb.h>
 #include "util/u_debug.h"
 #include "kopper_interface.h"
 #include "loader_dri_helper.h"
@@ -431,8 +433,7 @@ drisw_destroy_context(struct glx_context *context)
 }
 
 static int
-drisw_bind_context(struct glx_context *context, struct glx_context *old,
-                   GLXDrawable draw, GLXDrawable read)
+drisw_bind_context(struct glx_context *context, GLXDrawable draw, GLXDrawable read)
 {
    struct drisw_screen *psc = (struct drisw_screen *) context->psc;
    struct drisw_drawable *pdraw, *pread;
@@ -457,7 +458,7 @@ drisw_bind_context(struct glx_context *context, struct glx_context *old,
 }
 
 static void
-drisw_unbind_context(struct glx_context *context, struct glx_context *new)
+drisw_unbind_context(struct glx_context *context)
 {
    struct drisw_screen *psc = (struct drisw_screen *) context->psc;
 
@@ -575,7 +576,8 @@ drisw_create_context_attribs(struct glx_screen *base,
 
    /* Check the renderType value */
    if (!validate_renderType_against_config(config_base, dca.render_type)) {
-       return NULL;
+      *error = BadValue;
+      return NULL;
    }
 
    if (shareList) {
@@ -590,7 +592,7 @@ drisw_create_context_attribs(struct glx_screen *base,
        *    GLX_CONTEXT_OPENGL_NO_ERROR_ARB for the context being created.
        */
       if (!!shareList->noError != !!dca.no_error) {
-         *error = __DRI_CTX_ERROR_BAD_FLAG;
+         *error = BadMatch;
          return NULL;
       }
 
@@ -642,6 +644,8 @@ drisw_create_context_attribs(struct glx_screen *base,
                                         ctx_attribs,
                                         error,
                                         pcp);
+   *error = dri_context_error_to_glx_error(*error);
+
    if (pcp->driContext == NULL) {
       free(pcp);
       return NULL;
@@ -671,10 +675,21 @@ driswCreateDrawable(struct glx_screen *base, XID xDrawable,
 {
    struct drisw_drawable *pdp;
    __GLXDRIconfigPrivate *config = (__GLXDRIconfigPrivate *) modes;
+   unsigned depth;
    struct drisw_screen *psc = (struct drisw_screen *) base;
    const __DRIswrastExtension *swrast = psc->swrast;
    const __DRIkopperExtension *kopper = psc->kopper;
    Display *dpy = psc->base.dpy;
+
+   xcb_connection_t *conn = XGetXCBConnection(dpy);
+   xcb_generic_error_t *error;
+   xcb_get_geometry_cookie_t cookie = xcb_get_geometry(conn, xDrawable);
+   xcb_get_geometry_reply_t *reply = xcb_get_geometry_reply(conn, cookie, &error);
+   if (reply)
+      depth = reply->depth;
+   free(reply);
+   if (!reply || error)
+      return NULL;
 
    pdp = calloc(1, sizeof(*pdp));
    if (!pdp)
@@ -705,11 +720,6 @@ driswCreateDrawable(struct glx_screen *base, XID xDrawable,
 
    /* Otherwise, or if XGetVisualInfo failed, ask the server */
    if (pdp->xDepth == 0) {
-      Window root;
-      int x, y;
-      unsigned uw, uh, bw, depth;
-
-      XGetGeometry(dpy, xDrawable, &root, &x, &y, &uw, &uh, &bw, &depth);
       pdp->xDepth = depth;
    }
 
@@ -753,7 +763,7 @@ driswSwapBuffers(__GLXDRIdrawable * pdraw,
    }
 
    if (psc->kopper)
-       return psc->kopper->swapBuffers (pdp->driDrawable);
+       return psc->kopper->swapBuffers (pdp->driDrawable, 0);
 
    psc->core->swapBuffers(pdp->driDrawable);
 

@@ -585,7 +585,7 @@ static void si_launch_grid_internal_images(struct si_context *sctx,
       /* Simplify the format according to what image stores support. */
       if (images[i].access & PIPE_IMAGE_ACCESS_WRITE) {
          images[i].format = util_format_linear(images[i].format); /* SRGB not supported */
-         images[i].format = util_format_luminance_to_red(images[i].format);
+         /* Keep L8A8 formats as-is because GFX7 is unable to store into R8A8 for some reason. */
          images[i].format = util_format_intensity_to_red(images[i].format);
          images[i].format = util_format_rgbx_to_rgba(images[i].format); /* prevent partial writes */
       }
@@ -1078,7 +1078,7 @@ static bool si_should_blit_clamp_xy(const struct pipe_blit_info *info)
    return !in_bounds;
 }
 
-bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info)
+bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info, bool testing)
 {
    /* Compute blits require D16 right now (see the ISA).
     *
@@ -1088,7 +1088,7 @@ bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info)
     *
     * TODO: benchmark the performance on gfx11
     */
-   if (sctx->gfx_level < GFX11)
+   if (sctx->gfx_level < GFX11 && !testing)
       return false;
 
    if (!si_can_use_compute_blit(sctx, info->dst.format, info->dst.resource->nr_samples, true,
@@ -1158,10 +1158,16 @@ bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info)
    options.use_integer_one = util_format_is_pure_integer(info->dst.format) &&
                              options.last_src_channel < options.last_dst_channel &&
                              options.last_dst_channel == 3;
+
+   /* WARNING: We need this option for AMD_TEST to get results identical with the gfx blit,
+    * otherwise we wouldn't be able to fully validate whether everything else works.
+    * The test expects that the behavior is identical to u_blitter.
+    *
+    * Additionally, we need to keep this enabled even when not testing because not doing fp16_rtz
+    * breaks "piglit/bin/texsubimage -auto pbo".
+    */
    options.fp16_rtz = !util_format_is_pure_integer(info->dst.format) &&
-                      (dst_desc->channel[i].size <= 10 ||
-                       (dst_desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT &&
-                        dst_desc->channel[i].size <= 16));
+                      dst_desc->channel[i].size <= 10;
 
    struct hash_entry *entry = _mesa_hash_table_search(sctx->cs_blit_shaders,
                                                       (void*)(uintptr_t)options.key);

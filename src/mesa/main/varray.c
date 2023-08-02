@@ -304,6 +304,12 @@ _mesa_bind_vertex_buffer(struct gl_context *ctx,
       }
 
       vao->NonDefaultStateMask |= BITFIELD_BIT(index);
+   } else {
+      /* Since this function owns the vbo reference, it must release it if it
+       * doesn't use it.
+       */
+      if (take_vbo_ownership)
+         _mesa_reference_buffer_object(ctx, &vbo, NULL);
    }
 }
 
@@ -1012,7 +1018,7 @@ validate_array(struct gl_context *ctx, const char *func,
     *
     * The check for VBOs is handled below.
     */
-   if (ctx->API == API_OPENGL_CORE && (vao == ctx->Array.DefaultVAO)) {
+   if (_mesa_is_desktop_gl_core(ctx) && (vao == ctx->Array.DefaultVAO)) {
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(no array object bound)",
                   func);
       return;
@@ -1175,7 +1181,7 @@ _mesa_VertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
    GET_CURRENT_CONTEXT(ctx);
 
    GLenum format = GL_RGBA;
-   GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (BYTE_BIT | SHORT_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (SHORT_BIT | INT_BIT | FLOAT_BIT |
          DOUBLE_BIT | HALF_BIT |
@@ -1202,7 +1208,7 @@ _mesa_VertexArrayVertexOffsetEXT(GLuint vaobj, GLuint buffer, GLint size,
    GET_CURRENT_CONTEXT(ctx);
 
    GLenum format = GL_RGBA;
-   GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (BYTE_BIT | SHORT_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (SHORT_BIT | INT_BIT | FLOAT_BIT |
          DOUBLE_BIT | HALF_BIT |
@@ -1247,7 +1253,7 @@ _mesa_NormalPointer(GLenum type, GLsizei stride, const GLvoid *ptr )
    GET_CURRENT_CONTEXT(ctx);
 
    GLenum format = GL_RGBA;
-   const GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   const GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (BYTE_BIT | SHORT_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (BYTE_BIT | SHORT_BIT | INT_BIT |
          HALF_BIT | FLOAT_BIT | DOUBLE_BIT |
@@ -1274,7 +1280,7 @@ _mesa_VertexArrayNormalOffsetEXT(GLuint vaobj, GLuint buffer, GLenum type,
    GET_CURRENT_CONTEXT(ctx);
 
    GLenum format = GL_RGBA;
-   const GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   const GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (BYTE_BIT | SHORT_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (BYTE_BIT | SHORT_BIT | INT_BIT |
          HALF_BIT | FLOAT_BIT | DOUBLE_BIT |
@@ -1319,10 +1325,10 @@ void GLAPIENTRY
 _mesa_ColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *ptr)
 {
    GET_CURRENT_CONTEXT(ctx);
-   const GLint sizeMin = (ctx->API == API_OPENGLES) ? 4 : 3;
+   const GLint sizeMin = _mesa_is_gles1(ctx) ? 4 : 3;
 
    GLenum format = get_array_format(ctx, BGRA_OR_4, &size);
-   const GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   const GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (UNSIGNED_BYTE_BIT | HALF_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (BYTE_BIT | UNSIGNED_BYTE_BIT |
          SHORT_BIT | UNSIGNED_SHORT_BIT |
@@ -1349,10 +1355,10 @@ _mesa_VertexArrayColorOffsetEXT(GLuint vaobj, GLuint buffer, GLint size,
                                 GLenum type, GLsizei stride, GLintptr offset)
 {
    GET_CURRENT_CONTEXT(ctx);
-   const GLint sizeMin = (ctx->API == API_OPENGLES) ? 4 : 3;
+   const GLint sizeMin = _mesa_is_gles1(ctx) ? 4 : 3;
 
    GLenum format = get_array_format(ctx, BGRA_OR_4, &size);
-   const GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   const GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (UNSIGNED_BYTE_BIT | HALF_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (BYTE_BIT | UNSIGNED_BYTE_BIT |
          SHORT_BIT | UNSIGNED_SHORT_BIT |
@@ -1601,11 +1607,11 @@ _mesa_TexCoordPointer(GLint size, GLenum type, GLsizei stride,
                       const GLvoid *ptr)
 {
    GET_CURRENT_CONTEXT(ctx);
-   const GLint sizeMin = (ctx->API == API_OPENGLES) ? 2 : 1;
+   const GLint sizeMin = _mesa_is_gles1(ctx) ? 2 : 1;
    const GLuint unit = ctx->Array.ActiveTexture;
 
    GLenum format = GL_RGBA;
-   const GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   const GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (BYTE_BIT | SHORT_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (SHORT_BIT | INT_BIT |
          HALF_BIT | FLOAT_BIT | DOUBLE_BIT |
@@ -1630,11 +1636,11 @@ _mesa_VertexArrayTexCoordOffsetEXT(GLuint vaobj, GLuint buffer, GLint size,
                                    GLenum type, GLsizei stride, GLintptr offset)
 {
    GET_CURRENT_CONTEXT(ctx);
-   const GLint sizeMin = (ctx->API == API_OPENGLES) ? 2 : 1;
+   const GLint sizeMin = _mesa_is_gles1(ctx) ? 2 : 1;
    const GLuint unit = ctx->Array.ActiveTexture;
 
    GLenum format = GL_RGBA;
-   const GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   const GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (BYTE_BIT | SHORT_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (SHORT_BIT | INT_BIT |
          HALF_BIT | FLOAT_BIT | DOUBLE_BIT |
@@ -1668,11 +1674,11 @@ _mesa_VertexArrayMultiTexCoordOffsetEXT(GLuint vaobj, GLuint buffer, GLenum texu
                                         GLintptr offset)
 {
    GET_CURRENT_CONTEXT(ctx);
-   const GLint sizeMin = (ctx->API == API_OPENGLES) ? 2 : 1;
+   const GLint sizeMin = _mesa_is_gles1(ctx) ? 2 : 1;
    const GLuint unit = texunit - GL_TEXTURE0;
 
    GLenum format = GL_RGBA;
-   const GLbitfield legalTypes = (ctx->API == API_OPENGLES)
+   const GLbitfield legalTypes = _mesa_is_gles1(ctx)
       ? (BYTE_BIT | SHORT_BIT | FLOAT_BIT | FIXED_ES_BIT)
       : (SHORT_BIT | INT_BIT |
          HALF_BIT | FLOAT_BIT | DOUBLE_BIT |
@@ -2153,9 +2159,6 @@ _mesa_enable_vertex_array_attribs(struct gl_context *ctx,
 
       vao->_EnabledWithMapMode =
          _mesa_vao_enable_to_vp_inputs(vao->_AttributeMapMode, vao->Enabled);
-
-      _mesa_set_varying_vp_inputs(ctx, ctx->VertexProgram._VPModeInputFilter &
-                                  vao->_EnabledWithMapMode);
    }
 }
 
@@ -2259,9 +2262,6 @@ _mesa_disable_vertex_array_attribs(struct gl_context *ctx,
 
       vao->_EnabledWithMapMode =
          _mesa_vao_enable_to_vp_inputs(vao->_AttributeMapMode, vao->Enabled);
-
-      _mesa_set_varying_vp_inputs(ctx, ctx->VertexProgram._VPModeInputFilter &
-                                  vao->_EnabledWithMapMode);
    }
 }
 
@@ -2396,8 +2396,8 @@ get_vertex_array_attrib(struct gl_context *ctx,
       }
       goto error;
    case GL_VERTEX_ATTRIB_ARRAY_DIVISOR_ARB:
-      if ((_mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_instanced_arrays)
-          || _mesa_is_gles3(ctx)) {
+      if (_mesa_has_ARB_instanced_arrays(ctx) ||
+          _mesa_has_EXT_instanced_arrays(ctx)) {
          return vao->BufferBinding[array->BufferBindingIndex].InstanceDivisor;
       }
       goto error;
@@ -3305,7 +3305,7 @@ _mesa_BindVertexBuffer(GLuint bindingIndex, GLuint buffer, GLintptr offset,
     *    "An INVALID_OPERATION error is generated if no vertex array object
     *     is bound."
     */
-   if ((ctx->API == API_OPENGL_CORE || _mesa_is_gles31(ctx)) &&
+   if ((_mesa_is_desktop_gl_core(ctx) || _mesa_is_gles31(ctx)) &&
        ctx->Array.VAO == ctx->Array.DefaultVAO) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "glBindVertexBuffer(No array object bound)");
@@ -3527,7 +3527,7 @@ _mesa_BindVertexBuffers(GLuint first, GLsizei count, const GLuint *buffers,
     *    "An INVALID_OPERATION error is generated if no
     *     vertex array object is bound."
     */
-   if (ctx->API == API_OPENGL_CORE &&
+   if (_mesa_is_desktop_gl_core(ctx) &&
        ctx->Array.VAO == ctx->Array.DefaultVAO) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "glBindVertexBuffers(No array object bound)");
@@ -3543,23 +3543,10 @@ _mesa_BindVertexBuffers(GLuint first, GLsizei count, const GLuint *buffers,
 void
 _mesa_InternalBindVertexBuffers(struct gl_context *ctx,
                                 const struct glthread_attrib_binding *buffers,
-                                GLbitfield buffer_mask,
-                                GLboolean restore_pointers)
+                                GLbitfield buffer_mask)
 {
    struct gl_vertex_array_object *vao = ctx->Array.VAO;
    unsigned param_index = 0;
-
-   if (restore_pointers) {
-      while (buffer_mask) {
-         unsigned i = u_bit_scan(&buffer_mask);
-
-         _mesa_bind_vertex_buffer(ctx, vao, i, NULL,
-                                  (GLintptr)buffers[param_index].original_pointer,
-                                  vao->BufferBinding[i].Stride, false, false);
-         param_index++;
-      }
-      return;
-   }
 
    while (buffer_mask) {
       unsigned i = u_bit_scan(&buffer_mask);
@@ -3638,7 +3625,7 @@ vertex_attrib_format(GLuint attribIndex, GLint size, GLenum type,
        * is an oversight.  In the OpenGL 4.3 (Core Profile) spec, it applies
        * to all three functions.
        */
-      if ((ctx->API == API_OPENGL_CORE || _mesa_is_gles31(ctx)) &&
+      if ((_mesa_is_desktop_gl_core(ctx) || _mesa_is_gles31(ctx)) &&
           ctx->Array.VAO == ctx->Array.DefaultVAO) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "%s(No array object bound)", func);
@@ -3886,7 +3873,7 @@ _mesa_VertexAttribBinding(GLuint attribIndex, GLuint bindingIndex)
     *    "An INVALID_OPERATION error is generated if no vertex array object
     *     is bound."
     */
-   if ((ctx->API == API_OPENGL_CORE || _mesa_is_gles31(ctx)) &&
+   if ((_mesa_is_desktop_gl_core(ctx) || _mesa_is_gles31(ctx)) &&
        ctx->Array.VAO == ctx->Array.DefaultVAO) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "glVertexAttribBinding(No array object bound)");
@@ -3996,7 +3983,7 @@ _mesa_VertexBindingDivisor(GLuint bindingIndex, GLuint divisor)
     *    "An INVALID_OPERATION error is generated if no vertex array object
     *     is bound."
     */
-   if ((ctx->API == API_OPENGL_CORE || _mesa_is_gles31(ctx)) &&
+   if ((_mesa_is_desktop_gl_core(ctx) || _mesa_is_gles31(ctx)) &&
        ctx->Array.VAO == ctx->Array.DefaultVAO) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "glVertexBindingDivisor(No array object bound)");

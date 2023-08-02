@@ -350,9 +350,6 @@ vlVaCreateContext(VADriverContextP ctx, VAConfigID config_id, int picture_width,
          context->desc.h265enc.rc.rate_ctrl_method = config->rc;
          context->desc.h265enc.frame_idx = util_hash_table_create_ptr_keys();
          break;
-      case PIPE_VIDEO_FORMAT_AV1:
-         context->desc.av1enc.rc[0].rate_ctrl_method = config->rc;
-         break;
       default:
          break;
       }
@@ -414,6 +411,7 @@ vlVaDestroyContext(VADriverContextP ctx, VAContextID context_id)
       vl_deint_filter_cleanup(context->deint);
       FREE(context->deint);
    }
+   FREE(context->desc.base.decrypt_key);
    FREE(context);
    handle_table_remove(drv->htab, context_id);
    mtx_unlock(&drv->mutex);

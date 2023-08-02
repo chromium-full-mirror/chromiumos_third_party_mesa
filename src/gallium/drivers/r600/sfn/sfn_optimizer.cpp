@@ -360,6 +360,16 @@ CopyPropFwdVisitor::visit(AluInstr *instr)
    auto src = instr->psrc(0);
    auto dest = instr->dest();
 
+   /* Don't propagate an indirect load to more than one
+    * instruction, because we may have to split the address loads
+    * creating more instructions */
+   if (dest->uses().size() > 1) {
+      auto [addr, is_for_dest, index] = instr->indirect_addr();
+      if (addr && !is_for_dest)
+         return;
+   }
+
+
    auto ii = dest->uses().begin();
    auto ie = dest->uses().end();
 
@@ -397,7 +407,11 @@ CopyPropFwdVisitor::visit(AluInstr *instr)
       if (can_propagate) {
          sfn_log << SfnLog::opt << "   Try replace in " << i->block_id() << ":"
                  << i->index() << *i << "\n";
-         progress |= i->replace_source(dest, src);
+
+         if (i->as_alu() && i->as_alu()->parent_group()) {
+            progress |= i->as_alu()->parent_group()->replace_source(dest, src);
+         } else
+            progress |= i->replace_source(dest, src);
       }
    }
    if (instr->dest()) {
@@ -719,6 +733,36 @@ public:
    bool progress;
 };
 
+class HasVecDestVisitor : public ConstInstrVisitor {
+public:
+   HasVecDestVisitor():
+       has_group_dest(false)
+   {
+   }
+
+   void visit(const AluInstr& instr) override { (void)instr; }
+   void visit(const AluGroup& instr) override { (void)instr; }
+   void visit(const TexInstr& instr) override  {  (void)instr; has_group_dest = true; };
+   void visit(const ExportInstr& instr) override { (void)instr; }
+   void visit(const FetchInstr& instr) override  {  (void)instr; has_group_dest = true; };
+   void visit(const Block& instr) override { (void)instr; };
+   void visit(const ControlFlowInstr& instr) override{ (void)instr; }
+   void visit(const IfInstr& instr) override{ (void)instr; }
+   void visit(const ScratchIOInstr& instr) override  { (void)instr; };
+   void visit(const StreamOutInstr& instr) override { (void)instr; }
+   void visit(const MemRingOutInstr& instr) override { (void)instr; }
+   void visit(const EmitVertexInstr& instr) override { (void)instr; }
+   void visit(const GDSInstr& instr) override { (void)instr; }
+   void visit(const WriteTFInstr& instr) override { (void)instr; };
+   void visit(const LDSAtomicInstr& instr) override { (void)instr; };
+   void visit(const LDSReadInstr& instr) override { (void)instr; };
+   void visit(const RatInstr& instr) override {  (void)instr; };
+
+   bool has_group_dest;
+};
+
+
+
 bool
 simplify_source_vectors(Shader& sh)
 {
@@ -744,6 +788,16 @@ SimplifySourceVecVisitor::visit(TexInstr *instr)
       if (nvals == 1) {
          for (int i = 0; i < 4; ++i)
             if (src[i]->chan() < 4) {
+               HasVecDestVisitor check_dests;
+               for (auto p : src[i]->parents()) {
+                  p->accept(check_dests);
+                  if (check_dests.has_group_dest)
+                     break;
+               }
+
+               if (check_dests.has_group_dest)
+                  break;
+
                if (src[i]->pin() == pin_group)
                   src[i]->set_pin(pin_free);
                else if (src[i]->pin() == pin_chgr)

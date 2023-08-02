@@ -338,7 +338,6 @@ public:
          uint32_t spec_id = ins->words[ins->operands[2].offset];
          for (auto &c : specConstants) {
             if (c.second.id == spec_id) {
-               assert(c.first == id);
                return;
             }
          }
@@ -1147,6 +1146,17 @@ clc_link_spirv_binaries(const struct clc_linker_args *args,
    memcpy(out_spirv->data, linkingResult.data(), out_spirv->size);
 
    return 0;
+}
+
+bool
+clc_validate_spirv(const struct clc_binary *spirv,
+                   const struct clc_logger *logger)
+{
+   SPIRVMessageConsumer msgconsumer(logger);
+   spvtools::SpirvTools tools(spirv_target);
+   tools.SetMessageConsumer(msgconsumer);
+   const uint32_t *data = static_cast<const uint32_t *>(spirv->data);
+   return tools.Validate(data, spirv->size / 4);
 }
 
 int

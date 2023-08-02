@@ -151,6 +151,8 @@ vbo_exec_bind_arrays(struct gl_context *ctx,
 
    _mesa_save_and_set_draw_vao(ctx, vao, vao_filter,
                                old_vao, old_vp_input_filter);
+   _mesa_set_varying_vp_inputs(ctx, vao_filter &
+                               ctx->Array._DrawVAO->_EnabledWithMapMode);
 }
 
 
@@ -283,7 +285,7 @@ vbo_exec_vtx_map(struct vbo_exec_context *exec)
       vbo_install_exec_vtxfmt_noop(ctx);
    }
    else {
-      if (_mesa_using_noop_vtxfmt(ctx->Exec)) {
+      if (_mesa_using_noop_vtxfmt(ctx->Dispatch.Exec)) {
          /* The no-op functions are installed so switch back to regular
           * functions.  We do this test just to avoid frequent and needless
           * calls to vbo_install_exec_vtxfmt().

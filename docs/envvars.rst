@@ -86,6 +86,12 @@ Core Mesa environment variables
       print error and performance messages to stderr (or
       ``MESA_LOG_FILE``).
 
+.. envvar:: MESA_PROCESS_NAME
+
+   if set, overrides the process name string used internally for various
+   purposes (e.g. for driconf option matching, logging, artifact storage,
+   etc.).
+
 .. envvar:: MESA_LOG_FILE
 
    specifies a file name for logging all errors, warnings, etc., rather
@@ -224,14 +230,14 @@ Core Mesa environment variables
 
 .. envvar:: MESA_DISK_CACHE_READ_ONLY_FOZ_DBS
 
-   if set with envvar:`MESA_DISK_CACHE_SINGLE_FILE` enabled, references
+   if set with :envvar:`MESA_DISK_CACHE_SINGLE_FILE` enabled, references
    a string of comma separated file paths to read only Fossilize DB
    shader caches for loading at initialization. The file paths are
    relative to the cache directory and do not include suffixes,
    referencing both the cache DB and its index file. E.g.
-   MESA_DISK_CACHE_SINGLE_FILE=filename1 refers to filename1.foz and
-   filename1_idx.foz. A limit of 8 DBs can be loaded and this limit is
-   shared with :envvar:`MESA_DISK_CACHE_READ_ONLY_FOZ_DBS_DYNAMIC_LIST.`
+   ``MESA_DISK_CACHE_SINGLE_FILE=filename1`` refers to ``filename1.foz``
+   and ``filename1_idx.foz``. A limit of 8 DBs can be loaded and this limit
+   is shared with :envvar:`MESA_DISK_CACHE_READ_ONLY_FOZ_DBS_DYNAMIC_LIST.`
 
 .. envvar:: MESA_DISK_CACHE_DATABASE
 
@@ -244,6 +250,17 @@ Core Mesa environment variables
    in ``$XDG_CACHE_HOME/mesa_shader_cache_db`` (if that variable is set)
    or else within ``.cache/mesa_shader_cache_db`` within the user's home
    directory.
+
+.. envvar:: MESA_DISK_CACHE_DATABASE_NUM_PARTS
+
+   specifies number of mesa-db cache parts, default is 50.
+
+.. envvar:: MESA_DISK_CACHE_DATABASE_EVICTION_SCORE_2X_PERIOD
+
+   Mesa-DB cache eviction algorithm calculates weighted score for the
+   cache items. The weight is doubled based on the last access time of
+   cache entry. By default period of weight doubling is set to one month.
+   Period value is given in seconds.
 
 .. envvar:: MESA_DISK_CACHE_READ_ONLY_FOZ_DBS_DYNAMIC_LIST
 
@@ -483,6 +500,10 @@ Intel driver environment variables
       emit messages about performance issues
    ``perfmon``
       emit messages about :ext:`GL_AMD_performance_monitor`
+   ``perf-symbol-names``
+      use performance counter symbols instead of the counter name
+      (counter symbols are like variable names, it's sometimes easier
+      to work with when you have lots of metrics to collect)
    ``reemit``
       mark all state dirty on each draw call
    ``rt``
@@ -506,6 +527,8 @@ Intel driver environment variables
    ``sync``
       after sending each batch, wait on the CPU for that batch to
       finish rendering
+   ``swsb-stall``
+      Insert sync NOP after each instruction. This is only valid for Gfx12+.
    ``task``
       dump shader assembly for task shaders
    ``tcs``
@@ -523,6 +546,31 @@ Intel driver environment variables
       dump shader assembly for vertex shaders
    ``wm``
       dump shader assembly for fragment shaders (same as ``fs``)
+
+.. envvar:: INTEL_DECODE
+
+   a comma-separated list of enable/disable flags configuring the
+   output produced by ``INTEL_DEBUG=bat`` (use with
+   ``INTEL_DECODE=+color,-floats``) :
+
+   ``color``
+      print colored output
+
+   ``floats``
+      try to decode floating point data in buffers
+
+   ``full``
+      print additional custom information for instructions (usually
+      pulling more information by inspecting memory)
+
+   ``offsets``
+      print offsets of instructions
+
+.. envvar:: INTEL_EXTENDED_METRICS
+
+   By default, only a standard set of gpu metrics are advertised. This
+   reduces time to collect metrics and hides infrequently used metrics.
+   To enable all metrics, set value to 1.
 
 .. envvar:: INTEL_MEASURE
 
@@ -608,6 +656,43 @@ Intel driver environment variables
    overrode shader with sha1 <SHA-1>" in stderr replacing the original
    assembly.
 
+.. envvar:: INTEL_SIMD_DEBUG
+
+   a comma-separated list of named flags, which control simd dispatch widths:
+
+   ``fs8``
+      allow generation of SIMD8 fragment shader
+   ``fs16``
+      allow generation of SIMD16 fragment shader
+   ``fs32``
+      allow generation of SIMD32 fragment shader
+   ``cs8``
+      allow generation of SIMD8 compute shader
+   ``cs16``
+      allow generation of SIMD16 compute shader
+   ``cs32``
+      allow generation of SIMD32 compute shader
+   ``ts8``
+      allow generation of SIMD8 task shader
+   ``ts16``
+      allow generation of SIMD16 task shader
+   ``ts32``
+      allow generation of SIMD32 task shader
+   ``ms8``
+      allow generation of SIMD8 mesh shader
+   ``ms16``
+      allow generation of SIMD16 mesh shader
+   ``ms32``
+      allow generation of SIMD32 mesh shader
+   ``rt8``
+      allow generation of SIMD8 ray-tracing shader
+   ``rt16``
+      allow generation of SIMD16 ray-tracing shader
+   ``rt32``
+      allow generation of SIMD32 ray-tracing shader
+
+   If none of widths for particular shader stage was specified, then all
+   widths are allowed.
 
 DRI environment variables
 -------------------------
@@ -656,6 +741,10 @@ Gallium environment variables
 .. envvar:: GALLIUM_HUD_VISIBLE
 
    control default visibility, defaults to true.
+
+.. envvar:: GALLIUM_HUD_OPACITY
+
+   control background opacity as an integer percentage (1-100), defaults to 66%.
 
 .. envvar:: GALLIUM_HUD_TOGGLE_SIGNAL
 
@@ -804,6 +893,12 @@ Rusticl environment variables
    -  ``RUSTICL_ENABLE=iris:1,radeonsi:0,2`` (enables second iris and first
       and third radeonsi device)
 
+.. envvar:: RUSTICL_DEBUG
+
+   a comma-separated list of debug channels to enable.
+
+   - ``program`` dumps compilation logs to stderr
+
 Nine frontend environment variables
 -----------------------------------
 
@@ -942,7 +1037,7 @@ Shared Vulkan driver environment variables
    after n frames. Currently, only RADV implements this.
 
 .. envvar:: MESA_VK_MEMORY_TRACE_TRIGGER
-   
+
    enable trigger file-based memory tracing. (e.g.
    ``export MESA_VK_MEMORY_TRACE_TRIGGER=/tmp/memory_trigger`` and then
    ``touch /tmp/memory_trigger`` to capture a memory trace).
@@ -974,6 +1069,8 @@ RADV driver environment variables
       validate the LLVM IR before LLVM compiles the shader
    ``epilogs``
       dump fragment shader epilogs
+   ``extra_md``
+      add extra information in bo metadatas to help tools (umr)
    ``forcecompress``
       Enables DCC,FMASK,CMASK,HTILE in situations where the driver supports it
       but normally does not deem it beneficial.
@@ -1007,6 +1104,8 @@ RADV driver environment variables
       disable fast color/depthstencil clears
    ``nofmask``
       disable FMASK compression on MSAA images (GFX6-GFX10.3)
+   ``nogpl``
+      disable VK_EXT_graphics_pipeline_library
    ``nohiz``
       disable HIZ for depthstencil images
    ``noibs``
@@ -1032,6 +1131,8 @@ RADV driver environment variables
       dump shaders
    ``shaderstats``
       dump shader statistics
+   ``shadowregs``
+      enable register shadowing
    ``spirv``
       dump SPIR-V
    ``splitfma``
@@ -1070,20 +1171,17 @@ RADV driver environment variables
       enable wave32 for compute shaders (GFX10+)
    ``dccmsaa``
       enable DCC for MSAA images
+   ``dmashaders``
+      upload shaders to invisible VRAM (might be useful for non-resizable BAR systems)
    ``emulate_rt``
       forces ray-tracing to be emulated in software on GFX10_3+ and enables
       rt extensions with older hardware.
    ``gewave32``
       enable wave32 for vertex/tess/geometry shaders (GFX10+)
-   ``gpl``
-      enable experimental (and suboptimal) graphics pipeline library (still
-      under active development)
    ``localbos``
       enable local BOs
    ``nosam``
       disable optimizations that get enabled when all VRAM is CPU visible.
-   ``nv_ms``
-      enable unofficial experimental support for :ext:`VK_NV_mesh_shader`.
    ``pswave32``
       enable wave32 for pixel shaders (GFX10+)
    ``ngg_streamout``
@@ -1096,6 +1194,8 @@ RADV driver environment variables
       enable optimizations to move more driver internal objects to VRAM.
    ``rtwave64``
       enable wave64 for ray tracing shaders (GFX10+)
+   ``video_decode``
+      enable experimental video decoding support
 
 .. envvar:: RADV_TEX_ANISO
 
@@ -1274,6 +1374,8 @@ RadeonSI driver environment variables
       Enable DPBB.
    ``dfsm``
       Enable DFSM.
+   ``extra_md``
+      add extra information in bo metadatas to help tools (umr)
 
 r600 driver environment variables
 ---------------------------------
@@ -1521,6 +1623,32 @@ PowerVR driver environment variables
 
    A comma-separated list of debug options. Use `PVR_DEBUG=help` to
    print a list of available options.
+
+.. envvar:: ROGUE_DEBUG
+
+   a comma-separated list of named flags for the Rogue compiler,
+   which do various things:
+
+   ``nir``
+      Print the input NIR to stdout.
+   ``nir_passes``
+      Print the output of each NIR pass to stdout.
+   ``ir``
+      Print the input Rogue IR to stdout.
+   ``ir_passes``
+      Print the output of each Rogue IR pass to stdout.
+   ``ir_details``
+      Includes additional details when printing Rogue IR.
+   ``vld_skip``
+      Skips the compiler validation step.
+   ``vld_nonfatal``
+      Prints all the validation errors instead of stopping after the first.
+
+.. envvar:: ROGUE_COLOR
+
+   if set to ``auto`` Rogue IR will be colorized if stdout is not a pipe.
+   Color is forced off if set to ``off``/``0`` or on if set to ``on``/``1``.
+   Defaults to ``auto``.
 
 i915 driver environment variables
 ---------------------------------

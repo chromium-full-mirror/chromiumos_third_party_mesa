@@ -62,6 +62,7 @@
 #include "common/freedreno_uuid.h"
 
 #include "a2xx/ir2.h"
+#include "ir3/ir3_descriptor.h"
 #include "ir3/ir3_gallium.h"
 #include "ir3/ir3_nir.h"
 
@@ -145,6 +146,9 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 {
    struct fd_screen *screen = fd_screen(pscreen);
 
+   if (screen->aux_ctx)
+      screen->aux_ctx->destroy(screen->aux_ctx);
+
    if (screen->tess_bo)
       fd_bo_del(screen->tess_bo);
 
@@ -207,6 +211,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
    case PIPE_CAP_GL_SPIRV:
+   case PIPE_CAP_FBFETCH_COHERENT:
       return 1;
 
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
@@ -368,7 +373,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FBFETCH:
       if (fd_device_version(screen->dev) >= FD_VERSION_GMEM_BASE &&
           is_a6xx(screen))
-         return 1;
+         return screen->max_rts;
       return 0;
    case PIPE_CAP_SAMPLE_SHADING:
       if (is_a6xx(screen))
@@ -571,6 +576,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return is_a6xx(screen);
    case PIPE_CAP_TWO_SIDED_COLOR:
       return 0;
+   case PIPE_CAP_THROTTLE:
+      return screen->driconf.enable_throttling;
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
    }
@@ -681,8 +688,6 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
       return is_ir3(screen) ? 1 : 0;
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_DROUND_SUPPORTED:
-   case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
@@ -718,7 +723,13 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
                   (1 << PIPE_SHADER_IR_TGSI));
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen)) {
+      if (is_a6xx(screen)) {
+         if (param == PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) {
+            return IR3_BINDLESS_SSBO_COUNT;
+         } else {
+            return IR3_BINDLESS_IMAGE_COUNT;
+         }
+      } else if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen)) {
          /* a5xx (and a4xx for that matter) has one state-block
           * for compute-shader SSBO's and another that is shared
           * by VS/HS/DS/GS/FS..  so to simplify things for now
@@ -872,11 +883,17 @@ fd_screen_bo_get_handle(struct pipe_screen *pscreen, struct fd_bo *bo,
       if (screen->ro) {
          return renderonly_get_handle(scanout, whandle);
       } else {
-         whandle->handle = fd_bo_handle(bo);
+         uint32_t handle = fd_bo_handle(bo);
+         if (!handle)
+            return false;
+         whandle->handle = handle;
          return true;
       }
    } else if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
-      whandle->handle = fd_bo_dmabuf(bo);
+      int fd = fd_bo_dmabuf(bo);
+      if (fd < 0)
+         return false;
+      whandle->handle = fd;
       return true;
    } else {
       return false;
@@ -981,10 +998,22 @@ fd_screen_get_driver_uuid(struct pipe_screen *pscreen, char *uuid)
    fd_get_driver_uuid(uuid);
 }
 
-struct pipe_screen *
-fd_screen_create(struct fd_device *dev, struct renderonly *ro,
-                 const struct pipe_screen_config *config)
+static int
+fd_screen_get_fd(struct pipe_screen *pscreen)
 {
+   struct fd_screen *screen = fd_screen(pscreen);
+   return fd_device_fd(screen->dev);
+}
+
+struct pipe_screen *
+fd_screen_create(int fd,
+                 const struct pipe_screen_config *config,
+                 struct renderonly *ro)
+{
+   struct fd_device *dev = fd_device_new_dup(fd);
+   if (!dev)
+      return NULL;
+
    struct fd_screen *screen = CALLOC_STRUCT(fd_screen);
    struct pipe_screen *pscreen;
    uint64_t val;
@@ -1005,7 +1034,6 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
 
    screen->dev = dev;
    screen->ro = ro;
-   screen->refcnt = 1;
 
    // maybe this should be in context?
    screen->pipe = fd_pipe_new(screen->dev, FD_PIPE_3D);
@@ -1089,6 +1117,11 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
    driParseConfigFiles(config->options, config->options_info, 0, "msm",
                        NULL, fd_dev_name(screen->dev_id), NULL, 0, NULL, 0);
 
+   screen->driconf.conservative_lrz =
+         !driQueryOptionb(config->options, "disable_conservative_lrz");
+   screen->driconf.enable_throttling =
+         !driQueryOptionb(config->options, "disable_throttling");
+
    struct sysinfo si;
    sysinfo(&si);
    screen->ram_size = si.totalram;
@@ -1166,6 +1199,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
    (void)simple_mtx_init(&screen->lock, mtx_plain);
 
    pscreen->destroy = fd_screen_destroy;
+   pscreen->get_screen_fd = fd_screen_get_fd;
    pscreen->get_param = fd_screen_get_param;
    pscreen->get_paramf = fd_screen_get_paramf;
    pscreen->get_shader_param = fd_screen_get_shader_param;
@@ -1196,9 +1230,34 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
 
    slab_create_parent(&screen->transfer_pool, sizeof(struct fd_transfer), 16);
 
+   simple_mtx_init(&screen->aux_ctx_lock, mtx_plain);
+
    return pscreen;
 
 fail:
    fd_screen_destroy(pscreen);
    return NULL;
+}
+
+struct fd_context *
+fd_screen_aux_context_get(struct pipe_screen *pscreen)
+{
+   struct fd_screen *screen = fd_screen(pscreen);
+
+   simple_mtx_lock(&screen->aux_ctx_lock);
+
+   if (!screen->aux_ctx) {
+      screen->aux_ctx = pscreen->context_create(pscreen, NULL, 0);
+   }
+
+   return fd_context(screen->aux_ctx);
+}
+
+void
+fd_screen_aux_context_put(struct pipe_screen *pscreen)
+{
+   struct fd_screen *screen = fd_screen(pscreen);
+
+   screen->aux_ctx->flush(screen->aux_ctx, NULL, 0);
+   simple_mtx_unlock(&screen->aux_ctx_lock);
 }
