@@ -1,7 +1,1 @@
-basni@chromium.org
-chadversary@chromium.org
-robdclark@google.com
-anholt@google.com
-msturner@google.com
-olv@google.com
-prahladk@google.com
+include chromiumos/platform/graphics:main:/OWNERS.mesa_freedreno
