@@ -407,11 +407,7 @@ CopyPropFwdVisitor::visit(AluInstr *instr)
       if (can_propagate) {
          sfn_log << SfnLog::opt << "   Try replace in " << i->block_id() << ":"
                  << i->index() << *i << "\n";
-
-         if (i->as_alu() && i->as_alu()->parent_group()) {
-            progress |= i->as_alu()->parent_group()->replace_source(dest, src);
-         } else
-            progress |= i->replace_source(dest, src);
+         progress |= i->replace_source(dest, src);
       }
    }
    if (instr->dest()) {
