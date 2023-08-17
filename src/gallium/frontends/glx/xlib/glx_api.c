@@ -41,6 +41,7 @@
 #include "xm_api.h"
 #include "main/errors.h"
 #include "main/config.h"
+#include "pipe/p_compiler.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
@@ -1391,8 +1392,14 @@ glXQueryExtension( Display *dpy, int *errorBase, int *eventBase )
 PUBLIC void
 glXDestroyContext( Display *dpy, GLXContext ctx )
 {
-   if (ctx) {
-      GLXContext glxCtx = ctx;
+   GLXContext glxCtx = ctx;
+
+   if (glxCtx == NULL || glxCtx->xid == None)
+      return;
+
+   if (ctx->currentDpy) {
+      ctx->xid = None;
+   } else {
       (void) dpy;
       XMesaDestroyContext( glxCtx->xmesaContext );
       XMesaGarbageCollect();

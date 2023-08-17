@@ -349,8 +349,7 @@ void trace_dump_compute_state(const struct pipe_compute_state *state)
    }
    trace_dump_member_end();
 
-   trace_dump_member(uint, state, req_local_mem);
-   trace_dump_member(uint, state, req_private_mem);
+   trace_dump_member(uint, state, static_shared_mem);
    trace_dump_member(uint, state, req_input_mem);
 
    trace_dump_struct_end();
@@ -406,13 +405,13 @@ static void trace_dump_rt_blend_state(const struct pipe_rt_blend_state *state)
 
    trace_dump_member(uint, state, blend_enable);
 
-   trace_dump_member(uint, state, rgb_func);
-   trace_dump_member(uint, state, rgb_src_factor);
-   trace_dump_member(uint, state, rgb_dst_factor);
+   trace_dump_member_enum(state, rgb_func, tr_util_pipe_blend_func_name(state->rgb_func));
+   trace_dump_member_enum(state, rgb_src_factor, tr_util_pipe_blendfactor_name(state->rgb_src_factor));
+   trace_dump_member_enum(state, rgb_dst_factor, tr_util_pipe_blendfactor_name(state->rgb_dst_factor));
 
-   trace_dump_member(uint, state, alpha_func);
-   trace_dump_member(uint, state, alpha_src_factor);
-   trace_dump_member(uint, state, alpha_dst_factor);
+   trace_dump_member_enum(state, alpha_func, tr_util_pipe_blend_func_name(state->alpha_func));
+   trace_dump_member_enum(state, alpha_src_factor, tr_util_pipe_blendfactor_name(state->alpha_src_factor));
+   trace_dump_member_enum(state, alpha_dst_factor, tr_util_pipe_blendfactor_name(state->alpha_dst_factor));
 
    trace_dump_member(uint, state, colormask);
 
@@ -435,7 +434,7 @@ void trace_dump_blend_state(const struct pipe_blend_state *state)
 
    trace_dump_member(bool, state, independent_blend_enable);
    trace_dump_member(bool, state, logicop_enable);
-   trace_dump_member(uint, state, logicop_func);
+   trace_dump_member_enum(state, logicop_func, tr_util_pipe_logicop_name(state->logicop_func));
    trace_dump_member(bool, state, dither);
    trace_dump_member(bool, state, alpha_to_coverage);
    trace_dump_member(bool, state, alpha_to_coverage_dither);
@@ -1082,6 +1081,7 @@ void trace_dump_grid_info(const struct pipe_grid_info *state)
 
    trace_dump_member(uint, state, pc);
    trace_dump_member(ptr, state, input);
+   trace_dump_member(uint, state, variable_shared_mem);
 
    trace_dump_member_begin("block");
    trace_dump_array(uint, state->block, ARRAY_SIZE(state->block));

@@ -38,6 +38,10 @@
 #include "vulkan/util/vk_format.h"
 #include "vulkan/util/vk_enum_defines.h"
 
+#ifdef ANDROID
+#include "vk_android.h"
+#endif
+
 uint32_t
 radv_translate_buffer_dataformat(const struct util_format_description *desc, int first_non_void)
 {
@@ -536,6 +540,9 @@ radv_is_storage_image_format_supported(struct radv_physical_device *physical_dev
    if (format == VK_FORMAT_UNDEFINED)
       return false;
 
+   if (vk_format_is_depth_or_stencil(format))
+      return false;
+
    data_format =
       radv_translate_tex_dataformat(format, desc, vk_format_get_first_non_void_channel(format));
    num_format =
@@ -697,13 +704,21 @@ radv_physical_device_get_format_properties(struct radv_physical_device *physical
    if (multiplanar || desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
       uint64_t tiling = VK_FORMAT_FEATURE_2_TRANSFER_SRC_BIT |
                         VK_FORMAT_FEATURE_2_TRANSFER_DST_BIT |
-                        VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT |
-                        VK_FORMAT_FEATURE_2_COSITED_CHROMA_SAMPLES_BIT |
-                        VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT;
+                        VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT;
 
-      /* The subsampled formats have no support for linear filters. */
-      if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED) {
-         tiling |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+      if (vk_format_get_ycbcr_info(format)) {
+         tiling |= VK_FORMAT_FEATURE_2_COSITED_CHROMA_SAMPLES_BIT |
+                   VK_FORMAT_FEATURE_2_MIDPOINT_CHROMA_SAMPLES_BIT;
+
+         /* The subsampled formats have no support for linear filters. */
+         if (desc->layout != UTIL_FORMAT_LAYOUT_SUBSAMPLED)
+            tiling |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+      }
+
+      if (physical_device->instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE) {
+          if (format == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ||
+              format == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16)
+              tiling |= VK_FORMAT_FEATURE_2_VIDEO_DECODE_OUTPUT_BIT_KHR | VK_FORMAT_FEATURE_2_VIDEO_DECODE_DPB_BIT_KHR;
       }
 
       if (multiplanar)
@@ -901,6 +916,8 @@ radv_translate_colorformat(VkFormat format)
          return V_028C70_COLOR_16;
       case 32:
          return V_028C70_COLOR_32;
+      case 64:
+         return V_028C70_COLOR_32_32;
       }
       break;
    case 2:
@@ -955,7 +972,7 @@ radv_translate_colorformat(VkFormat format)
 uint32_t
 radv_colorformat_endian_swap(uint32_t colorformat)
 {
-   if (0 /*SI_BIG_ENDIAN*/) {
+   if (0 /*UTIL_ARCH_BIG_ENDIAN*/) {
       switch (colorformat) {
          /* 8-bit buffers. */
       case V_028C70_COLOR_8:
@@ -1210,12 +1227,6 @@ radv_get_modifier_flags(struct radv_physical_device *dev, VkFormat format, uint6
    return features;
 }
 
-static VkFormatFeatureFlags
-features2_to_features(VkFormatFeatureFlags2 features2)
-{
-   return features2 & VK_ALL_FORMAT_FEATURE_FLAG_BITS;
-}
-
 static void
 radv_list_drm_format_modifiers(struct radv_physical_device *dev, VkFormat format,
                                const VkFormatProperties3 *format_props,
@@ -1265,7 +1276,8 @@ radv_list_drm_format_modifiers(struct radv_physical_device *dev, VkFormat format
          *out_props = (VkDrmFormatModifierPropertiesEXT) {
             .drmFormatModifier = mods[i],
             .drmFormatModifierPlaneCount = planes,
-            .drmFormatModifierTilingFeatures = features2_to_features(features),
+            .drmFormatModifierTilingFeatures =
+               vk_format_features2_to_features(features),
          };
       };
    }
@@ -1421,11 +1433,11 @@ radv_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice, VkForma
    radv_physical_device_get_format_properties(physical_device, format, &format_props);
 
    pFormatProperties->formatProperties.linearTilingFeatures =
-      features2_to_features(format_props.linearTilingFeatures);
+      vk_format_features2_to_features(format_props.linearTilingFeatures);
    pFormatProperties->formatProperties.optimalTilingFeatures =
-      features2_to_features(format_props.optimalTilingFeatures);
+      vk_format_features2_to_features(format_props.optimalTilingFeatures);
    pFormatProperties->formatProperties.bufferFeatures =
-      features2_to_features(format_props.bufferFeatures);
+      vk_format_features2_to_features(format_props.bufferFeatures);
 
    VkFormatProperties3 *format_props_extended =
       vk_find_struct(pFormatProperties, FORMAT_PROPERTIES_3);
@@ -1544,7 +1556,18 @@ radv_get_image_format_properties(struct radv_physical_device *physical_device,
        vk_format_get_blocksizebits(format) == 128 && vk_format_is_compressed(format) &&
        (info->flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) &&
        ((info->flags & VK_IMAGE_CREATE_EXTENDED_USAGE_BIT) ||
-        (info->usage & VK_FORMAT_FEATURE_2_COLOR_ATTACHMENT_BIT))) {
+        (info->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))) {
+      goto unsupported;
+   }
+
+   /* For some reasons, we can't create 1d block-compressed images that can be stored to with a
+    * different format on GFX6.
+    */
+   if (physical_device->rad_info.gfx_level == GFX6 && info->type == VK_IMAGE_TYPE_1D &&
+       vk_format_is_block_compressed(format) &&
+       (info->flags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) &&
+       ((info->flags & VK_IMAGE_CREATE_EXTENDED_USAGE_BIT) ||
+        (info->usage & VK_IMAGE_USAGE_STORAGE_BIT))) {
       goto unsupported;
    }
 
@@ -1795,7 +1818,7 @@ radv_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice,
    if (android_usage && ahb_supported) {
 #if RADV_SUPPORT_ANDROID_HARDWARE_BUFFER
       android_usage->androidHardwareBufferUsage =
-         radv_ahb_usage_from_vk_usage(base_info->flags, base_info->usage);
+         vk_image_usage_to_ahb_usage(base_info->flags, base_info->usage);
 #endif
    }
 
@@ -1999,7 +2022,8 @@ radv_GetDeviceImageSparseMemoryRequirements(VkDevice device,
     * creating an image.
     * TODO: Avoid creating an image.
     */
-   result = radv_CreateImage(device, pInfo->pCreateInfo, NULL, &image);
+   result = radv_image_create(
+      device, &(struct radv_image_create_info){.vk_info = pInfo->pCreateInfo}, NULL, &image, true);
    assert(result == VK_SUCCESS);
 
    VkImageSparseMemoryRequirementsInfo2 info2 = {
@@ -2056,13 +2080,8 @@ static void
 radv_get_dcc_channel_type(const struct util_format_description *desc, enum dcc_channel_type *type,
                           unsigned *size)
 {
-   int i;
-
-   /* Find the first non-void channel. */
-   for (i = 0; i < desc->nr_channels; i++)
-      if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID)
-         break;
-   if (i == desc->nr_channels) {
+   int i = util_format_get_first_non_void_channel(desc->format);
+   if (i == -1) {
       *type = dcc_channel_incompatible;
       return;
    }
@@ -2096,10 +2115,6 @@ radv_dcc_formats_compatible(enum amd_gfx_level gfx_level, VkFormat format1, VkFo
    unsigned size1, size2;
    int i;
 
-   /* All formats are compatible on GFX11. */
-   if (gfx_level >= GFX11)
-      return true;
-
    if (format1 == format2)
       return true;
 
@@ -2122,8 +2137,16 @@ radv_dcc_formats_compatible(enum amd_gfx_level gfx_level, VkFormat format1, VkFo
        (type1 == dcc_channel_float) != (type2 == dcc_channel_float) || size1 != size2)
       return false;
 
-   if (type1 != type2)
+   if (type1 != type2) {
+      /* FIXME: All formats should be compatible on GFX11 but for some reasons DCC with signedness
+       * reinterpretation doesn't work as expected, like R8_UINT<->R8_SINT. Note that disabling
+       * fast-clears doesn't help.
+       */
+      if (gfx_level >= GFX11)
+         return false;
+
       *sign_reinterpret = true;
+   }
 
    return true;
 }

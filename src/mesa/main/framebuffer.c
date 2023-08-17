@@ -30,7 +30,7 @@
  */
 
 #include <stdio.h>
-#include "glheader.h"
+#include "util/glheader.h"
 
 #include "blend.h"
 #include "buffers.h"
@@ -202,6 +202,8 @@ _mesa_free_framebuffer_data(struct gl_framebuffer *fb)
 {
    assert(fb);
    assert(fb->RefCount == 0);
+
+   pipe_resource_reference(&fb->resolve, NULL);
 
    simple_mtx_destroy(&fb->Mutex);
 

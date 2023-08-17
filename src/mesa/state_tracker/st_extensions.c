@@ -79,7 +79,8 @@ static int _clamp(int a, int min, int max)
  * Note that we have to limit/clamp against Mesa's internal limits too.
  */
 void st_init_limits(struct pipe_screen *screen,
-                    struct gl_constants *c, struct gl_extensions *extensions)
+                    struct gl_constants *c, struct gl_extensions *extensions,
+                    gl_api api)
 {
    int supported_irs;
    unsigned sh;
@@ -390,8 +391,6 @@ void st_init_limits(struct pipe_screen *screen,
       screen->get_param(screen, PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF);
    c->GLSLTessLevelsAsInputs =
       screen->get_param(screen, PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS);
-   c->LowerTessLevel =
-      !screen->get_param(screen, PIPE_CAP_NIR_COMPACT_ARRAYS);
    c->PrimitiveRestartForPatches = false;
 
    c->MaxCombinedTextureImageUnits =
@@ -491,6 +490,10 @@ void st_init_limits(struct pipe_screen *screen,
    /* GL_ARB_get_program_binary */
    if (screen->get_disk_shader_cache && screen->get_disk_shader_cache(screen))
       c->NumProgramBinaryFormats = 1;
+   /* GL_ARB_gl_spirv */
+   if (screen->get_param(screen, PIPE_CAP_GL_SPIRV) &&
+       (api == API_OPENGL_CORE || api == API_OPENGL_COMPAT))
+      c->NumShaderBinaryFormats = 1;
 
    c->MaxAtomicBufferBindings =
       MAX2(c->Program[MESA_SHADER_FRAGMENT].MaxAtomicBuffers,
@@ -587,9 +590,6 @@ void st_init_limits(struct pipe_screen *screen,
    c->AllowMappedBuffersDuringExecution =
       screen->get_param(screen, PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION);
 
-   c->BufferCreateMapUnsynchronizedThreadSafe =
-      screen->get_param(screen, PIPE_CAP_MAP_UNSYNCHRONIZED_THREAD_SAFE);
-
    c->UseSTD430AsDefaultPacking =
       screen->get_param(screen, PIPE_CAP_LOAD_CONSTBUF);
 
@@ -628,6 +628,9 @@ void st_init_limits(struct pipe_screen *screen,
 
    c->HardwareAcceleratedSelect =
       screen->get_param(screen, PIPE_CAP_HARDWARE_GL_SELECT);
+
+   c->AllowGLThreadBufferSubDataOpt =
+      screen->get_param(screen, PIPE_CAP_ALLOW_GLTHREAD_BUFFER_SUBDATA_OPT);
 }
 
 

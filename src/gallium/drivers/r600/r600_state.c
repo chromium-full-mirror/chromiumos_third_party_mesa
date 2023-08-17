@@ -857,11 +857,7 @@ static void r600_init_color_surface(struct r600_context *rctx,
 
 	desc = util_format_description(surf->base.format);
 
-	for (i = 0; i < 4; i++) {
-		if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID) {
-			break;
-		}
-	}
+	i = util_format_get_first_non_void_channel(surf->base.format);
 
 	ntype = V_0280A0_NUMBER_UNORM;
 	if (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB)
@@ -1845,6 +1841,20 @@ static void r600_emit_sampler_states(struct r600_context *rctx,
 		enum pipe_texture_target target = PIPE_BUFFER;
 		if (rview)
 			target = rview->base.texture->target;
+
+                /* If seamless cube map is set, set the CAMP_(X|Y|Z) to
+                 * SQ_TEX_WRAP which seems to trigger properly ignoring the
+                 * texture wrap mode */
+                if (target == PIPE_TEXTURE_CUBE ||
+		    target == PIPE_TEXTURE_CUBE_ARRAY) {
+                   if (rstate->seamless_cube_map){
+                      uint32_t mask = ~(S_03C000_CLAMP_X(7) |
+                                        S_03C000_CLAMP_Y(7) |
+                                        S_03C000_CLAMP_Z(7));
+                      rstate->tex_sampler_words[0] &= mask;
+                   }
+                }
+
 		if (target == PIPE_TEXTURE_1D_ARRAY ||
 		    target == PIPE_TEXTURE_2D_ARRAY) {
 			rstate->tex_sampler_words[0] |= S_03C000_TEX_ARRAY_OVERRIDE(1);
