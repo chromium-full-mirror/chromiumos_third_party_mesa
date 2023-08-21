@@ -1002,18 +1002,7 @@ vn_physical_device_get_native_extensions(
    exts->EXT_physical_device_drm = true;
    /* use common implementation */
    exts->EXT_tooling_info = true;
-
-   /* Disable VK_EXT_device_memory_report temporarily on Android because the
-    * arm32 Android CTS is failing in dEQP-VK.memory.device_memory_report.* when
-    * ran through an arm32-to-x86_64 translation layer.
-    *
-,   * The bug is likely in the CTS itself. The test seems to assume that nothing
-    * does allocations except the test itself, therefore making it to fail when
-    * Vulkan runs on a layer.
-    */
-#ifndef ANDROID
    exts->EXT_device_memory_report = true;
-#endif
 }
 
 static void
