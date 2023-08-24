@@ -112,6 +112,8 @@ struct vn_physical_device {
    uint32_t queue_family_count;
 
    VkPhysicalDeviceMemoryProperties2 memory_properties;
+   uint32_t coherent_uncached;
+   uint32_t incoherent_cached;
 
    struct {
       VkExternalMemoryHandleTypeFlagBits renderer_handle_type;
