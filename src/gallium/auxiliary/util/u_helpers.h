@@ -117,6 +117,8 @@ void util_throttle_init(struct util_throttle *t, uint64_t max_mem_usage);
 void util_throttle_deinit(struct pipe_screen *screen, struct util_throttle *t);
 void util_throttle_memory_usage(struct pipe_context *pipe,
                                 struct util_throttle *t, uint64_t memory_size);
+void util_sw_query_memory_info(struct pipe_screen *pscreen,
+                          struct pipe_memory_info *info);
 
 bool
 util_lower_clearsize_to_dword(const void *clearValue, int *clearValueSize, uint32_t *clamped);
@@ -132,6 +134,9 @@ util_init_pipe_vertex_state(struct pipe_screen *screen,
 
 union pipe_color_union util_clamp_color(enum pipe_format format,
                                         const union pipe_color_union *color);
+
+struct pipe_sampler_view
+util_image_to_sampler_view(struct pipe_image_view *v);
 
 #ifdef __cplusplus
 }

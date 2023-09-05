@@ -1,24 +1,7 @@
 /*
  * Copyright © 2022 Advanced Micro Devices, Inc.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 /* Implement query_size, query_levels, and query_samples by extracting the information from
@@ -128,6 +111,19 @@ lower_query_size(nir_builder *b, nir_ssa_def *desc, nir_src *lod,
       }
    }
 
+   /* On GFX10.3+, DEPTH contains the pitch if the type is 1D, 2D, or 2D_MSAA. We only program
+    * the pitch for 2D. We need to set depth and last_array to 0 in that case.
+    */
+   if (gfx_level >= GFX10_3 && (has_depth || is_array)) {
+      nir_ssa_def *type = get_field(b, desc, 3, ~C_00A00C_TYPE);
+      nir_ssa_def *is_2d = nir_ieq_imm(b, type, V_008F1C_SQ_RSRC_IMG_2D);
+
+      if (has_depth)
+         depth = nir_bcsel(b, is_2d, nir_imm_int(b, 0), depth);
+      if (is_array)
+         last_array = nir_bcsel(b, is_2d, nir_imm_int(b, 0), last_array);
+   }
+
    /* All values are off by 1. */
    if (has_width)
       width = nir_iadd_imm(b, width, 1);
@@ -165,6 +161,17 @@ lower_query_size(nir_builder *b, nir_ssa_def *desc, nir_src *lod,
          if (has_depth)
             depth = nir_umax(b, depth, nir_imm_int(b, 1));
       }
+   }
+
+   /* Special case for sliced storage 3D views which shouldn't be minified. */
+   if (gfx_level >= GFX10 && has_depth) {
+      nir_ssa_def *uav3d =
+         nir_ieq_imm(b, get_field(b, desc, 5, ~C_00A014_ARRAY_PITCH), 1);
+      nir_ssa_def *layers_3d =
+         nir_isub(b, get_field(b, desc, 4, ~C_00A010_DEPTH),
+                     get_field(b, desc, 4, ~C_00A010_BASE_ARRAY));
+      layers_3d = nir_iadd_imm(b, layers_3d, 1);
+      depth = nir_bcsel(b, uav3d, layers_3d, depth);
    }
 
    nir_ssa_def *result = NULL;
@@ -282,7 +289,7 @@ static bool lower_resinfo(nir_builder *b, nir_instr *instr, void *data)
                nir_src_copy(&new_tex->src[0].src, &tex->src[i].src, &new_tex->instr);
                new_tex->src[0].src_type = tex->src[i].src_type;
                nir_ssa_dest_init(&new_tex->instr, &new_tex->dest,
-                                 nir_tex_instr_dest_size(new_tex), 32, NULL);
+                                 nir_tex_instr_dest_size(new_tex), 32);
                nir_builder_instr_insert(b, &new_tex->instr);
                desc = &new_tex->dest.ssa;
                break;

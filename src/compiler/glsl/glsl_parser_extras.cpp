@@ -95,7 +95,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->ARB_texture_rectangle_enable = true;
 
    /* OpenGL ES 2.0 has different defaults from desktop GL. */
-   if (ctx->API == API_OPENGLES2) {
+   if (_mesa_is_gles2(ctx)) {
       this->language_version = 100;
       this->es_shader = true;
       this->ARB_texture_rectangle_enable = false;
@@ -238,7 +238,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
          }
       }
    }
-   if (ctx->API == API_OPENGLES2 || ctx->Extensions.ARB_ES2_compatibility) {
+   if (_mesa_is_gles2(ctx) || ctx->Extensions.ARB_ES2_compatibility) {
       this->supported_versions[this->num_supported_versions].ver = 100;
       this->supported_versions[this->num_supported_versions].gl_ver = 20;
       this->supported_versions[this->num_supported_versions].es = true;
@@ -256,7 +256,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
       this->supported_versions[this->num_supported_versions].es = true;
       this->num_supported_versions++;
    }
-   if ((ctx->API == API_OPENGLES2 && ctx->Version >= 32) ||
+   if (_mesa_is_gles32(ctx) ||
        ctx->Extensions.ARB_ES3_2_compatibility) {
       this->supported_versions[this->num_supported_versions].ver = 320;
       this->supported_versions[this->num_supported_versions].gl_ver = 32;
@@ -918,6 +918,56 @@ _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
    return true;
 }
 
+bool
+_mesa_glsl_can_implicitly_convert(const glsl_type *from, const glsl_type *desired,
+                                  _mesa_glsl_parse_state *state)
+{
+   if (from == desired)
+      return true;
+
+   /* GLSL 1.10 and ESSL do not allow implicit conversions. If there is no
+    * state, we're doing intra-stage function linking where these checks have
+    * already been done.
+    */
+   if (state && !state->has_implicit_conversions())
+      return false;
+
+   /* There is no conversion among matrix types. */
+   if (from->matrix_columns > 1 || desired->matrix_columns > 1)
+      return false;
+
+   /* Vector size must match. */
+   if (from->vector_elements != desired->vector_elements)
+      return false;
+
+   /* int and uint can be converted to float. */
+   if (desired->is_float() && from->is_integer_32())
+      return true;
+
+   /* With GLSL 4.0, ARB_gpu_shader5, or MESA_shader_integer_functions, int
+    * can be converted to uint.  Note that state may be NULL here, when
+    * resolving function calls in the linker. By this time, all the
+    * state-dependent checks have already happened though, so allow anything
+    * that's allowed in any shader version.
+    */
+   if ((!state || state->has_implicit_int_to_uint_conversion()) &&
+         desired->base_type == GLSL_TYPE_UINT && from->base_type == GLSL_TYPE_INT)
+      return true;
+
+   /* No implicit conversions from double. */
+   if ((!state || state->has_double()) && from->is_double())
+      return false;
+
+   /* Conversions from different types to double. */
+   if ((!state || state->has_double()) && desired->is_double()) {
+      if (from->is_float())
+         return true;
+      if (from->is_integer_32())
+         return true;
+   }
+
+   return false;
+}
 
 /**
  * Recurses through <type> and <expr> if <expr> is an aggregate initializer
@@ -1881,15 +1931,15 @@ set_shader_inout_layout(struct gl_shader *shader,
       }
 
       if (state->gs_input_prim_type_specified) {
-         shader->info.Geom.InputType = (enum shader_prim)state->in_qualifier->prim_type;
+         shader->info.Geom.InputType = (enum mesa_prim)state->in_qualifier->prim_type;
       } else {
-         shader->info.Geom.InputType = SHADER_PRIM_UNKNOWN;
+         shader->info.Geom.InputType = MESA_PRIM_UNKNOWN;
       }
 
       if (state->out_qualifier->flags.q.prim_type) {
-         shader->info.Geom.OutputType = (enum shader_prim)state->out_qualifier->prim_type;
+         shader->info.Geom.OutputType = (enum mesa_prim)state->out_qualifier->prim_type;
       } else {
-         shader->info.Geom.OutputType = SHADER_PRIM_UNKNOWN;
+         shader->info.Geom.OutputType = MESA_PRIM_UNKNOWN;
       }
 
       shader->info.Geom.Invocations = 0;
@@ -2388,29 +2438,18 @@ do_common_optimization(exec_list *ir, bool linked,
    OPT(propagate_invariance, ir);
    OPT(do_if_simplification, ir);
    OPT(opt_flatten_nested_if_blocks, ir);
-   OPT(do_copy_propagation_elements, ir);
 
    if (options->OptimizeForAOS && !linked)
       OPT(opt_flip_matrices, ir);
 
-   if (linked)
-      OPT(do_dead_code, ir);
-   else
-      OPT(do_dead_code_unlinked, ir);
+   OPT(do_dead_code_unlinked, ir);
    OPT(do_dead_code_local, ir);
    OPT(do_tree_grafting, ir);
-   OPT(do_constant_propagation, ir);
-   if (linked)
-      OPT(do_constant_variable, ir);
-   else
-      OPT(do_constant_variable_unlinked, ir);
-   OPT(do_constant_folding, ir);
    OPT(do_minmax_prune, ir);
    OPT(do_rebalance_tree, ir);
    OPT(do_algebraic, ir, native_integers, options);
    OPT(do_lower_jumps, ir, true, true, options->EmitNoMainReturn,
        options->EmitNoCont);
-   OPT(lower_vector_insert, ir, false);
 
    /* If an optimization pass fails to preserve the invariant flag, calling
     * the pass only once earlier may result in incorrect code generation. Always call

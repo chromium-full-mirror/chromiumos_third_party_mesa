@@ -28,6 +28,7 @@ import os
 import subprocess
 import tempfile
 
+# You must update the paths in docs/gitlab-ci.yml's pages job when changing this.
 INPUT_PATHS = [
     'src/compiler/nir/nir.h',
     'src/intel/isl',
@@ -57,6 +58,7 @@ EXPAND_ONLY_PREDEF = YES
 
 # Defines required to keep doxygen from tripping on our attribute macros
 PREDEFINED  = PACKED=
+PREDEFINED += ENUM_PACKED=
 PREDEFINED += ATTRIBUTE_CONST=
 PREDEFINED += MUST_CHECK=
 """)

@@ -48,7 +48,7 @@ extern const std::map<ESDOp, int> ds_opcode_map;
 
 class AssamblerVisitor : public ConstInstrVisitor {
 public:
-   AssamblerVisitor(r600_shader *sh, const r600_shader_key& key);
+   AssamblerVisitor(r600_shader *sh, const r600_shader_key& key, bool legacy_math_rules);
 
    void visit(const AluInstr& instr) override;
    void visit(const AluGroup& instr) override;
@@ -81,6 +81,8 @@ public:
    PVirtualValue copy_src(r600_bytecode_alu_src& src, const VirtualValue& s);
 
    EBufferIndexMode emit_index_reg(const VirtualValue& addr, unsigned idx);
+   EBufferIndexMode get_index_mode(const InstrWithResource& instr,
+                                   unsigned idx);
 
    void emit_endif();
    void emit_else();
@@ -91,6 +93,8 @@ public:
 
    void emit_alu_op(const AluInstr& ai);
    void emit_lds_op(const AluInstr& lds);
+
+   auto translate_for_mathrules(EAluOp op) -> EAluOp;
 
    void emit_wait_ack();
 
@@ -108,7 +112,7 @@ public:
    std::set<int> vtx_fetch_results;
    std::set<int> tex_fetch_results;
 
-   PRegister m_last_addr{nullptr};
+   const VirtualValue *m_last_addr{nullptr};
 
    unsigned m_max_color_exports{0};
    int m_loop_nesting{0};
@@ -118,12 +122,13 @@ public:
    bool m_has_pos_output{false};
    bool m_last_op_was_barrier{false};
    bool m_result{true};
+   bool m_legacy_math_rules{false};
 };
 
 bool
 Assembler::lower(Shader *shader)
 {
-   AssamblerVisitor ass(m_sh, m_key);
+   AssamblerVisitor ass(m_sh, m_key, shader->has_flag(Shader::sh_legacy_math_rules));
 
    auto& blocks = shader->func();
    for (auto b : blocks) {
@@ -137,13 +142,15 @@ Assembler::lower(Shader *shader)
    return ass.m_result;
 }
 
-AssamblerVisitor::AssamblerVisitor(r600_shader *sh, const r600_shader_key& key):
+AssamblerVisitor::AssamblerVisitor(r600_shader *sh, const r600_shader_key& key,
+                                   bool legacy_math_rules):
     m_key(key),
     m_shader(sh),
 
     m_bc(&sh->bc),
     m_callstack(sh->bc),
-    ps_alpha_to_one(key.ps.alpha_to_one)
+    ps_alpha_to_one(key.ps.alpha_to_one),
+    m_legacy_math_rules(legacy_math_rules)
 {
    if (m_shader->processor_type == PIPE_SHADER_FRAGMENT)
       m_max_color_exports = MAX2(m_key.ps.nr_cbufs, 1);
@@ -260,38 +267,68 @@ AssamblerVisitor::emit_lds_op(const AluInstr& lds)
       m_result = false;
 }
 
+auto AssamblerVisitor::translate_for_mathrules(EAluOp op) -> EAluOp
+{
+   switch (op) {
+   case op2_dot_ieee: return op2_dot;
+   case op2_dot4_ieee: return op2_dot4;
+   case op2_mul_ieee: return op2_mul;
+   case op3_muladd_ieee : return op2_mul_ieee;
+   default:
+      return op;
+   }
+}
+
 void
 AssamblerVisitor::emit_alu_op(const AluInstr& ai)
 {
+   sfn_log << SfnLog::assembly << "Emit ALU op " << ai << "\n";
+
    struct r600_bytecode_alu alu;
    memset(&alu, 0, sizeof(alu));
 
-   if (opcode_map.find(ai.opcode()) == opcode_map.end()) {
+   auto opcode = ai.opcode();
+
+   if (unlikely(ai.opcode() == op1_mova_int &&
+                (m_bc->gfx_level < CAYMAN || alu.dst.sel == 0))) {
+      m_last_addr = ai.psrc(0);
+      m_bc->ar_chan = m_last_addr->chan();
+      m_bc->ar_reg = m_last_addr->sel();
+   }
+
+   if (m_legacy_math_rules)
+       opcode = translate_for_mathrules(opcode);
+
+   auto hw_opcode = opcode_map.find(opcode);
+
+   if (hw_opcode == opcode_map.end()) {
       std::cerr << "Opcode not handled for " << ai << "\n";
       m_result = false;
       return;
    }
 
    // skip multiple barriers
-   if (m_last_op_was_barrier && ai.opcode() == op0_group_barrier)
+   if (m_last_op_was_barrier && opcode == op0_group_barrier)
       return;
 
-   m_last_op_was_barrier = ai.opcode() == op0_group_barrier;
+   m_last_op_was_barrier = opcode == op0_group_barrier;
 
-   alu.op = opcode_map.at(ai.opcode());
+   alu.op = hw_opcode->second;
 
    auto dst = ai.dest();
    if (dst) {
-      if (!copy_dst(alu.dst, *dst, ai.has_alu_flag(alu_write))) {
-         m_result = false;
-         return;
-      }
+      if (ai.opcode() != op1_mova_int) {
+         if (!copy_dst(alu.dst, *dst, ai.has_alu_flag(alu_write))) {
+            m_result = false;
+            return;
+         }
 
-      alu.dst.write = ai.has_alu_flag(alu_write);
-      alu.dst.clamp = ai.has_alu_flag(alu_dst_clamp);
-      alu.dst.rel = dst->addr() ? 1 : 0;
-   } else {
-      alu.dst.chan = ai.dest_chan();
+         alu.dst.write = ai.has_alu_flag(alu_write);
+         alu.dst.clamp = ai.has_alu_flag(alu_dst_clamp);
+         alu.dst.rel = dst->addr() ? 1 : 0;
+      } else if (m_bc->gfx_level == CAYMAN && ai.dest()->sel() > 0) {
+         alu.dst.sel = ai.dest()->sel() + 1;
+      }
    }
 
    alu.is_op3 = ai.n_sources() == 3;
@@ -301,13 +338,23 @@ AssamblerVisitor::emit_alu_op(const AluInstr& ai)
 
    for (unsigned i = 0; i < ai.n_sources(); ++i) {
       buffer_offset = copy_src(alu.src[i], ai.src(i));
-      alu.src[i].neg = ai.has_alu_flag(AluInstr::src_neg_flags[i]);
+      alu.src[i].neg = ai.has_source_mod(i, AluInstr::mod_neg);
       if (!alu.is_op3)
-         alu.src[i].abs = ai.has_alu_flag(AluInstr::src_abs_flags[i]);
+         alu.src[i].abs = ai.has_source_mod(i, AluInstr::mod_abs);
 
       if (buffer_offset && kcache_index_mode == bim_none) {
-         kcache_index_mode = bim_zero;
-         alu.src[i].kc_rel = 1;
+         auto idx_reg = buffer_offset->as_register();
+         if (idx_reg && idx_reg->has_flag(Register::addr_or_idx)) {
+            switch (idx_reg->sel()) {
+            case 1: kcache_index_mode = bim_zero; break;
+            case 2: kcache_index_mode = bim_one; break;
+            default:
+               unreachable("Unsupported index mode");
+            }
+         } else {
+            kcache_index_mode = bim_zero;
+         }
+         alu.src[i].kc_rel = kcache_index_mode;
       }
 
       if (ai.has_lds_queue_read()) {
@@ -331,12 +378,6 @@ AssamblerVisitor::emit_alu_op(const AluInstr& ai)
 
    if (dst)
       sfn_log << SfnLog::assembly << "  Current dst register is " << *dst << "\n";
-
-   if (dst && m_last_addr && *dst == *m_last_addr) {
-      sfn_log << SfnLog::assembly << "  Clear address register (was " << *m_last_addr
-              << "\n";
-      m_last_addr = nullptr;
-   }
 
    auto cf_op = ai.cf_type();
 
@@ -375,18 +416,25 @@ AssamblerVisitor::emit_alu_op(const AluInstr& ai)
 
    m_result = !r600_bytecode_add_alu_type(m_bc, &alu, type);
 
-   if (ai.opcode() == op1_mova_int)
-      m_bc->ar_loaded = 0;
+   if (unlikely(ai.opcode() == op1_mova_int)) {
+      if (m_bc->gfx_level < CAYMAN || alu.dst.sel == 0) {
+         m_bc->ar_loaded = 1;
+      } else if (m_bc->gfx_level == CAYMAN) {
+         int idx = alu.dst.sel - 2;
+         m_bc->index_loaded[idx] = 1;
+         m_bc->index_reg[idx] = -1;
+      }
+   }
 
-   if (ai.opcode() == op1_set_cf_idx0)
+   if (ai.opcode() == op1_set_cf_idx0) {
       m_bc->index_loaded[0] = 1;
+      m_bc->index_reg[0] = -1;
+   }
 
-   if (ai.opcode() == op1_set_cf_idx1)
+   if (ai.opcode() == op1_set_cf_idx1) {
       m_bc->index_loaded[1] = 1;
-
-   m_bc->force_add_cf |=
-      (ai.opcode() == op2_kille || ai.opcode() == op2_killne_int ||
-       ai.opcode() == op1_set_cf_idx0 || ai.opcode() == op1_set_cf_idx1);
+      m_bc->index_reg[1] = -1;
+   }
 }
 
 void
@@ -419,20 +467,23 @@ AssamblerVisitor::visit(const AluGroup& group)
       }
    }
 
-   auto addr = group.addr();
+   auto [addr, is_index] = group.addr();
 
-   if (addr.first) {
-      if (!addr.second) {
-         if (!m_last_addr || !m_bc->ar_loaded || !m_last_addr->equal_to(*addr.first)) {
-            m_bc->ar_reg = addr.first->sel();
-            m_bc->ar_chan = addr.first->chan();
-            m_last_addr = addr.first;
-            m_bc->ar_loaded = 0;
-
-            r600_load_ar(m_bc, group.addr_for_src());
+   if (addr) {
+      if (!addr->has_flag(Register::addr_or_idx)) {
+         if (is_index) {
+            emit_index_reg(*addr, 0);
+         } else {
+            auto reg = addr->as_register();
+            assert(reg);
+            if (!m_last_addr || !m_bc->ar_loaded || !m_last_addr->equal_to(*reg)) {
+               m_last_addr = reg;
+               m_bc->ar_reg = reg->sel();
+               m_bc->ar_chan = reg->chan();
+               m_bc->ar_loaded = 0;
+               r600_load_ar(m_bc, group.addr_for_src());
+            }
          }
-      } else {
-         emit_index_reg(*addr.first, 0);
       }
    }
 
@@ -447,11 +498,7 @@ AssamblerVisitor::visit(const TexInstr& tex_instr)
 {
    clear_states(sf_vtx | sf_alu);
 
-   auto addr = tex_instr.resource_offset();
-   EBufferIndexMode index_mode = bim_none;
-
-   if (addr)
-      index_mode = emit_index_reg(*addr, 1);
+   EBufferIndexMode index_mode = get_index_mode(tex_instr, 1);
 
    if (tex_fetch_results.find(tex_instr.src().sel()) != tex_fetch_results.end()) {
       m_bc->force_add_cf = 1;
@@ -647,19 +694,19 @@ AssamblerVisitor::visit(const EmitVertexInstr& instr)
 void
 AssamblerVisitor::visit(const FetchInstr& fetch_instr)
 {
-   clear_states(sf_tex | sf_alu);
+   bool use_tc =
+      fetch_instr.has_fetch_flag(FetchInstr::use_tc) || (m_bc->gfx_level == CAYMAN);
 
-   auto buffer_offset = fetch_instr.resource_offset();
-   EBufferIndexMode rat_index_mode = bim_none;
+   auto clear_flags = use_tc ? sf_vtx : sf_tex;
 
-   if (buffer_offset)
-      rat_index_mode = emit_index_reg(*buffer_offset, 0);
+   clear_states(clear_flags | sf_alu);
+
+   EBufferIndexMode index_mode = get_index_mode(fetch_instr, 0);
 
    if (fetch_instr.has_fetch_flag(FetchInstr::wait_ack))
       emit_wait_ack();
 
-   bool use_tc =
-      fetch_instr.has_fetch_flag(FetchInstr::use_tc) || (m_bc->gfx_level == CAYMAN);
+
    if (!use_tc &&
        vtx_fetch_results.find(fetch_instr.src().sel()) != vtx_fetch_results.end()) {
       m_bc->force_add_cf = 1;
@@ -695,7 +742,7 @@ AssamblerVisitor::visit(const FetchInstr& fetch_instr)
    vtx.num_format_all = fetch_instr.num_format(); /* NUM_FORMAT_SCALED */
    vtx.format_comp_all = fetch_instr.has_fetch_flag(FetchInstr::format_comp_signed);
    vtx.endian = fetch_instr.endian_swap();
-   vtx.buffer_index_mode = rat_index_mode;
+   vtx.buffer_index_mode = index_mode;
    vtx.offset = fetch_instr.src_offset();
    vtx.indexed = fetch_instr.has_fetch_flag(FetchInstr::indexed);
    vtx.uncached = fetch_instr.has_fetch_flag(FetchInstr::uncached);
@@ -769,18 +816,16 @@ AssamblerVisitor::visit(const RatInstr& instr)
 {
    struct r600_bytecode_gds gds;
 
-   /* The instruction writes to the retuen buffer loaction, and
+   /* The instruction writes to the retuen buffer location, and
     * the value will actually be read back, so make sure all previous writes
     * have been finished */
    if (m_ack_suggested /*&& instr.has_instr_flag(Instr::ack_rat_return_write)*/)
       emit_wait_ack();
 
-   int rat_idx = instr.resource_base();
-   EBufferIndexMode rat_index_mode = bim_none;
 
-   auto addr = instr.resource_offset();
-   if (addr)
-      rat_index_mode = emit_index_reg(*addr, 1);
+   EBufferIndexMode index_mode = get_index_mode(instr, 1);
+
+   int rat_idx = instr.resource_base();
 
    memset(&gds, 0, sizeof(struct r600_bytecode_gds));
 
@@ -788,7 +833,7 @@ AssamblerVisitor::visit(const RatInstr& instr)
    auto cf = m_bc->cf_last;
    cf->rat.id = rat_idx + m_shader->rat_base;
    cf->rat.inst = instr.rat_op();
-   cf->rat.index_mode = rat_index_mode;
+   cf->rat.index_mode = index_mode;
    cf->output.type = instr.need_ack() ? 3 : 1;
    cf->output.gpr = instr.data_gpr();
    cf->output.index_gpr = instr.index_gpr();
@@ -867,6 +912,7 @@ AssamblerVisitor::visit(const IfInstr& instr)
    auto [addr, dummy0, dummy1] = pred->indirect_addr();
    {
    }
+   assert(!dummy1);
    if (addr) {
       if (!m_last_addr || !m_bc->ar_loaded || !m_last_addr->equal_to(*addr)) {
          m_bc->ar_reg = addr->sel();
@@ -940,24 +986,17 @@ AssamblerVisitor::visit(const GDSInstr& instr)
 {
    struct r600_bytecode_gds gds;
 
-   bool indirect = false;
-   auto addr = instr.resource_offset();
-
-   if (addr) {
-      indirect = true;
-      emit_index_reg(*addr, 1);
-   }
+   EBufferIndexMode index_mode = get_index_mode(instr, 0);
 
    memset(&gds, 0, sizeof(struct r600_bytecode_gds));
 
    gds.op = ds_opcode_map.at(instr.opcode());
-   gds.dst_gpr = instr.dest()->sel();
    gds.uav_id = instr.resource_base();
-   gds.uav_index_mode = indirect ? bim_one : bim_none;
+   gds.uav_index_mode = index_mode;
    gds.src_gpr = instr.src().sel();
 
    gds.src_sel_x = instr.src()[0]->chan() < 7 ? instr.src()[0]->chan() : 4;
-   gds.src_sel_y = instr.src()[1]->chan();
+   gds.src_sel_y = instr.src()[1]->chan() < 7 ? instr.src()[1]->chan() : 4;
    gds.src_sel_z = instr.src()[2]->chan() < 7 ? instr.src()[2]->chan() : 4;
 
    gds.dst_sel_x = 7;
@@ -965,18 +1004,21 @@ AssamblerVisitor::visit(const GDSInstr& instr)
    gds.dst_sel_z = 7;
    gds.dst_sel_w = 7;
 
-   switch (instr.dest()->chan()) {
-   case 0:
-      gds.dst_sel_x = 0;
-      break;
-   case 1:
-      gds.dst_sel_y = 0;
-      break;
-   case 2:
-      gds.dst_sel_z = 0;
-      break;
-   case 3:
-      gds.dst_sel_w = 0;
+   if (instr.dest()) {
+      gds.dst_gpr = instr.dest()->sel();
+      switch (instr.dest()->chan()) {
+      case 0:
+         gds.dst_sel_x = 0;
+         break;
+      case 1:
+         gds.dst_sel_y = 0;
+         break;
+      case 2:
+         gds.dst_sel_z = 0;
+         break;
+      case 3:
+         gds.dst_sel_w = 0;
+      }
    }
 
    gds.src_gpr2 = 0;
@@ -1161,13 +1203,28 @@ AssamblerVisitor::copy_dst(r600_bytecode_alu_dst& dst, const Register& d, bool w
    dst.sel = d.sel();
    dst.chan = d.chan();
 
-   if (m_bc->index_reg[1] == dst.sel && m_bc->index_reg_chan[1] == dst.chan)
-      m_bc->index_loaded[1] = false;
+   if (m_last_addr && m_last_addr->equal_to(d))
+      m_last_addr = nullptr;
 
-   if (m_bc->index_reg[0] == dst.sel && m_bc->index_reg_chan[0] == dst.chan)
-      m_bc->index_loaded[0] = false;
+   for (int i = 0; i < 2; ++i) {
+      /* Force emitting index register, if we didn't emit it yet, because
+       * the register value will change now */
+      if (dst.sel == m_bc->index_reg[i] && dst.chan == m_bc->index_reg_chan[i])
+         m_bc->index_loaded[i] = false;
+   }
 
    return true;
+}
+
+EBufferIndexMode AssamblerVisitor::get_index_mode(const InstrWithResource& instr,
+                                                  unsigned idx)
+{
+   EBufferIndexMode index_mode = instr.buffer_index_mode();
+
+   if (index_mode == bim_none && instr.resource_offset())
+      index_mode = emit_index_reg(*instr.resource_offset(), idx);
+
+   return index_mode;
 }
 
 void

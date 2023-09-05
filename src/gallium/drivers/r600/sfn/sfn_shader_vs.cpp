@@ -29,7 +29,6 @@
 #include "sfn_debug.h"
 #include "sfn_instr_alugroup.h"
 #include "sfn_instr_export.h"
-#include "tgsi/tgsi_from_mesa.h"
 
 namespace r600 {
 
@@ -436,8 +435,8 @@ VertexShader::do_scan_instruction(nir_instr *instr)
    switch (intr->intrinsic) {
    case nir_intrinsic_load_input: {
       int vtx_register = nir_intrinsic_base(intr) + 1;
-      if (m_last_vertex_atribute_register < vtx_register)
-         m_last_vertex_atribute_register = vtx_register;
+      if (m_last_vertex_attribute_register < vtx_register)
+         m_last_vertex_attribute_register = vtx_register;
       return true;
    }
    case nir_intrinsic_store_output: {
@@ -505,8 +504,7 @@ VertexShader::load_input(nir_intrinsic_instr *intr)
    if (location < VERT_ATTRIB_MAX) {
       for (unsigned i = 0; i < nir_dest_num_components(intr->dest); ++i) {
          auto src = vf.allocate_pinned_register(driver_location + 1, i);
-         src->pin_live_range(true);
-         src->set_is_ssa(true);
+         src->set_flag(Register::ssa);
          if (intr->dest.is_ssa)
             vf.inject_value(intr->dest, i, src);
          else {
@@ -532,26 +530,22 @@ VertexShader::do_allocate_reserved_registers()
 {
    if (m_sv_values.test(es_vertexid)) {
       m_vertex_id = value_factory().allocate_pinned_register(0, 0);
-      m_vertex_id->pin_live_range(true);
    }
 
    if (m_sv_values.test(es_instanceid)) {
       m_instance_id = value_factory().allocate_pinned_register(0, 3);
-      m_instance_id->pin_live_range(true);
    }
 
    if (m_sv_values.test(es_primitive_id) || m_vs_as_gs_a) {
       auto primitive_id = value_factory().allocate_pinned_register(0, 2);
-      primitive_id->pin_live_range(true);
       set_primitive_id(primitive_id);
    }
 
    if (m_sv_values.test(es_rel_patch_id)) {
       m_rel_vertex_id = value_factory().allocate_pinned_register(0, 1);
-      m_rel_vertex_id->pin_live_range(true);
    }
 
-   return m_last_vertex_atribute_register + 1;
+   return m_last_vertex_attribute_register + 1;
 }
 
 bool
@@ -631,7 +625,8 @@ VertexExportForGS::do_store_output(const store_loc& store_info,
    }
 
    if (ring_offset == -1) {
-      sfn_log << SfnLog::err << "VS defines output at " << store_info.driver_location
+      sfn_log << SfnLog::warn << "VS defines output at "
+              << store_info.driver_location
               << "name=" << out_io.name() << " sid=" << out_io.sid()
               << " that is not consumed as GS input\n";
       return true;

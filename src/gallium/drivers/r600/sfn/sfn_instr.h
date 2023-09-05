@@ -98,16 +98,9 @@ public:
       m_instr_flags.set(scheduled);
       forward_set_scheduled();
    }
-   void add_use() { ++m_use_count; }
-   void dec_use()
-   {
-      assert(m_use_count > 0);
-      --m_use_count;
-   }
    bool is_dead() const { return m_instr_flags.test(dead); }
    bool is_scheduled() const { return m_instr_flags.test(scheduled); }
    bool keep() const { return m_instr_flags.test(always_keep); }
-   bool has_uses() const { return m_use_count > 0; }
 
    bool has_instr_flag(Flags f) const { return m_instr_flags.test(f); }
    void set_instr_flag(Flags f) { m_instr_flags.set(f); }
@@ -136,7 +129,12 @@ public:
    const InstrList& dependend_instr() { return m_dependend_instr; }
 
    virtual AluInstr *as_alu() { return nullptr; }
-   virtual uint8_t allowed_dest_chan_mask() const { return 0; }
+   virtual uint8_t allowed_src_chan_mask() const { return 0; }
+
+   virtual void update_indirect_addr(PRegister addr) {
+      (void)addr;
+      unreachable("Instruction type has no indirect addess");
+   };
 
 protected:
    const InstrList& required_instr() const { return m_required_instr; }
@@ -193,6 +191,8 @@ public:
 
    void erase(iterator node);
 
+   iterator insert(const iterator pos, Instr *instr);
+
    bool is_equal_to(const Block& lhs) const;
 
    void accept(ConstInstrVisitor& visitor) const override;
@@ -222,6 +222,13 @@ public:
 
    int inc_rat_emitted() { return ++m_emitted_rat_instr; }
 
+   void set_expected_ar_uses(uint32_t n) {m_expected_ar_uses = n;}
+   auto expected_ar_uses() const {return m_expected_ar_uses;}
+   void dec_expected_ar_uses() {
+      assert(m_expected_ar_uses > 0);
+      --m_expected_ar_uses;
+   }
+
    static void set_chipclass(r600_chip_class chip_class);
 
 private:
@@ -247,6 +254,7 @@ private:
    AluInstr *m_lds_group_start{nullptr};
    static unsigned s_max_kcache_banks;
    int m_emitted_rat_instr{0};
+   uint32_t m_expected_ar_uses{0};
 };
 
 class InstrWithResource : public Instr {
@@ -294,8 +302,9 @@ public:
 
    auto buffer_index_mode() const -> EBufferIndexMode
    {
-      if (!m_offset)
+      if (!m_offset || !m_offset->has_flag(Register::addr_or_idx))
          return bim_none;
+
       switch (m_offset->sel()) {
       case 1:
          return bim_zero;
@@ -309,6 +318,11 @@ public:
    bool resource_ready(int block_id, int index) const
    {
       return !m_offset || m_offset->ready(block_id, index);
+   }
+
+   void update_indirect_addr(PRegister addr) override
+   {
+      set_resource_offset(addr);
    }
 
 protected:

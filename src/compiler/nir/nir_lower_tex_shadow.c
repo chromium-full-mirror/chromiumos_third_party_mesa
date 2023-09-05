@@ -98,7 +98,7 @@ nir_lower_tex_shadow_impl(nir_builder *b, nir_instr *instr, void *options)
    }
 
    /* NIR expects a vec4 result from the above texture instructions */
-   nir_ssa_dest_init(&tex->instr, &tex->dest, 4, 32, NULL);
+   nir_ssa_dest_init(&tex->instr, &tex->dest, 4, 32);
 
    nir_ssa_def *tex_r = nir_channel(b, &tex->dest.ssa, 0);
    nir_ssa_def *cmp = tex->src[comp_index].src.ssa;
@@ -118,11 +118,14 @@ nir_lower_tex_shadow_impl(nir_builder *b, nir_instr *instr, void *options)
    nir_ssa_def *zero = nir_imm_float(b, 0.0);
 
    nir_ssa_def *lookup[6] = {result, NULL, NULL, NULL, zero, one};
-   nir_ssa_def *r[4] = {lookup[state->tex_swizzles[sampler_binding].swizzle_r],
-                        lookup[state->tex_swizzles[sampler_binding].swizzle_g],
-                        lookup[state->tex_swizzles[sampler_binding].swizzle_b],
-                        lookup[state->tex_swizzles[sampler_binding].swizzle_a]
-                       };
+   nir_ssa_def *r[4] = { result, result, result, result };
+
+   if (sampler_binding < state->n_states) {
+      r[0] = lookup[state->tex_swizzles[sampler_binding].swizzle_r];
+      r[1] = lookup[state->tex_swizzles[sampler_binding].swizzle_g];
+      r[2] = lookup[state->tex_swizzles[sampler_binding].swizzle_b];
+      r[3] = lookup[state->tex_swizzles[sampler_binding].swizzle_a];
+   }
 
    result = nir_vec(b, r, num_components);
 

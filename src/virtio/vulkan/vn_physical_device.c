@@ -187,17 +187,25 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
    VN_ADD_PNEXT_EXT(feats2, TEXEL_BUFFER_ALIGNMENT_FEATURES_EXT, feats->texel_buffer_alignment, exts->EXT_texel_buffer_alignment);
    VN_ADD_PNEXT_EXT(feats2, YCBCR_2_PLANE_444_FORMATS_FEATURES_EXT, feats->ycbcr_2plane_444_formats, exts->EXT_ycbcr_2plane_444_formats);
 
+   /* KHR */
+   VN_ADD_PNEXT_EXT(feats2, SHADER_CLOCK_FEATURES_KHR, feats->shader_clock, exts->KHR_shader_clock);
+
    /* EXT */
+   VN_ADD_PNEXT_EXT(feats2, BORDER_COLOR_SWIZZLE_FEATURES_EXT, feats->border_color_swizzle, exts->EXT_border_color_swizzle);
+   VN_ADD_PNEXT_EXT(feats2, COLOR_WRITE_ENABLE_FEATURES_EXT, feats->color_write_enable, exts->EXT_color_write_enable);
    VN_ADD_PNEXT_EXT(feats2, CONDITIONAL_RENDERING_FEATURES_EXT, feats->conditional_rendering, exts->EXT_conditional_rendering);
    VN_ADD_PNEXT_EXT(feats2, CUSTOM_BORDER_COLOR_FEATURES_EXT, feats->custom_border_color, exts->EXT_custom_border_color);
    VN_ADD_PNEXT_EXT(feats2, DEPTH_CLIP_CONTROL_FEATURES_EXT, feats->depth_clip_control, exts->EXT_depth_clip_control);
    VN_ADD_PNEXT_EXT(feats2, DEPTH_CLIP_ENABLE_FEATURES_EXT, feats->depth_clip_enable, exts->EXT_depth_clip_enable);
+   VN_ADD_PNEXT_EXT(feats2, DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_FEATURES_EXT, feats->dynamic_rendering_unused_attachments, exts->EXT_dynamic_rendering_unused_attachments);
+   VN_ADD_PNEXT_EXT(feats2, FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT, feats->fragment_shader_interlock, exts->EXT_fragment_shader_interlock);
    VN_ADD_PNEXT_EXT(feats2, IMAGE_2D_VIEW_OF_3D_FEATURES_EXT, feats->image_2d_view_of_3d, exts->EXT_image_2d_view_of_3d);
    VN_ADD_PNEXT_EXT(feats2, IMAGE_VIEW_MIN_LOD_FEATURES_EXT, feats->image_view_min_lod, exts->EXT_image_view_min_lod);
    VN_ADD_PNEXT_EXT(feats2, INDEX_TYPE_UINT8_FEATURES_EXT, feats->index_type_uint8, exts->EXT_index_type_uint8);
    VN_ADD_PNEXT_EXT(feats2, LINE_RASTERIZATION_FEATURES_EXT, feats->line_rasterization, exts->EXT_line_rasterization);
    VN_ADD_PNEXT_EXT(feats2, MULTI_DRAW_FEATURES_EXT, feats->multi_draw, exts->EXT_multi_draw);
    VN_ADD_PNEXT_EXT(feats2, MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT, feats->mutable_descriptor_type, exts->EXT_mutable_descriptor_type || exts->VALVE_mutable_descriptor_type);
+   VN_ADD_PNEXT_EXT(feats2, NON_SEAMLESS_CUBE_MAP_FEATURES_EXT, feats->non_seamless_cube_map, exts->EXT_non_seamless_cube_map);
    VN_ADD_PNEXT_EXT(feats2, PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT, feats->primitive_topology_list_restart, exts->EXT_primitive_topology_list_restart);
    VN_ADD_PNEXT_EXT(feats2, PRIMITIVES_GENERATED_QUERY_FEATURES_EXT, feats->primitives_generated_query, exts->EXT_primitives_generated_query);
    VN_ADD_PNEXT_EXT(feats2, PROVOKING_VERTEX_FEATURES_EXT, feats->provoking_vertex, exts->EXT_provoking_vertex);
@@ -220,25 +228,23 @@ vn_physical_device_init_features(struct vn_physical_device *physical_dev)
 
    /* clang-format off */
 
-   /* vkQueueBindSparse relies on explicit sync primitives. To intercept the
-    * timeline semaphores within each bind info to write the feedback buffer,
-    * we have to split the call into bindInfoCount number of calls while
-    * inserting vkQueueSubmit to wait on the signal timeline semaphores before
-    * filling the feedback buffer. To intercept the fence to be signaled, we
-    * have to relocate the fence to another vkQueueSubmit call and potentially
-    * have to use an internal timeline semaphore to synchronize between them.
-    * Those would make the code overly complex, so we disable sparse binding
-    * for simplicity.
+   /* To support sparse binding with feedback, we require sparse binding queue families
+    * to  also support submiting feedback commands. Any queue families that exclusively
+    * support sparse binding are filtered out.
+    * If a device only supports sparse binding with exclusive queue families that get
+    * filtered out then disable the feature.
     */
-   VN_SET_CORE_VALUE(vk10_feats, sparseBinding, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidencyBuffer, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidencyImage2D, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidencyImage3D, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidency2Samples, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidency4Samples, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidency8Samples, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidency16Samples, false);
-   VN_SET_CORE_VALUE(vk10_feats, sparseResidencyAliased, false);
+   if (physical_dev->sparse_binding_disabled) {
+      VN_SET_CORE_VALUE(vk10_feats, sparseBinding, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidencyBuffer, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidencyImage2D, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidencyImage3D, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidency2Samples, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidency4Samples, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidency8Samples, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidency16Samples, false);
+      VN_SET_CORE_VALUE(vk10_feats, sparseResidencyAliased, false);
+   }
 
    if (renderer_version < VK_API_VERSION_1_2) {
       /* Vulkan 1.1 */
@@ -518,6 +524,7 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
    VN_ADD_PNEXT_EXT(props2, CUSTOM_BORDER_COLOR_PROPERTIES_EXT, props->custom_border_color, exts->EXT_custom_border_color);
    VN_ADD_PNEXT_EXT(props2, LINE_RASTERIZATION_PROPERTIES_EXT, props->line_rasterization, exts->EXT_line_rasterization);
    VN_ADD_PNEXT_EXT(props2, MULTI_DRAW_PROPERTIES_EXT, props->multi_draw, exts->EXT_multi_draw);
+   VN_ADD_PNEXT_EXT(props2, PCI_BUS_INFO_PROPERTIES_EXT, props->pci_bus_info, exts->EXT_pci_bus_info);
    VN_ADD_PNEXT_EXT(props2, PROVOKING_VERTEX_PROPERTIES_EXT, props->provoking_vertex, exts->EXT_provoking_vertex);
    VN_ADD_PNEXT_EXT(props2, ROBUSTNESS_2_PROPERTIES_EXT, props->robustness_2, exts->EXT_robustness2);
    VN_ADD_PNEXT_EXT(props2, TRANSFORM_FEEDBACK_PROPERTIES_EXT, props->transform_feedback, exts->EXT_transform_feedback);
@@ -537,8 +544,11 @@ vn_physical_device_init_properties(struct vn_physical_device *physical_dev)
 
    /* clang-format off */
 
-   VN_SET_CORE_VALUE(vk10_props, limits.sparseAddressSpaceSize, 0);
-   VN_SET_CORE_VALUE(vk10_props, sparseProperties, (VkPhysicalDeviceSparseProperties){ 0 });
+   /* See comment for sparse binding feature disable */
+   if (physical_dev->sparse_binding_disabled) {
+      VN_SET_CORE_VALUE(vk10_props, limits.sparseAddressSpaceSize, 0);
+      VN_SET_CORE_VALUE(vk10_props, sparseProperties, (VkPhysicalDeviceSparseProperties){ 0 });
+   }
 
    if (renderer_version < VK_API_VERSION_1_2) {
       /* Vulkan 1.1 */
@@ -768,8 +778,28 @@ vn_physical_device_init_queue_family_properties(
    vn_call_vkGetPhysicalDeviceQueueFamilyProperties2(
       instance, vn_physical_device_to_handle(physical_dev), &count, props);
 
+   /* Filter out queue families that exclusively support sparse binding as
+    * we need additional support for submitting feedback commands
+    */
+   uint32_t sparse_count = 0;
+   uint32_t non_sparse_only_count = 0;
+   for (uint32_t i = 0; i < count; i++) {
+      if (props[i].queueFamilyProperties.queueFlags &
+          ~VK_QUEUE_SPARSE_BINDING_BIT) {
+         props[non_sparse_only_count++].queueFamilyProperties =
+            props[i].queueFamilyProperties;
+      }
+      if (props[i].queueFamilyProperties.queueFlags &
+          VK_QUEUE_SPARSE_BINDING_BIT) {
+         sparse_count++;
+      }
+   }
+
+   if (sparse_count && non_sparse_only_count + sparse_count == count)
+      physical_dev->sparse_binding_disabled = true;
+
    physical_dev->queue_family_properties = props;
-   physical_dev->queue_family_count = count;
+   physical_dev->queue_family_count = non_sparse_only_count;
 
    return VK_SUCCESS;
 }
@@ -788,49 +818,18 @@ vn_physical_device_init_memory_properties(
    vn_call_vkGetPhysicalDeviceMemoryProperties2(
       instance, vn_physical_device_to_handle(physical_dev), props2);
 
-   /* Kernel makes every mapping coherent. If a memory type is truly
-    * incoherent, it's better to remove the host-visible flag than silently
-    * making it coherent. However, for app compatibility purpose, when
-    * coherent-cached memory type is unavailable, we emulate the first cached
-    * memory type with the first coherent memory type.
-    */
-   uint32_t coherent_uncached = VK_MAX_MEMORY_TYPES;
-   uint32_t incoherent_cached = VK_MAX_MEMORY_TYPES;
-
-   for (uint32_t i = 0; i < props1->memoryTypeCount; i++) {
-      const VkMemoryPropertyFlags flags =
-         props1->memoryTypes[i].propertyFlags;
-      const bool coherent = flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-      const bool cached = flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-      if (coherent && cached) {
-         coherent_uncached = VK_MAX_MEMORY_TYPES;
-         incoherent_cached = VK_MAX_MEMORY_TYPES;
-         break;
-      } else if (coherent && coherent_uncached == VK_MAX_MEMORY_TYPES) {
-         coherent_uncached = i;
-      } else if (cached && incoherent_cached == VK_MAX_MEMORY_TYPES) {
-         incoherent_cached = i;
-      }
-   }
-
    for (uint32_t i = 0; i < props1->memoryTypeCount; i++) {
       VkMemoryType *type = &props1->memoryTypes[i];
-      if (i == incoherent_cached) {
-         /* Only get here if no coherent+cached type is available, and the
-          * spec guarantees that there is at least one coherent type, so it
-          * must be coherent+uncached, hence the index is always valid.
-          */
-         assert(coherent_uncached < props1->memoryTypeCount);
-         type->heapIndex = props1->memoryTypes[coherent_uncached].heapIndex;
-      } else if (!(type->propertyFlags &
-                   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+
+      /* Kernel makes every mapping coherent.  If a memory type is truly
+       * incoherent, it's better to remove the host-visible flag than silently
+       * making it coherent.
+       */
+      if (!(type->propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
          type->propertyFlags &= ~(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                   VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
       }
    }
-
-   physical_dev->coherent_uncached = coherent_uncached;
-   physical_dev->incoherent_cached = incoherent_cached;
 }
 
 static void
@@ -838,26 +837,26 @@ vn_physical_device_init_external_memory(
    struct vn_physical_device *physical_dev)
 {
    /* When a renderer VkDeviceMemory is exportable, we can create a
-    * vn_renderer_bo from it.  The vn_renderer_bo can be freely exported as an
+    * vn_renderer_bo from it. The vn_renderer_bo can be freely exported as an
     * opaque fd or a dma-buf.
     *
-    * However, to know if a rendender VkDeviceMemory is exportable, we have to
-    * start from VkPhysicalDeviceExternalImageFormatInfo (or
-    * vkGetPhysicalDeviceExternalBufferProperties).  That means we need to
-    * know the handle type that the renderer will use to make those queries.
+    * When an external memory can be imported as a vn_renderer_bo, that bo
+    * might be imported as a renderer side VkDeviceMemory.
     *
-    * XXX We also assume that a vn_renderer_bo can be created as long as the
-    * renderer VkDeviceMemory has a mappable memory type.  That is plain
-    * wrong.  It is impossible to fix though until some new extension is
-    * created and supported by the driver, and that the renderer switches to
-    * the extension.
-    */
-
-   if (!physical_dev->instance->renderer->info.has_dma_buf_import)
-      return;
-
-   /* TODO We assume the renderer uses dma-bufs here.  This should be
-    * negotiated by adding a new function to VK_MESA_venus_protocol.
+    * However, to know if a rendender VkDeviceMemory is exportable or if a bo
+    * can be imported as a renderer VkDeviceMemory. We have to start from
+    * physical device external image and external buffer properties queries,
+    * which requires to know the renderer supported external handle types. For
+    * such info, we can reliably retrieve from the external memory extensions
+    * advertised by the renderer.
+    *
+    * We require VK_EXT_external_memory_dma_buf to expose driver side external
+    * memory support for a renderer running on Linux. As a comparison, when
+    * the renderer runs on Windows, VK_KHR_external_memory_win32 might be
+    * required for the same.
+    *
+    * For vtest, the protocol does not support external memory import. So we
+    * only mask out the importable bit so that wsi over vtest can be supported.
     */
    if (physical_dev->renderer_extensions.EXT_external_memory_dma_buf) {
       physical_dev->external_memory.renderer_handle_type =
@@ -970,24 +969,38 @@ vn_physical_device_init_external_semaphore_handles(
 #endif
 }
 
+static inline bool
+vn_physical_device_get_external_memory_support(
+   const struct vn_physical_device *physical_dev)
+{
+   if (!physical_dev->external_memory.renderer_handle_type)
+      return false;
+
+   /* see vn_physical_device_init_external_memory */
+   if (physical_dev->external_memory.renderer_handle_type ==
+       VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
+      const struct vk_device_extension_table *renderer_exts =
+         &physical_dev->renderer_extensions;
+      return renderer_exts->EXT_image_drm_format_modifier &&
+             renderer_exts->EXT_queue_family_foreign;
+   }
+
+   /* expand support once the renderer can run on non-Linux platforms */
+   return false;
+}
+
 static void
 vn_physical_device_get_native_extensions(
    const struct vn_physical_device *physical_dev,
    struct vk_device_extension_table *exts)
 {
-   const struct vn_instance *instance = physical_dev->instance;
-   const struct vk_device_extension_table *renderer_exts =
-      &physical_dev->renderer_extensions;
-
    memset(exts, 0, sizeof(*exts));
 
-   /* see vn_physical_device_init_external_memory */
-   const bool can_external_mem = renderer_exts->EXT_external_memory_dma_buf &&
-                                 instance->renderer->info.has_dma_buf_import;
+   const bool can_external_mem =
+      vn_physical_device_get_external_memory_support(physical_dev);
 
 #ifdef ANDROID
-   if (can_external_mem && renderer_exts->EXT_image_drm_format_modifier &&
-       renderer_exts->EXT_queue_family_foreign) {
+   if (can_external_mem) {
       exts->ANDROID_external_memory_android_hardware_buffer = true;
 
       /* For wsi, we require renderer:
@@ -1020,13 +1033,23 @@ vn_physical_device_get_native_extensions(
 #endif /* ANDROID */
 
 #ifdef VN_USE_WSI_PLATFORM
-   if (renderer_exts->EXT_image_drm_format_modifier &&
-       renderer_exts->EXT_queue_family_foreign &&
+   if (can_external_mem &&
        physical_dev->renderer_sync_fd.semaphore_importable) {
       exts->KHR_incremental_present = true;
       exts->KHR_swapchain = true;
       exts->KHR_swapchain_mutable_format = true;
    }
+
+   /* VK_EXT_pci_bus_info is required by common wsi to decide whether native
+    * image or prime blit is used. Meanwhile, venus must stay on native image
+    * path for proper fencing.
+    * - For virtgpu, VK_EXT_pci_bus_info is natively supported.
+    * - For vtest, pci bus info must be queried from the renderer side physical
+    *   device to be compared against the render node opened by common wsi.
+    */
+   exts->EXT_pci_bus_info =
+      physical_dev->instance->renderer->info.pci.has_bus_info ||
+      physical_dev->renderer_extensions.EXT_pci_bus_info;
 #endif
 
    exts->EXT_physical_device_drm = true;
@@ -1128,22 +1151,30 @@ vn_physical_device_get_passthrough_extensions(
 
       /* KHR */
       .KHR_push_descriptor = true,
+      .KHR_shader_clock = true,
 
       /* EXT */
+      .EXT_border_color_swizzle = true,
       .EXT_calibrated_timestamps = true,
+      .EXT_color_write_enable = true,
       .EXT_conditional_rendering = true,
       .EXT_conservative_rasterization = true,
       .EXT_custom_border_color = true,
       .EXT_depth_clip_control = true,
       .EXT_depth_clip_enable = true,
+      .EXT_dynamic_rendering_unused_attachments = true,
+      .EXT_fragment_shader_interlock = true,
       .EXT_image_2d_view_of_3d = true,
       .EXT_image_drm_format_modifier = true,
       .EXT_image_view_min_lod = true,
       .EXT_index_type_uint8 = true,
       .EXT_line_rasterization = true,
       .EXT_load_store_op_none = true,
+      /* TODO: re-enable after generic app compat issues are resolved */
+      .EXT_memory_budget = false,
       .EXT_multi_draw = true,
       .EXT_mutable_descriptor_type = true,
+      .EXT_non_seamless_cube_map = true,
       .EXT_primitive_topology_list_restart = true,
       .EXT_primitives_generated_query = true,
       /* TODO(VK_EXT_private_data): Support natively.
@@ -1169,6 +1200,7 @@ vn_physical_device_get_passthrough_extensions(
       .EXT_rasterization_order_attachment_access = true,
       .EXT_robustness2 = true,
       .EXT_shader_stencil_export = true,
+      .EXT_shader_subgroup_ballot = true,
       .EXT_transform_feedback = true,
       .EXT_vertex_attribute_divisor = true,
 
@@ -1191,23 +1223,6 @@ vn_physical_device_init_supported_extensions(
 
 #ifdef ANDROID
       if (!vk_android_allowed_device_extensions.extensions[i])
-         continue;
-
-      /* TODO remove below after ndk translation filters extensions */
-      static const struct vk_device_extension_table blocked = {
-         .KHR_buffer_device_address = true,
-         .KHR_copy_commands2 = true,
-         .KHR_push_descriptor = true,
-         .KHR_synchronization2 = true,
-         .KHR_timeline_semaphore = true,
-         .EXT_calibrated_timestamps = true,
-         .EXT_conditional_rendering = true,
-         .EXT_image_drm_format_modifier = true,
-         .EXT_inline_uniform_block = true,
-         .EXT_pipeline_creation_feedback = true,
-         .EXT_subgroup_size_control = true,
-      };
-      if (blocked.extensions[i])
          continue;
 #endif
 
@@ -1344,13 +1359,13 @@ vn_physical_device_init(struct vn_physical_device *physical_dev)
 
    vn_physical_device_init_supported_extensions(physical_dev);
 
-   /* TODO query all caps with minimal round trips */
-   vn_physical_device_init_features(physical_dev);
-   vn_physical_device_init_properties(physical_dev);
-
    result = vn_physical_device_init_queue_family_properties(physical_dev);
    if (result != VK_SUCCESS)
       goto fail;
+
+   /* TODO query all caps with minimal round trips */
+   vn_physical_device_init_features(physical_dev);
+   vn_physical_device_init_properties(physical_dev);
 
    vn_physical_device_init_memory_properties(physical_dev);
 
@@ -1503,7 +1518,7 @@ enumerate_physical_devices(struct vn_instance *instance,
    VkPhysicalDevice *handles = NULL;
    VkResult result;
 
-   uint32_t count;
+   uint32_t count = 0;
    result = vn_call_vkEnumeratePhysicalDevices(
       instance, vn_instance_to_handle(instance), &count, NULL);
    if (result != VK_SUCCESS || !count)
@@ -1789,17 +1804,25 @@ vn_GetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice,
       CASE(TEXEL_BUFFER_ALIGNMENT_FEATURES_EXT, texel_buffer_alignment);
       CASE(YCBCR_2_PLANE_444_FORMATS_FEATURES_EXT, ycbcr_2plane_444_formats);
 
+      /* KHR */
+      CASE(SHADER_CLOCK_FEATURES_KHR, shader_clock);
+
       /* EXT */
+      CASE(BORDER_COLOR_SWIZZLE_FEATURES_EXT, border_color_swizzle);
+      CASE(COLOR_WRITE_ENABLE_FEATURES_EXT, color_write_enable);
       CASE(CONDITIONAL_RENDERING_FEATURES_EXT, conditional_rendering);
       CASE(CUSTOM_BORDER_COLOR_FEATURES_EXT, custom_border_color);
       CASE(DEPTH_CLIP_CONTROL_FEATURES_EXT, depth_clip_control);
       CASE(DEPTH_CLIP_ENABLE_FEATURES_EXT, depth_clip_enable);
+      CASE(DYNAMIC_RENDERING_UNUSED_ATTACHMENTS_FEATURES_EXT, dynamic_rendering_unused_attachments);
+      CASE(FRAGMENT_SHADER_INTERLOCK_FEATURES_EXT, fragment_shader_interlock);
       CASE(IMAGE_2D_VIEW_OF_3D_FEATURES_EXT, image_2d_view_of_3d);
       CASE(IMAGE_VIEW_MIN_LOD_FEATURES_EXT, image_view_min_lod);
       CASE(INDEX_TYPE_UINT8_FEATURES_EXT, index_type_uint8);
       CASE(LINE_RASTERIZATION_FEATURES_EXT, line_rasterization);
       CASE(MULTI_DRAW_FEATURES_EXT, multi_draw);
       CASE(MUTABLE_DESCRIPTOR_TYPE_FEATURES_EXT, mutable_descriptor_type);
+      CASE(NON_SEAMLESS_CUBE_MAP_FEATURES_EXT, non_seamless_cube_map);
       CASE(PRIMITIVE_TOPOLOGY_LIST_RESTART_FEATURES_EXT, primitive_topology_list_restart);
       CASE(PRIMITIVES_GENERATED_QUERY_FEATURES_EXT, primitives_generated_query);
       CASE(PROVOKING_VERTEX_FEATURES_EXT, provoking_vertex);
@@ -1895,6 +1918,11 @@ vn_GetPhysicalDeviceProperties2(VkPhysicalDevice physicalDevice,
             out_props->pciBus = info->pci.bus;
             out_props->pciDevice = info->pci.device;
             out_props->pciFunction = info->pci.function;
+         } else {
+            assert(VN_DEBUG(VTEST));
+            vk_copy_struct_guts(out,
+                                (VkBaseInStructure *)&in_props->pci_bus_info,
+                                sizeof(in_props->pci_bus_info));
          }
          break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENTATION_PROPERTIES_ANDROID: {
@@ -1938,7 +1966,29 @@ vn_GetPhysicalDeviceMemoryProperties2(
 {
    struct vn_physical_device *physical_dev =
       vn_physical_device_from_handle(physicalDevice);
+   struct vn_instance *instance = physical_dev->instance;
+   VkPhysicalDeviceMemoryBudgetPropertiesEXT *memory_budget = NULL;
 
+   /* Don't waste time searching for unsupported structs. */
+   if (physical_dev->base.base.supported_extensions.EXT_memory_budget) {
+      memory_budget =
+         vk_find_struct(pMemoryProperties->pNext,
+                        PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT);
+   }
+
+   /* When the app queries invariant memory properties, we return a cached
+    * copy. For dynamic properties, we must query the server.
+    */
+   if (memory_budget) {
+      vn_call_vkGetPhysicalDeviceMemoryProperties2(instance, physicalDevice,
+                                                   pMemoryProperties);
+   }
+
+   /* Even when we query the server for memory properties, we must still
+    * overwrite the invariant memory properties returned from the server with
+    * our cached version.  Our cached version may differ from the server's
+    * version due to workarounds.
+    */
    pMemoryProperties->memoryProperties =
       physical_dev->memory_properties.memoryProperties;
 }
@@ -1979,8 +2029,8 @@ struct vn_physical_device_image_format_info {
 
 static const VkPhysicalDeviceImageFormatInfo2 *
 vn_physical_device_fix_image_format_info(
-   struct vn_physical_device *physical_dev,
    const VkPhysicalDeviceImageFormatInfo2 *info,
+   const VkExternalMemoryHandleTypeFlagBits renderer_handle_type,
    struct vn_physical_device_image_format_info *local_info)
 {
    local_info->format = *info;
@@ -1997,8 +2047,7 @@ vn_physical_device_fix_image_format_info(
          is_ahb =
             local_info->external.handleType ==
             VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
-         local_info->external.handleType =
-            physical_dev->external_memory.renderer_handle_type;
+         local_info->external.handleType = renderer_handle_type;
          pnext = &local_info->external;
          break;
       case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO:
@@ -2097,9 +2146,28 @@ vn_GetPhysicalDeviceImageFormatProperties2(
                          VK_ERROR_FORMAT_NOT_SUPPORTED);
       }
 
+      /* Check the image tiling against the renderer handle type:
+       * - No need to check for AHB since the tiling will either be forwarded
+       *   or overwritten based on the renderer external memory type.
+       * - For opaque fd and dma_buf fd handle types, passthrough tiling when
+       *   the renderer external memory is dma_buf. Then we can avoid
+       *   reconstructing the structs to support drm format modifier tiling
+       *   like how we support AHB.
+       */
+      if (external_info->handleType !=
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID) {
+         if (renderer_handle_type ==
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+             pImageFormatInfo->tiling !=
+                VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+            return vn_error(physical_dev->instance,
+                            VK_ERROR_FORMAT_NOT_SUPPORTED);
+         }
+      }
+
       if (external_info->handleType != renderer_handle_type) {
          pImageFormatInfo = vn_physical_device_fix_image_format_info(
-            physical_dev, pImageFormatInfo, &local_info);
+            pImageFormatInfo, renderer_handle_type, &local_info);
          if (!pImageFormatInfo) {
             return vn_error(physical_dev->instance,
                             VK_ERROR_FORMAT_NOT_SUPPORTED);
@@ -2137,6 +2205,13 @@ vn_GetPhysicalDeviceImageFormatProperties2(
    VkExternalMemoryProperties *mem_props =
       &img_props->externalMemoryProperties;
 
+   if (renderer_handle_type ==
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+       !physical_dev->instance->renderer->info.has_dma_buf_import) {
+      mem_props->externalMemoryFeatures &=
+         ~VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+   }
+
    if (external_info->handleType ==
        VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID) {
       /* AHB backed image requires renderer to support import bit */
@@ -2172,12 +2247,21 @@ vn_GetPhysicalDeviceSparseImageFormatProperties2(
    VkSparseImageFormatProperties2 *pProperties)
 {
 
+   struct vn_physical_device *physical_dev =
+      vn_physical_device_from_handle(physicalDevice);
    /* If VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT is not supported for the given
     * arguments, pPropertyCount will be set to zero upon return, and no data
     * will be written to pProperties.
     */
-   *pPropertyCount = 0;
-   return;
+   if (physical_dev->sparse_binding_disabled) {
+      *pPropertyCount = 0;
+      return;
+   }
+
+   /* TODO per-device cache */
+   vn_call_vkGetPhysicalDeviceSparseImageFormatProperties2(
+      physical_dev->instance, physicalDevice, pFormatInfo, pPropertyCount,
+      pProperties);
 }
 
 void
@@ -2216,6 +2300,13 @@ vn_GetPhysicalDeviceExternalBufferProperties(
    vn_call_vkGetPhysicalDeviceExternalBufferProperties(
       physical_dev->instance, physicalDevice, pExternalBufferInfo,
       pExternalBufferProperties);
+
+   if (renderer_handle_type ==
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT &&
+       !physical_dev->instance->renderer->info.has_dma_buf_import) {
+      props->externalMemoryFeatures &=
+         ~VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+   }
 
    if (is_ahb) {
       props->compatibleHandleTypes =

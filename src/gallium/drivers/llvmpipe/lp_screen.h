@@ -36,7 +36,7 @@
 
 #include "pipe/p_screen.h"
 #include "pipe/p_defines.h"
-#include "os/os_thread.h"
+#include "util/u_thread.h"
 #include "util/list.h"
 #include "gallivm/lp_bld.h"
 #include "gallivm/lp_bld_misc.h"
@@ -62,7 +62,6 @@ struct llvmpipe_screen
    struct lp_cs_tpool *cs_tpool;
    mtx_t cs_mutex;
 
-   bool use_tgsi;
    bool allow_cl;
 
    mtx_t late_mutex;
@@ -74,8 +73,6 @@ struct llvmpipe_screen
    char renderer_string[100];
 
    struct disk_cache *disk_shader_cache;
-   unsigned num_disk_shader_cache_hits;
-   unsigned num_disk_shader_cache_misses;
 };
 
 
@@ -104,9 +101,16 @@ llvmpipe_screen(struct pipe_screen *pipe)
 static inline unsigned
 lp_get_constant_buffer_stride(struct pipe_screen *_screen)
 {
-   struct llvmpipe_screen *screen = llvmpipe_screen(_screen);
-   return screen->use_tgsi ? (sizeof(float) * 4) : sizeof(float);
+   return sizeof(float);
 }
+
+
+bool
+lp_storage_render_image_format_supported(enum pipe_format format);
+
+
+bool
+lp_storage_image_format_supported(enum pipe_format format);
 
 
 #endif /* LP_SCREEN_H */

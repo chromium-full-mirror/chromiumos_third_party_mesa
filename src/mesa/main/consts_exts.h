@@ -31,7 +31,7 @@
 #ifndef __CONSTS_EXTS_H__
 #define __CONSTS_EXTS_H__
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "compiler/shader_enums.h"
 #include "compiler/shader_info.h"
 
@@ -55,7 +55,6 @@ struct gl_extensions
    GLboolean ARB_bindless_texture;
    GLboolean ARB_blend_func_extended;
    GLboolean ARB_buffer_storage;
-   GLboolean ARB_clear_texture;
    GLboolean ARB_clip_control;
    GLboolean ARB_color_buffer_float;
    GLboolean ARB_compatibility;
@@ -178,7 +177,6 @@ struct gl_extensions
    GLboolean EXT_memory_object_win32;
    GLboolean EXT_multisampled_render_to_texture;
    GLboolean EXT_packed_float;
-   GLboolean EXT_pixel_buffer_object;
    GLboolean EXT_provoking_vertex;
    GLboolean EXT_render_snorm;
    GLboolean EXT_semaphore;
@@ -796,6 +794,11 @@ struct gl_constants
    GLboolean DisableTransformFeedbackPacking;
 
    /**
+    * Disable the glsl optimisation that resizes uniform arrays.
+    */
+   bool DisableUniformArrayResize;
+
+   /**
     * Align varyings to POT in a slot
     *
     * Drivers that prefer varyings to be aligned to POT must set this value to GL_TRUE
@@ -904,7 +907,6 @@ struct gl_constants
    GLuint MaxTessGenLevel;
    GLuint MaxTessPatchComponents;
    GLuint MaxTessControlTotalOutputComponents;
-   bool LowerTessLevel; /**< Lower gl_TessLevel* from float[n] to vecn? */
    bool PrimitiveRestartForPatches;
 
    /** GL_OES_primitive_bounding_box */
@@ -919,17 +921,14 @@ struct gl_constants
    /** When drivers are OK with mapped buffers during draw and other calls. */
    bool AllowMappedBuffersDuringExecution;
 
-   /**
-    * Whether buffer creation, unsynchronized mapping, unmapping, and
-    * deletion is thread-safe.
-    */
-   bool BufferCreateMapUnsynchronizedThreadSafe;
-
    /** Override GL_MAP_UNSYNCHRONIZED_BIT */
    bool ForceMapBufferSynchronized;
 
    /** GL_ARB_get_program_binary */
    GLuint NumProgramBinaryFormats;
+
+   /** GL_ARB_gl_spirv */
+   GLuint NumShaderBinaryFormats;
 
    /** GL_NV_conservative_raster */
    GLuint MaxSubpixelPrecisionBiasBits;
@@ -940,6 +939,15 @@ struct gl_constants
 
    /** Is the drivers uniform storage packed or padded to 16 bytes. */
    bool PackedDriverUniformStorage;
+
+   bool HasFBFetch;
+
+   /** Whether the backend supports reading from outputs */
+   bool SupportsReadingOutputs;
+
+   bool CombinedClipCullDistanceArrays;
+
+   bool PointSizeFixed;
 
    /** Wether or not glBitmap uses red textures rather than alpha */
    bool BitmapUsesRed;
@@ -993,5 +1001,8 @@ struct gl_constants
 
    /** Use hardware accelerated GL_SELECT */
    bool HardwareAcceleratedSelect;
+
+   /** Allow GLThread to convert glBuffer */
+   bool AllowGLThreadBufferSubDataOpt;
 };
 #endif

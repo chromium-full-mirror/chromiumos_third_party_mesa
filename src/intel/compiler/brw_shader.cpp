@@ -25,6 +25,7 @@
 #include "brw_eu.h"
 #include "brw_fs.h"
 #include "brw_nir.h"
+#include "brw_private.h"
 #include "brw_vec4_tes.h"
 #include "dev/intel_debug.h"
 #include "main/uniforms.h"
@@ -79,25 +80,6 @@ brw_type_for_base_type(const struct glsl_type *type)
    }
 
    return BRW_REGISTER_TYPE_F;
-}
-
-enum brw_conditional_mod
-brw_conditional_for_comparison(unsigned int op)
-{
-   switch (op) {
-   case ir_binop_less:
-      return BRW_CONDITIONAL_L;
-   case ir_binop_gequal:
-      return BRW_CONDITIONAL_GE;
-   case ir_binop_equal:
-   case ir_binop_all_equal: /* same as equal for scalars */
-      return BRW_CONDITIONAL_Z;
-   case ir_binop_nequal:
-   case ir_binop_any_nequal: /* same as nequal for scalars */
-      return BRW_CONDITIONAL_NZ;
-   default:
-      unreachable("not reached: bad operation for comparison");
-   }
 }
 
 uint32_t
@@ -293,8 +275,6 @@ brw_instruction_name(const struct brw_isa_info *isa, enum opcode op)
       return "untyped_atomic";
    case SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL:
       return "untyped_atomic_logical";
-   case SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL:
-      return "untyped_atomic_float_logical";
    case VEC4_OPCODE_UNTYPED_SURFACE_READ:
       return "untyped_surface_read";
    case SHADER_OPCODE_UNTYPED_SURFACE_READ_LOGICAL:
@@ -323,16 +303,6 @@ brw_instruction_name(const struct brw_isa_info *isa, enum opcode op)
       return "a64_byte_scattered_write_logical";
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL:
       return "a64_untyped_atomic_logical";
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
-      return "a64_untyped_atomic_int16_logical";
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
-      return "a64_untyped_atomic_int64_logical";
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
-      return "a64_untyped_atomic_float16_logical";
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
-      return "a64_untyped_atomic_float32_logical";
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
-      return "a64_untyped_atomic_float64_logical";
    case SHADER_OPCODE_TYPED_ATOMIC_LOGICAL:
       return "typed_atomic_logical";
    case SHADER_OPCODE_TYPED_SURFACE_READ_LOGICAL:
@@ -442,8 +412,6 @@ brw_instruction_name(const struct brw_isa_info *isa, enum opcode op)
 
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD:
       return "uniform_pull_const";
-   case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD_GFX7:
-      return "uniform_pull_const_gfx7";
    case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_GFX4:
       return "varying_pull_const_gfx4";
    case FS_OPCODE_VARYING_PULL_CONSTANT_LOAD_LOGICAL:
@@ -922,6 +890,32 @@ backend_instruction::is_math() const
 }
 
 bool
+backend_instruction::is_control_flow_begin() const
+{
+   switch (opcode) {
+   case BRW_OPCODE_DO:
+   case BRW_OPCODE_IF:
+   case BRW_OPCODE_ELSE:
+      return true;
+   default:
+      return false;
+   }
+}
+
+bool
+backend_instruction::is_control_flow_end() const
+{
+   switch (opcode) {
+   case BRW_OPCODE_ELSE:
+   case BRW_OPCODE_WHILE:
+   case BRW_OPCODE_ENDIF:
+      return true;
+   default:
+      return false;
+   }
+}
+
+bool
 backend_instruction::is_control_flow() const
 {
    switch (opcode) {
@@ -1095,7 +1089,7 @@ backend_instruction::writes_accumulator_implicitly(const struct intel_device_inf
             (opcode >= FS_OPCODE_DDX_COARSE && opcode <= FS_OPCODE_LINTERP))) ||
           (opcode == FS_OPCODE_LINTERP &&
            (!devinfo->has_pln || devinfo->ver <= 6)) ||
-          (eot && devinfo->ver >= 12); /* See Wa_14010017096. */
+          (eot && intel_needs_workaround(devinfo, 14010017096));
 }
 
 bool
@@ -1108,18 +1102,12 @@ backend_instruction::has_side_effects() const
    case BRW_OPCODE_SYNC:
    case VEC4_OPCODE_UNTYPED_ATOMIC:
    case SHADER_OPCODE_UNTYPED_ATOMIC_LOGICAL:
-   case SHADER_OPCODE_UNTYPED_ATOMIC_FLOAT_LOGICAL:
    case SHADER_OPCODE_GFX4_SCRATCH_WRITE:
    case VEC4_OPCODE_UNTYPED_SURFACE_WRITE:
    case SHADER_OPCODE_UNTYPED_SURFACE_WRITE_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_WRITE_LOGICAL:
    case SHADER_OPCODE_A64_BYTE_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_A64_UNTYPED_ATOMIC_LOGICAL:
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT16_LOGICAL:
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_INT64_LOGICAL:
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT16_LOGICAL:
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT32_LOGICAL:
-   case SHADER_OPCODE_A64_UNTYPED_ATOMIC_FLOAT64_LOGICAL:
    case SHADER_OPCODE_BYTE_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_DWORD_SCATTERED_WRITE_LOGICAL:
    case SHADER_OPCODE_TYPED_ATOMIC_LOGICAL:
@@ -1173,11 +1161,16 @@ backend_instruction::is_volatile() const
 static bool
 inst_is_in_block(const bblock_t *block, const backend_instruction *inst)
 {
-   foreach_inst_in_block (backend_instruction, i, block) {
-      if (inst == i)
-         return true;
-   }
-   return false;
+   const exec_node *n = inst;
+
+   /* Find the tail sentinel. If the tail sentinel is the sentinel from the
+    * list header in the bblock_t, then this instruction is in that basic
+    * block.
+    */
+   while (!n->is_tail_sentinel())
+      n = n->get_next();
+
+   return n == &block->instructions.tail_sentinel;
 }
 #endif
 
@@ -1225,21 +1218,6 @@ backend_instruction::insert_before(bblock_t *block, backend_instruction *inst)
 }
 
 void
-backend_instruction::insert_before(bblock_t *block, exec_list *list)
-{
-   assert(inst_is_in_block(block, this) || !"Instruction not in block");
-   assert(block->end_ip_delta == 0);
-
-   unsigned num_inst = list->length();
-
-   block->end_ip += num_inst;
-
-   adjust_later_block_ips(block, num_inst);
-
-   exec_node::insert_before(list);
-}
-
-void
 backend_instruction::remove(bblock_t *block, bool defer_later_block_ip_updates)
 {
    assert(inst_is_in_block(block, this) || !"Instruction not in block");
@@ -1266,12 +1244,6 @@ backend_instruction::remove(bblock_t *block, bool defer_later_block_ip_updates)
 }
 
 void
-backend_shader::dump_instructions() const
-{
-   dump_instructions(NULL);
-}
-
-void
 backend_shader::dump_instructions(const char *name) const
 {
    FILE *file = stderr;
@@ -1281,6 +1253,16 @@ backend_shader::dump_instructions(const char *name) const
          file = stderr;
    }
 
+   dump_instructions_to_file(file);
+
+   if (file != stderr) {
+      fclose(file);
+   }
+}
+
+void
+backend_shader::dump_instructions_to_file(FILE *file) const
+{
    if (cfg) {
       int ip = 0;
       foreach_block_and_inst(block, backend_instruction, inst, cfg) {
@@ -1295,10 +1277,6 @@ backend_shader::dump_instructions(const char *name) const
             fprintf(file, "%4d: ", ip++);
          dump_instruction(inst, file);
       }
-   }
-
-   if (file != stderr) {
-      fclose(file);
    }
 }
 
@@ -1328,7 +1306,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
    struct brw_tes_prog_data *prog_data = params->prog_data;
 
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
-   const bool debug_enabled = INTEL_DEBUG(DEBUG_TES);
+   const bool debug_enabled = brw_should_print_shader(nir, DEBUG_TES);
    const unsigned *assembly;
 
    prog_data->base.base.stage = MESA_SHADER_TESS_EVAL;
@@ -1337,10 +1315,10 @@ brw_compile_tes(const struct brw_compiler *compiler,
    nir->info.inputs_read = key->inputs_read;
    nir->info.patch_inputs_read = key->patch_inputs_read;
 
-   brw_nir_apply_key(nir, compiler, &key->base, 8, is_scalar);
+   brw_nir_apply_key(nir, compiler, &key->base, 8);
    brw_nir_lower_tes_inputs(nir, input_vue_map);
    brw_nir_lower_vue_outputs(nir);
-   brw_postprocess_nir(nir, compiler, is_scalar, debug_enabled,
+   brw_postprocess_nir(nir, compiler, debug_enabled,
                        key->base.robust_buffer_access);
 
    brw_compute_vue_map(devinfo, &prog_data->base.vue_map,
@@ -1414,7 +1392,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
    if (is_scalar) {
       fs_visitor v(compiler, params->log_data, mem_ctx, &key->base,
                    &prog_data->base.base, nir, 8,
-                   debug_enabled);
+                   params->stats != NULL, debug_enabled);
       if (!v.run_tes()) {
          params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
          return NULL;

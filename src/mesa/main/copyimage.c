@@ -20,13 +20,10 @@
  * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
  * OTHER DEALINGS IN THE SOFTWARE.
- *
- * Authors:
- *    Jason Ekstrand <jason.ekstrand@intel.com>
  */
 
 #include "context.h"
-#include "glheader.h"
+#include "util/glheader.h"
 #include "errors.h"
 #include "enums.h"
 #include "teximage.h"
@@ -103,6 +100,9 @@ prepare_target_err(struct gl_context *ctx, GLuint name, GLenum target,
       break;
    case GL_TEXTURE_EXTERNAL_OES:
       /* Only exists in ES */
+      if (_mesa_is_gles(ctx))
+         break;
+      FALLTHROUGH;
    case GL_TEXTURE_BUFFER:
    default:
       _mesa_error(ctx, GL_INVALID_ENUM,

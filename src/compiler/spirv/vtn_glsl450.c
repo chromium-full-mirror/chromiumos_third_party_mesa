@@ -19,10 +19,6 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
- *
- * Authors:
- *    Jason Ekstrand (jason@jlekstrand.net)
- *
  */
 
 #include <math.h>
@@ -404,7 +400,7 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
       nir_ssa_def *cmp = nir_slt(nb, src[1], src[0]);
 
       nb->exact = exact;
-      dest->def = nir_fsub(nb, nir_imm_floatN_t(nb, 1.0f, cmp->bit_size), cmp);
+      dest->def = nir_fsub_imm(nb, 1.0f, cmp);
       break;
    }
 
@@ -482,11 +478,9 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
        * double if the other operands are double also.
        */
       if (I->bit_size != eta->bit_size) {
-         nir_op conversion_op =
-            nir_type_conversion_op(nir_type_float | eta->bit_size,
-                                   nir_type_float | I->bit_size,
-                                   nir_rounding_mode_undef);
-         eta = nir_build_alu(nb, conversion_op, eta, NULL, NULL, NULL);
+         eta = nir_type_convert(nb, eta, nir_type_float,
+                                nir_type_float | I->bit_size,
+                                nir_rounding_mode_undef);
       }
       /* k = 1.0 - eta * eta * (1.0 - dot(N, I) * dot(N, I)) */
       nir_ssa_def *k =
@@ -573,10 +567,9 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
          nir_fsqrt(nb, nir_ffma_imm2(nb, src[0], src[0], -1.0f))));
       break;
    case GLSLstd450Atanh: {
-      nir_ssa_def *one = nir_imm_floatN_t(nb, 1.0, src[0]->bit_size);
       dest->def =
-         nir_fmul_imm(nb, nir_flog(nb, nir_fdiv(nb, nir_fadd(nb, src[0], one),
-                                       nir_fsub(nb, one, src[0]))),
+         nir_fmul_imm(nb, nir_flog(nb, nir_fdiv(nb, nir_fadd_imm(nb, src[0], 1.0),
+                                       nir_fsub_imm(nb, 1.0, src[0]))),
                           0.5f);
       break;
    }
@@ -587,8 +580,8 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
 
    case GLSLstd450Acos:
       dest->def =
-         nir_fsub(nb, nir_imm_floatN_t(nb, M_PI_2f, src[0]->bit_size),
-                      build_asin(nb, src[0], 0.08132463, -0.02363318, false));
+         nir_fsub_imm(nb, M_PI_2f,
+                          build_asin(nb, src[0], 0.08132463, -0.02363318, false));
       break;
 
    case GLSLstd450Atan:
@@ -689,7 +682,7 @@ handle_glsl450_interpolation(struct vtn_builder *b, enum GLSLstd450 opcode,
    intrin->num_components = glsl_get_vector_elements(deref->type);
    nir_ssa_dest_init(&intrin->instr, &intrin->dest,
                      glsl_get_vector_elements(deref->type),
-                     glsl_get_bit_size(deref->type), NULL);
+                     glsl_get_bit_size(deref->type));
 
    nir_builder_instr_insert(&b->nb, &intrin->instr);
 

@@ -26,10 +26,12 @@
 
 #include "sfn_instr_alu.h"
 
+#include "sfn_alu_defines.h"
 #include "sfn_debug.h"
 #include "sfn_instr_alugroup.h"
 #include "sfn_instr_tex.h"
 #include "sfn_shader.h"
+#include "sfn_virtualvalues.h"
 
 #include <algorithm>
 #include <sstream>
@@ -67,6 +69,18 @@ AluInstr::AluInstr(EAluOp opcode,
       ASSERT_OR_THROW(dest, "Write flag is set, but no destination register is given");
 
    update_uses();
+
+   if (dest && slots > 1) {
+      switch (m_opcode) {
+      case op2_dot_ieee: m_allowed_dest_mask = (1 << (5 - slots)) - 1;
+         break;
+      default:
+         if (has_alu_flag(alu_is_cayman_trans)) {
+            m_allowed_dest_mask = (1 << slots) - 1;
+         }
+      }
+   }
+   assert(!dest || (m_allowed_dest_mask & (1 << dest->chan())));
 }
 
 AluInstr::AluInstr(EAluOp opcode):
@@ -155,7 +169,11 @@ AluInstr::update_uses()
          u->buf_addr()->as_register()->add_use(this);
    }
 
-   if (m_dest && has_alu_flag(alu_write)) {
+   if (m_dest &&
+       (has_alu_flag(alu_write) ||
+        m_opcode == op1_mova_int ||
+        m_opcode == op1_set_cf_idx0 ||
+        m_opcode == op1_set_cf_idx1)) {
       m_dest->add_parent(this);
 
       if (m_dest->pin() == pin_array) {
@@ -199,9 +217,6 @@ const std::map<AluBankSwizzle, std::string> AluInstr::bank_swizzle_map = {
    {alu_vec_210, "VEC_210"}
 };
 
-const AluModifiers AluInstr::src_abs_flags[2] = {alu_src0_abs, alu_src1_abs};
-const AluModifiers AluInstr::src_neg_flags[3] = {
-   alu_src0_neg, alu_src1_neg, alu_src2_neg};
 const AluModifiers AluInstr::src_rel_flags[3] = {
    alu_src0_rel, alu_src1_rel, alu_src2_rel};
 
@@ -240,21 +255,23 @@ AluInstr::do_print(std::ostream& os) const
          os << " CLAMP";
 
       if (m_dest) {
-         if (has_alu_flag(alu_write))
+         if (has_alu_flag(alu_write) || m_dest->has_flag(Register::addr_or_idx)) {
             os << " " << *m_dest;
-         else
+         } else {
             os << " __"
                << "." << swzchar[m_dest->chan()];
-         if (!has_alu_flag(alu_write) && m_dest->pin() != pin_none)
-            os << "@" << m_dest->pin();
+            if (m_dest->pin() != pin_none)
+               os << "@" << m_dest->pin();
+         }
          os << " : ";
       } else {
-         os << "__." << swzchar[dest_chan()] << " : ";
+         os << " __." << swzchar[dest_chan()] << " : ";
       }
    }
 
    const int n_source_per_slot =
       has_alu_flag(alu_is_lds) ? m_src.size() : alu_ops.at(m_opcode).nsrc;
+
 
    for (int s = 0; s < m_alu_slots; ++s) {
 
@@ -265,12 +282,12 @@ AluInstr::do_print(std::ostream& os) const
          int pflags = 0;
          if (i)
             os << ' ';
-         if (has_alu_flag(src_neg_flags[k]))
+         if (has_source_mod(i, mod_neg))
             pflags |= ValuePrintFlags::has_neg;
          if (has_alu_flag(src_rel_flags[k]))
             pflags |= ValuePrintFlags::is_rel;
-         if (i < 2)
-            if (has_alu_flag(src_abs_flags[k]))
+         if (n_source_per_slot <= 2)
+            if (has_source_mod(i, mod_abs))
                pflags |= ValuePrintFlags::has_abs;
 
          if (pflags & ValuePrintFlags::has_neg)
@@ -317,7 +334,7 @@ AluInstr::can_propagate_src() const
 
    assert(m_dest);
 
-   if (!m_dest->is_ssa()) {
+   if (!m_dest->has_flag(Register::ssa)) {
       return false;
    }
 
@@ -326,9 +343,55 @@ AluInstr::can_propagate_src() const
 
    if (m_dest->pin() == pin_chan)
       return src_reg->pin() == pin_none ||
+             src_reg->pin() == pin_free ||
              (src_reg->pin() == pin_chan && src_reg->chan() == m_dest->chan());
 
    return m_dest->pin() == pin_none || m_dest->pin() == pin_free;
+}
+
+class ReplaceIndirectArrayAddr : public RegisterVisitor {
+public:
+   void visit(Register& value) override { (void)value; }
+   void visit(LocalArray& value) override
+   {
+      (void)value;
+      unreachable("An array can't be used as address");
+   }
+   void visit(LocalArrayValue& value) override;
+   void visit(UniformValue& value) override;
+   void visit(LiteralConstant& value) override { (void)value; }
+   void visit(InlineConstant& value) override { (void)value; }
+
+   PRegister new_addr;
+};
+
+void ReplaceIndirectArrayAddr::visit(LocalArrayValue& value)
+{
+   if (new_addr->sel() == 0 && value.addr()->as_register())
+      value.set_addr(new_addr);
+}
+
+void ReplaceIndirectArrayAddr::visit(UniformValue& value)
+{
+   if (value.buf_addr() && value.buf_addr()->as_register() &&
+       (new_addr->sel() == 1 || new_addr->sel() == 2)) {
+      value.set_buf_addr(new_addr);
+   }
+}
+
+void AluInstr::update_indirect_addr(PRegister reg)
+{
+   ReplaceIndirectArrayAddr visitor;
+   visitor.new_addr = reg;
+   assert(reg->has_flag(Register::addr_or_idx));
+
+   if (m_dest)
+      m_dest->accept(visitor);
+
+   for (auto src : m_src)
+      src->accept(visitor);
+
+   reg->add_use(this);
 }
 
 bool
@@ -349,7 +412,10 @@ AluInstr::can_propagate_dest() const
       return false;
    }
 
-   if (!src_reg->is_ssa())
+   if (!src_reg->has_flag(Register::ssa))
+      return false;
+
+   if (!m_dest->has_flag(Register::ssa))
       return false;
 
    if (src_reg->pin() == pin_chan)
@@ -366,7 +432,7 @@ AluInstr::can_copy_propagate() const
    if (m_opcode != op1_mov)
       return false;
 
-   if (has_alu_flag(alu_src0_abs) || has_alu_flag(alu_src0_neg) ||
+   if (has_source_mod(0, mod_abs) || has_source_mod(0, mod_neg) ||
        has_alu_flag(alu_dst_clamp))
       return false;
 
@@ -376,63 +442,15 @@ AluInstr::can_copy_propagate() const
 bool
 AluInstr::replace_source(PRegister old_src, PVirtualValue new_src)
 {
+   if (!can_replace_source(old_src, new_src))
+      return false;
+
+   return do_replace_source(old_src, new_src);
+}
+
+bool AluInstr::do_replace_source(PRegister old_src, PVirtualValue new_src)
+{
    bool process = false;
-
-   if (!check_readport_validation(old_src, new_src))
-      return false;
-
-   /* If the old source is an array element, we assume that there
-    * might have been an (untracked) indirect access, so don't replace
-    * this source */
-   if (old_src->pin() == pin_array)
-      return false;
-
-   if (new_src->get_addr()) {
-      for (auto& s : m_src) {
-         auto addr = s->get_addr();
-         /* can't have two differen't indirect addresses in the same instr */
-         if (addr && !addr->equal_to(*new_src->get_addr()))
-            return false;
-      }
-   }
-
-   if (m_dest) {
-      /* We don't allow src and dst with rel and different indirect register
-       * addresses */
-      if (m_dest->pin() == pin_array && new_src->pin() == pin_array) {
-         auto dav = static_cast<const LocalArrayValue *>(m_dest)->addr();
-         auto sav = static_cast<const LocalArrayValue *>(new_src)->addr();
-         if (dav && sav && dav->as_register() && !dav->equal_to(*sav))
-            return false;
-      }
-   }
-
-   /* Check the readports */
-   if (m_alu_slots * alu_ops.at(m_opcode).nsrc > 2 || m_parent_group) {
-      AluReadportReservation read_port_check =
-         !m_parent_group ? AluReadportReservation() : m_parent_group->readport_reserer();
-
-      int nsrc = alu_ops.at(m_opcode).nsrc;
-      PVirtualValue src[3];
-
-      for (int s = 0; s < m_alu_slots; ++s) {
-         for (int i = 0; i < nsrc; ++i) {
-            auto old_s = m_src[i + nsrc * s];
-            src[i] = old_s->equal_to(*old_src) ? new_src : old_s;
-         }
-         AluBankSwizzle bs = alu_vec_012;
-         while (bs != alu_vec_unknown) {
-            if (read_port_check.schedule_vec_src(src, nsrc, bs)) {
-               break;
-            }
-            ++bs;
-         }
-         if (bs == alu_vec_unknown)
-            return false;
-      }
-      if (m_parent_group)
-         m_parent_group->set_readport_reserer(read_port_check);
-   }
 
    for (unsigned i = 0; i < m_src.size(); ++i) {
       if (old_src->equal_to(*m_src[i])) {
@@ -446,7 +464,83 @@ AluInstr::replace_source(PRegister old_src, PVirtualValue new_src)
          r->add_use(this);
       old_src->del_use(this);
    }
+
    return process;
+}
+
+bool AluInstr::replace_src(int i, PVirtualValue new_src, uint32_t to_set,
+                           SourceMod to_clear)
+{
+   auto old_src = m_src[i]->as_register();
+   assert(old_src);
+
+   if (!can_replace_source(old_src, new_src))
+      return false;
+
+   assert(old_src);
+   old_src->del_use(this);
+
+   m_src[i] = new_src;
+
+   auto r = new_src->as_register();
+   if (r)
+      r->add_use(this);
+
+   m_source_modifiers |= to_set << (2 * i);
+   m_source_modifiers &= ~(to_clear  << (2 * i));
+
+   return true;
+}
+
+
+bool AluInstr::can_replace_source(PRegister old_src, PVirtualValue new_src)
+{
+   if (!check_readport_validation(old_src, new_src))
+      return false;
+
+   /* If the old or new source is an array element, we assume that there
+    * might have been an (untracked) indirect access, so don't replace
+    * this source */
+   if (old_src->pin() == pin_array || new_src->pin() == pin_array)
+      return false;
+
+   auto [addr, dummy, index] = indirect_addr();
+   auto addr_reg = addr ?  addr->as_register() : nullptr;
+   auto index_reg = index ? index->as_register() : nullptr;
+
+   if (auto u = new_src->as_uniform()) {
+      if (u && u->buf_addr()) {
+
+         /* Don't mix indirect buffer and indirect registers, because the
+          * scheduler can't handle it yet. */
+         if (addr_reg)
+            return false;
+
+         /* Don't allow two different index registers, can't deal with that yet */
+         if (index_reg && !index_reg->equal_to(*u->buf_addr()))
+            return false;
+      }
+   }
+
+   if (auto new_addr = new_src->get_addr()) {
+      auto new_addr_reg = new_addr->as_register();
+      bool new_addr_lowered = new_addr_reg &&
+                              new_addr_reg->has_flag(Register::addr_or_idx);
+
+      if (addr_reg) {
+         if (!addr_reg->equal_to(*new_addr) || new_addr_lowered ||
+             addr_reg->has_flag(Register::addr_or_idx))
+            return false;
+      }
+      if (m_dest->has_flag(Register::addr_or_idx)) {
+         if (new_src->pin() == pin_array) {
+            auto s = static_cast<const LocalArrayValue *>(new_src)->addr();
+            if (!s->as_inline_const() || !s->as_literal())
+               return false;
+         }
+      }
+   }
+   return true;
 }
 
 void
@@ -465,17 +559,42 @@ AluInstr::set_sources(SrcValues src)
    }
 }
 
-uint8_t
-AluInstr::allowed_dest_chan_mask() const
+uint8_t AluInstr::allowed_src_chan_mask() const
 {
-   if (alu_slots() != 1) {
-      if (has_alu_flag(alu_is_cayman_trans)) {
-         return (1 << alu_slots()) - 1;
-      } else {
-         return 0;
-      }
+   if (m_alu_slots < 2)
+      return 0xf;
+
+   int chan_use_count[4] = {0};
+
+   for (auto s : m_src) {
+       auto r = s->as_register();
+       if (r)
+           ++chan_use_count[r->chan()];
    }
-   return 0xf;
+   /* Each channel can only be loaded in one of three cycles,
+    * so if a channel is already used three times, we can't
+    * add another source withthis channel.
+    * Since we want to move away from one channel to another, it
+    * is not important to know which is the old channel that will
+    * be freed by the channel switch.*/
+   int mask = 0;
+
+   /* Be conservative about channel use when using more than two
+    * slots. Currently a constellatioon of
+    *
+    *  ALU d.x = f(r0.x, r1.y)
+    *  ALU _.y = f(r2.y, r3.x)
+    *  ALU _.z = f(r4.x, r5.y)
+    *
+    * will fail to be split. To get constellations like this to be scheduled
+    * properly will need some work on the bank swizzle check.
+    */
+   int maxuse = m_alu_slots > 2 ? 2 : 3;
+   for (int i = 0; i < 4; ++i) {
+       if (chan_use_count[i] < maxuse)
+           mask |= 1 << i;
+   }
+   return mask;
 }
 
 bool
@@ -491,8 +610,8 @@ AluInstr::replace_dest(PRegister new_dest, AluInstr *move_instr)
       return false;
 
    /* Currently we bail out when an array write should be moved, because
-    * decalring an array write is currently not well defined. The
-    * Whole "backwards" copy propagation shoul dprobably be replaced by some
+    * declaring an array write is currently not well defined. The
+    * Whole "backwards" copy propagation should dprobably be replaced by some
     * forward peep holew optimization */
    /*
    if (new_dest->pin() == pin_array) {
@@ -551,32 +670,34 @@ AluInstr::pin_sources_to_chan()
 bool
 AluInstr::check_readport_validation(PRegister old_src, PVirtualValue new_src) const
 {
-   bool success = true;
-   AluReadportReservation rpr_sum;
-
    if (m_src.size() < 3)
       return true;
+
+   bool success = true;
+   AluReadportReservation rpr_sum;
 
    unsigned nsrc = alu_ops.at(m_opcode).nsrc;
    assert(nsrc * m_alu_slots == m_src.size());
 
    for (int s = 0; s < m_alu_slots && success; ++s) {
-      for (AluBankSwizzle i = alu_vec_012; i != alu_vec_unknown; ++i) {
-         auto ireg = m_src.begin() + s * nsrc;
+      PVirtualValue src[3];
+      auto ireg = m_src.begin() + s * nsrc;
 
+      for (unsigned i = 0; i < nsrc; ++i, ++ireg)
+         src[i] = old_src->equal_to(**ireg) ? new_src : *ireg;
+
+      AluBankSwizzle bs = alu_vec_012;
+      while (bs != alu_vec_unknown) {
          AluReadportReservation rpr = rpr_sum;
-         PVirtualValue s[3];
-
-         for (unsigned i = 0; i < nsrc; ++i, ++ireg)
-            s[i] = old_src->equal_to(**ireg) ? new_src : *ireg;
-
-         if (rpr.schedule_vec_src(s, nsrc, i)) {
+         if (rpr.schedule_vec_src(src, nsrc, bs)) {
             rpr_sum = rpr;
             break;
-         } else {
-            success = false;
          }
+         ++bs;
       }
+
+      if (bs == alu_vec_unknown)
+         success = false;
    }
    return success;
 }
@@ -639,15 +760,18 @@ public:
    void visit(const InlineConstant& value) { (void)value; }
 
    PRegister addr{nullptr};
-   bool is_index{false};
+   PRegister index{nullptr};
+   bool addr_is_for_dest{false};
 };
 
 void
 ResolveIndirectArrayAddr::visit(const LocalArrayValue& value)
 {
    auto a = value.addr();
-   if (a)
+   if (a) {
       addr = a->as_register();
+      assert(!addr_is_for_dest);
+   }
 }
 
 void
@@ -655,12 +779,11 @@ ResolveIndirectArrayAddr::visit(const UniformValue& value)
 {
    auto a = value.buf_addr();
    if (a) {
-      addr = a->as_register();
-      is_index = true;
+      index = a->as_register();
    }
 }
 
-std::tuple<PRegister, bool, bool>
+std::tuple<PRegister, bool, PRegister>
 AluInstr::indirect_addr() const
 {
    ResolveIndirectArrayAddr visitor;
@@ -668,16 +791,13 @@ AluInstr::indirect_addr() const
    if (m_dest) {
       m_dest->accept(visitor);
       if (visitor.addr)
-         return {visitor.addr, false, false};
+          visitor.addr_is_for_dest = true;
    }
 
    for (auto s : m_src) {
       s->accept(visitor);
-      if (visitor.addr) {
-         return {visitor.addr, !visitor.is_index, visitor.is_index};
-      }
    }
-   return {nullptr, false, false};
+   return {visitor.addr, visitor.addr_is_for_dest, visitor.index};
 }
 
 AluGroup *
@@ -692,7 +812,18 @@ AluInstr::split(ValueFactory& vf)
 
    m_dest->del_parent(this);
 
-   for (int s = 0; s < m_alu_slots; ++s) {
+   int start_slot = 0;
+   bool is_dot = m_opcode == op2_dot_ieee;
+   auto last_opcode = m_opcode;
+
+   if (is_dot) {
+      start_slot = m_dest->chan();
+      last_opcode = op2_mul_ieee;
+   }
+
+
+   for (int k = 0; k < m_alu_slots; ++k) {
+      int s = k + start_slot;
 
       PRegister dst = m_dest->chan() == s ? m_dest : vf.dummy_dest(s);
       if (dst->pin() != pin_chgr) {
@@ -703,8 +834,9 @@ AluInstr::split(ValueFactory& vf)
       }
 
       SrcValues src;
-      for (int i = 0; i < alu_ops.at(m_opcode).nsrc; ++i) {
-         auto old_src = m_src[s * alu_ops.at(m_opcode).nsrc + i];
+      int nsrc = alu_ops.at(m_opcode).nsrc;
+      for (int i = 0; i < nsrc; ++i) {
+         auto old_src = m_src[k * nsrc + i];
          // Make it easy for the scheduler and pin the register to the
          // channel, otherwise scheduler would have to check whether a
          // channel switch is possible
@@ -718,20 +850,23 @@ AluInstr::split(ValueFactory& vf)
          src.push_back(old_src);
       }
 
-      auto instr = new AluInstr(m_opcode, dst, src, {}, 1);
+      auto opcode = k < m_alu_slots -1 ? m_opcode : last_opcode;
+
+
+      auto instr = new AluInstr(opcode, dst, src, {}, 1);
       instr->set_blockid(block_id(), index());
 
       if (s == 0 || !m_alu_flags.test(alu_64bit_op)) {
-         if (has_alu_flag(alu_src0_neg))
-            instr->set_alu_flag(alu_src0_neg);
-         if (has_alu_flag(alu_src1_neg))
-            instr->set_alu_flag(alu_src1_neg);
-         if (has_alu_flag(alu_src2_neg))
-            instr->set_alu_flag(alu_src2_neg);
-         if (has_alu_flag(alu_src0_abs))
-            instr->set_alu_flag(alu_src0_abs);
-         if (has_alu_flag(alu_src1_abs))
-            instr->set_alu_flag(alu_src1_abs);
+         if (has_source_mod(nsrc * k + 0, mod_neg))
+            instr->set_source_mod(0, mod_neg);
+         if (has_source_mod(nsrc * k + 1, mod_neg))
+            instr->set_source_mod(1, mod_neg);
+         if (has_source_mod(nsrc * k + 2, mod_neg))
+            instr->set_source_mod(2, mod_neg);
+         if (has_source_mod(nsrc * k + 0, mod_abs))
+            instr->set_source_mod(0, mod_abs);
+         if (has_source_mod(nsrc * k + 1, mod_abs))
+            instr->set_source_mod(1, mod_abs);
       }
       if (has_alu_flag(alu_dst_clamp))
          instr->set_alu_flag(alu_dst_clamp);
@@ -756,6 +891,7 @@ AluInstr::split(ValueFactory& vf)
          r->del_use(this);
       }
    }
+   group->set_origin(this);
 
    return group;
 }
@@ -771,8 +907,9 @@ AluInstr::register_priority() const
    if (!has_alu_flag(alu_no_schedule_bias)) {
 
       if (m_dest) {
-         if (m_dest->is_ssa() && has_alu_flag(alu_write)) {
-            if (m_dest->pin() != pin_group && m_dest->pin() != pin_chgr)
+         if (m_dest->has_flag(Register::ssa) && has_alu_flag(alu_write)) {
+            if (m_dest->pin() != pin_group && m_dest->pin() != pin_chgr &&
+                !m_dest->addr())
                priority--;
          } else {
             // Arrays and registers are pre-allocated, hence scheduling
@@ -783,14 +920,18 @@ AluInstr::register_priority() const
 
       for (const auto s : m_src) {
          auto r = s->as_register();
-         if (r && r->is_ssa()) {
-            int pending = 0;
-            for (auto b : r->uses()) {
-               if (!b->is_scheduled())
-                  ++pending;
+         if (r) {
+            if (r->has_flag(Register::ssa)) {
+               int pending = 0;
+               for (auto b : r->uses()) {
+                  if (!b->is_scheduled())
+                     ++pending;
+               }
+               if (pending == 1)
+                  ++priority;
             }
-            if (pending == 1)
-               ++priority;
+            if (r->addr() && r->addr()->as_register())
+               priority += 2;
          }
          if (s->as_uniform())
             ++priority;
@@ -822,7 +963,7 @@ AluInstr::propagate_death()
 
    /* We assume that nir does a good job in eliminating all ALU results that
     * are not needed, and we don't let copy propagation doesn't make the
-    * instruction obsolte, so just keep all */
+    * instruction obsolete, so just keep all */
    if (has_alu_flag(alu_is_cayman_trans))
       return false;
 
@@ -866,7 +1007,7 @@ static std::map<std::string, OpDescr> s_alu_map_by_name;
 static std::map<std::string, OpDescr> s_lds_map_by_name;
 
 Instr::Pointer
-AluInstr::from_string(istream& is, ValueFactory& value_factory, AluGroup *group)
+AluInstr::from_string(istream& is, ValueFactory& value_factory, AluGroup *group, bool is_cayman)
 {
    vector<string> tokens;
 
@@ -938,10 +1079,28 @@ AluInstr::from_string(istream& is, ValueFactory& value_factory, AluGroup *group)
       } else {
          op_descr = op->second;
       }
+      if (is_cayman) {
+         switch (op_descr.alu_opcode) {
+         case op1_cos:
+         case op1_exp_ieee:
+         case op1_log_clamped:
+         case op1_recip_ieee:
+         case op1_recipsqrt_ieee1:
+         case op1_sqrt_ieee:
+         case op1_sin:
+         case op2_mullo_int:
+         case op2_mulhi_int:
+         case op2_mulhi_uint:
+            flags.insert(alu_is_cayman_trans);
+         default:
+         ;
+         }
+      }
    }
 
    int slots = 0;
 
+   uint32_t src_mods = 0;
    SrcValues sources;
    do {
       ++t;
@@ -949,19 +1108,13 @@ AluInstr::from_string(istream& is, ValueFactory& value_factory, AluGroup *group)
          string srcstr = *t++;
 
          if (srcstr[0] == '-') {
-            if (!slots)
-               flags.insert(AluInstr::src_neg_flags[i]);
-            else
-               assert(flags.find(AluInstr::src_neg_flags[i]) != flags.end());
+            src_mods |= AluInstr::mod_neg << (2 * sources.size());
             srcstr = srcstr.substr(1);
          }
 
          if (srcstr[0] == '|') {
             assert(srcstr[srcstr.length() - 1] == '|');
-            if (!slots)
-               flags.insert(AluInstr::src_abs_flags[i]);
-            else
-               assert(flags.find(AluInstr::src_abs_flags[i]) != flags.end());
+            src_mods |= AluInstr::mod_abs << (2 * sources.size());
             srcstr = srcstr.substr(1, srcstr.length() - 2);
          }
 
@@ -1061,6 +1214,7 @@ AluInstr::from_string(istream& is, ValueFactory& value_factory, AluGroup *group)
    else
       retval = new AluInstr(op_descr.alu_opcode, dest, sources, flags, slots);
 
+   retval->m_source_modifiers = src_mods;
    retval->set_bank_swizzle(bank_swizzle);
    retval->set_cf_type(cf);
    if (group) {
@@ -1094,7 +1248,7 @@ AluInstr::do_ready() const
       }
    }
 
-   if (m_dest && !m_dest->is_ssa()) {
+   if (m_dest && !m_dest->has_flag(Register::ssa)) {
       if (m_dest->pin() == pin_array) {
          auto av = static_cast<const LocalArrayValue *>(m_dest);
          auto addr = av->addr();
@@ -1145,14 +1299,45 @@ AluInstrVisitor::visit(IfInstr *instr)
    instr->predicate()->accept(*this);
 }
 
+bool AluInstr::is_kill() const
+{
+   if (has_alu_flag(alu_is_lds))
+      return false;
+
+   switch (m_opcode) {
+   case op2_kille:
+   case op2_kille_int:
+   case op2_killne:
+   case op2_killne_int:
+   case op2_killge:
+   case op2_killge_int:
+   case op2_killge_uint:
+   case op2_killgt:
+   case op2_killgt_int:
+   case op2_killgt_uint:
+      return true;
+   default:
+      return false;
+   }
+}
+
+enum AluMods {
+   mod_none,
+   mod_src0_abs,
+   mod_src0_neg,
+   mod_dest_clamp,
+};
+
 static bool
 emit_alu_b2x(const nir_alu_instr& alu, AluInlineConstants mask, Shader& shader);
+
+
 
 static bool
 emit_alu_op1(const nir_alu_instr& alu,
              EAluOp opcode,
              Shader& shader,
-             const AluOpFlags& flags = 0);
+             AluMods mod = mod_none);
 static bool
 emit_alu_op1_64bit(const nir_alu_instr& alu,
                    EAluOp opcode,
@@ -1186,6 +1371,8 @@ static bool
 emit_alu_f2f32(const nir_alu_instr& alu, Shader& shader);
 static bool
 emit_alu_abs64(const nir_alu_instr& alu, Shader& shader);
+static bool
+emit_alu_fsat64(const nir_alu_instr& alu, Shader& shader);
 
 static bool
 emit_alu_op2(const nir_alu_instr& alu,
@@ -1212,9 +1399,6 @@ emit_any_all_icomp(
    const nir_alu_instr& alu, EAluOp opcode, int nc, bool all, Shader& shader);
 
 static bool
-emit_alu_i2orf2_b1(const nir_alu_instr& alu, EAluOp opcode, Shader& shader);
-
-static bool
 emit_alu_comb_with_zero(const nir_alu_instr& alu, EAluOp opcode, Shader& shader);
 static bool
 emit_unpack_64_2x32_split(const nir_alu_instr& alu, int comp, Shader& shader);
@@ -1236,6 +1420,8 @@ emit_unpack_32_2x16_split_y(const nir_alu_instr& alu, Shader& shader);
 
 static bool
 emit_dot(const nir_alu_instr& alu, int nelm, Shader& shader);
+static bool
+emit_dot4(const nir_alu_instr& alu, int nelm, Shader& shader);
 static bool
 emit_create_vec(const nir_alu_instr& instr, unsigned nc, Shader& shader);
 
@@ -1302,6 +1488,8 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
          return emit_alu_mov_64bit(*alu, shader);
       case nir_op_fneg:
          return emit_alu_neg(*alu, shader);
+      case nir_op_fsat:
+         return emit_alu_fsat64(*alu, shader);
       case nir_op_ffract:
          return emit_alu_op1_64bit(*alu, op1_fract_64, shader, true);
       case nir_op_feq32:
@@ -1500,10 +1688,8 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
    case nir_op_b32csel:
       return emit_alu_op3(*alu, op3_cnde_int, shader, {0, 2, 1});
 
-   case nir_op_f2b32:
-      return emit_alu_comb_with_zero(*alu, op2_setne_dx10, shader);
    case nir_op_fabs:
-      return emit_alu_op1(*alu, op1_mov, shader, {1 << alu_src0_abs});
+      return emit_alu_op1(*alu, op1_mov, shader, mod_src0_abs);
    case nir_op_fadd:
       return emit_alu_op2(*alu, op2_add, shader);
    case nir_op_fceil:
@@ -1518,11 +1704,17 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
    case nir_op_fdph:
       return emit_fdph(*alu, shader);
    case nir_op_fdot2:
-      return emit_dot(*alu, 2, shader);
+      if (shader.chip_class() >= ISA_CC_EVERGREEN)
+         return emit_dot(*alu, 2, shader);
+      else
+         return emit_dot4(*alu, 2, shader);
    case nir_op_fdot3:
-      return emit_dot(*alu, 3, shader);
+      if (shader.chip_class() >= ISA_CC_EVERGREEN)
+         return emit_dot(*alu, 3, shader);
+      else
+         return emit_dot4(*alu, 3, shader);
    case nir_op_fdot4:
-      return emit_dot(*alu, 4, shader);
+      return emit_dot4(*alu, 4, shader);
 
    case nir_op_feq32:
    case nir_op_feq:
@@ -1555,7 +1747,7 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       return emit_alu_op2(*alu, op2_mul, shader);
 
    case nir_op_fneg:
-      return emit_alu_op1(*alu, op1_mov, shader, {1 << alu_src0_neg});
+      return emit_alu_op1(*alu, op1_mov, shader, mod_src0_neg);
    case nir_op_fneu32:
       return emit_alu_op2(*alu, op2_setne_dx10, shader);
    case nir_op_fneu:
@@ -1564,14 +1756,11 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
    case nir_op_fround_even:
       return emit_alu_op1(*alu, op1_rndne, shader);
    case nir_op_fsat:
-      return emit_alu_op1(*alu, op1_mov, shader, {1 << alu_dst_clamp});
+      return emit_alu_op1(*alu, op1_mov, shader, mod_dest_clamp);
    case nir_op_fsub:
       return emit_alu_op2(*alu, op2_add, shader, op2_opt_neg_src1);
    case nir_op_ftrunc:
       return emit_alu_op1(*alu, op1_trunc, shader);
-   case nir_op_i2b1:
-   case nir_op_i2b32:
-      return emit_alu_i2orf2_b1(*alu, op2_setne_int, shader);
    case nir_op_iadd:
       return emit_alu_op2_int(*alu, op2_add_int, shader);
    case nir_op_iand:
@@ -1687,7 +1876,7 @@ AluInstr::from_nir(nir_alu_instr *alu, Shader& shader)
       return emit_tex_fdd(*alu, TexInstr::get_gradient_v, false, shader);
    case nir_op_fddy_fine:
       return emit_tex_fdd(*alu, TexInstr::get_gradient_v, true, shader);
-   case nir_op_cube_r600:
+   case nir_op_cube_amd:
       return emit_alu_cube(*alu, shader);
    default:
       fprintf(stderr, "Unknown instruction '");
@@ -1730,10 +1919,6 @@ emit_alu_op1_64bit(const nir_alu_instr& alu,
                         value_factory.src64(alu.src[0], i, swz[0]),
                         {alu_write});
       group->add_instruction(ir);
-      if (alu.src[0].abs)
-         ir->set_alu_flag(alu_src0_abs);
-      if (alu.src[0].negate)
-         ir->set_alu_flag(alu_src0_neg);
 
       ir = new AluInstr(opcode,
                         value_factory.dest(alu.dest, 2 * i + 1, pin_chan),
@@ -1762,10 +1947,6 @@ emit_alu_mov_64bit(const nir_alu_instr& alu, Shader& shader)
                            {alu_write});
          shader.emit_instruction(ir);
       }
-      if (alu.src[0].abs)
-         ir->set_alu_flag(alu_src0_abs);
-      if (alu.src[0].negate)
-         ir->set_alu_flag(alu_src0_neg);
    }
    if (ir)
       ir->set_alu_flag(alu_last_instr);
@@ -1777,8 +1958,6 @@ emit_alu_neg(const nir_alu_instr& alu, Shader& shader)
 {
    auto& value_factory = shader.value_factory();
 
-   auto group = new AluGroup();
-
    AluInstr *ir = nullptr;
 
    for (unsigned i = 0; i < nir_dest_num_components(alu.dest.dest); ++i) {
@@ -1787,13 +1966,13 @@ emit_alu_neg(const nir_alu_instr& alu, Shader& shader)
                            value_factory.dest(alu.dest, 2 * i + c, pin_chan),
                            value_factory.src64(alu.src[0], i, c),
                            {alu_write});
-         group->add_instruction(ir);
+         shader.emit_instruction(ir);
       }
-      ir->set_alu_flag(alu_src0_neg);
+      ir->set_source_mod(0, AluInstr::mod_neg);
    }
    if (ir)
       ir->set_alu_flag(alu_last_instr);
-   shader.emit_instruction(group);
+
    return true;
 }
 
@@ -1813,10 +1992,85 @@ emit_alu_abs64(const nir_alu_instr& alu, Shader& shader)
                           value_factory.dest(alu.dest, 1, pin_chan),
                           value_factory.src64(alu.src[0], 0, 1),
                           AluInstr::last_write);
-   ir->set_alu_flag(alu_src0_abs);
+   ir->set_source_mod(0, AluInstr::mod_abs);
    shader.emit_instruction(ir);
    return true;
 }
+
+static bool
+try_propagat_fsat64(const nir_alu_instr& alu, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+   auto src0 = value_factory.src64(alu.src[0], 0, 0);
+   auto reg0 = src0->as_register();
+   if (!reg0)
+      return false;
+
+   if (!reg0->has_flag(Register::ssa))
+      return false;
+
+   if (reg0->parents().size() != 1)
+      return false;
+
+   if (!reg0->uses().empty())
+      return false;
+
+   auto parent = (*reg0->parents().begin())->as_alu();
+   if (!parent)
+      return false;
+
+   auto opinfo = alu_ops.at(parent->opcode());
+   if (!opinfo.can_clamp)
+      return false;
+
+   parent->set_alu_flag(alu_dst_clamp);
+   return true;
+}
+
+
+static bool
+emit_alu_fsat64(const nir_alu_instr& alu, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+
+   assert(nir_dest_num_components(alu.dest.dest) == 1);
+
+   if (try_propagat_fsat64(alu, shader)) {
+      auto ir = new AluInstr(op1_mov,
+                             value_factory.dest(alu.dest, 0, pin_chan),
+                             value_factory.src64(alu.src[0], 0, 0),
+                             AluInstr::write);
+      shader.emit_instruction(ir);
+
+      shader.emit_instruction(new AluInstr(op1_mov,
+                                           value_factory.dest(alu.dest, 1, pin_chan),
+                                           value_factory.src64(alu.src[0], 0, 1),
+                              AluInstr::last_write));
+   } else {
+
+      /* dest clamp doesn't work on plain 64 bit move, so add a zero
+       * to apply the modifier */
+
+      auto group = new AluGroup();
+      auto ir = new AluInstr(op2_add_64,
+                             value_factory.dest(alu.dest, 0, pin_chan),
+                             value_factory.src64(alu.src[0], 0, 1),
+                             value_factory.literal(0),
+                             AluInstr::write);
+      ir->set_alu_flag(alu_dst_clamp);
+      group->add_instruction(ir);
+
+      group->add_instruction(new AluInstr(op2_add_64,
+                                          value_factory.dest(alu.dest, 1, pin_chan),
+                                          value_factory.src64(alu.src[0], 0, 0),
+                                          value_factory.literal(0),
+                                          AluInstr::last_write));
+      shader.emit_instruction(group);
+
+   }
+   return true;
+}
+
 
 static bool
 emit_alu_op2_64bit(const nir_alu_instr& alu,
@@ -1848,19 +2102,6 @@ emit_alu_op2_64bit(const nir_alu_instr& alu,
                            value_factory.src64(alu.src[order[0]], k, 1),
                            value_factory.src64(alu.src[order[1]], k, 1),
                            i < 2 ? AluInstr::write : AluInstr::empty);
-
-         if (alu.src[0].abs)
-            ir->set_alu_flag(switch_src ? alu_src1_abs : alu_src0_abs);
-         if (alu.src[1].abs)
-            ir->set_alu_flag(switch_src ? alu_src0_abs : alu_src1_abs);
-         if (alu.src[0].negate)
-            ir->set_alu_flag(switch_src ? alu_src1_neg : alu_src0_neg);
-         if (alu.src[1].negate)
-            ir->set_alu_flag(switch_src ? alu_src0_neg : alu_src1_neg);
-         if (alu.dest.saturate && i == 0) {
-            ir->set_alu_flag(alu_dst_clamp);
-         }
-
          group->add_instruction(ir);
       }
 
@@ -1905,15 +2146,6 @@ emit_alu_op2_64bit_one_dst(const nir_alu_instr& alu,
       src[3] = value_factory.src64(alu.src[order[1]], k, 0);
 
       ir = new AluInstr(opcode, dest, src, AluInstr::write, 2);
-
-      if (alu.src[0].abs)
-         ir->set_alu_flag(switch_order ? alu_src1_abs : alu_src0_abs);
-      if (alu.src[1].abs)
-         ir->set_alu_flag(switch_order ? alu_src0_abs : alu_src1_abs);
-      if (alu.src[0].negate)
-         ir->set_alu_flag(switch_order ? alu_src1_neg : alu_src0_neg);
-      if (alu.src[1].negate)
-         ir->set_alu_flag(switch_order ? alu_src0_neg : alu_src1_neg);
       ir->set_alu_flag(alu_64bit_op);
 
       shader.emit_instruction(ir);
@@ -1938,11 +2170,8 @@ emit_alu_op1_64bit_trans(const nir_alu_instr& alu, EAluOp opcode, Shader& shader
                         value_factory.src64(alu.src[0], 0, 0),
                         i < 2 ? AluInstr::write : AluInstr::empty);
 
-      if (alu.src[0].abs || opcode == op1_sqrt_64)
-         ir->set_alu_flag(alu_src1_abs);
-      if (alu.src[0].negate)
-         ir->set_alu_flag(alu_src1_neg);
-
+      if (opcode == op1_sqrt_64)
+         ir->set_source_mod(0, AluInstr::mod_abs);
       group->add_instruction(ir);
    }
    if (ir)
@@ -1969,16 +2198,6 @@ emit_alu_fma_64bit(const nir_alu_instr& alu, EAluOp opcode, Shader& shader)
                         value_factory.src64(alu.src[1], 0, chan),
                         value_factory.src64(alu.src[2], 0, chan),
                         i < 2 ? AluInstr::write : AluInstr::empty);
-
-      if (i < 3) {
-         if (alu.src[0].negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (alu.src[1].negate)
-            ir->set_alu_flag(alu_src1_neg);
-         if (alu.src[2].negate)
-            ir->set_alu_flag(alu_src2_neg);
-      }
-
       group->add_instruction(ir);
    }
    if (ir)
@@ -2137,10 +2356,6 @@ emit_alu_b2x(const nir_alu_instr& alu, AluInlineConstants mask, Shader& shader)
                            src,
                            value_factory.inline_const(mask, 0),
                            {alu_write});
-         if (alu.src[0].negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (alu.src[0].abs)
-            ir->set_alu_flag(alu_src0_abs);
          shader.emit_instruction(ir);
       }
    }
@@ -2153,7 +2368,7 @@ static bool
 emit_alu_op1(const nir_alu_instr& alu,
              EAluOp opcode,
              Shader& shader,
-             const AluOpFlags& flags)
+             AluMods mod)
 {
    auto& value_factory = shader.value_factory();
 
@@ -2162,20 +2377,20 @@ emit_alu_op1(const nir_alu_instr& alu,
 
    for (unsigned i = 0; i < nir_dest_num_components(alu.dest.dest); ++i) {
       if (alu.dest.write_mask & (1 << i)) {
+
          ir = new AluInstr(opcode,
                            value_factory.dest(alu.dest, i, pin),
                            value_factory.src(alu.src[0], i),
                            {alu_write});
-
-         if (flags.test(alu_src0_abs) || alu.src[0].abs)
-            ir->set_alu_flag(alu_src0_abs);
-
-         if (alu.src[0].negate ^ flags.test(alu_src0_neg))
-            ir->set_alu_flag(alu_src0_neg);
-
-         if (flags.test(alu_dst_clamp) || alu.dest.saturate)
+         switch (mod) {
+         case mod_src0_abs:
+            ir->set_source_mod(0, AluInstr::mod_abs); break;
+         case mod_src0_neg:
+            ir->set_source_mod(0, AluInstr::mod_neg); break;
+         case mod_dest_clamp:
             ir->set_alu_flag(alu_dst_clamp);
-
+            default:;
+         }
          shader.emit_instruction(ir);
       }
    }
@@ -2201,7 +2416,7 @@ emit_alu_op2(const nir_alu_instr& alu,
       std::swap(idx0, idx1);
    }
 
-   bool src1_negate = (opts & AluInstr::op2_opt_neg_src1) ^ src1->negate;
+   bool src1_negate = (opts & AluInstr::op2_opt_neg_src1);
 
    auto pin = pin_for_components(alu);
    AluInstr *ir = nullptr;
@@ -2212,17 +2427,8 @@ emit_alu_op2(const nir_alu_instr& alu,
                            value_factory.src(*src0, i),
                            value_factory.src(*src1, i),
                            {alu_write});
-
-         if (src0->negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (src0->abs)
-            ir->set_alu_flag(alu_src0_abs);
          if (src1_negate)
-            ir->set_alu_flag(alu_src1_neg);
-         if (src1->abs)
-            ir->set_alu_flag(alu_src1_abs);
-         if (alu.dest.saturate)
-            ir->set_alu_flag(alu_dst_clamp);
+            ir->set_source_mod(1, AluInstr::mod_neg);
          shader.emit_instruction(ir);
       }
    }
@@ -2237,11 +2443,6 @@ emit_alu_op2_int(const nir_alu_instr& alu,
                  Shader& shader,
                  AluInstr::Op2Options opts)
 {
-   assert(!alu.src[0].abs);
-   assert(!alu.src[0].negate);
-   assert(!alu.src[1].abs);
-   assert(!alu.src[1].negate);
-
    return emit_alu_op2(alu, opcode, shader, opts);
 }
 
@@ -2267,20 +2468,6 @@ emit_alu_op3(const nir_alu_instr& alu,
                            value_factory.src(*src[1], i),
                            value_factory.src(*src[2], i),
                            {alu_write});
-
-         if (src[0]->negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (src[1]->negate)
-            ir->set_alu_flag(alu_src1_neg);
-         if (src[2]->negate)
-            ir->set_alu_flag(alu_src2_neg);
-
-         assert(!src[0]->abs);
-         assert(!src[1]->abs);
-         assert(!src[2]->abs);
-
-         if (alu.dest.saturate)
-            ir->set_alu_flag(alu_dst_clamp);
          ir->set_alu_flag(alu_write);
          shader.emit_instruction(ir);
       }
@@ -2306,16 +2493,6 @@ emit_any_all_fcomp2(const nir_alu_instr& alu, EAluOp opcode, Shader& shader)
                         value_factory.src(alu.src[0], i),
                         value_factory.src(alu.src[1], i),
                         {alu_write});
-      if (alu.src[0].abs)
-         ir->set_alu_flag(alu_src0_abs);
-      if (alu.src[0].negate)
-         ir->set_alu_flag(alu_src0_neg);
-
-      if (alu.src[1].abs)
-         ir->set_alu_flag(alu_src1_abs);
-      if (alu.src[1].negate)
-         ir->set_alu_flag(alu_src1_neg);
-
       shader.emit_instruction(ir);
    }
    ir->set_alu_flag(alu_last_instr);
@@ -2353,17 +2530,6 @@ emit_any_all_fcomp(const nir_alu_instr& alu, EAluOp op, int nc, bool all, Shader
                         value_factory.src(alu.src[0], i),
                         value_factory.src(alu.src[1], i),
                         {alu_write});
-
-      if (alu.src[0].abs)
-         ir->set_alu_flag(alu_src0_abs);
-      if (alu.src[0].negate)
-         ir->set_alu_flag(alu_src0_neg);
-
-      if (alu.src[1].abs)
-         ir->set_alu_flag(alu_src1_abs);
-      if (alu.src[1].negate)
-         ir->set_alu_flag(alu_src1_neg);
-
       shader.emit_instruction(ir);
    }
    if (ir)
@@ -2373,8 +2539,12 @@ emit_any_all_fcomp(const nir_alu_instr& alu, EAluOp op, int nc, bool all, Shader
 
    ir = new AluInstr(op1_max4, max_val, s, AluInstr::last_write, 4);
 
-   if (all)
-      ir->set_alu_flag(alu_src0_neg);
+   if (all) {
+      ir->set_source_mod(0, AluInstr::mod_neg);
+      ir->set_source_mod(1, AluInstr::mod_neg);
+      ir->set_source_mod(2, AluInstr::mod_neg);
+      ir->set_source_mod(3, AluInstr::mod_neg);
+   }
 
    shader.emit_instruction(ir);
 
@@ -2389,7 +2559,7 @@ emit_any_all_fcomp(const nir_alu_instr& alu, EAluOp op, int nc, bool all, Shader
                      value_factory.inline_const(ALU_SRC_1, 0),
                      AluInstr::last_write);
    if (all)
-      ir->set_alu_flag(alu_src1_neg);
+      ir->set_source_mod(1, AluInstr::mod_neg);
    shader.emit_instruction(ir);
 
    return true;
@@ -2461,35 +2631,45 @@ emit_dot(const nir_alu_instr& alu, int n, Shader& shader)
    const nir_alu_src& src0 = alu.src[0];
    const nir_alu_src& src1 = alu.src[1];
 
-   auto dest = value_factory.dest(alu.dest.dest, 0, pin_free);
+   auto dest = value_factory.dest(alu.dest.dest, 0, pin_chan);
 
-   AluInstr::SrcValues srcs(8);
+   AluInstr::SrcValues srcs(2 * n);
 
    for (int i = 0; i < n; ++i) {
       srcs[2 * i] = value_factory.src(src0, i);
       srcs[2 * i + 1] = value_factory.src(src1, i);
    }
 
-   for (int i = n; i < 4; ++i) {
-      srcs[2 * i] = value_factory.zero();
-      srcs[2 * i + 1] = value_factory.zero();
+   AluInstr *ir = new AluInstr(op2_dot_ieee, dest, srcs, AluInstr::last_write, n);
+
+   shader.emit_instruction(ir);
+   shader.set_flag(Shader::sh_disble_sb);
+
+   return true;
+}
+
+static bool
+emit_dot4(const nir_alu_instr& alu, int nelm, Shader& shader)
+{
+   auto& value_factory = shader.value_factory();
+   const nir_alu_src& src0 = alu.src[0];
+   const nir_alu_src& src1 = alu.src[1];
+
+   auto dest = value_factory.dest(alu.dest.dest, 0, pin_free);
+
+   AluInstr::SrcValues srcs(8);
+
+   for (int i = 0; i < nelm; ++i) {
+      srcs[2 * i] = value_factory.src(src0, i);
+      srcs[2 * i + 1] = value_factory.src(src1, i);
+   }
+   
+   for (int i = nelm; i < 4; ++i) {
+       srcs[2 * i] = value_factory.zero();
+       srcs[2 * i + 1] = value_factory.zero();
    }
 
-   auto op =
-      unlikely(shader.has_flag(Shader::sh_legacy_math_rules)) ? op2_dot4 : op2_dot4_ieee;
-   AluInstr *ir = new AluInstr(op, dest, srcs, AluInstr::last_write, 4);
-
-   if (src0.negate)
-      ir->set_alu_flag(alu_src0_neg);
-   if (src0.abs)
-      ir->set_alu_flag(alu_src0_abs);
-   if (src1.negate)
-      ir->set_alu_flag(alu_src1_neg);
-   if (src1.abs)
-      ir->set_alu_flag(alu_src1_abs);
-
-   if (alu.dest.saturate)
-      ir->set_alu_flag(alu_dst_clamp);
+   AluInstr *ir = new AluInstr(op2_dot4_ieee, dest, srcs, AluInstr::last_write, 4);
 
    shader.emit_instruction(ir);
    return true;
@@ -2514,22 +2694,7 @@ emit_fdph(const nir_alu_instr& alu, Shader& shader)
    srcs[6] = value_factory.one();
    srcs[7] = value_factory.src(src1, 3);
 
-   auto op =
-      unlikely(shader.has_flag(Shader::sh_legacy_math_rules)) ? op2_dot4 : op2_dot4_ieee;
-   AluInstr *ir = new AluInstr(op, dest, srcs, AluInstr::last_write, 4);
-
-   if (src0.negate)
-      ir->set_alu_flag(alu_src0_neg);
-   if (src0.abs)
-      ir->set_alu_flag(alu_src0_abs);
-   if (src1.negate)
-      ir->set_alu_flag(alu_src1_neg);
-   if (src1.abs)
-      ir->set_alu_flag(alu_src1_abs);
-
-   if (alu.dest.saturate)
-      ir->set_alu_flag(alu_dst_clamp);
-
+   AluInstr *ir = new AluInstr(op2_dot4_ieee, dest, srcs, AluInstr::last_write, 4);
    shader.emit_instruction(ir);
    return true;
 }
@@ -2543,42 +2708,11 @@ emit_create_vec(const nir_alu_instr& instr, unsigned nc, Shader& shader)
    for (unsigned i = 0; i < nc; ++i) {
       if (instr.dest.write_mask & (1 << i)) {
          auto src = value_factory.src(instr.src[i].src, instr.src[i].swizzle[0]);
-         auto dst = value_factory.dest(instr.dest.dest, i, pin_chan);
-         ir = new AluInstr(op1_mov, dst, src, {alu_write});
-
-         if (instr.dest.saturate)
-            ir->set_alu_flag(alu_dst_clamp);
-         if (instr.src[i].negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (instr.src[i].abs)
-            ir->set_alu_flag(alu_src0_abs);
-
-         shader.emit_instruction(ir);
+         auto dst = value_factory.dest(instr.dest.dest, i, pin_none);
+         shader.emit_instruction(new AluInstr(op1_mov, dst, src, {alu_write}));
       }
    }
 
-   if (ir)
-      ir->set_alu_flag(alu_last_instr);
-   return true;
-}
-
-static bool
-emit_alu_i2orf2_b1(const nir_alu_instr& alu, EAluOp opcode, Shader& shader)
-{
-   auto& value_factory = shader.value_factory();
-   AluInstr *ir = nullptr;
-   Pin pin = nir_dest_num_components(alu.dest.dest) == 1 ? pin_free : pin_none;
-
-   for (int i = 0; i < 4; ++i) {
-      if (alu.dest.write_mask & (1 << i)) {
-         ir = new AluInstr(opcode,
-                           value_factory.dest(alu.dest, i, pin),
-                           value_factory.src(alu.src[0], i),
-                           value_factory.zero(),
-                           AluInstr::write);
-         shader.emit_instruction(ir);
-      }
-   }
    if (ir)
       ir->set_alu_flag(alu_last_instr);
    return true;
@@ -2757,12 +2891,6 @@ emit_alu_trans_op1_eg(const nir_alu_instr& alu, EAluOp opcode, Shader& shader)
                            value_factory.dest(alu.dest.dest, i, pin),
                            value_factory.src(src0, i),
                            AluInstr::last_write);
-         if (src0.negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (src0.abs)
-            ir->set_alu_flag(alu_src0_abs);
-         if (alu.dest.saturate)
-            ir->set_alu_flag(alu_dst_clamp);
          ir->set_alu_flag(alu_is_trans);
          shader.emit_instruction(ir);
       }
@@ -2787,10 +2915,6 @@ emit_alu_f2i32_or_u32_eg(const nir_alu_instr& alu, EAluOp opcode, Shader& shader
                         reg[i],
                         value_factory.src(alu.src[0], i),
                         AluInstr::last_write);
-      if (alu.src[0].abs)
-         ir->set_alu_flag(alu_src0_abs);
-      if (alu.src[0].negate)
-         ir->set_alu_flag(alu_src0_neg);
       shader.emit_instruction(ir);
    }
 
@@ -2818,29 +2942,19 @@ emit_alu_trans_op1_cayman(const nir_alu_instr& alu, EAluOp opcode, Shader& shade
 
    auto pin = pin_for_components(alu);
 
-   unsigned ncomp = 4; //nir_dest_num_components(alu.dest.dest) == 4 ? 4 : 3;
+   const std::set<AluModifiers> flags({alu_write, alu_last_instr, alu_is_cayman_trans});
 
-   /* todo: Actually we need only three channels, but then we have
-    * to make sure that we don't hava w dest */
-   for (unsigned j = 0; j < ncomp; ++j) {
+   for (unsigned j = 0; j < nir_dest_num_components(alu.dest.dest); ++j) {
       if (alu.dest.write_mask & (1 << j)) {
+         unsigned ncomp =  j == 3 ? 4 : 3;
+
          AluInstr::SrcValues srcs(ncomp);
          PRegister dest = value_factory.dest(alu.dest.dest, j, pin, (1 << ncomp) - 1);
 
          for (unsigned i = 0; i < ncomp; ++i)
             srcs[i] = value_factory.src(src0, j);
 
-         auto ir = new AluInstr(opcode, dest, srcs, AluInstr::last_write, ncomp);
-
-         if (alu.src[0].abs)
-            ir->set_alu_flag(alu_src0_abs);
-         if (alu.src[0].negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (alu.dest.saturate)
-            ir->set_alu_flag(alu_dst_clamp);
-
-         ir->set_alu_flag(alu_is_cayman_trans);
-
+         auto ir = new AluInstr(opcode, dest, srcs, flags, ncomp);
          shader.emit_instruction(ir);
       }
    }
@@ -2865,16 +2979,6 @@ emit_alu_trans_op2_eg(const nir_alu_instr& alu, EAluOp opcode, Shader& shader)
                            value_factory.src(src0, i),
                            value_factory.src(src1, i),
                            AluInstr::last_write);
-         if (src0.negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (src0.abs)
-            ir->set_alu_flag(alu_src0_abs);
-         if (src1.negate)
-            ir->set_alu_flag(alu_src1_neg);
-         if (src1.abs)
-            ir->set_alu_flag(alu_src1_abs);
-         if (alu.dest.saturate)
-            ir->set_alu_flag(alu_dst_clamp);
          ir->set_alu_flag(alu_is_trans);
          shader.emit_instruction(ir);
       }
@@ -2892,6 +2996,8 @@ emit_alu_trans_op2_cayman(const nir_alu_instr& alu, EAluOp opcode, Shader& shade
 
    unsigned last_slot = 4;
 
+   const std::set<AluModifiers> flags({alu_write, alu_last_instr, alu_is_cayman_trans});
+
    for (unsigned k = 0; k < nir_dest_num_components(alu.dest.dest); ++k) {
       if (alu.dest.write_mask & (1 << k)) {
          AluInstr::SrcValues srcs(2 * last_slot);
@@ -2902,18 +3008,7 @@ emit_alu_trans_op2_cayman(const nir_alu_instr& alu, EAluOp opcode, Shader& shade
             srcs[2 * i + 1] = value_factory.src(src1, k);
          }
 
-         auto ir = new AluInstr(opcode, dest, srcs, AluInstr::last_write, last_slot);
-
-         if (src0.negate)
-            ir->set_alu_flag(alu_src0_neg);
-         if (src0.abs)
-            ir->set_alu_flag(alu_src0_abs);
-         if (src1.negate)
-            ir->set_alu_flag(alu_src1_neg);
-         if (src1.abs)
-            ir->set_alu_flag(alu_src1_abs);
-         if (alu.dest.saturate)
-            ir->set_alu_flag(alu_dst_clamp);
+         auto ir = new AluInstr(opcode, dest, srcs, flags, last_slot);
          ir->set_alu_flag(alu_is_cayman_trans);
          shader.emit_instruction(ir);
       }
@@ -2940,10 +3035,6 @@ emit_tex_fdd(const nir_alu_instr& alu, TexInstr::Opcode opcode, bool fine, Shade
    AluInstr *mv = nullptr;
    for (int i = 0; i < ncomp; ++i) {
       mv = new AluInstr(op1_mov, tmp[i], src[i], AluInstr::write);
-      if (alu.src[0].abs)
-         mv->set_alu_flag(alu_src0_abs);
-      if (alu.src[0].negate)
-         mv->set_alu_flag(alu_src0_neg);
       shader.emit_instruction(mv);
    }
    if (mv)

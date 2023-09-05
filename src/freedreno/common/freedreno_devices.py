@@ -22,9 +22,20 @@
 
 from mako.template import Template
 import sys
+from enum import Enum
 
 def max_bitfield_val(high, low, shift):
     return ((1 << (high - low)) - 1) << shift
+
+
+class CHIP(Enum):
+    A2XX = 2
+    A3XX = 3
+    A4XX = 4
+    A5XX = 5
+    A6XX = 6
+    A7XX = 7
+
 
 class State(object):
     def __init__(self):
@@ -89,9 +100,10 @@ class GPUInfo(Struct):
        tends to have lower limits, in which case a comment will describe
        the bitfield size/shift
     """
-    def __init__(self, gmem_align_w, gmem_align_h,
+    def __init__(self, chip, gmem_align_w, gmem_align_h,
                  tile_align_w, tile_align_h,
                  tile_max_w, tile_max_h, num_vsc_pipes):
+        self.chip          = chip.value
         self.gmem_align_w  = gmem_align_w
         self.gmem_align_h  = gmem_align_h
         self.tile_align_w  = tile_align_w
@@ -108,19 +120,17 @@ class A6xxGPUInfo(GPUInfo):
        into distinct sub-generations.  The template parameter avoids
        duplication of parameters that are unique to the sub-generation.
     """
-    def __init__(self, template, num_sp_cores, num_ccu, magic_regs):
-        super().__init__(gmem_align_w = 16, gmem_align_h = 4,
-                         tile_align_w = 32, tile_align_h = 32,
+    def __init__(self, chip, template, num_ccu, tile_align_w, tile_align_h, magic_regs):
+        super().__init__(chip, gmem_align_w = 16, gmem_align_h = 4,
+                         tile_align_w = tile_align_w,
+                         tile_align_h = tile_align_h,
                          tile_max_w   = 1024, # max_bitfield_val(5, 0, 5)
                          tile_max_h   = max_bitfield_val(14, 8, 4),
                          num_vsc_pipes = 32)
-        assert(num_sp_cores == num_ccu)
 
-        self.num_sp_cores = num_sp_cores
-
-        # 96 tile alignment seems correlated to 3 CCU
-        if num_ccu == 3:
-            self.tile_align_w = 96
+        # The # of SP cores seems to always match # of CCU
+        self.num_sp_cores = num_ccu
+        self.num_ccu = num_ccu
 
         self.a6xx = Struct()
         self.a6xx.magic = Struct()
@@ -146,6 +156,7 @@ add_gpus([
         GPUId(205),
         GPUId(220),
     ], GPUInfo(
+        CHIP.A2XX,
         gmem_align_w = 32,  gmem_align_h = 32,
         tile_align_w = 32,  tile_align_h = 32,
         tile_max_w   = 512,
@@ -159,6 +170,7 @@ add_gpus([
         GPUId(320),
         GPUId(330),
     ], GPUInfo(
+        CHIP.A3XX,
         gmem_align_w = 32,  gmem_align_h = 32,
         tile_align_w = 32,  tile_align_h = 32,
         tile_max_w   = 992, # max_bitfield_val(4, 0, 5)
@@ -171,6 +183,7 @@ add_gpus([
         GPUId(420),
         GPUId(430),
     ], GPUInfo(
+        CHIP.A4XX,
         gmem_align_w = 32,  gmem_align_h = 32,
         tile_align_w = 32,  tile_align_h = 32,
         tile_max_w   = 1024, # max_bitfield_val(4, 0, 5)
@@ -179,6 +192,7 @@ add_gpus([
     ))
 
 add_gpus([
+        GPUId(506),
         GPUId(508),
         GPUId(509),
         GPUId(510),
@@ -186,6 +200,7 @@ add_gpus([
         GPUId(530),
         GPUId(540),
     ], GPUInfo(
+        CHIP.A5XX,
         gmem_align_w = 64,  gmem_align_h = 32,
         tile_align_w = 64,  tile_align_h = 32,
         tile_max_w   = 1024, # max_bitfield_val(7, 0, 5)
@@ -231,6 +246,7 @@ a6xx_gen3 = dict(
         tess_use_shared = True,
         storage_16bit = True,
         has_tex_filter_cubic = True,
+        has_separate_chroma_filter = True,
         has_sample_locations = True,
         has_ccu_flush_bug = True,
         has_8bpp_ubwc = False,
@@ -238,6 +254,7 @@ a6xx_gen3 = dict(
         has_lrz_dir_tracking = True,
         enable_lrz_fast_clear = True,
         lrz_track_quirk = True,
+        has_per_view_viewport = True,
     )
 
 # a635, a660:
@@ -251,6 +268,7 @@ a6xx_gen4 = dict(
         tess_use_shared = True,
         storage_16bit = True,
         has_tex_filter_cubic = True,
+        has_separate_chroma_filter = True,
         has_sample_locations = True,
         has_ccu_flush_bug = True,
         has_cp_reg_write = False,
@@ -262,6 +280,7 @@ a6xx_gen4 = dict(
         has_dp4acc = True,
         enable_lrz_fast_clear = True,
         has_lrz_dir_tracking = True,
+        has_per_view_viewport = True,
     )
 
 add_gpus([
@@ -270,9 +289,11 @@ add_gpus([
         GPUId(618),
         GPUId(619),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen1,
-        num_sp_cores = 1,
         num_ccu = 1,
+        tile_align_w = 32,
+        tile_align_h = 32,
         magic_regs = dict(
             PC_POWER_CNTL = 0,
             TPL1_DBG_ECO_CNTL = 0x00108000,
@@ -281,6 +302,7 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000004,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x0,
+            RB_DBG_ECO_CNTL = 0x04100000,
             RB_DBG_ECO_CNTL_blit = 0x04100000,
             HLSQ_DBG_ECO_CNTL = 0x00080000,
             RB_UNKNOWN_8E01 = 0x00000001,
@@ -292,9 +314,11 @@ add_gpus([
 add_gpus([
         GPUId(620),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen1,
-        num_sp_cores = 1,
         num_ccu = 1,
+        tile_align_w = 32,
+        tile_align_h = 16,
         magic_regs = dict(
             PC_POWER_CNTL = 0,
             TPL1_DBG_ECO_CNTL = 0x01008000,
@@ -303,6 +327,7 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000004,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x01000000,
+            RB_DBG_ECO_CNTL = 0x04100000,
             RB_DBG_ECO_CNTL_blit = 0x04100000,
             HLSQ_DBG_ECO_CNTL = 0x0,
             RB_UNKNOWN_8E01 = 0x0,
@@ -314,9 +339,11 @@ add_gpus([
 add_gpus([
         GPUId(630),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen1,
-        num_sp_cores = 2,
         num_ccu = 2,
+        tile_align_w = 32,
+        tile_align_h = 16,
         magic_regs = dict(
             PC_POWER_CNTL = 1,
             TPL1_DBG_ECO_CNTL = 0x00108000,
@@ -325,7 +352,8 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000004,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x0,
-            RB_DBG_ECO_CNTL_blit = 0x04100000,
+            RB_DBG_ECO_CNTL = 0x04100000,
+            RB_DBG_ECO_CNTL_blit = 0x05100000,
             HLSQ_DBG_ECO_CNTL = 0x00080000,
             RB_UNKNOWN_8E01 = 0x00000001,
             VPC_DBG_ECO_CNTL = 0x0,
@@ -336,9 +364,11 @@ add_gpus([
 add_gpus([
         GPUId(640),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen2,
-        num_sp_cores = 2,
         num_ccu = 2,
+        tile_align_w = 32,
+        tile_align_h = 16,
         magic_regs = dict(
             PC_POWER_CNTL = 1,
             TPL1_DBG_ECO_CNTL = 0x00008000,
@@ -347,6 +377,7 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000004,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x0,
+            RB_DBG_ECO_CNTL = 0x04100000,
             RB_DBG_ECO_CNTL_blit = 0x04100000,
             HLSQ_DBG_ECO_CNTL = 0x0,
             RB_UNKNOWN_8E01 = 0x00000001,
@@ -358,9 +389,11 @@ add_gpus([
 add_gpus([
         GPUId(680),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen2,
-        num_sp_cores = 4,
         num_ccu = 4,
+        tile_align_w = 64,
+        tile_align_h = 32,
         magic_regs = dict(
             PC_POWER_CNTL = 3,
             TPL1_DBG_ECO_CNTL = 0x00108000,
@@ -369,6 +402,7 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000004,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x0,
+            RB_DBG_ECO_CNTL = 0x04100000,
             RB_DBG_ECO_CNTL_blit = 0x04100000,
             HLSQ_DBG_ECO_CNTL = 0x0,
             RB_UNKNOWN_8E01 = 0x00000001,
@@ -380,9 +414,11 @@ add_gpus([
 add_gpus([
         GPUId(650),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen3,
-        num_sp_cores = 3,
         num_ccu = 3,
+        tile_align_w = 96,
+        tile_align_h = 16,
         magic_regs = dict(
             PC_POWER_CNTL = 2,
             # this seems to be a chicken bit that fixes cubic filtering:
@@ -392,6 +428,7 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000004,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x01000000,
+            RB_DBG_ECO_CNTL = 0x04100000,
             RB_DBG_ECO_CNTL_blit = 0x04100000,
             HLSQ_DBG_ECO_CNTL = 0x0,
             RB_UNKNOWN_8E01 = 0x0,
@@ -407,9 +444,11 @@ add_gpus([
         # fallback wildcard entry should be last:
         GPUId(chip_id=0xffff06030500, name="Adreno 7c+ Gen 3"),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen4,
-        num_sp_cores = 2,
         num_ccu = 2,
+        tile_align_w = 32,
+        tile_align_h = 16,
         magic_regs = dict(
             PC_POWER_CNTL = 1,
             TPL1_DBG_ECO_CNTL = 0x05008000,
@@ -418,6 +457,7 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000084,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x00000006,
+            RB_DBG_ECO_CNTL = 0x04100000,
             RB_DBG_ECO_CNTL_blit = 0x04100000,
             HLSQ_DBG_ECO_CNTL = 0x0,
             RB_UNKNOWN_8E01 = 0x0,
@@ -429,9 +469,11 @@ add_gpus([
 add_gpus([
         GPUId(660),
     ], A6xxGPUInfo(
+        CHIP.A6XX,
         a6xx_gen4,
-        num_sp_cores = 3,
         num_ccu = 3,
+        tile_align_w = 96,
+        tile_align_h = 16,
         magic_regs = dict(
             PC_POWER_CNTL = 2,
             TPL1_DBG_ECO_CNTL = 0x05008000,
@@ -440,12 +482,51 @@ add_gpus([
             UCHE_CLIENT_PF = 0x00000084,
             PC_MODE_CNTL = 0x1f,
             SP_DBG_ECO_CNTL = 0x01000000,
+            RB_DBG_ECO_CNTL = 0x04100000,
             RB_DBG_ECO_CNTL_blit = 0x04100000,
             HLSQ_DBG_ECO_CNTL = 0x0,
             RB_UNKNOWN_8E01 = 0x0,
             VPC_DBG_ECO_CNTL = 0x02000000,
             UCHE_UNKNOWN_0E12 = 0x00000001
         )
+    ))
+
+add_gpus([
+        GPUId(690),
+    ], A6xxGPUInfo(
+        CHIP.A6XX,
+        a6xx_gen4,
+        num_ccu = 8,
+        tile_align_w = 64,
+        tile_align_h = 32,
+        magic_regs = dict(
+            PC_POWER_CNTL = 7,
+            TPL1_DBG_ECO_CNTL = 0x01008000,
+            GRAS_DBG_ECO_CNTL = 0x0,
+            SP_CHICKEN_BITS = 0x00001400,
+            UCHE_CLIENT_PF = 0x00000084,
+            PC_MODE_CNTL = 0x1f,
+            SP_DBG_ECO_CNTL = 0x00000000,
+            RB_DBG_ECO_CNTL = 0x00100000,
+            RB_DBG_ECO_CNTL_blit = 0x00100000,  # ???
+            HLSQ_DBG_ECO_CNTL = 0x0,
+            RB_UNKNOWN_8E01 = 0x0,
+            VPC_DBG_ECO_CNTL = 0x02000000,
+            UCHE_UNKNOWN_0E12 = 0x00000001
+        )
+    ))
+
+# Minimal definition needed for ir3 assembler/disassembler
+add_gpus([
+        GPUId(730),
+        GPUId(740),
+    ], A6xxGPUInfo(
+        CHIP.A7XX,
+        a6xx_gen4,
+        num_ccu = 4,
+        tile_align_w = 64,
+        tile_align_h = 32,
+        magic_regs = dict()
     ))
 
 template = """\

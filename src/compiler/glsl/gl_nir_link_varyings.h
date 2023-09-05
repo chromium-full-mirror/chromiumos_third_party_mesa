@@ -31,7 +31,7 @@
  */
 
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "program/prog_parameter.h"
 #include "util/bitset.h"
 
@@ -101,8 +101,6 @@ enum lowered_builtin_array_var {
    none,
    clip_distance,
    cull_distance,
-   tess_level_outer,
-   tess_level_inner,
 };
 
 /**
@@ -133,8 +131,8 @@ struct xfb_decl
    unsigned array_subscript;
 
    /**
-    * Non-zero if the variable is gl_ClipDistance, glTessLevelOuter or
-    * gl_TessLevelInner and the driver lowers it to gl_*MESA.
+    * Non-zero if the variable is gl_ClipDistance and the driver lowers it to
+    * gl_*MESA.
     */
    enum lowered_builtin_array_var lowered_builtin_array_variable;
 
@@ -216,5 +214,9 @@ xfb_decl_is_varying(const struct xfb_decl *xfb_decl)
 {
    return !xfb_decl->next_buffer_separator && !xfb_decl->skip_components;
 }
+
+bool
+gl_assign_attribute_or_color_locations(const struct gl_constants *consts,
+                                       struct gl_shader_program *prog);
 
 #endif /* GLSL_LINK_VARYINGS_H */

@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2007 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,15 +22,16 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 #ifndef PIPE_DEFINES_H
 #define PIPE_DEFINES_H
 
-#include "p_compiler.h"
+#include "util/compiler.h"
 
 #include "compiler/shader_enums.h"
+#include "util/os_time.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -249,7 +250,7 @@ enum pipe_map_flags
     * create time.
     */
    PIPE_MAP_READ = 1 << 0,
-   
+
    /**
     * Resource contents will be written back at buffer/texture_unmap
     * time (or modified as a result of being accessed directly).
@@ -261,7 +262,7 @@ enum pipe_map_flags
     */
    PIPE_MAP_READ_WRITE = PIPE_MAP_READ | PIPE_MAP_WRITE,
 
-   /** 
+   /**
     * The transfer should map the texture storage directly. The driver may
     * return NULL if that isn't possible, and the gallium frontend needs to cope
     * with that and use an alternative path without this flag.
@@ -517,7 +518,7 @@ enum pipe_flush_flags
  * The shared flag is quite underspecified, but certainly isn't a
  * binding flag - it seems more like a message to the winsys to create
  * a shareable allocation.
- * 
+ *
  * The third flag has been added to be able to force textures to be created
  * in linear mode (no tiling).
  */
@@ -557,28 +558,6 @@ enum pipe_resource_usage {
    PIPE_USAGE_STREAM,         /* uploaded data is used once */
    PIPE_USAGE_STAGING,        /* fast CPU access */
 };
-
-/**
- * Primitive types:
- */
-enum pipe_prim_type {
-   PIPE_PRIM_POINTS,
-   PIPE_PRIM_LINES,
-   PIPE_PRIM_LINE_LOOP,
-   PIPE_PRIM_LINE_STRIP,
-   PIPE_PRIM_TRIANGLES,
-   PIPE_PRIM_TRIANGLE_STRIP,
-   PIPE_PRIM_TRIANGLE_FAN,
-   PIPE_PRIM_QUADS,
-   PIPE_PRIM_QUAD_STRIP,
-   PIPE_PRIM_POLYGON,
-   PIPE_PRIM_LINES_ADJACENCY,
-   PIPE_PRIM_LINE_STRIP_ADJACENCY,
-   PIPE_PRIM_TRIANGLES_ADJACENCY,
-   PIPE_PRIM_TRIANGLE_STRIP_ADJACENCY,
-   PIPE_PRIM_PATCHES,
-   PIPE_PRIM_MAX,
-} ENUM_PACKED;
 
 /**
  * Tessellator spacing types
@@ -627,6 +606,8 @@ enum pipe_statistics_query_index {
    PIPE_STAT_QUERY_HS_INVOCATIONS,
    PIPE_STAT_QUERY_DS_INVOCATIONS,
    PIPE_STAT_QUERY_CS_INVOCATIONS,
+   PIPE_STAT_QUERY_TS_INVOCATIONS,
+   PIPE_STAT_QUERY_MS_INVOCATIONS,
 };
 
 /**
@@ -675,9 +656,6 @@ enum pipe_viewport_swizzle {
    PIPE_VIEWPORT_SWIZZLE_NEGATIVE_W,
 };
 
-#define PIPE_TIMEOUT_INFINITE 0xffffffffffffffffull
-
-
 /**
  * Device reset status.
  */
@@ -724,10 +702,13 @@ enum pipe_conservative_raster_mode
 /**
  * pipe_image_view access flags.
  */
-#define PIPE_IMAGE_ACCESS_READ       (1 << 0)
-#define PIPE_IMAGE_ACCESS_WRITE      (1 << 1)
-#define PIPE_IMAGE_ACCESS_READ_WRITE (PIPE_IMAGE_ACCESS_READ | \
-                                      PIPE_IMAGE_ACCESS_WRITE)
+#define PIPE_IMAGE_ACCESS_READ               (1 << 0)
+#define PIPE_IMAGE_ACCESS_WRITE              (1 << 1)
+#define PIPE_IMAGE_ACCESS_READ_WRITE         (PIPE_IMAGE_ACCESS_READ | \
+                                              PIPE_IMAGE_ACCESS_WRITE)
+#define PIPE_IMAGE_ACCESS_COHERENT           (1 << 2)
+#define PIPE_IMAGE_ACCESS_VOLATILE           (1 << 3)
+#define PIPE_IMAGE_ACCESS_TEX2D_FROM_BUFFER  (1 << 4)
 
 /**
  * Implementation capabilities/limits which are queried through
@@ -797,6 +778,7 @@ enum pipe_cap
    PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT,
    PIPE_CAP_START_INSTANCE,
    PIPE_CAP_QUERY_TIMESTAMP,
+   PIPE_CAP_TIMER_RESOLUTION,
    PIPE_CAP_TEXTURE_MULTISAMPLE,
    PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT,
    PIPE_CAP_CUBE_MAP_ARRAY,
@@ -804,7 +786,8 @@ enum pipe_cap
    PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT,
    PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY,
    PIPE_CAP_TGSI_TEXCOORD,
-   PIPE_CAP_TEXTURE_BUFFER_SAMPLER,
+   PIPE_CAP_LINEAR_IMAGE_PITCH_ALIGNMENT,
+   PIPE_CAP_LINEAR_IMAGE_BASE_ADDRESS_ALIGNMENT,
    PIPE_CAP_TEXTURE_TRANSFER_MODES,
    PIPE_CAP_QUERY_PIPELINE_STATISTICS,
    PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK,
@@ -850,7 +833,6 @@ enum pipe_cap
    PIPE_CAP_FORCE_PERSAMPLE_INTERP,
    PIPE_CAP_SHAREABLE_SHADERS,
    PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS,
-   PIPE_CAP_CLEAR_TEXTURE,
    PIPE_CAP_CLEAR_SCISSORED,
    PIPE_CAP_DRAW_PARAMETERS,
    PIPE_CAP_SHADER_PACK_HALF_FLOAT,
@@ -932,7 +914,6 @@ enum pipe_cap
    PIPE_CAP_SURFACE_SAMPLE_COUNT,
    PIPE_CAP_IMAGE_ATOMIC_FLOAT_ADD,
    PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE,
-   PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND,
    PIPE_CAP_DEST_SURFACE_SRGB_CONTROL,
    PIPE_CAP_NIR_COMPACT_ARRAYS,
    PIPE_CAP_MAX_VARYINGS,
@@ -1012,7 +993,11 @@ enum pipe_cap
    PIPE_CAP_QUERY_TIMESTAMP_BITS,
    /** For EGL_EXT_protected_content */
    PIPE_CAP_DEVICE_PROTECTED_CONTEXT,
+   PIPE_CAP_ALLOW_GLTHREAD_BUFFER_SUBDATA_OPT,
+   PIPE_CAP_NULL_TEXTURES,
+   PIPE_CAP_ASTC_VOID_EXTENTS_NEED_DENORM_FLUSH,
 
+   PIPE_CAP_VALIDATE_ALL_DIRTY_STATES,
    PIPE_CAP_LAST,
    /* XXX do not add caps after PIPE_CAP_LAST! */
 };
@@ -1028,7 +1013,7 @@ enum pipe_texture_transfer_mode {
  * return a bitmask of the supported priorities.  If the driver does not
  * support prioritized contexts, it can return 0.
  *
- * Note that these match __DRI2_RENDERER_HAS_CONTEXT_PRIORITY_*
+ * Note that these match __EGL_CONTEXT_PRIORITY_*_BIT.
  */
 #define PIPE_CONTEXT_PRIORITY_LOW     (1 << 0)
 #define PIPE_CONTEXT_PRIORITY_MEDIUM  (1 << 1)
@@ -1103,16 +1088,13 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_INT16,
    PIPE_SHADER_CAP_GLSL_16BIT_CONSTS,
    PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS,
-   PIPE_SHADER_CAP_PREFERRED_IR,
    PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED,
    PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS,
    PIPE_SHADER_CAP_DROUND_SUPPORTED, /* all rounding modes */
-   PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED,
    PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE,
    PIPE_SHADER_CAP_MAX_SHADER_BUFFERS,
    PIPE_SHADER_CAP_SUPPORTED_IRS,
    PIPE_SHADER_CAP_MAX_SHADER_IMAGES,
-   PIPE_SHADER_CAP_LDEXP_SUPPORTED,
    PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS,
    PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS,
 };
@@ -1155,8 +1137,9 @@ enum pipe_compute_cap
    PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE,
    PIPE_COMPUTE_CAP_MAX_CLOCK_FREQUENCY,
    PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS,
+   PIPE_COMPUTE_CAP_MAX_SUBGROUPS,
    PIPE_COMPUTE_CAP_IMAGES_SUPPORTED,
-   PIPE_COMPUTE_CAP_SUBGROUP_SIZE,
+   PIPE_COMPUTE_CAP_SUBGROUP_SIZES,
    PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK,
 };
 
@@ -1230,8 +1213,10 @@ struct pipe_query_data_pipeline_statistics
          uint64_t hs_invocations; /**< Num hull shader invocations. */
          uint64_t ds_invocations; /**< Num domain shader invocations. */
          uint64_t cs_invocations; /**< Num compute shader invocations. */
+         uint64_t ts_invocations; /**< Num task shader invocations. */
+         uint64_t ms_invocations; /**< Num mesh shader invocations. */
       };
-      uint64_t counters[11];
+      uint64_t counters[13];
    };
 };
 
@@ -1396,7 +1381,7 @@ enum pipe_perf_counter_data_type
 #define PIPE_UUID_SIZE 16
 #define PIPE_LUID_SIZE 8
 
-#ifdef PIPE_OS_UNIX
+#if DETECT_OS_UNIX
 #define PIPE_MEMORY_FD
 #endif
 

@@ -220,6 +220,8 @@ static VAStatus vlVaPostProcBlit(vlVaDriver *drv, vlVaContext *context,
       vlVaSurface *surf;
 
       surf = handle_table_get(drv->htab, context->target_id);
+      if (!surf)
+         return VA_STATUS_ERROR_INVALID_SURFACE;
       surf->templat.interlaced = false;
       dst->destroy(dst);
 
@@ -251,7 +253,17 @@ static VAStatus vlVaPostProcBlit(vlVaDriver *drv, vlVaContext *context,
       return VA_STATUS_SUCCESS;
    }
 
+   if (src->buffer_format == PIPE_FORMAT_YUYV ||
+       src->buffer_format == PIPE_FORMAT_UYVY) {
+      vl_compositor_yuv_deint_full(&drv->cstate, &drv->compositor,
+                                   src, dst, &src_rect, &dst_rect,
+                                   VL_COMPOSITOR_NONE);
+
+      return VA_STATUS_SUCCESS;
+   }
+
    if (src->interlaced != dst->interlaced) {
+      deinterlace = deinterlace ? deinterlace : VL_COMPOSITOR_WEAVE;
       vl_compositor_yuv_deint_full(&drv->cstate, &drv->compositor,
                                    src, dst, &src_rect, &dst_rect,
                                    deinterlace);
@@ -381,6 +393,10 @@ vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContext *contex
 
    src_surface = handle_table_get(drv->htab, param->surface);
    dst_surface = handle_table_get(drv->htab, context->target_id);
+   if (!src_surface || !dst_surface)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+   if (!src_surface->buffer || !dst_surface->buffer)
+      return VA_STATUS_ERROR_INVALID_SURFACE;
 
    pscreen = drv->vscreen->pscreen;
 
@@ -412,9 +428,6 @@ vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContext *contex
 
       return VA_STATUS_SUCCESS;
    }
-
-   if (!src_surface || !src_surface->buffer)
-      return VA_STATUS_ERROR_INVALID_SURFACE;
 
    src = src_surface->buffer;
    dst = dst_surface->buffer;
@@ -490,6 +503,7 @@ vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContext *contex
             return VA_STATUS_ERROR_ALLOCATION_FAILED;
       }
 
+      context->desc.vidproc.src_surface_fence = src_surface->fence;
       /* Perform VPBlit, if fail, fallback to other implementations below */
       if (VA_STATUS_SUCCESS == vlVaVidEngineBlit(drv, context, src_region, dst_region,
                                                  src, context->target, deinterlace, param))

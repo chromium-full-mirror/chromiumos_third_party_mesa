@@ -1,27 +1,8 @@
 /**************************************************************************
  *
  * Copyright 2017 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR
- * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  *
  **************************************************************************/
 
@@ -54,6 +35,7 @@
 #define RENCODE_IB_PARAM_ENCODE_CONTEXT_BUFFER     0x00000011
 #define RENCODE_IB_PARAM_VIDEO_BITSTREAM_BUFFER    0x00000012
 #define RENCODE_IB_PARAM_FEEDBACK_BUFFER           0x00000015
+#define RENCODE_IB_PARAM_ENCODE_STATISTICS         0x00000019
 
 #define RENCODE_HEVC_IB_PARAM_SLICE_CONTROL        0x00100001
 #define RENCODE_HEVC_IB_PARAM_SPEC_MISC            0x00100002
@@ -63,15 +45,6 @@
 #define RENCODE_H264_IB_PARAM_SPEC_MISC            0x00200002
 #define RENCODE_H264_IB_PARAM_ENCODE_PARAMS        0x00200003
 #define RENCODE_H264_IB_PARAM_DEBLOCKING_FILTER    0x00200004
-
-#define RENCODE_COLOR_VOLUME_G22_BT709             0
-#define RENCODE_COLOR_VOLUME_G10_BT2020            3
-
-#define RENCODE_COLOR_BIT_DEPTH_8_BIT              0
-#define RENCODE_COLOR_BIT_DEPTH_10_BIT             1
-
-#define RENCODE_COLOR_PACKING_FORMAT_NV12          0
-#define RENCODE_COLOR_PACKING_FORMAT_P010          1
 
 static void radeon_enc_op_preset(struct radeon_encoder *enc)
 {
@@ -89,6 +62,24 @@ static void radeon_enc_op_preset(struct radeon_encoder *enc)
       preset_mode = RENCODE_IB_OP_SET_SPEED_ENCODING_MODE;
 
    RADEON_ENC_BEGIN(preset_mode);
+   RADEON_ENC_END();
+}
+
+static void radeon_enc_quality_params(struct radeon_encoder *enc)
+{
+   enc->enc_pic.quality_params.vbaq_mode = enc->enc_pic.quality_modes.vbaq_mode;
+   enc->enc_pic.quality_params.scene_change_sensitivity = 0;
+   enc->enc_pic.quality_params.scene_change_min_idr_interval = 0;
+   enc->enc_pic.quality_params.two_pass_search_center_map_mode =
+                    (enc->enc_pic.quality_modes.pre_encode_mode) ? 1 : 0;
+   enc->enc_pic.quality_params.vbaq_strength = 0;
+
+   RADEON_ENC_BEGIN(enc->cmd.quality_params);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.vbaq_mode);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.scene_change_sensitivity);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.scene_change_min_idr_interval);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.two_pass_search_center_map_mode);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.vbaq_strength);
    RADEON_ENC_END();
 }
 
@@ -293,12 +284,12 @@ static void radeon_enc_nalu_sps_hevc(struct radeon_encoder *enc)
    } else if (pic->session_init.padding_width  != 0 ||
               pic->session_init.padding_height != 0) {
       radeon_enc_code_fixed_bits(enc, 0x1, 1);
+      radeon_enc_code_ue(enc, 0);
       radeon_enc_code_ue(enc, pic->session_init.padding_width / 2);
-      radeon_enc_code_ue(enc, pic->session_init.padding_width / 2);
-      radeon_enc_code_ue(enc, pic->session_init.padding_height / 2);
+      radeon_enc_code_ue(enc, 0);
       radeon_enc_code_ue(enc, pic->session_init.padding_height / 2);
    } else
-   radeon_enc_code_fixed_bits(enc, 0x0, 1);
+      radeon_enc_code_fixed_bits(enc, 0x0, 1);
 
    radeon_enc_code_ue(enc, pic->bit_depth_luma_minus8);
    radeon_enc_code_ue(enc, pic->bit_depth_chroma_minus8);
@@ -431,46 +422,38 @@ static void radeon_enc_nalu_pps_hevc(struct radeon_encoder *enc)
 static void radeon_enc_input_format(struct radeon_encoder *enc)
 {
    RADEON_ENC_BEGIN(enc->cmd.input_format);
-   if (enc->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10) {
-      RADEON_ENC_CS(RENCODE_COLOR_VOLUME_G10_BT2020);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(RENCODE_COLOR_BIT_DEPTH_10_BIT);
-      RADEON_ENC_CS(RENCODE_COLOR_PACKING_FORMAT_P010);
-   } else {
-      RADEON_ENC_CS(RENCODE_COLOR_VOLUME_G22_BT709);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(RENCODE_COLOR_BIT_DEPTH_8_BIT);
-      RADEON_ENC_CS(RENCODE_COLOR_PACKING_FORMAT_NV12);
-   }
+   RADEON_ENC_CS(enc->enc_pic.enc_input_format.input_color_volume);
+   RADEON_ENC_CS(enc->enc_pic.enc_input_format.input_color_space);
+   RADEON_ENC_CS(enc->enc_pic.enc_input_format.input_color_range);
+   RADEON_ENC_CS(enc->enc_pic.enc_input_format.input_chroma_subsampling);
+   RADEON_ENC_CS(enc->enc_pic.enc_input_format.input_chroma_location);
+   RADEON_ENC_CS(enc->enc_pic.enc_input_format.input_color_bit_depth);
+   RADEON_ENC_CS(enc->enc_pic.enc_input_format.input_color_packing_format);
    RADEON_ENC_END();
 }
 
 static void radeon_enc_output_format(struct radeon_encoder *enc)
 {
    RADEON_ENC_BEGIN(enc->cmd.output_format);
-   if (enc->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10) {
-      RADEON_ENC_CS(RENCODE_COLOR_VOLUME_G10_BT2020);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(RENCODE_COLOR_BIT_DEPTH_10_BIT);
-   } else {
-      RADEON_ENC_CS(RENCODE_COLOR_VOLUME_G22_BT709);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(0);
-      RADEON_ENC_CS(RENCODE_COLOR_BIT_DEPTH_8_BIT);
-   }
+   RADEON_ENC_CS(enc->enc_pic.enc_output_format.output_color_volume);
+   RADEON_ENC_CS(enc->enc_pic.enc_output_format.output_color_range);
+   RADEON_ENC_CS(enc->enc_pic.enc_output_format.output_chroma_location);
+   RADEON_ENC_CS(enc->enc_pic.enc_output_format.output_color_bit_depth);
    RADEON_ENC_END();
+}
+
+static uint32_t radeon_enc_ref_swizzle_mode(struct radeon_encoder *enc)
+{
+   /* return RENCODE_REC_SWIZZLE_MODE_LINEAR; for debugging purpose */
+   if (enc->enc_pic.bit_depth_luma_minus8 != 0)
+      return RENCODE_REC_SWIZZLE_MODE_8x8_1D_THIN_12_24BPP;
+   else
+      return RENCODE_REC_SWIZZLE_MODE_256B_S;
 }
 
 static void radeon_enc_ctx(struct radeon_encoder *enc)
 {
-   enc->enc_pic.ctx_buf.swizzle_mode = 0;
+   enc->enc_pic.ctx_buf.swizzle_mode = radeon_enc_ref_swizzle_mode(enc);
    enc->enc_pic.ctx_buf.two_pass_search_center_map_offset = 0;
 
    RADEON_ENC_BEGIN(enc->cmd.ctx);
@@ -513,6 +496,7 @@ static void encode(struct radeon_encoder *enc)
    enc->ctx(enc);
    enc->bitstream(enc);
    enc->feedback(enc);
+   enc->encode_statistics(enc);
    enc->intra_refresh(enc);
    enc->input_format(enc);
    enc->output_format(enc);
@@ -530,6 +514,7 @@ void radeon_enc_2_0_init(struct radeon_encoder *enc)
    enc->output_format = radeon_enc_output_format;
    enc->ctx = radeon_enc_ctx;
    enc->op_preset = radeon_enc_op_preset;
+   enc->quality_params = radeon_enc_quality_params;
 
    if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_HEVC) {
       enc->deblocking_filter = radeon_enc_loop_filter_hevc;
@@ -563,6 +548,7 @@ void radeon_enc_2_0_init(struct radeon_encoder *enc)
    enc->cmd.spec_misc_h264 = RENCODE_H264_IB_PARAM_SPEC_MISC;
    enc->cmd.enc_params_h264 = RENCODE_H264_IB_PARAM_ENCODE_PARAMS;
    enc->cmd.deblocking_filter_h264 = RENCODE_H264_IB_PARAM_DEBLOCKING_FILTER;
+   enc->cmd.enc_statistics = RENCODE_IB_PARAM_ENCODE_STATISTICS;
 
    enc->enc_pic.session_info.interface_version =
       ((RENCODE_FW_INTERFACE_MAJOR_VERSION << RENCODE_IF_MAJOR_VERSION_SHIFT) |

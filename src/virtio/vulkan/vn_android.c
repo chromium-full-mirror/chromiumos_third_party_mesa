@@ -191,11 +191,7 @@ vn_hal_open(const struct hw_module_t *mod,
             const char *id,
             struct hw_device_t **dev);
 
-static void UNUSED
-static_asserts(void)
-{
-   STATIC_ASSERT(HWVULKAN_DISPATCH_MAGIC == ICD_LOADER_MAGIC);
-}
+static_assert(HWVULKAN_DISPATCH_MAGIC == ICD_LOADER_MAGIC, "");
 
 PUBLIC struct hwvulkan_module_t HAL_MODULE_INFO_SYM = {
    .common = {
@@ -1113,32 +1109,6 @@ vn_android_get_drm_format_modifier_info(
 
    AHardwareBuffer_release(ahb);
    return true;
-}
-
-VkResult
-vn_android_image_from_ahb(struct vn_device *dev,
-                          const VkImageCreateInfo *create_info,
-                          const VkAllocationCallbacks *alloc,
-                          struct vn_image **out_img)
-{
-   const VkExternalFormatANDROID *ext_info =
-      vk_find_struct_const(create_info->pNext, EXTERNAL_FORMAT_ANDROID);
-
-   VkImageCreateInfo local_info;
-   if (ext_info && ext_info->externalFormat) {
-      assert(create_info->format == VK_FORMAT_UNDEFINED);
-      assert(create_info->imageType == VK_IMAGE_TYPE_2D);
-      assert(create_info->usage == VK_IMAGE_USAGE_SAMPLED_BIT);
-      assert(create_info->tiling == VK_IMAGE_TILING_OPTIMAL);
-      assert(!(create_info->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT));
-
-      local_info = *create_info;
-      local_info.format =
-         vn_android_drm_format_to_vk_format(ext_info->externalFormat);
-      create_info = &local_info;
-   }
-
-   return vn_image_create_deferred(dev, create_info, alloc, out_img);
 }
 
 VkResult

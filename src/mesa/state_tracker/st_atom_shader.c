@@ -40,6 +40,7 @@
 #include "main/framebuffer.h"
 #include "main/state.h"
 #include "main/texobj.h"
+#include "main/teximage.h"
 #include "main/texstate.h"
 #include "program/program.h"
 
@@ -78,6 +79,9 @@ update_gl_clamp(struct st_context *st, struct gl_program *prog, uint32_t *gl_cla
    if (!st->emulate_gl_clamp)
       return;
 
+   if (!st->ctx->Texture.NumSamplersWithClamp)
+      return;
+
    gl_clamp[0] = gl_clamp[1] = gl_clamp[2] = 0;
    GLbitfield samplers_used = prog->SamplersUsed;
    unsigned unit;
@@ -85,8 +89,7 @@ update_gl_clamp(struct st_context *st, struct gl_program *prog, uint32_t *gl_cla
    for (unit = 0; samplers_used; unit++, samplers_used >>= 1) {
       unsigned tex_unit = prog->SamplerUnits[unit];
       if (samplers_used & 1 &&
-          (st->ctx->Texture.Unit[tex_unit]._Current->Target != GL_TEXTURE_BUFFER ||
-           st->texture_buffer_sampler)) {
+          (st->ctx->Texture.Unit[tex_unit]._Current->Target != GL_TEXTURE_BUFFER)) {
          ASSERTED const struct gl_texture_object *texobj;
          struct gl_context *ctx = st->ctx;
          const struct gl_sampler_object *msamp;
@@ -122,7 +125,8 @@ st_update_fp( struct st_context *st )
 
    if (st->shader_has_one_variant[MESA_SHADER_FRAGMENT] &&
        !fp->ati_fs && /* ATI_fragment_shader always has multiple variants */
-       !fp->ExternalSamplersUsed /* external samplers need variants */) {
+       !fp->ExternalSamplersUsed && /* external samplers need variants */
+       !(!fp->shader_program && fp->ShadowSamplers)) {
       shader = fp->variants->driver_shader;
    } else {
       struct st_fp_variant_key key;
@@ -164,6 +168,18 @@ st_update_fp( struct st_context *st )
          }
       }
 
+      if (!fp->shader_program && fp->ShadowSamplers) {
+         u_foreach_bit(i, fp->ShadowSamplers) {
+            struct gl_texture_object *tex_obj =
+                _mesa_get_tex_unit(st->ctx, fp->SamplerUnits[i])->_Current;
+            GLenum16 baseFormat = _mesa_base_tex_image(tex_obj)->_BaseFormat;
+
+            if (baseFormat == GL_DEPTH_COMPONENT ||
+                baseFormat == GL_DEPTH_STENCIL)
+               key.depth_textures |= BITFIELD_BIT(i);
+         }
+      }
+
       key.external = st_get_external_sampler_key(st, fp);
       update_gl_clamp(st, st->ctx->FragmentProgram._Current, key.gl_clamp);
 
@@ -195,7 +211,7 @@ st_update_vp( struct st_context *st )
    assert(vp->Target == GL_VERTEX_PROGRAM_ARB);
 
    if (st->shader_has_one_variant[MESA_SHADER_VERTEX] &&
-       !st->vertdata_edgeflags) {
+       !st->ctx->Array._PerVertexEdgeFlagsEnabled) {
       st->vp_variant = st_common_variant(vp->variants);
    } else {
       struct st_common_variant_key key;
@@ -210,7 +226,7 @@ st_update_vp( struct st_context *st )
        * the input to the output.  We'll need to use similar logic to set
        * up the extra vertex_element input for edgeflags.
        */
-      key.passthrough_edgeflags = st->vertdata_edgeflags;
+      key.passthrough_edgeflags = st->ctx->Array._PerVertexEdgeFlagsEnabled;
 
       key.clamp_color = st->clamp_vert_color_in_shader &&
                         st->ctx->Light._ClampVertexColor &&

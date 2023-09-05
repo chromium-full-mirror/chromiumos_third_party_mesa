@@ -141,6 +141,7 @@ _blorp_combine_address(struct blorp_batch *batch, void *location,
 #define __gen_combine_address _blorp_combine_address
 
 #include "genxml/genX_pack.h"
+#include "common/intel_genX_state.h"
 
 #define _blorp_cmd_length(cmd) cmd ## _length
 #define _blorp_cmd_length_bias(cmd) cmd ## _length_bias
@@ -404,9 +405,8 @@ static void
 blorp_emit_vertex_buffers(struct blorp_batch *batch,
                           const struct blorp_params *params)
 {
-   struct GENX(VERTEX_BUFFER_STATE) vb[3];
-   uint32_t num_vbs = 2;
-   memset(vb, 0, sizeof(vb));
+   struct GENX(VERTEX_BUFFER_STATE) vb[2] = {};
+   const uint32_t num_vbs = ARRAY_SIZE(vb);
 
    struct blorp_address addrs[2] = {};
    uint32_t sizes[2];
@@ -592,6 +592,10 @@ blorp_emit_vertex_elements(struct blorp_batch *batch,
       sgvs.InstanceIDComponentNumber = COMP_1;
       sgvs.InstanceIDElementOffset = 0;
    }
+
+#if GFX_VER >= 11
+   blorp_emit(batch, GENX(3DSTATE_VF_SGVS_2), sgvs);
+#endif
 
    for (unsigned i = 0; i < num_elements; i++) {
       blorp_emit(batch, GENX(3DSTATE_VF_INSTANCING), vf) {
@@ -854,28 +858,6 @@ blorp_emit_ps_config(struct blorp_batch *batch,
       if (GFX_VER == 11)
          ps.SamplerCount = 0;
 
-      if (prog_data) {
-         brw_fs_get_dispatch_enables(devinfo, prog_data,
-                                     params->num_samples,
-                                     &ps._8PixelDispatchEnable,
-                                     &ps._16PixelDispatchEnable,
-                                     &ps._32PixelDispatchEnable);
-
-         ps.DispatchGRFStartRegisterForConstantSetupData0 =
-            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
-         ps.DispatchGRFStartRegisterForConstantSetupData1 =
-            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 1);
-         ps.DispatchGRFStartRegisterForConstantSetupData2 =
-            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 2);
-
-         ps.KernelStartPointer0 = params->wm_prog_kernel +
-                                  brw_wm_prog_data_prog_offset(prog_data, ps, 0);
-         ps.KernelStartPointer1 = params->wm_prog_kernel +
-                                  brw_wm_prog_data_prog_offset(prog_data, ps, 1);
-         ps.KernelStartPointer2 = params->wm_prog_kernel +
-                                  brw_wm_prog_data_prog_offset(prog_data, ps, 2);
-      }
-
       /* 3DSTATE_PS expects the number of threads per PSD, which is always 64
        * for pre Gfx11 and 128 for gfx11+; On gfx11+ If a programmed value is
        * k, it implies 2(k+1) threads. It implicitly scales for different GT
@@ -913,6 +895,51 @@ blorp_emit_ps_config(struct blorp_batch *batch,
       default:
          unreachable("Invalid fast clear op");
       }
+
+      /* The RENDER_SURFACE_STATE page for TGL says:
+       *
+       *   For an 8 bpp surface with NUM_MULTISAMPLES = 1, Surface Width not
+       *   multiple of 64 pixels and more than 1 mip level in the view, Fast
+       *   Clear is not supported when AUX_CCS_E is set in this field.
+       *
+       * The granularity of a fast-clear or ambiguate operation is likely one
+       * CCS element. For an 8 bpp primary surface, this maps to 32px x 4rows.
+       * Due to the surface layout parameters, if LOD0's width isn't a
+       * multiple of 64px, LOD1 and LOD2+ will share CCS elements. Assert that
+       * these operations aren't occurring on these LODs.
+       *
+       * We don't explicitly check for TGL+ because the restriction is
+       * technically applicable to all hardware. Platforms prior to TGL don't
+       * support CCS on 8 bpp surfaces. So, these unaligned fast clear
+       * operations shouldn't be occurring prior to TGL as well.
+       */
+      if (isl_format_get_layout(params->dst.surf.format)->bpb == 8 &&
+          params->dst.surf.logical_level0_px.width % 64 != 0 &&
+          params->dst.surf.levels >= 3 &&
+          params->dst.view.base_level >= 1) {
+         assert(params->num_samples == 1);
+         assert(!ps.RenderTargetFastClearEnable);
+      }
+
+      if (prog_data) {
+         intel_set_ps_dispatch_state(&ps, devinfo, prog_data,
+                                     params->num_samples,
+                                     0 /* msaa_flags */);
+
+         ps.DispatchGRFStartRegisterForConstantSetupData0 =
+            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
+         ps.DispatchGRFStartRegisterForConstantSetupData1 =
+            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 1);
+         ps.DispatchGRFStartRegisterForConstantSetupData2 =
+            brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 2);
+
+         ps.KernelStartPointer0 = params->wm_prog_kernel +
+                                  brw_wm_prog_data_prog_offset(prog_data, ps, 0);
+         ps.KernelStartPointer1 = params->wm_prog_kernel +
+                                  brw_wm_prog_data_prog_offset(prog_data, ps, 1);
+         ps.KernelStartPointer2 = params->wm_prog_kernel +
+                                  brw_wm_prog_data_prog_offset(prog_data, ps, 2);
+      }
    }
 
    blorp_emit(batch, GENX(3DSTATE_PS_EXTRA), psx) {
@@ -931,6 +958,7 @@ blorp_emit_ps_config(struct blorp_batch *batch,
    }
 
 #elif GFX_VER >= 7
+   const struct intel_device_info *devinfo = batch->blorp->compiler->devinfo;
 
    blorp_emit(batch, GENX(3DSTATE_WM), wm) {
       switch (params->hiz_op) {
@@ -977,9 +1005,9 @@ blorp_emit_ps_config(struct blorp_batch *batch,
 #endif
 
       if (prog_data) {
-         ps._8PixelDispatchEnable = prog_data->dispatch_8;
-         ps._16PixelDispatchEnable = prog_data->dispatch_16;
-         ps._32PixelDispatchEnable = prog_data->dispatch_32;
+         intel_set_ps_dispatch_state(&ps, devinfo, prog_data,
+                                     params->num_samples,
+                                     0 /* msaa_flags */);
 
          ps.DispatchGRFStartRegisterForConstantSetupData0 =
             brw_wm_prog_data_dispatch_grf_start_reg(prog_data, ps, 0);
@@ -1759,7 +1787,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
 
    isl_emit_depth_stencil_hiz_s(isl_dev, dw, &info);
 
-#if GFX_VER >= 12
+#if GFX_VER >= 11
    /* Wa_1408224581
     *
     * Workaround: Gfx12LP Astep only An additional pipe control with
@@ -1767,7 +1795,7 @@ blorp_emit_depth_stencil_config(struct blorp_batch *batch,
     * have an additional pipe control after the stencil state whenever
     * the surface state bits of this state is changing).
     *
-    * This also seems sufficient to handle Wa_14014148106.
+    * This also seems sufficient to handle Wa_14014097488.
     */
    blorp_emit(batch, GENX(PIPE_CONTROL), pc) {
       pc.PostSyncOperation = WriteImmediateData;
@@ -2142,12 +2170,6 @@ blorp_exec_compute(struct blorp_batch *batch, const struct blorp_params *params)
 #endif /* GFX_VER >= 7 */
 
 #if GFX_VERx10 >= 125
-
-   blorp_emit(batch, GENX(CFE_STATE), cfe) {
-      cfe.MaximumNumberofThreads =
-         devinfo->max_cs_threads * devinfo->subslice_total;
-   }
-
    assert(cs_prog_data->push.per_thread.regs == 0);
    blorp_emit(batch, GENX(COMPUTE_WALKER), cw) {
       cw.SIMDSize                       = dispatch.simd_size / 16;
@@ -2184,6 +2206,7 @@ blorp_exec_compute(struct blorp_batch *batch, const struct blorp_params *params)
          .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
          .SharedLocalMemorySize =
             encode_slm_size(GFX_VER, prog_data->total_shared),
+         .PreferredSLMAllocationSize = preferred_slm_allocation_size(devinfo),
          .NumberOfBarriers = cs_prog_data->uses_barrier,
       };
    }
@@ -2372,7 +2395,7 @@ xy_aux_mode(const struct brw_blorp_surface_info *info)
 {
    switch (info->aux_usage) {
    case ISL_AUX_USAGE_CCS_E:
-   case ISL_AUX_USAGE_GFX12_CCS_E:
+   case ISL_AUX_USAGE_FCV_CCS_E:
       return XY_CCS_E;
    case ISL_AUX_USAGE_NONE:
       return XY_NONE;

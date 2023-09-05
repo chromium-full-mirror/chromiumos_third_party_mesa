@@ -23,6 +23,7 @@
 // ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 // OTHER DEALINGS IN THE SOFTWARE.
 
+#include <filesystem>
 #include <sstream>
 #include <mutex>
 
@@ -38,6 +39,7 @@
 #include <llvm-c/Target.h>
 #include <LLVMSPIRVLib/LLVMSPIRVLib.h>
 
+#include <clang/Driver/Driver.h>
 #include <clang/CodeGen/CodeGenAction.h>
 #include <clang/Lex/PreprocessorOptions.h>
 #include <clang/Frontend/CompilerInstance.h>
@@ -62,6 +64,8 @@
 #endif
 
 #include "clc_helpers.h"
+
+namespace fs = std::filesystem;
 
 /* Use the highest version of SPIRV supported by SPIRV-Tools. */
 constexpr spv_target_env spirv_target = SPV_ENV_UNIVERSAL_1_5;
@@ -334,7 +338,6 @@ public:
          uint32_t spec_id = ins->words[ins->operands[2].offset];
          for (auto &c : specConstants) {
             if (c.second.id == spec_id) {
-               assert(c.first == id);
                return;
             }
          }
@@ -740,6 +743,7 @@ clc_free_kernels_info(const struct clc_kernel_info *kernels,
             free((void *)kernels[i].args[j].name);
             free((void *)kernels[i].args[j].type_name);
          }
+         free((void *)kernels[i].args);
       }
       free((void *)kernels[i].name);
    }
@@ -752,6 +756,9 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
                            const struct clc_compile_args *args,
                            const struct clc_logger *logger)
 {
+   static_assert(std::has_unique_object_representations<clc_optional_features>(),
+                 "no padding allowed inside clc_optional_features");
+
    std::string diag_log_str;
    raw_string_ostream diag_log_stream { diag_log_str };
 
@@ -776,7 +783,7 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
 #else
       "-finclude-default-header",
 #endif
-#if LLVM_VERSION_MAJOR >= 15
+#if LLVM_VERSION_MAJOR >= 15 && LLVM_VERSION_MAJOR < 17
       "-no-opaque-pointers",
 #endif
       // Add a default CL compiler version. Clang will pick the last one specified
@@ -792,6 +799,14 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
       "-U__SPIR__",
       "-U__SPIRV__",
    };
+
+   // llvm handles these extensions differently so we have to pass this flag instead to expose the clc functions
+   if (args->features.integer_dot_product) {
+      clang_opts.push_back("-Dcl_khr_integer_dot_product=1");
+      clang_opts.push_back("-D__opencl_c_integer_dot_product_input_4x8bit_packed=1");
+      clang_opts.push_back("-D__opencl_c_integer_dot_product_input_4x8bit=1");
+   }
+
    // We assume there's appropriate defines for __OPENCL_VERSION__ and __IMAGE_SUPPORT__
    // being provided by the caller here.
    clang_opts.insert(clang_opts.end(), args->args, args->args + args->num_args);
@@ -845,20 +860,31 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
       ::llvm::sys::path::append(system_header_path, "opencl-c.h");
       c->getPreprocessorOpts().addRemappedFile(system_header_path.str(),
          ::llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(opencl_c_source, ARRAY_SIZE(opencl_c_source) - 1)).release());
+      ::llvm::sys::path::remove_filename(system_header_path);
 #endif
 
-      ::llvm::sys::path::remove_filename(system_header_path);
       ::llvm::sys::path::append(system_header_path, "opencl-c-base.h");
       c->getPreprocessorOpts().addRemappedFile(system_header_path.str(),
          ::llvm::MemoryBuffer::getMemBuffer(llvm::StringRef(opencl_c_base_source, ARRAY_SIZE(opencl_c_base_source) - 1)).release());
+
+#if LLVM_VERSION_MAJOR >= 15
+      c->getPreprocessorOpts().Includes.push_back("opencl-c-base.h");
+#endif
    }
 #else
+   // GetResourcePath is a way to retrive the actual libclang resource dir based on a given binary
+   // or library. The path doesn't even need to exist, we just have to put something in there,
+   // because we might have linked clang statically.
+   auto libclang_path = fs::path(LLVM_LIB_DIR) / "libclang.so";
+   auto clang_res_path =
+      fs::path(clang::driver::Driver::GetResourcesPath(libclang_path.string())) / "include";
+
    c->getHeaderSearchOpts().UseBuiltinIncludes = true;
    c->getHeaderSearchOpts().UseStandardSystemIncludes = true;
-   c->getHeaderSearchOpts().ResourceDir = CLANG_RESOURCE_DIR;
+   c->getHeaderSearchOpts().ResourceDir = clang_res_path.string();
 
    // Add opencl-c generic search path
-   c->getHeaderSearchOpts().AddPath(CLANG_RESOURCE_DIR,
+   c->getHeaderSearchOpts().AddPath(clang_res_path.string(),
                                     clang::frontend::Angled,
                                     false, false);
    // Add opencl include
@@ -901,6 +927,10 @@ clc_compile_to_llvm_module(LLVMContext &llvm_ctx,
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_intel_subgroups");
    }
    if (args->features.subgroups) {
+      c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+__opencl_c_subgroups");
+   }
+   if (args->features.subgroups_ifp) {
+      assert(args->features.subgroups);
       c->getTargetOpts().OpenCLExtensionsAsWritten.push_back("+cl_khr_subgroups");
    }
 #endif
@@ -1086,7 +1116,7 @@ public:
          return;
 
       std::ostringstream message;
-      message << "(file=" << src
+      message << "(file=" << (src ? src : "input")
               << ",line=" << pos.line
               << ",column=" << pos.column
               << ",index=" << pos.index
@@ -1132,6 +1162,26 @@ clc_link_spirv_binaries(const struct clc_linker_args *args,
    memcpy(out_spirv->data, linkingResult.data(), out_spirv->size);
 
    return 0;
+}
+
+bool
+clc_validate_spirv(const struct clc_binary *spirv,
+                   const struct clc_logger *logger,
+                   const struct clc_validator_options *options)
+{
+   SPIRVMessageConsumer msgconsumer(logger);
+   spvtools::SpirvTools tools(spirv_target);
+   tools.SetMessageConsumer(msgconsumer);
+   spvtools::ValidatorOptions spirv_options;
+   const uint32_t *data = static_cast<const uint32_t *>(spirv->data);
+
+   if (options) {
+      spirv_options.SetUniversalLimit(
+         spv_validator_limit_max_function_args,
+         options->limit_max_function_arg);
+   }
+
+   return tools.Validate(data, spirv->size / 4, spirv_options);
 }
 
 int

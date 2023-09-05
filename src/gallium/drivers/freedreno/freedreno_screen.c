@@ -62,6 +62,7 @@
 #include "common/freedreno_uuid.h"
 
 #include "a2xx/ir2.h"
+#include "ir3/ir3_descriptor.h"
 #include "ir3/ir3_gallium.h"
 #include "ir3/ir3_nir.h"
 
@@ -145,6 +146,9 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 {
    struct fd_screen *screen = fd_screen(pscreen);
 
+   if (screen->aux_ctx)
+      screen->aux_ctx->destroy(screen->aux_ctx);
+
    if (screen->tess_bo)
       fd_bo_del(screen->tess_bo);
 
@@ -202,15 +206,17 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
    case PIPE_CAP_TEXTURE_BARRIER:
    case PIPE_CAP_INVALIDATE_BUFFER:
-   case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
    case PIPE_CAP_GLSL_TESS_LEVELS_AS_INPUTS:
    case PIPE_CAP_NIR_COMPACT_ARRAYS:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
    case PIPE_CAP_GL_SPIRV:
+   case PIPE_CAP_FBFETCH_COHERENT:
       return 1;
 
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
-   case PIPE_CAP_CLEAR_TEXTURE:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT:
+   case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
       return is_a6xx(screen);
 
    case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
@@ -305,6 +311,9 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
       return 0;
 
+   case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
+      return PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_FREEDRENO;
+
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_CUBE_MAP_ARRAY:
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
@@ -330,7 +339,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_GLSL_FEATURE_LEVEL:
    case PIPE_CAP_GLSL_FEATURE_LEVEL_COMPATIBILITY:
       if (is_a6xx(screen))
-         return 450;
+         return 460;
       else if (is_ir3(screen))
          return 140;
       else
@@ -365,7 +374,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FBFETCH:
       if (fd_device_version(screen->dev) >= FD_VERSION_GMEM_BASE &&
           is_a6xx(screen))
-         return 1;
+         return screen->max_rts;
       return 0;
    case PIPE_CAP_SAMPLE_SHADING:
       if (is_a6xx(screen))
@@ -462,6 +471,10 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return !is_a5xx(screen);
 
    /* Stream output. */
+   case PIPE_CAP_MAX_VERTEX_STREAMS:
+      if (is_a6xx(screen))  /* has SO + GS */
+         return PIPE_MAX_SO_BUFFERS;
+      return 0;
    case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
       if (is_ir3(screen))
          return PIPE_MAX_SO_BUFFERS;
@@ -506,8 +519,9 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 12;
 
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
-      return (is_a3xx(screen) || is_a4xx(screen) || is_a5xx(screen) ||
-              is_a6xx(screen))
+      if (is_a6xx(screen))
+         return 2048;
+      return (is_a3xx(screen) || is_a4xx(screen) || is_a5xx(screen))
                 ? 256
                 : 0;
 
@@ -527,6 +541,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return (screen->max_freq > 0) &&
              (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen));
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
+   case PIPE_CAP_QUERY_SO_OVERFLOW:
+   case PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE:
       return is_a6xx(screen);
 
    case PIPE_CAP_VENDOR_ID:
@@ -567,6 +583,8 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return is_a6xx(screen);
    case PIPE_CAP_TWO_SIDED_COLOR:
       return 0;
+   case PIPE_CAP_THROTTLE:
+      return screen->driconf.enable_throttling;
    default:
       return u_pipe_screen_get_param_defaults(pscreen, param);
    }
@@ -633,6 +651,9 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
       if (has_compute(screen))
          break;
       return 0;
+   case PIPE_SHADER_TASK:
+   case PIPE_SHADER_MESH:
+      return 0;
    default:
       mesa_loge("unknown shader type %d", shader);
       return 0;
@@ -677,8 +698,6 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
       return is_ir3(screen) ? 1 : 0;
    case PIPE_SHADER_CAP_SUBROUTINES:
    case PIPE_SHADER_CAP_DROUND_SUPPORTED:
-   case PIPE_SHADER_CAP_DFRACEXP_DLDEXP_SUPPORTED:
-   case PIPE_SHADER_CAP_LDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
@@ -701,8 +720,6 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
    case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
       return 16;
-   case PIPE_SHADER_CAP_PREFERRED_IR:
-      return PIPE_SHADER_IR_NIR;
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
       return (1 << PIPE_SHADER_IR_NIR) |
              COND(has_compute(screen) && (shader == PIPE_SHADER_COMPUTE),
@@ -714,7 +731,13 @@ fd_screen_get_shader_param(struct pipe_screen *pscreen,
                   (1 << PIPE_SHADER_IR_TGSI));
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen)) {
+      if (is_a6xx(screen)) {
+         if (param == PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) {
+            return IR3_BINDLESS_SSBO_COUNT;
+         } else {
+            return IR3_BINDLESS_IMAGE_COUNT;
+         }
+      } else if (is_a4xx(screen) || is_a5xx(screen) || is_a6xx(screen)) {
          /* a5xx (and a4xx for that matter) has one state-block
           * for compute-shader SSBO's and another that is shared
           * by VS/HS/DS/GS/FS..  so to simplify things for now
@@ -818,8 +841,11 @@ fd_get_compute_param(struct pipe_screen *pscreen, enum pipe_shader_ir ir_type,
    case PIPE_COMPUTE_CAP_IMAGES_SUPPORTED:
       RET((uint32_t[]){1});
 
-   case PIPE_COMPUTE_CAP_SUBGROUP_SIZE:
+   case PIPE_COMPUTE_CAP_SUBGROUP_SIZES:
       RET((uint32_t[]){32}); // TODO
+
+   case PIPE_COMPUTE_CAP_MAX_SUBGROUPS:
+      RET((uint32_t[]){0}); // TODO
 
    case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
       RET((uint64_t[]){ compiler->max_variable_workgroup_size });
@@ -868,11 +894,17 @@ fd_screen_bo_get_handle(struct pipe_screen *pscreen, struct fd_bo *bo,
       if (screen->ro) {
          return renderonly_get_handle(scanout, whandle);
       } else {
-         whandle->handle = fd_bo_handle(bo);
+         uint32_t handle = fd_bo_handle(bo);
+         if (!handle)
+            return false;
+         whandle->handle = handle;
          return true;
       }
    } else if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
-      whandle->handle = fd_bo_dmabuf(bo);
+      int fd = fd_bo_dmabuf(bo);
+      if (fd < 0)
+         return false;
+      whandle->handle = fd;
       return true;
    } else {
       return false;
@@ -960,7 +992,7 @@ static void
 _fd_fence_ref(struct pipe_screen *pscreen, struct pipe_fence_handle **ptr,
               struct pipe_fence_handle *pfence)
 {
-   fd_fence_ref(ptr, pfence);
+   fd_pipe_fence_ref(ptr, pfence);
 }
 
 static void
@@ -977,10 +1009,22 @@ fd_screen_get_driver_uuid(struct pipe_screen *pscreen, char *uuid)
    fd_get_driver_uuid(uuid);
 }
 
-struct pipe_screen *
-fd_screen_create(struct fd_device *dev, struct renderonly *ro,
-                 const struct pipe_screen_config *config)
+static int
+fd_screen_get_fd(struct pipe_screen *pscreen)
 {
+   struct fd_screen *screen = fd_screen(pscreen);
+   return fd_device_fd(screen->dev);
+}
+
+struct pipe_screen *
+fd_screen_create(int fd,
+                 const struct pipe_screen_config *config,
+                 struct renderonly *ro)
+{
+   struct fd_device *dev = fd_device_new_dup(fd);
+   if (!dev)
+      return NULL;
+
    struct fd_screen *screen = CALLOC_STRUCT(fd_screen);
    struct pipe_screen *pscreen;
    uint64_t val;
@@ -1001,7 +1045,6 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
 
    screen->dev = dev;
    screen->ro = ro;
-   screen->refcnt = 1;
 
    // maybe this should be in context?
    screen->pipe = fd_pipe_new(screen->dev, FD_PIPE_3D);
@@ -1085,6 +1128,11 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
    driParseConfigFiles(config->options, config->options_info, 0, "msm",
                        NULL, fd_dev_name(screen->dev_id), NULL, 0, NULL, 0);
 
+   screen->driconf.conservative_lrz =
+         !driQueryOptionb(config->options, "disable_conservative_lrz");
+   screen->driconf.enable_throttling =
+         !driQueryOptionb(config->options, "disable_throttling");
+
    struct sysinfo si;
    sysinfo(&si);
    screen->ram_size = si.totalram;
@@ -1137,7 +1185,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
    /* fdN_screen_init() should set this: */
    assert(screen->primtypes);
    screen->primtypes_mask = 0;
-   for (unsigned i = 0; i <= PIPE_PRIM_MAX; i++)
+   for (unsigned i = 0; i <= MESA_PRIM_COUNT; i++)
       if (screen->primtypes[i])
          screen->primtypes_mask |= (1 << i);
 
@@ -1162,6 +1210,7 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
    (void)simple_mtx_init(&screen->lock, mtx_plain);
 
    pscreen->destroy = fd_screen_destroy;
+   pscreen->get_screen_fd = fd_screen_get_fd;
    pscreen->get_param = fd_screen_get_param;
    pscreen->get_paramf = fd_screen_get_paramf;
    pscreen->get_shader_param = fd_screen_get_shader_param;
@@ -1180,8 +1229,8 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
    pscreen->get_timestamp = fd_screen_get_timestamp;
 
    pscreen->fence_reference = _fd_fence_ref;
-   pscreen->fence_finish = fd_fence_finish;
-   pscreen->fence_get_fd = fd_fence_get_fd;
+   pscreen->fence_finish = fd_pipe_fence_finish;
+   pscreen->fence_get_fd = fd_pipe_fence_get_fd;
 
    pscreen->query_dmabuf_modifiers = fd_screen_query_dmabuf_modifiers;
    pscreen->is_dmabuf_modifier_supported =
@@ -1192,9 +1241,34 @@ fd_screen_create(struct fd_device *dev, struct renderonly *ro,
 
    slab_create_parent(&screen->transfer_pool, sizeof(struct fd_transfer), 16);
 
+   simple_mtx_init(&screen->aux_ctx_lock, mtx_plain);
+
    return pscreen;
 
 fail:
    fd_screen_destroy(pscreen);
    return NULL;
+}
+
+struct fd_context *
+fd_screen_aux_context_get(struct pipe_screen *pscreen)
+{
+   struct fd_screen *screen = fd_screen(pscreen);
+
+   simple_mtx_lock(&screen->aux_ctx_lock);
+
+   if (!screen->aux_ctx) {
+      screen->aux_ctx = pscreen->context_create(pscreen, NULL, 0);
+   }
+
+   return fd_context(screen->aux_ctx);
+}
+
+void
+fd_screen_aux_context_put(struct pipe_screen *pscreen)
+{
+   struct fd_screen *screen = fd_screen(pscreen);
+
+   screen->aux_ctx->flush(screen->aux_ctx, NULL, 0);
+   simple_mtx_unlock(&screen->aux_ctx_lock);
 }

@@ -32,7 +32,7 @@
 #include "etnaviv_screen.h"
 
 #include "pipe/p_defines.h"
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "util/format/u_format.h"
@@ -390,7 +390,7 @@ etna_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
           (!trans->rsc &&
            (((usage & PIPE_MAP_READ) && (status & ETNA_PENDING_WRITE)) ||
            ((usage & PIPE_MAP_WRITE) && status)))) {
-         pctx->flush(pctx, NULL, 0);
+         etna_flush(pctx, NULL, 0, true);
       }
 
       if (usage & PIPE_MAP_READ)

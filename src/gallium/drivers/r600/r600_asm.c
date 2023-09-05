@@ -295,7 +295,7 @@ r600_bytecode_write_export_ack_type(struct r600_bytecode *bc, bool indirect)
 	}
 }
 
-/* alu instructions that can ony exits once per group */
+/* alu instructions that can only exits once per group */
 static int is_alu_once_inst(struct r600_bytecode_alu *alu)
 {
 	return r600_isa_alu(alu->op)->flags & (AF_KILL | AF_PRED) || alu->is_lds_idx_op || alu->op == ALU_OP0_GROUP_BARRIER;
@@ -591,7 +591,7 @@ static int check_and_set_bank_swizzle(const struct r600_bytecode *bc,
 	struct alu_bank_swizzle bs;
 	int bank_swizzle[5];
 	int i, r = 0, forced = 1;
-	boolean scalar_only = bc->gfx_level == CAYMAN ? false : true;
+	bool scalar_only = bc->gfx_level == CAYMAN ? false : true;
 	int max_slots = bc->gfx_level == CAYMAN ? 4 : 5;
 	int max_checks = max_slots * 1000;
 
@@ -611,7 +611,7 @@ static int check_and_set_bank_swizzle(const struct r600_bytecode *bc,
 		return 0;
 
 	/* Just check every possible combination of bank swizzle.
-	 * Not very efficent, but works on the first try in most of the cases. */
+	 * Not very efficient, but works on the first try in most of the cases. */
 	for (i = 0; i < 4; i++)
 		if (!slots[i] || !slots[i]->bank_swizzle_force || slots[i]->is_lds_idx_op)
 			bank_swizzle[i] = SQ_ALU_VEC_012;
@@ -818,6 +818,8 @@ static int merge_inst_groups(struct r600_bytecode *bc, struct r600_bytecode_alu 
 	int have_mova = 0, have_rel = 0;
 	int max_slots = bc->gfx_level == CAYMAN ? 4 : 5;
 
+   bool has_dot = false;
+
 	r = assign_alu_units(bc, alu_prev, prev);
 	if (r)
 		return r;
@@ -828,6 +830,8 @@ static int merge_inst_groups(struct r600_bytecode *bc, struct r600_bytecode_alu 
 			      return 0;
 		      if (is_alu_once_inst(prev[i]))
 			      return 0;
+				has_dot |= prev[i]->op == ALU_OP2_DOT || prev[i]->op == ALU_OP2_DOT_IEEE;
+
 
                       if (prev[i]->op == ALU_OP1_INTERP_LOAD_P0)
                          interp_xz |= 3;
@@ -840,6 +844,8 @@ static int merge_inst_groups(struct r600_bytecode *bc, struct r600_bytecode_alu 
 			if (slots[i]->pred_sel)
 				return 0;
 			if (is_alu_once_inst(slots[i]))
+				return 0;
+         has_dot |= slots[i]->op == ALU_OP2_DOT || slots[i]->op == ALU_OP2_DOT_IEEE;
 				return 0;
                         if (slots[i]->op == ALU_OP1_INTERP_LOAD_P0)
                            interp_xz |= 3;
@@ -889,7 +895,7 @@ static int merge_inst_groups(struct r600_bytecode *bc, struct r600_bytecode_alu 
 			result[i] = prev[i];
 			continue;
 		} else if (prev[i] && slots[i]) {
-			if (max_slots == 5 && result[4] == NULL && prev[4] == NULL && slots[4] == NULL) {
+			if (max_slots == 5 && !has_dot && result[4] == NULL && prev[4] == NULL && slots[4] == NULL) {
 				/* Trans unit is still free try to use it. */
 				if (is_alu_any_unit_inst(bc, slots[i]) && !alu_uses_lds(slots[i])) {
 					result[i] = prev[i];
@@ -956,7 +962,7 @@ static int merge_inst_groups(struct r600_bytecode *bc, struct r600_bytecode_alu 
 				if (!prev[j] || !alu_writes(prev[j]))
 					continue;
 
-				/* If it's relative then we can't determin which gpr is really used. */
+				/* If it's relative then we can't determine which gpr is really used. */
 				if (prev[j]->dst.chan == alu->src[src].chan &&
 					(prev[j]->dst.sel == alu->src[src].sel ||
 					prev[j]->dst.rel || alu->src[src].rel))
@@ -976,7 +982,7 @@ static int merge_inst_groups(struct r600_bytecode *bc, struct r600_bytecode_alu 
 
 	/* looks like everything worked out right, apply the changes */
 
-	/* undo adding previus literals */
+	/* undo adding previous literals */
 	bc->cf_last->ndw -= align(prev_nliteral, 2);
 
 	/* sort instructions */
@@ -1084,7 +1090,7 @@ static int r600_bytecode_alloc_inst_kcache_lines(struct r600_bytecode *bc,
 		bank = alu->src[i].kc_bank;
 		assert(bank < R600_MAX_HW_CONST_BUFFERS);
 		line = (sel-512)>>4;
-		index_mode = alu->src[i].kc_rel ? 1 : 0; // V_SQ_CF_INDEX_0 / V_SQ_CF_INDEX_NONE
+		index_mode = alu->src[i].kc_rel;
 
 		if ((r = r600_bytecode_alloc_kcache_line(bc, kcache, bank, line, index_mode)))
 			return r;
@@ -1304,7 +1310,7 @@ int r600_bytecode_add_alu_type(struct r600_bytecode *bc,
 	if (bc->gfx_level >= EVERGREEN) {
 		for (i = 0; i < 3; i++)
 			if (nalu->src[i].kc_bank &&  nalu->src[i].kc_rel)
-				egcm_load_index_reg(bc, 0, true);
+				egcm_load_index_reg(bc, nalu->src[i].kc_rel - 1, true);
 	}
 
 	/* Check AR usage and load it if required */
@@ -1437,11 +1443,11 @@ static unsigned r600_bytecode_num_tex_and_vtx_instructions(const struct r600_byt
 	}
 }
 
-static inline boolean last_inst_was_not_vtx_fetch(struct r600_bytecode *bc)
+static inline bool last_inst_was_not_vtx_fetch(struct r600_bytecode *bc, bool use_tc)
 {
 	return !((r600_isa_cf(bc->cf_last->op)->flags & CF_FETCH) &&
 		 bc->cf_last->op != CF_OP_GDS &&
-		 (bc->gfx_level == CAYMAN ||
+		 (bc->gfx_level == CAYMAN || use_tc ||
 		  bc->cf_last->op != CF_OP_TEX));
 }
 
@@ -1461,9 +1467,10 @@ static int r600_bytecode_add_vtx_internal(struct r600_bytecode *bc, const struct
 			egcm_load_index_reg(bc, vtx->buffer_index_mode - 1, false);
 	}
 
+
 	/* cf can contains only alu or only vtx or only tex */
 	if (bc->cf_last == NULL ||
-	    last_inst_was_not_vtx_fetch(bc) ||
+	    last_inst_was_not_vtx_fetch(bc, use_tc) ||
 	    bc->force_add_cf) {
 		r = r600_bytecode_add_cf(bc);
 		if (r) {
@@ -1525,19 +1532,28 @@ int r600_bytecode_add_tex(struct r600_bytecode *bc, const struct r600_bytecode_t
 	/* Load index register if required */
 	if (bc->gfx_level >= EVERGREEN) {
 		if (tex->sampler_index_mode || tex->resource_index_mode)
-			egcm_load_index_reg(bc, 1, false);
+			egcm_load_index_reg(bc, tex->resource_index_mode - 1, false);
 	}
 
 	/* we can't fetch data und use it as texture lookup address in the same TEX clause */
 	if (bc->cf_last != NULL &&
 		bc->cf_last->op == CF_OP_TEX) {
 		struct r600_bytecode_tex *ttex;
+                uint8_t use_mask = ((1 << ntex->src_sel_x) |
+                                    (1 << ntex->src_sel_y) |
+                                    (1 << ntex->src_sel_z) |
+                                    (1 << ntex->src_sel_w)) & 0xf;
+
 		LIST_FOR_EACH_ENTRY(ttex, &bc->cf_last->tex, list) {
-			if (ttex->dst_gpr == ntex->src_gpr &&
-                            (ttex->dst_sel_x < 4 || ttex->dst_sel_y < 4 ||
-                             ttex->dst_sel_z < 4 || ttex->dst_sel_w < 4)) {
-				bc->force_add_cf = 1;
-				break;
+			if (ttex->dst_gpr == ntex->src_gpr) {
+                           uint8_t write_mask = (ttex->dst_sel_x < 6 ? 1 : 0) |
+                                                (ttex->dst_sel_y < 6 ? 2 : 0) |
+                                                (ttex->dst_sel_z < 6 ? 4 : 0) |
+                                                (ttex->dst_sel_w < 6 ? 8 : 0);
+                           if (use_mask & write_mask) {
+                              bc->force_add_cf = 1;
+                              break;
+                           }
 			}
 		}
 		/* vtx instrs get inserted after tex, so make sure we aren't moving the tex
@@ -2166,6 +2182,62 @@ static int print_indent(int p, int c)
 	return o;
 }
 
+const char *rat_instr_name[] = {
+   "NOP",
+   "STORE_TYPED",
+   "STORE_RAW",
+   "STORE_RAW_FDENORM",
+   "CMP_XCHG_INT",
+   "CMP_XCHG_FLT",
+   "CMP_XCHG_FDENORM",
+   "ADD",
+   "SUB",
+   "RSUB",
+   "MIN_INT",
+   "MIN_UINT",
+   "MAX_INT",
+   "MAX_UINT",
+   "AND",
+   "OR",
+   "XOR",
+   "MSKOR",
+   "INC_UINT",
+   "DEC_UINT",
+   "RESERVED20",
+   "RESERVED21",
+   "RESERVED22",
+   "RESERVED23",
+   "RESERVED24",
+   "RESERVED25",
+   "RESERVED26",
+   "RESERVED27",
+   "RESERVED28",
+   "RESERVED29",
+   "RESERVED30",
+   "RESERVED31",
+   "NOP_RTN",
+   "RESERVED33",
+   "XCHG_RTN",
+   "XCHG_FDENORM_RTN",
+   "CMPXCHG_INT_RTN",
+   "CMPXCHG_FLT_RTN",
+   "CMPXCHG_FDENORM_RTN",
+   "ADD_RTN",
+   "SUB_RTN",
+   "RSUB_RTN",
+   "MIN_INT_RTN",
+   "MIN_UINT_RTN",
+   "MAX_INT_RTN",
+   "MAX_UINT_RTN",
+   "AND_RTN",
+   "OR_RTN",
+   "XOR_RTN",
+   "MSKOR_RTN",
+   "INC_UINT_RTN",
+   "DEC_UINT_RTN",
+};
+
+
 void r600_bytecode_disasm(struct r600_bytecode *bc)
 {
 	const char *index_mode[] = {"CF_INDEX_NONE", "CF_INDEX_0", "CF_INDEX_1"};
@@ -2292,7 +2364,8 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 					if (cf->rat.index_mode) {
 						o += fprintf(stderr, "[IDX%d]", cf->rat.index_mode - 1);
 					}
-					o += fprintf(stderr, " INST: %d ", cf->rat.inst);
+               assert(ARRAY_SIZE(rat_instr_name) > cf->rat.inst);
+					o += fprintf(stderr, " %s ", rat_instr_name[cf->rat.inst]);
 				}
 
 				if (cf->output.burst_count > 1) {
@@ -2315,7 +2388,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 
 				if (cf->output.type == V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_WRITE_IND ||
 				    cf->output.type == V_SQ_CF_ALLOC_EXPORT_WORD0_SQ_EXPORT_READ_IND)
-					o += fprintf(stderr, " R%d", cf->output.index_gpr);
+					o += fprintf(stderr, " R%d.xyz", cf->output.index_gpr);
 
 				o += print_indent(o, 67);
 
@@ -2525,7 +2598,7 @@ void r600_bytecode_disasm(struct r600_bytecode *bc)
 		}
 
 		LIST_FOR_EACH_ENTRY(gds, &cf->gds, list) {
-			int o = 0;
+			UNUSED int o = 0;
 			o += fprintf(stderr, " %04d %08X %08X %08X   ", id, bc->bytecode[id],
 					bc->bytecode[id + 1], bc->bytecode[id + 2]);
 
@@ -2600,12 +2673,7 @@ void r600_vertex_data_type(enum pipe_format pformat,
 		goto out_unknown;
 	}
 
-	/* Find the first non-VOID channel. */
-	for (i = 0; i < 4; i++) {
-		if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID) {
-			break;
-		}
-	}
+	i = util_format_get_first_non_void_channel(pformat);
 
 	*endian = r600_endian_swap(desc->channel[i].size);
 

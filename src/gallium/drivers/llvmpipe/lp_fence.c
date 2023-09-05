@@ -62,7 +62,7 @@ lp_fence_create(unsigned rank)
    fence->rank = rank;
 
    if (LP_DEBUG & DEBUG_FENCE)
-      debug_printf("%s %d\n", __FUNCTION__, fence->id);
+      debug_printf("%s %d\n", __func__, fence->id);
 
    return fence;
 }
@@ -73,7 +73,7 @@ void
 lp_fence_destroy(struct lp_fence *fence)
 {
    if (LP_DEBUG & DEBUG_FENCE)
-      debug_printf("%s %d\n", __FUNCTION__, fence->id);
+      debug_printf("%s %d\n", __func__, fence->id);
 
    mtx_destroy(&fence->mutex);
    cnd_destroy(&fence->signalled);
@@ -89,7 +89,7 @@ void
 lp_fence_signal(struct lp_fence *fence)
 {
    if (LP_DEBUG & DEBUG_FENCE)
-      debug_printf("%s %d\n", __FUNCTION__, fence->id);
+      debug_printf("%s %d\n", __func__, fence->id);
 
    mtx_lock(&fence->mutex);
 
@@ -97,7 +97,7 @@ lp_fence_signal(struct lp_fence *fence)
    assert(fence->count <= fence->rank);
 
    if (LP_DEBUG & DEBUG_FENCE)
-      debug_printf("%s count=%u rank=%u\n", __FUNCTION__,
+      debug_printf("%s count=%u rank=%u\n", __func__,
                    fence->count, fence->rank);
 
    /* Wakeup all threads waiting on the mutex:
@@ -108,7 +108,7 @@ lp_fence_signal(struct lp_fence *fence)
 }
 
 
-boolean
+bool
 lp_fence_signalled(struct lp_fence *f)
 {
    return f->count == f->rank;
@@ -119,7 +119,7 @@ void
 lp_fence_wait(struct lp_fence *f)
 {
    if (LP_DEBUG & DEBUG_FENCE)
-      debug_printf("%s %d\n", __FUNCTION__, f->id);
+      debug_printf("%s %d\n", __func__, f->id);
 
    mtx_lock(&f->mutex);
    assert(f->issued);
@@ -130,7 +130,7 @@ lp_fence_wait(struct lp_fence *f)
 }
 
 
-boolean
+bool
 lp_fence_timedwait(struct lp_fence *f, uint64_t timeout)
 {
    struct timespec ts, abs_ts;
@@ -140,7 +140,7 @@ lp_fence_timedwait(struct lp_fence *f, uint64_t timeout)
    bool ts_overflow = timespec_add_nsec(&abs_ts, &ts, timeout);
 
    if (LP_DEBUG & DEBUG_FENCE)
-      debug_printf("%s %d\n", __FUNCTION__, f->id);
+      debug_printf("%s %d\n", __func__, f->id);
 
    mtx_lock(&f->mutex);
    assert(f->issued);
@@ -154,7 +154,7 @@ lp_fence_timedwait(struct lp_fence *f, uint64_t timeout)
          break;
    }
 
-   const boolean result = (f->count >= f->rank);
+   const bool result = (f->count >= f->rank);
    mtx_unlock(&f->mutex);
 
    return result;

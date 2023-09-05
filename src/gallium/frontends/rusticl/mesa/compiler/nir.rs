@@ -1,5 +1,6 @@
 use mesa_rust_gen::*;
 use mesa_rust_util::bitset;
+use mesa_rust_util::offset_of;
 
 use std::convert::TryInto;
 use std::ffi::c_void;
@@ -8,26 +9,6 @@ use std::marker::PhantomData;
 use std::ptr;
 use std::ptr::NonNull;
 use std::slice;
-
-// from https://internals.rust-lang.org/t/discussion-on-offset-of/7440/2
-macro_rules! offset_of {
-    ($Struct:path, $field:ident) => {{
-        // Using a separate function to minimize unhygienic hazards
-        // (e.g. unsafety of #[repr(packed)] field borrows).
-        // Uncomment `const` when `const fn`s can juggle pointers.
-        /*const*/
-        fn offset() -> usize {
-            let u = std::mem::MaybeUninit::<$Struct>::uninit();
-            // Use pattern-matching to avoid accidentally going through Deref.
-            let &$Struct { $field: ref f, .. } = unsafe { &*u.as_ptr() };
-            let o = (f as *const _ as usize).wrapping_sub(&u as *const _ as usize);
-            // Triple check that we are within `u` still.
-            assert!((0..=std::mem::size_of_val(&u)).contains(&o));
-            o
-        }
-        offset()
-    }};
-}
 
 pub struct ExecListIter<'a, T> {
     n: &'a mut exec_node,
@@ -89,7 +70,9 @@ impl NirShader {
         unsafe {
             blob_init(&mut blob);
             nir_serialize(&mut blob, self.nir.as_ptr(), false);
-            slice::from_raw_parts(blob.data, blob.size).to_vec()
+            let res = slice::from_raw_parts(blob.data, blob.size).to_vec();
+            blob_finish(&mut blob);
+            res
         }
     }
 
@@ -174,6 +157,10 @@ impl NirShader {
         unsafe { (*self.nir.as_ptr()).info.num_images }
     }
 
+    pub fn num_textures(&self) -> u8 {
+        unsafe { (*self.nir.as_ptr()).info.num_textures }
+    }
+
     pub fn reset_scratch_size(&self) {
         unsafe {
             (*self.nir.as_ptr()).scratch_size = 0;
@@ -192,12 +179,44 @@ impl NirShader {
         unsafe { (*self.nir.as_ptr()).info.workgroup_size }
     }
 
+    pub fn subgroup_size(&self) -> u8 {
+        let subgroup_size = unsafe { (*self.nir.as_ptr()).info.subgroup_size };
+        let valid_subgroup_sizes = [
+            gl_subgroup_size::SUBGROUP_SIZE_REQUIRE_8,
+            gl_subgroup_size::SUBGROUP_SIZE_REQUIRE_16,
+            gl_subgroup_size::SUBGROUP_SIZE_REQUIRE_32,
+            gl_subgroup_size::SUBGROUP_SIZE_REQUIRE_64,
+            gl_subgroup_size::SUBGROUP_SIZE_REQUIRE_128,
+        ];
+
+        if valid_subgroup_sizes.contains(&subgroup_size) {
+            subgroup_size as u8
+        } else {
+            0
+        }
+    }
+
+    pub fn num_subgroups(&self) -> u8 {
+        unsafe { (*self.nir.as_ptr()).info.num_subgroups }
+    }
+
     pub fn set_workgroup_size_variable_if_zero(&self) {
         let nir = self.nir.as_ptr();
         unsafe {
             (*nir)
                 .info
                 .set_workgroup_size_variable((*nir).info.workgroup_size[0] == 0);
+        }
+    }
+
+    pub fn set_has_variable_shared_mem(&mut self, val: bool) {
+        unsafe {
+            self.nir
+                .as_mut()
+                .info
+                .anon_1
+                .cs
+                .set_has_variable_shared_mem(val)
         }
     }
 

@@ -91,7 +91,7 @@ is_live(BITSET_WORD *defs_live, nir_instr *instr)
    case nir_instr_type_parallel_copy: {
       nir_parallel_copy_instr *pc = nir_instr_as_parallel_copy(instr);
       nir_foreach_parallel_copy_entry(entry, pc) {
-         if (is_dest_live(&entry->dest, defs_live))
+         if (entry->dest_is_reg || is_dest_live(&entry->dest.dest, defs_live))
             return true;
       }
       return false;
@@ -167,6 +167,7 @@ dce_cf_list(struct exec_list *cf_list, BITSET_WORD *defs_live,
       }
       case nir_cf_node_loop: {
          nir_loop *loop = nir_cf_node_as_loop(cf_node);
+         assert(!nir_loop_has_continue_construct(loop));
 
          struct loop_state inner_state;
          inner_state.preheader = nir_cf_node_as_block(nir_cf_node_prev(cf_node));
@@ -250,8 +251,8 @@ bool
 nir_opt_dce(nir_shader *shader)
 {
    bool progress = false;
-   nir_foreach_function(function, shader) {
-      if (function->impl && nir_opt_dce_impl(function->impl))
+   nir_foreach_function_impl(impl, shader) {
+      if (nir_opt_dce_impl(impl))
          progress = true;
    }
 

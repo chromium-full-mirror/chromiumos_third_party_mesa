@@ -22,6 +22,7 @@
  */
 
 #include "nir.h"
+#include "nir_clc_helpers.h"
 #include "nir_serialize.h"
 #include "glsl_types.h"
 #include "nir_types.h"
@@ -262,8 +263,7 @@ clc_lower_images(nir_shader *nir, struct clc_image_lower_context *context)
          continue;
       assert(func->impl);
 
-      nir_builder b;
-      nir_builder_init(&b, func->impl);
+      nir_builder b = nir_builder_create(func->impl);
 
       nir_foreach_block(block, func->impl) {
          nir_foreach_instr_safe(instr, block) {
@@ -284,8 +284,7 @@ static void
 clc_lower_64bit_semantics(nir_shader *nir)
 {
    nir_foreach_function(func, nir) {
-      nir_builder b;
-      nir_builder_init(&b, func->impl);
+      nir_builder b = nir_builder_create(func->impl);
 
       nir_foreach_block(block, func->impl) {
          nir_foreach_instr_safe(instr, block) {
@@ -331,8 +330,7 @@ clc_lower_nonnormalized_samplers(nir_shader *nir,
          continue;
       assert(func->impl);
 
-      nir_builder b;
-      nir_builder_init(&b, func->impl);
+      nir_builder b = nir_builder_create(func->impl);
 
       nir_foreach_block(block, func->impl) {
          nir_foreach_instr_safe(instr, block) {
@@ -375,7 +373,7 @@ clc_lower_nonnormalized_samplers(nir_shader *nir,
                   // Don't scale the array index, but do clamp it
                   comps[i] = nir_fround_even(&b, comps[i]);
                   comps[i] = nir_fmax(&b, comps[i], nir_imm_float(&b, 0.0f));
-                  comps[i] = nir_fmin(&b, comps[i], nir_fsub(&b, nir_channel(&b, txs, i), nir_imm_float(&b, 1.0f)));
+                  comps[i] = nir_fmin(&b, comps[i], nir_fadd_imm(&b, nir_channel(&b, txs, i), -1.0f));
                   break;
                }
 
@@ -458,9 +456,6 @@ clc_lower_constant_to_ssbo(nir_shader *nir,
 
       assert(func->impl);
 
-      nir_builder b;
-      nir_builder_init(&b, func->impl);
-
       nir_foreach_block(block, func->impl) {
          nir_foreach_instr(instr, block) {
             if (instr->type != nir_instr_type_deref)
@@ -478,8 +473,11 @@ clc_lower_constant_to_ssbo(nir_shader *nir,
 }
 
 static void
-clc_lower_global_to_ssbo(nir_shader *nir)
+clc_change_variable_mode(nir_shader *nir, nir_variable_mode from, nir_variable_mode to)
 {
+   nir_foreach_variable_with_modes(var, nir, from)
+      var->data.mode = to;
+
    nir_foreach_function(func, nir) {
       if (!func->is_entrypoint)
          continue;
@@ -493,10 +491,10 @@ clc_lower_global_to_ssbo(nir_shader *nir)
 
             nir_deref_instr *deref = nir_instr_as_deref(instr);
 
-            if (deref->modes != nir_var_mem_global)
+            if (deref->modes != from)
                continue;
 
-            deref->modes = nir_var_mem_ssbo;
+            deref->modes = to;
          }
       }
    }
@@ -544,136 +542,6 @@ copy_const_initializer(const nir_constant *constant, const struct glsl_type *typ
          data += glsl_get_bit_size(type) / 8;
       }
    }
-}
-
-static const struct glsl_type *
-get_cast_type(unsigned bit_size)
-{
-   switch (bit_size) {
-   case 64:
-      return glsl_int64_t_type();
-   case 32:
-      return glsl_int_type();
-   case 16:
-      return glsl_int16_t_type();
-   case 8:
-      return glsl_int8_t_type();
-   }
-   unreachable("Invalid bit_size");
-}
-
-static void
-split_unaligned_load(nir_builder *b, nir_intrinsic_instr *intrin, unsigned alignment)
-{
-   enum gl_access_qualifier access = nir_intrinsic_access(intrin);
-   nir_ssa_def *srcs[NIR_MAX_VEC_COMPONENTS * NIR_MAX_VEC_COMPONENTS * sizeof(int64_t) / 8];
-   unsigned comp_size = intrin->dest.ssa.bit_size / 8;
-   unsigned num_comps = intrin->dest.ssa.num_components;
-
-   b->cursor = nir_before_instr(&intrin->instr);
-
-   nir_deref_instr *ptr = nir_src_as_deref(intrin->src[0]);
-
-   const struct glsl_type *cast_type = get_cast_type(alignment * 8);
-   nir_deref_instr *cast = nir_build_deref_cast(b, &ptr->dest.ssa, ptr->modes, cast_type, alignment);
-
-   unsigned num_loads = DIV_ROUND_UP(comp_size * num_comps, alignment);
-   for (unsigned i = 0; i < num_loads; ++i) {
-      nir_deref_instr *elem = nir_build_deref_ptr_as_array(b, cast, nir_imm_intN_t(b, i, cast->dest.ssa.bit_size));
-      srcs[i] = nir_load_deref_with_access(b, elem, access);
-   }
-
-   nir_ssa_def *new_dest = nir_extract_bits(b, srcs, num_loads, 0, num_comps, intrin->dest.ssa.bit_size);
-   nir_ssa_def_rewrite_uses(&intrin->dest.ssa, new_dest);
-   nir_instr_remove(&intrin->instr);
-}
-
-static void
-split_unaligned_store(nir_builder *b, nir_intrinsic_instr *intrin, unsigned alignment)
-{
-   enum gl_access_qualifier access = nir_intrinsic_access(intrin);
-
-   assert(intrin->src[1].is_ssa);
-   nir_ssa_def *value = intrin->src[1].ssa;
-   unsigned comp_size = value->bit_size / 8;
-   unsigned num_comps = value->num_components;
-
-   b->cursor = nir_before_instr(&intrin->instr);
-
-   nir_deref_instr *ptr = nir_src_as_deref(intrin->src[0]);
-
-   const struct glsl_type *cast_type = get_cast_type(alignment * 8);
-   nir_deref_instr *cast = nir_build_deref_cast(b, &ptr->dest.ssa, ptr->modes, cast_type, alignment);
-
-   unsigned num_stores = DIV_ROUND_UP(comp_size * num_comps, alignment);
-   for (unsigned i = 0; i < num_stores; ++i) {
-      nir_ssa_def *substore_val = nir_extract_bits(b, &value, 1, i * alignment * 8, 1, alignment * 8);
-      nir_deref_instr *elem = nir_build_deref_ptr_as_array(b, cast, nir_imm_intN_t(b, i, cast->dest.ssa.bit_size));
-      nir_store_deref_with_access(b, elem, substore_val, ~0, access);
-   }
-
-   nir_instr_remove(&intrin->instr);
-}
-
-static bool
-split_unaligned_loads_stores(nir_shader *shader)
-{
-   bool progress = false;
-
-   nir_foreach_function(function, shader) {
-      if (!function->impl)
-         continue;
-
-      nir_builder b;
-      nir_builder_init(&b, function->impl);
-
-      nir_foreach_block(block, function->impl) {
-         nir_foreach_instr_safe(instr, block) {
-            if (instr->type != nir_instr_type_intrinsic)
-               continue;
-            nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-            if (intrin->intrinsic != nir_intrinsic_load_deref &&
-                intrin->intrinsic != nir_intrinsic_store_deref)
-               continue;
-            nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
-
-            unsigned align_mul = 0, align_offset = 0;
-            nir_get_explicit_deref_align(deref, true, &align_mul, &align_offset);
-
-            unsigned alignment = align_offset ? 1 << (ffs(align_offset) - 1) : align_mul;
-
-            /* We can load anything at 4-byte alignment, except for
-             * UBOs (AKA CBs where the granularity is 16 bytes).
-             */
-            if (alignment >= (deref->modes == nir_var_mem_ubo ? 16 : 4))
-               continue;
-
-            nir_ssa_def *val;
-            if (intrin->intrinsic == nir_intrinsic_load_deref) {
-               assert(intrin->dest.is_ssa);
-               val = &intrin->dest.ssa;
-            } else {
-               assert(intrin->src[1].is_ssa);
-               val = intrin->src[1].ssa;
-            }
-
-            unsigned natural_alignment =
-               val->bit_size / 8 *
-               (val->num_components == 3 ? 4 : val->num_components);
-
-            if (alignment >= natural_alignment)
-               continue;
-
-            if (intrin->intrinsic == nir_intrinsic_load_deref)
-               split_unaligned_load(&b, intrin, alignment);
-            else
-               split_unaligned_store(&b, intrin, alignment);
-            progress = true;
-         }
-      }
-   }
-
-   return progress;
 }
 
 static enum pipe_tex_wrap
@@ -724,7 +592,7 @@ clc_libclc_new_dxil(const struct clc_logger *logger,
 {
    struct clc_libclc_options clc_options = {
       .optimize = options->optimize,
-      .nir_options = dxil_get_nir_compiler_options(),
+      .nir_options = dxil_get_base_nir_compiler_options(),
    };
 
    return clc_libclc_new(logger, &clc_options);
@@ -775,17 +643,17 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
          .printf = true,
       },
    };
-   nir_shader_compiler_options nir_options =
-      *dxil_get_nir_compiler_options();
-
-   if (conf && conf->lower_bit_size & 64) {
-      nir_options.lower_pack_64_2x32_split = false;
-      nir_options.lower_unpack_64_2x32_split = false;
-      nir_options.lower_int64_options = ~0;
+   unsigned supported_int_sizes = (16 | 32 | 64);
+   unsigned supported_float_sizes = (16 | 32);
+   if (conf) {
+      supported_int_sizes &= ~conf->lower_bit_size;
+      supported_float_sizes &= ~conf->lower_bit_size;
    }
-
-   if (conf && conf->lower_bit_size & 16)
-      nir_options.support_16bit_alu = true;
+   nir_shader_compiler_options nir_options;
+   dxil_get_nir_compiler_options(&nir_options,
+                                 conf ? conf->max_shader_model : SHADER_MODEL_6_2,
+                                 supported_int_sizes,
+                                 supported_float_sizes);
 
    glsl_type_singleton_init_or_ref();
 
@@ -861,6 +729,7 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
          NIR_PASS(progress, nir, nir_opt_remove_phis);
          NIR_PASS(progress, nir, nir_opt_peephole_select, 8, true, true);
          NIR_PASS(progress, nir, nir_lower_vec3_to_vec4, nir_var_mem_generic | nir_var_uniform);
+         NIR_PASS(progress, nir, nir_opt_memcpy);
       } while (progress);
    }
 
@@ -870,9 +739,6 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
    unsigned sampler_id = 0;
 
    NIR_PASS_V(nir, nir_lower_variable_initializers, ~(nir_var_function_temp | nir_var_shader_temp));
-
-   // Lower memcpy
-   NIR_PASS_V(nir, dxil_nir_lower_memcpy_deref);
 
    // Ensure the printf struct has explicit types, but we'll throw away the scratch size, because we haven't
    // necessarily removed all temp variables (e.g. the printf struct itself) at this point, so we'll rerun this later
@@ -894,15 +760,6 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
       metadata->printf.infos[i].arg_sizes = malloc(nir->printf_info[i].num_args * sizeof(unsigned));
       memcpy(metadata->printf.infos[i].arg_sizes, nir->printf_info[i].arg_sizes, nir->printf_info[i].num_args * sizeof(unsigned));
    }
-
-   // copy propagate to prepare for lower_explicit_io
-   NIR_PASS_V(nir, nir_split_var_copies);
-   NIR_PASS_V(nir, nir_opt_copy_prop_vars);
-   NIR_PASS_V(nir, nir_lower_var_copies);
-   NIR_PASS_V(nir, nir_lower_vars_to_ssa);
-   NIR_PASS_V(nir, nir_lower_alu);
-   NIR_PASS_V(nir, nir_opt_dce);
-   NIR_PASS_V(nir, nir_opt_deref);
 
    // For uniforms (kernel inputs, minus images), run this before adjusting variable list via image/sampler lowering
    NIR_PASS_V(nir, nir_lower_vars_to_explicit_types, nir_var_uniform, glsl_get_cl_type_size_align);
@@ -998,7 +855,7 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
    NIR_PASS_V(nir, clc_lower_nonnormalized_samplers, int_sampler_states);
    NIR_PASS_V(nir, nir_lower_samplers);
    NIR_PASS_V(nir, dxil_lower_sample_to_txf_for_integer_tex,
-              int_sampler_states, NULL, 14.0f);
+              PIPE_MAX_SHADER_SAMPLER_VIEWS, int_sampler_states, NULL, 14.0f);
 
    NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_mem_shared | nir_var_function_temp, NULL);
 
@@ -1007,9 +864,39 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
               nir_var_mem_shared | nir_var_function_temp | nir_var_mem_global | nir_var_mem_constant,
               glsl_get_cl_type_size_align);
 
-   NIR_PASS_V(nir, dxil_nir_lower_ubo_to_temp);
+   // Lower memcpy - needs to wait until types are sized
+   {
+      bool progress;
+      do {
+         progress = false;
+         NIR_PASS(progress, nir, nir_opt_memcpy);
+         NIR_PASS(progress, nir, nir_copy_prop);
+         NIR_PASS(progress, nir, nir_opt_copy_prop_vars);
+         NIR_PASS(progress, nir, nir_opt_deref);
+         NIR_PASS(progress, nir, nir_opt_dce);
+         NIR_PASS(progress, nir, nir_split_var_copies);
+         NIR_PASS(progress, nir, nir_lower_var_copies);
+         NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
+         NIR_PASS(progress, nir, nir_opt_constant_folding);
+         NIR_PASS(progress, nir, nir_opt_cse);
+      } while (progress);
+   }
+   NIR_PASS_V(nir, nir_lower_memcpy);
+
+   // Attempt to preserve derefs to constants by moving them to shader_temp
+   NIR_PASS_V(nir, dxil_nir_lower_constant_to_temp);
+   // While inserting new var derefs for our "logical" addressing mode, temporarily
+   // switch the pointer size to 32-bit.
+   nir->info.cs.ptr_size = 32;
+   NIR_PASS_V(nir, nir_split_struct_vars, nir_var_shader_temp);
+   NIR_PASS_V(nir, dxil_nir_flatten_var_arrays, nir_var_shader_temp);
+   NIR_PASS_V(nir, dxil_nir_lower_var_bit_size, nir_var_shader_temp,
+              (supported_int_sizes & 16) ? 16 : 32, (supported_int_sizes & 64) ? 64 : 32);
+   nir->info.cs.ptr_size = 64;
+
    NIR_PASS_V(nir, clc_lower_constant_to_ssbo, out_dxil->kernel, &uav_id);
-   NIR_PASS_V(nir, clc_lower_global_to_ssbo);
+   NIR_PASS_V(nir, clc_change_variable_mode, nir_var_shader_temp, nir_var_mem_constant);
+   NIR_PASS_V(nir, clc_change_variable_mode, nir_var_mem_global, nir_var_mem_ssbo);
 
    bool has_printf = false;
    NIR_PASS(has_printf, nir, clc_lower_printf_base, uav_id);
@@ -1017,7 +904,7 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
 
    NIR_PASS_V(nir, dxil_nir_lower_deref_ssbo);
 
-   NIR_PASS_V(nir, split_unaligned_loads_stores);
+   NIR_PASS_V(nir, dxil_nir_split_unaligned_loads_stores, nir_var_mem_shared | nir_var_function_temp);
 
    assert(nir->info.cs.ptr_size == 64);
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ssbo,
@@ -1077,34 +964,14 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
    }
 
    NIR_PASS_V(nir, clc_nir_lower_kernel_input_loads, inputs_var);
-   NIR_PASS_V(nir, split_unaligned_loads_stores);
    NIR_PASS_V(nir, nir_lower_explicit_io, nir_var_mem_ubo,
               nir_address_format_32bit_index_offset);
    NIR_PASS_V(nir, clc_nir_lower_system_values, work_properties_var);
-   NIR_PASS_V(nir, dxil_nir_lower_loads_stores_to_dxil);
-   NIR_PASS_V(nir, dxil_nir_opt_alu_deref_srcs);
-   NIR_PASS_V(nir, dxil_nir_lower_atomics_to_dxil);
-   NIR_PASS_V(nir, nir_lower_fp16_casts);
-   NIR_PASS_V(nir, nir_lower_convert_alu_types, NULL);
-
-   // Convert pack to pack_split
-   NIR_PASS_V(nir, nir_lower_pack);
-   // Lower pack_split to bit math
-   NIR_PASS_V(nir, nir_opt_algebraic);
-
-   NIR_PASS_V(nir, nir_opt_dce);
-
-   nir_validate_shader(nir, "Validate before feeding NIR to the DXIL compiler");
-   struct nir_to_dxil_options opts = {
-      .interpolate_at_vertex = false,
-      .lower_int16 = (conf && (conf->lower_bit_size & 16) != 0),
-      .disable_math_refactoring = true,
-      .num_kernel_globals = num_global_inputs,
-      .environment = DXIL_ENVIRONMENT_CL,
-      .shader_model_max = SHADER_MODEL_6_2,
-      .validator_version_max = DXIL_VALIDATOR_1_4,
+   const struct dxil_nir_lower_loads_stores_options loads_stores_options = {
+      .use_16bit_ssbo = false,
    };
-
+   
+   /* Now that function-declared local vars have been sized, append args */
    for (unsigned i = 0; i < out_dxil->kernel->num_args; i++) {
       if (out_dxil->kernel->args[i].address_qualifier != CLC_KERNEL_ARG_ADDRESS_LOCAL)
          continue;
@@ -1130,6 +997,29 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
       metadata->args[i].localptr.sharedmem_offset = nir->info.shared_size;
       nir->info.shared_size += size;
    }
+
+   NIR_PASS_V(nir, dxil_nir_lower_loads_stores_to_dxil, &loads_stores_options);
+   NIR_PASS_V(nir, dxil_nir_opt_alu_deref_srcs);
+   NIR_PASS_V(nir, nir_lower_fp16_casts, nir_lower_fp16_all);
+   NIR_PASS_V(nir, nir_lower_convert_alu_types, NULL);
+
+   // Convert pack to pack_split
+   NIR_PASS_V(nir, nir_lower_pack);
+   // Lower pack_split to bit math
+   NIR_PASS_V(nir, nir_opt_algebraic);
+
+   NIR_PASS_V(nir, nir_opt_dce);
+
+   nir_validate_shader(nir, "Validate before feeding NIR to the DXIL compiler");
+   struct nir_to_dxil_options opts = {
+      .interpolate_at_vertex = false,
+      .lower_int16 = (conf && (conf->lower_bit_size & 16) != 0),
+      .disable_math_refactoring = true,
+      .num_kernel_globals = num_global_inputs,
+      .environment = DXIL_ENVIRONMENT_CL,
+      .shader_model_max = conf && conf->max_shader_model ? conf->max_shader_model : SHADER_MODEL_6_2,
+      .validator_version_max = conf ? conf->validator_version : DXIL_VALIDATOR_1_4,
+   };
 
    metadata->local_mem_size = nir->info.shared_size;
    metadata->priv_mem_size = nir->scratch_size;

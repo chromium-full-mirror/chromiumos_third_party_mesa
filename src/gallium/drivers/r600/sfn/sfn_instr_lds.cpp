@@ -142,6 +142,7 @@ LDSReadInstr::split(std::vector<AluInstr *>& out_block, AluInstr *last_lds_instr
                                 AluInstr::last_write);
       instr->add_required_instr(last_lds_instr);
       instr->set_blockid(block_id(), index());
+      instr->set_always_keep();
       out_block.push_back(instr);
       last_lds_instr = instr;
    }
@@ -154,7 +155,7 @@ LDSReadInstr::split(std::vector<AluInstr *>& out_block, AluInstr *last_lds_instr
 bool
 LDSReadInstr::do_ready() const
 {
-   unreachable("This instruction is not handled by the schduler");
+   unreachable("This instruction is not handled by the scheduler");
    return false;
 }
 
@@ -225,6 +226,48 @@ LDSReadInstr::from_string(istream& is, ValueFactory& value_factory) -> Pointer
    assert(srcs.size() == dests.size() && !dests.empty());
 
    return new LDSReadInstr(dests, srcs);
+}
+
+bool LDSReadInstr::replace_dest(PRegister new_dest, AluInstr *move_instr)
+{
+   if (new_dest->pin() == pin_array)
+      return false;
+
+   auto old_dest = move_instr->psrc(0);
+
+   bool success = false;
+
+   for (unsigned i = 0; i < m_dest_value.size(); ++i) {
+      auto& dest = m_dest_value[i];
+
+      if (!dest->equal_to(*old_dest))
+         continue;
+
+      if (dest->equal_to(*new_dest))
+         continue;
+
+      if (dest->uses().size() > 1)
+         continue;
+
+      if (dest->pin() == pin_fully)
+         continue;
+
+      if (dest->pin() == pin_group)
+         continue;
+
+      if (dest->pin() == pin_chan && new_dest->chan() != dest->chan())
+         continue;
+
+      if (dest->pin() == pin_chan) {
+         if (new_dest->pin() == pin_group)
+            new_dest->set_pin(pin_chgr);
+         else
+            new_dest->set_pin(pin_chan);
+      }
+      m_dest_value[i] = new_dest;
+      success = true;
+   }
+   return success;
 }
 
 LDSAtomicInstr::LDSAtomicInstr(ESDOp op,
@@ -314,33 +357,32 @@ LDSAtomicInstr::replace_source(PRegister old_src, PVirtualValue new_src)
 {
    bool process = false;
 
-   if (new_src->as_uniform() && m_srcs.size() > 2) {
-      int nconst = 0;
-      for (auto& s : m_srcs) {
-         if (s->as_uniform() && !s->equal_to(*old_src))
-            ++nconst;
+   if (new_src->as_uniform()) {
+      if (m_srcs.size() > 2) {
+         int nconst = 0;
+         for (auto& s : m_srcs) {
+            if (s->as_uniform() && !s->equal_to(*old_src))
+               ++nconst;
+         }
+         /* Conservative check: with two kcache values can always live,
+          * tree might be a problem, don't care for now, just reject
+          */
+         if (nconst > 2)
+            return false;
       }
-      /* Conservative check: with two kcache values can always live,
-       * tree might be a problem, don't care for now, just reject
-       */
-      if (nconst > 2)
+
+      /* indirect constant buffer access means new CF, and this is something
+       * we can't do in the middle of an LDS read group */
+      auto u = new_src->as_uniform();
+      if (u->buf_addr())
          return false;
    }
 
-   /* If the old source is an array element, we assume that there
+   /* If the source is an array element, we assume that there
     * might have been an (untracked) indirect access, so don't replace
     * this source */
-   if (old_src->pin() == pin_array)
+   if (old_src->pin() == pin_array || new_src->pin() == pin_array)
       return false;
-
-   if (new_src->get_addr()) {
-      for (auto& s : m_srcs) {
-         auto addr = s->get_addr();
-         /* can't have two differen't indirect addresses in the same instr */
-         if (addr && !addr->equal_to(*new_src->get_addr()))
-            return false;
-      }
-   }
 
    for (unsigned i = 0; i < m_srcs.size(); ++i) {
       if (old_src->equal_to(*m_srcs[i])) {
@@ -361,7 +403,7 @@ LDSAtomicInstr::replace_source(PRegister old_src, PVirtualValue new_src)
 bool
 LDSAtomicInstr::do_ready() const
 {
-   unreachable("This instruction is not handled by the schduler");
+   unreachable("This instruction is not handled by the scheduler");
    return false;
 }
 

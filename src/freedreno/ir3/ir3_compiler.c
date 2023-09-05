@@ -116,7 +116,6 @@ static const nir_shader_compiler_options ir3_base_options = {
    .has_isub = true,
    .force_indirect_unrolling_sampler = true,
    .lower_uniforms_to_ubo = true,
-   .use_scoped_barrier = true,
    .max_unroll_iterations = 32,
 
    .lower_cs_local_index_to_id = true,
@@ -143,7 +142,8 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
    compiler->dev = dev;
    compiler->dev_id = dev_id;
    compiler->gen = fd_dev_gen(dev_id);
-   compiler->robust_buffer_access2 = options->robust_buffer_access2;
+   compiler->is_64bit = fd_dev_64b(dev_id);
+   compiler->options = *options;
 
    /* All known GPU's have 32k local memory (aka shared) */
    compiler->local_mem_size = 32 * 1024;
@@ -195,8 +195,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
       compiler->has_preamble = true;
 
       compiler->tess_use_shared = dev_info->a6xx.tess_use_shared;
-
-      compiler->storage_16bit = dev_info->a6xx.storage_16bit;
 
       compiler->has_getfiberid = dev_info->a6xx.has_getfiberid;
 
@@ -264,8 +262,6 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
    compiler->bool_type = (compiler->gen >= 5) ? TYPE_U16 : TYPE_U32;
    compiler->has_shared_regfile = compiler->gen >= 5;
 
-   compiler->push_ubo_with_preamble = options->push_ubo_with_preamble;
-
    /* The driver can't request this unless preambles are supported. */
    if (options->push_ubo_with_preamble)
       assert(compiler->has_preamble);
@@ -287,6 +283,10 @@ ir3_compiler_create(struct fd_device *dev, const struct fd_dev_id *dev_id,
    } else if (compiler->gen <= 2) {
       /* a2xx compiler doesn't handle indirect: */
       compiler->nir_options.force_indirect_unrolling = nir_var_all;
+   }
+
+   if (options->lower_base_vertex) {
+      compiler->nir_options.lower_base_vertex = true;
    }
 
    /* 16-bit ALU op generation is mostly controlled by frontend compiler options, but

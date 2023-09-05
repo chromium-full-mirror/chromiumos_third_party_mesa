@@ -44,26 +44,6 @@
  *
  * Version 2.1.0
  */
-static bool
-lower_fp16_casts_filter(const nir_instr *instr, const void *data)
-{
-   if (instr->type == nir_instr_type_alu) {
-      nir_alu_instr *alu = nir_instr_as_alu(instr);
-      switch (alu->op) {
-      case nir_op_f2f16:
-      case nir_op_f2f16_rtne:
-      case nir_op_f2f16_rtz:
-         return true;
-      default:
-         return false;
-      }
-   } else if (instr->type == nir_instr_type_intrinsic) {
-      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-      return intrin->intrinsic == nir_intrinsic_convert_alu_types &&
-         nir_intrinsic_dest_type(intrin) == nir_type_float16;
-   }
-   return false;
-}
 
 static nir_ssa_def *
 half_rounded(nir_builder *b, nir_ssa_def *value, nir_ssa_def *guard, nir_ssa_def *sticky,
@@ -73,11 +53,11 @@ half_rounded(nir_builder *b, nir_ssa_def *value, nir_ssa_def *guard, nir_ssa_def
    case nir_rounding_mode_rtne:
       return nir_iadd(b, value, nir_iand(b, guard, nir_ior(b, sticky, value)));
    case nir_rounding_mode_ru:
-      sign = nir_ushr(b, sign, nir_imm_int(b, 31));
+      sign = nir_ushr_imm(b, sign, 31);
       return nir_iadd(b, value, nir_iand(b, nir_inot(b, sign),
                                             nir_ior(b, guard, sticky)));
    case nir_rounding_mode_rd:
-      sign = nir_ushr(b, sign, nir_imm_int(b, 31));
+      sign = nir_ushr_imm(b, sign, 31);
       return nir_iadd(b, value, nir_iand(b, sign,
                                             nir_ior(b, guard, sticky)));
    default:
@@ -93,10 +73,10 @@ float_to_half_impl(nir_builder *b, nir_ssa_def *src, nir_rounding_mode mode)
 
    if (src->bit_size == 64)
       src = nir_f2f32(b, src);
-   nir_ssa_def *sign = nir_iand(b, src, nir_imm_int(b, 0x80000000));
+   nir_ssa_def *sign = nir_iand_imm(b, src, 0x80000000);
    nir_ssa_def *one = nir_imm_int(b, 1);
 
-   nir_ssa_def *abs = nir_iand(b, src, nir_imm_int(b, 0x7FFFFFFF));
+   nir_ssa_def *abs = nir_iand_imm(b, src, 0x7FFFFFFF);
    /* NaN or INF. For rtne, overflow also becomes INF, so combine the comparisons */
    nir_push_if(b, nir_ige(b, abs, mode == nir_rounding_mode_rtne ? f16max : f32infinity));
    nir_ssa_def *inf_nanfp16 = nir_bcsel(b,
@@ -115,38 +95,39 @@ float_to_half_impl(nir_builder *b, nir_ssa_def *src, nir_rounding_mode mode)
          break;
       case nir_rounding_mode_ru:
          /* Negative becomes max float, positive becomes inf */
-         overflowed_fp16 = nir_bcsel(b, nir_i2b1(b, sign), nir_imm_int(b, 0x7BFF), nir_imm_int(b, 0x7C00));
+         overflowed_fp16 = nir_bcsel(b, nir_i2b(b, sign), nir_imm_int(b, 0x7BFF), nir_imm_int(b, 0x7C00));
          break;
       case nir_rounding_mode_rd:
          /* Negative becomes inf, positive becomes max float */
-         overflowed_fp16 = nir_bcsel(b, nir_i2b1(b, sign), nir_imm_int(b, 0x7C00), nir_imm_int(b, 0x7BFF));
+         overflowed_fp16 = nir_bcsel(b, nir_i2b(b, sign), nir_imm_int(b, 0x7C00), nir_imm_int(b, 0x7BFF));
          break;
       default: unreachable("Should've been handled already");
       }
       nir_push_else(b, NULL);
    }
 
-   nir_push_if(b, nir_ige(b, abs, nir_imm_int(b, 113 << 23)));
+   nir_ssa_def *zero = nir_imm_int(b, 0);
+
+   nir_push_if(b, nir_ige_imm(b, abs, 113 << 23));
 
    /* FP16 will be normal */
-   nir_ssa_def *zero = nir_imm_int(b, 0);
    nir_ssa_def *value = nir_ior(b,
-                                nir_ishl(b,
-                                         nir_isub(b,
-                                                  nir_ushr(b, abs, nir_imm_int(b, 23)),
-                                                  nir_imm_int(b, 112)),
-                                         nir_imm_int(b, 10)),
-                                nir_iand(b, nir_ushr(b, abs, nir_imm_int(b, 13)), nir_imm_int(b, 0x3FFF)));
-   nir_ssa_def *guard = nir_iand(b, nir_ushr(b, abs, nir_imm_int(b, 12)), one);
-   nir_ssa_def *sticky = nir_bcsel(b, nir_ine(b, nir_iand(b, abs, nir_imm_int(b, 0xFFF)), zero), one, zero);
+                                nir_ishl_imm(b,
+                                             nir_iadd_imm(b,
+                                                          nir_ushr_imm(b, abs, 23),
+                                                          -112),
+                                             10),
+                                nir_iand_imm(b, nir_ushr_imm(b, abs, 13), 0x3FFF));
+   nir_ssa_def *guard = nir_iand(b, nir_ushr_imm(b, abs, 12), one);
+   nir_ssa_def *sticky = nir_bcsel(b, nir_ine(b, nir_iand_imm(b, abs, 0xFFF), zero), one, zero);
    nir_ssa_def *normal_fp16 = half_rounded(b, value, guard, sticky, sign, mode);
 
    nir_push_else(b, NULL);
-   nir_push_if(b, nir_ige(b, abs, nir_imm_int(b, 102 << 23)));
+   nir_push_if(b, nir_ige_imm(b, abs, 102 << 23));
 
    /* FP16 will be denormal */
-   nir_ssa_def *i = nir_isub(b, nir_imm_int(b, 125), nir_ushr(b, abs, nir_imm_int(b, 23)));
-   nir_ssa_def *masked = nir_ior(b, nir_iand(b, abs, nir_imm_int(b, 0x7FFFFF)), nir_imm_int(b, 0x800000));
+   nir_ssa_def *i = nir_isub_imm(b, 125, nir_ushr_imm(b, abs, 23));
+   nir_ssa_def *masked = nir_ior_imm(b, nir_iand_imm(b, abs, 0x7FFFFF), 0x800000);
    value = nir_ushr(b, masked, nir_iadd(b, i, one));
    guard = nir_iand(b, nir_ushr(b, masked, i), one);
    sticky = nir_bcsel(b, nir_ine(b, nir_iand(b, masked, nir_isub(b, nir_ishl(b, one, i), one)), zero), one, zero);
@@ -158,12 +139,12 @@ float_to_half_impl(nir_builder *b, nir_ssa_def *src, nir_rounding_mode mode)
    nir_ssa_def *underflowed_fp16 = zero;
    if (mode == nir_rounding_mode_ru ||
        mode == nir_rounding_mode_rd) {
-      nir_push_if(b, nir_i2b1(b, abs));
+      nir_push_if(b, nir_i2b(b, abs));
 
       if (mode == nir_rounding_mode_ru)
-         underflowed_fp16 = nir_bcsel(b, nir_i2b1(b, sign), zero, one);
+         underflowed_fp16 = nir_bcsel(b, nir_i2b(b, sign), zero, one);
       else
-         underflowed_fp16 = nir_bcsel(b, nir_i2b1(b, sign), one, zero);
+         underflowed_fp16 = nir_bcsel(b, nir_i2b(b, sign), one, zero);
 
       nir_push_else(b, NULL);
       nir_pop_if(b, NULL);
@@ -185,15 +166,15 @@ float_to_half_impl(nir_builder *b, nir_ssa_def *src, nir_rounding_mode mode)
    nir_pop_if(b, NULL);
    nir_ssa_def *fp16 = nir_if_phi(b, inf_nanfp16, finite_or_overflowed_fp16);
 
-   return nir_u2u16(b, nir_ior(b, fp16, nir_ushr(b, sign, nir_imm_int(b, 16))));
+   return nir_u2u16(b, nir_ior(b, fp16, nir_ushr_imm(b, sign, 16)));
 }
 
-static nir_ssa_def *
+static bool
 lower_fp16_cast_impl(nir_builder *b, nir_instr *instr, void *data)
 {
    nir_ssa_def *src, *dst;
    uint8_t *swizzle = NULL;
-   nir_rounding_mode mode = nir_rounding_mode_rtne;
+   nir_rounding_mode mode = nir_rounding_mode_undef;
 
    if (instr->type == nir_instr_type_alu) {
       nir_alu_instr *alu = nir_instr_as_alu(instr);
@@ -202,21 +183,62 @@ lower_fp16_cast_impl(nir_builder *b, nir_instr *instr, void *data)
       dst = &alu->dest.dest.ssa;
       switch (alu->op) {
       case nir_op_f2f16:
+         if (b->shader->info.float_controls_execution_mode & FLOAT_CONTROLS_ROUNDING_MODE_RTZ_FP16)
+            mode = nir_rounding_mode_rtz;
+         else if (b->shader->info.float_controls_execution_mode & FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP16)
+            mode = nir_rounding_mode_rtne;
+         break;
       case nir_op_f2f16_rtne:
+         mode = nir_rounding_mode_rtne;
          break;
       case nir_op_f2f16_rtz:
          mode = nir_rounding_mode_rtz;
          break;
-      default: unreachable("Should've been filtered");
+      default:
+         return false;
       }
-   } else {
+   } else if (instr->type == nir_instr_type_intrinsic) {
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-      assert(nir_intrinsic_src_type(intrin) == nir_type_float32);
+      if (intrin->intrinsic != nir_intrinsic_convert_alu_types ||
+          nir_intrinsic_dest_type(intrin) != nir_type_float16)
+         return false;
       src = intrin->src[0].ssa;
       dst = &intrin->dest.ssa;
       mode = nir_intrinsic_rounding_mode(intrin);
+   } else {
+      return false;
    }
 
+   nir_lower_fp16_cast_options options = *(nir_lower_fp16_cast_options *)data;
+   nir_lower_fp16_cast_options req_option = 0;
+   switch (mode) {
+   case nir_rounding_mode_rtz:
+      req_option = nir_lower_fp16_rtz;
+      break;
+   case nir_rounding_mode_rtne:
+      req_option = nir_lower_fp16_rtne;
+      break;
+   case nir_rounding_mode_ru:
+      req_option = nir_lower_fp16_ru;
+      break;
+   case nir_rounding_mode_rd:
+      req_option = nir_lower_fp16_rd;
+      break;
+   case nir_rounding_mode_undef:
+      if (options == nir_lower_fp16_all) {
+         /* Pick one arbitrarily for lowering */
+         mode = nir_rounding_mode_rtne;
+         req_option = nir_lower_fp16_rtne;
+      }
+      /* Otherwise assume the backend can handle f2f16 with undef rounding */
+      break;
+   default:
+      unreachable("Invalid rounding mode");
+   }
+   if (!(options & req_option))
+      return false;
+
+   b->cursor = nir_before_instr(instr);
    nir_ssa_def *rets[NIR_MAX_VEC_COMPONENTS] = { NULL };
 
    for (unsigned i = 0; i < dst->num_components; i++) {
@@ -224,14 +246,16 @@ lower_fp16_cast_impl(nir_builder *b, nir_instr *instr, void *data)
       rets[i] = float_to_half_impl(b, comp, mode);
    }
 
-   return nir_vec(b, rets, dst->num_components);
+   nir_ssa_def *new_val = nir_vec(b, rets, dst->num_components);
+   nir_ssa_def_rewrite_uses(dst, new_val);
+   return true;
 }
 
 bool
-nir_lower_fp16_casts(nir_shader *shader)
+nir_lower_fp16_casts(nir_shader *shader, nir_lower_fp16_cast_options options)
 {
-   return nir_shader_lower_instructions(shader,
-                                        lower_fp16_casts_filter,
-                                        lower_fp16_cast_impl,
-                                        NULL);
+   return nir_shader_instructions_pass(shader,
+                                       lower_fp16_cast_impl,
+                                       nir_metadata_none,
+                                       &options);
 }

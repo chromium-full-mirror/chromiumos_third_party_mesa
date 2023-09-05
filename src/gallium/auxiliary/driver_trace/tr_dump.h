@@ -34,8 +34,8 @@
 #define TR_DUMP_H
 
 
-#include "pipe/p_compiler.h"
-#include "pipe/p_format.h"
+#include "util/compiler.h"
+#include "util/format/u_formats.h"
 
 struct pipe_resource;
 struct pipe_surface;
@@ -82,16 +82,16 @@ void trace_dump_arg_begin(const char *name);
 void trace_dump_arg_end(void);
 void trace_dump_ret_begin(void);
 void trace_dump_ret_end(void);
-void trace_dump_bool(int value);
-void trace_dump_int(long long int value);
-void trace_dump_uint(long long unsigned value);
+void trace_dump_bool(bool value);
+void trace_dump_int(int64_t value);
+void trace_dump_uint(uint64_t value);
 void trace_dump_float(double value);
 void trace_dump_bytes(const void *data, size_t size);
 void trace_dump_box_bytes(const void *data,
                           struct pipe_resource *resource,
 			  const struct pipe_box *box,
 			  unsigned stride,
-			  unsigned slice_stride);
+			  uint64_t slice_stride);
 void trace_dump_string(const char *str);
 void trace_dump_enum(const char *value);
 void trace_dump_array_begin(void);
@@ -187,6 +187,14 @@ bool trace_dump_is_triggered(void);
    do { \
       trace_dump_member_begin(#_member); \
       trace_dump_##_type((_obj)->_member); \
+      trace_dump_member_end(); \
+   } while(0)
+
+
+#define trace_dump_member_enum(_obj, _member, _value) \
+   do { \
+      trace_dump_member_begin(#_member); \
+      trace_dump_enum(_value); \
       trace_dump_member_end(); \
    } while(0)
 

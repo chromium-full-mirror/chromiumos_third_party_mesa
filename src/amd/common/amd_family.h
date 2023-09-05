@@ -2,24 +2,8 @@
  * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
  * Copyright 2010 Marek Olšák <maraeo@gmail.com>
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #ifndef AMD_FAMILY_H
 #define AMD_FAMILY_H
@@ -114,8 +98,9 @@ enum radeon_family
    CHIP_RAVEN,          /* Ryzen 2000, 3000 */
    CHIP_RAVEN2,         /* Ryzen 2200U, 3200U */
    CHIP_RENOIR,         /* Ryzen 4000, 5000 */
-   CHIP_ARCTURUS,       /* MI100 */
-   CHIP_ALDEBARAN,      /* MI200 */
+   CHIP_MI100,
+   CHIP_MI200,
+   CHIP_GFX940,
    /* GFX10.1 (RDNA 1) */
    CHIP_NAVI10,         /* Radeon 5600, 5700 */
    CHIP_NAVI12,         /* Radeon Pro 5600M */
@@ -127,11 +112,12 @@ enum radeon_family
    CHIP_NAVI23,         /* Radeon 6600 (formerly "Dimgrey Cavefish") */
    CHIP_NAVI24,         /* Radeon 6400, 6500 (formerly "Beige Goby") */
    CHIP_REMBRANDT,      /* Ryzen 6000 (formerly "Yellow Carp") */
-   CHIP_GFX1036,
+   CHIP_RAPHAEL_MENDOCINO, /* Ryzen 7000(X), Ryzen 7045, Ryzen 7020 */
    CHIP_GFX1100,
    CHIP_GFX1101,
    CHIP_GFX1102,
-   CHIP_GFX1103,
+   CHIP_GFX1103_R1,
+   CHIP_GFX1103_R2,
    CHIP_LAST,
 };
 
@@ -183,6 +169,33 @@ enum amd_vram_type {
    AMD_VRAM_TYPE_DDR4,
    AMD_VRAM_TYPE_GDDR6,
    AMD_VRAM_TYPE_DDR5,
+   AMD_VRAM_TYPE_LPDDR4,
+   AMD_VRAM_TYPE_LPDDR5,
+};
+
+enum vcn_version{
+   VCN_UNKNOWN,
+   VCN_1_0_0,
+   VCN_1_0_1,
+
+   VCN_2_0_0,
+   VCN_2_0_2,
+   VCN_2_0_3,
+   VCN_2_2_0,
+   VCN_2_5_0,
+   VCN_2_6_0,
+
+   VCN_3_0_0,
+   VCN_3_0_2,
+   VCN_3_0_16,
+   VCN_3_0_33,
+   VCN_3_1_1,
+   VCN_3_1_2,
+
+   VCN_4_0_0,
+   VCN_4_0_2,
+   VCN_4_0_3,
+   VCN_4_0_4,
 };
 
 const char *ac_get_family_name(enum radeon_family family);

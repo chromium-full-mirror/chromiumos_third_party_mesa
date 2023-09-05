@@ -145,6 +145,7 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_pipeline_stat_query_enabled_amd:
    case nir_intrinsic_load_prim_gen_query_enabled_amd:
    case nir_intrinsic_load_prim_xfb_query_enabled_amd:
+   case nir_intrinsic_load_clamp_vertex_color_amd:
    case nir_intrinsic_load_cull_front_face_enabled_amd:
    case nir_intrinsic_load_cull_back_face_enabled_amd:
    case nir_intrinsic_load_cull_ccw_amd:
@@ -152,6 +153,8 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_cull_any_enabled_amd:
    case nir_intrinsic_load_cull_small_prim_precision_amd:
    case nir_intrinsic_load_texture_base_agx:
+   case nir_intrinsic_load_ubo_base_agx:
+   case nir_intrinsic_load_vbo_base_agx:
       return true;
 
    /* Intrinsics which can be moved depending on hardware */
@@ -177,6 +180,7 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_deref:
    case nir_intrinsic_load_global_constant:
    case nir_intrinsic_load_uniform:
+   case nir_intrinsic_load_preamble:
    case nir_intrinsic_load_constant:
    case nir_intrinsic_load_sample_pos_from_id:
    case nir_intrinsic_load_kernel_input:
@@ -194,6 +198,7 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_masked_swizzle_amd:
    case nir_intrinsic_load_ssbo_address:
    case nir_intrinsic_bindless_resource_ir3:
+   case nir_intrinsic_load_constant_agx:
       return can_move_srcs(&instr->instr, ctx);
 
    /* Image/SSBO loads can be moved if they are CAN_REORDER and their
@@ -417,7 +422,6 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
    }
 
    if (num_candidates == 0) {
-      *size = 0;
       free(ctx.states);
       return false;
    }
@@ -481,7 +485,6 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
    num_candidates = candidate_idx;
 
    if (num_candidates == 0) {
-      *size = 0;
       free(ctx.states);
       free(candidates);
       return false;
@@ -494,11 +497,11 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
     * divided by size.
     */
 
-   if (total_size > options->preamble_storage_size) {
-      qsort(candidates, num_candidates, sizeof(*candidates), candidate_sort);
+   if (((*size) + total_size) > options->preamble_storage_size) {
+     qsort(candidates, num_candidates, sizeof(*candidates), candidate_sort);
    }
 
-   unsigned offset = 0;
+   unsigned offset = *size;
    for (unsigned i = 0; i < num_candidates; i++) {
       def_state *state = candidates[i];
       offset = ALIGN_POT(offset, state->align);
@@ -521,10 +524,8 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
       _mesa_pointer_hash_table_create(NULL);
    nir_function_impl *preamble =
       nir_shader_get_preamble(impl->function->shader);
-   nir_builder _b;
-   nir_builder *b = &_b;
-   nir_builder_init(b, preamble);
-   b->cursor = nir_before_cf_list(&preamble->body);
+   nir_builder preamble_builder = nir_builder_at(nir_before_cf_list(&preamble->body));
+   nir_builder *b = &preamble_builder;
 
    nir_foreach_block (block, impl) {
       nir_foreach_instr (instr, block) {
@@ -567,7 +568,8 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
       }
    }
 
-   nir_builder_init(b, impl);
+   nir_builder builder = nir_builder_create(impl);
+   b = &builder;
 
    nir_foreach_block (block, impl) {
       nir_foreach_instr_safe (instr, block) {

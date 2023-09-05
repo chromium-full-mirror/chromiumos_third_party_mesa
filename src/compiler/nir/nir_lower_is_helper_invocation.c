@@ -51,7 +51,7 @@ nir_lower_load_and_store_is_helper(nir_builder *b, nir_instr *instr, void *data)
    switch (intrin->intrinsic) {
    case nir_intrinsic_demote: {
       b->cursor = nir_before_instr(instr);
-      nir_store_deref(b, is_helper_deref, nir_imm_bool(b, true), 1);
+      nir_store_deref(b, is_helper_deref, nir_imm_true(b), 1);
       return true;
    }
    case nir_intrinsic_demote_if: {
@@ -76,11 +76,8 @@ nir_lower_load_and_store_is_helper(nir_builder *b, nir_instr *instr, void *data)
 static bool
 has_is_helper_invocation(nir_shader *shader)
 {
-   nir_foreach_function(function, shader) {
-      if (!function->impl)
-         continue;
-
-      nir_foreach_block_safe(block, function->impl) {
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_block_safe(block, impl) {
          nir_foreach_instr_safe(instr, block) {
             if (instr->type != nir_instr_type_intrinsic)
                continue;
@@ -106,15 +103,15 @@ nir_lower_is_helper_invocation(nir_shader *shader)
 
    nir_function_impl *entrypoint = nir_shader_get_entrypoint(shader);
 
-   nir_builder b;
-   nir_builder_init(&b, entrypoint);
-   b.cursor = nir_before_cf_list(&entrypoint->body);
+   nir_builder b = nir_builder_at(nir_before_cf_list(&entrypoint->body));
 
    nir_variable *is_helper = nir_local_variable_create(entrypoint,
                                           glsl_bool_type(),
                                           "gl_IsHelperInvocationEXT");
 
-   nir_ssa_def *started_as_helper = nir_load_helper_invocation(&b, 1);
+   nir_ssa_def *started_as_helper = shader->options->lower_helper_invocation ?
+      nir_build_lowered_load_helper_invocation(&b) :
+      nir_load_helper_invocation(&b, 1);
 
    nir_deref_instr *is_helper_deref = nir_build_deref_var(&b, is_helper);
    nir_store_deref(&b, is_helper_deref, started_as_helper, 1);

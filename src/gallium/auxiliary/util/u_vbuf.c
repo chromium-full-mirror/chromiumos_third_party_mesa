@@ -92,10 +92,10 @@
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
-#include "indices/u_primconvert.h"
 #include "util/u_prim_restart.h"
 #include "util/u_screen.h"
 #include "util/u_upload_mgr.h"
+#include "indices/u_primconvert.h"
 #include "translate/translate.h"
 #include "translate/translate_cache.h"
 #include "cso_cache/cso_cache.h"
@@ -180,7 +180,7 @@ struct u_vbuf {
    struct cso_velems_state fallback_velems;
    /* If non-NULL, this is a vertex element state used for the translate
     * fallback and therefore used for rendering too. */
-   boolean using_translate;
+   bool using_translate;
    /* The vertex buffer slot index where translated vertices have been
     * stored in. */
    unsigned fallback_vbs[VB_NUM];
@@ -321,13 +321,13 @@ void u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
        screen->get_param(screen, PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX)) {
       caps->rewrite_restart_index = screen->get_param(screen, PIPE_CAP_EMULATE_NONFIXED_PRIMITIVE_RESTART);
       caps->supported_restart_modes = screen->get_param(screen, PIPE_CAP_SUPPORTED_PRIM_MODES_WITH_RESTART);
-      caps->supported_restart_modes |= BITFIELD_BIT(PIPE_PRIM_PATCHES);
-      if (caps->supported_restart_modes != BITFIELD_MASK(PIPE_PRIM_MAX))
+      caps->supported_restart_modes |= BITFIELD_BIT(MESA_PRIM_PATCHES);
+      if (caps->supported_restart_modes != BITFIELD_MASK(MESA_PRIM_COUNT))
          caps->fallback_always = true;
       caps->fallback_always |= caps->rewrite_restart_index;
    }
    caps->supported_prim_modes = screen->get_param(screen, PIPE_CAP_SUPPORTED_PRIM_MODES);
-   if (caps->supported_prim_modes != BITFIELD_MASK(PIPE_PRIM_MAX))
+   if (caps->supported_prim_modes != BITFIELD_MASK(MESA_PRIM_COUNT))
       caps->fallback_always = true;
 
    if (!screen->is_format_supported(screen, PIPE_FORMAT_R8_UINT, PIPE_BUFFER, 0, 0, PIPE_BIND_INDEX_BUFFER))
@@ -356,8 +356,8 @@ u_vbuf_create(struct pipe_context *pipe, struct u_vbuf_caps *caps)
    mgr->pipe = pipe;
    if (caps->rewrite_ubyte_ibs || caps->rewrite_restart_index ||
        /* require all but patches */
-       ((caps->supported_prim_modes & caps->supported_restart_modes & BITFIELD_MASK(PIPE_PRIM_MAX))) !=
-                                      BITFIELD_MASK(PIPE_PRIM_MAX)) {
+       ((caps->supported_prim_modes & caps->supported_restart_modes & BITFIELD_MASK(MESA_PRIM_COUNT))) !=
+                                      BITFIELD_MASK(MESA_PRIM_COUNT)) {
       struct primconvert_config cfg;
       cfg.fixed_prim_restart = caps->rewrite_restart_index;
       cfg.primtypes_mask = caps->supported_prim_modes;
@@ -461,7 +461,7 @@ u_vbuf_translate_buffers(struct u_vbuf *mgr, struct translate_key *key,
                          const struct pipe_draw_start_count_bias *draw,
                          unsigned vb_mask, unsigned out_vb,
                          int start_vertex, unsigned num_vertices,
-                         int min_index, boolean unroll_indices)
+                         int min_index, bool unroll_indices)
 {
    struct translate *tr;
    struct pipe_transfer *vb_transfer[PIPE_MAX_ATTRIBS] = {0};
@@ -613,7 +613,7 @@ u_vbuf_translate_buffers(struct u_vbuf *mgr, struct translate_key *key,
    return PIPE_OK;
 }
 
-static boolean
+static bool
 u_vbuf_translate_find_free_vb_slots(struct u_vbuf *mgr,
                                     unsigned mask[VB_NUM])
 {
@@ -624,11 +624,11 @@ u_vbuf_translate_find_free_vb_slots(struct u_vbuf *mgr,
       mgr->ve->incompatible_vb_mask_all | mgr->incompatible_vb_mask |
       ~mgr->enabled_vb_mask;
    uint32_t unused_vb_mask_orig;
-   boolean insufficient_buffers = false;
+   bool insufficient_buffers = false;
 
    /* No vertex buffers available at all */
    if (!unused_vb_mask)
-      return FALSE;
+      return false;
 
    memset(fallback_vbs, ~0, sizeof(fallback_vbs));
    mgr->fallback_vbs_mask = 0;
@@ -671,15 +671,15 @@ u_vbuf_translate_find_free_vb_slots(struct u_vbuf *mgr,
    }
 
    memcpy(mgr->fallback_vbs, fallback_vbs, sizeof(fallback_vbs));
-   return TRUE;
+   return true;
 }
 
-static boolean
+static bool
 u_vbuf_translate_begin(struct u_vbuf *mgr,
                        const struct pipe_draw_info *info,
                        const struct pipe_draw_start_count_bias *draw,
                        int start_vertex, unsigned num_vertices,
-                       int min_index, boolean unroll_indices,
+                       int min_index, bool unroll_indices,
                        uint32_t misaligned)
 {
    unsigned mask[VB_NUM] = {0};
@@ -735,7 +735,7 @@ u_vbuf_translate_begin(struct u_vbuf *mgr,
 
    /* Find free vertex buffer slots. */
    if (!u_vbuf_translate_find_free_vb_slots(mgr, mask)) {
-      return FALSE;
+      return false;
    }
 
    unsigned min_alignment[VB_NUM] = {0};
@@ -801,7 +801,7 @@ u_vbuf_translate_begin(struct u_vbuf *mgr,
                                         start[type], num[type], min_index,
                                         unroll_indices && type == VB_VERTEX);
          if (err != PIPE_OK)
-            return FALSE;
+            return false;
 
          /* Fixup the stride for constant attribs. */
          if (type == VB_CONST) {
@@ -836,8 +836,8 @@ u_vbuf_translate_begin(struct u_vbuf *mgr,
    mgr->fallback_velems.count = mgr->ve->count;
 
    u_vbuf_set_vertex_elements_internal(mgr, &mgr->fallback_velems);
-   mgr->using_translate = TRUE;
-   return TRUE;
+   mgr->using_translate = true;
+   return true;
 }
 
 static void u_vbuf_translate_end(struct u_vbuf *mgr)
@@ -846,7 +846,7 @@ static void u_vbuf_translate_end(struct u_vbuf *mgr)
 
    /* Restore vertex elements. */
    mgr->pipe->bind_vertex_elements_state(mgr->pipe, mgr->ve->driver_cso);
-   mgr->using_translate = FALSE;
+   mgr->using_translate = false;
 
    /* Unreference the now-unused VBOs. */
    for (i = 0; i < VB_NUM; i++) {
@@ -1257,7 +1257,7 @@ u_vbuf_upload_buffers(struct u_vbuf *mgr,
    return PIPE_OK;
 }
 
-static boolean u_vbuf_need_minmax_index(const struct u_vbuf *mgr, uint32_t misaligned)
+static bool u_vbuf_need_minmax_index(const struct u_vbuf *mgr, uint32_t misaligned)
 {
    /* See if there are any per-vertex attribs which will be uploaded or
     * translated. Use bitmasks to get the info instead of looping over vertex
@@ -1271,7 +1271,7 @@ static boolean u_vbuf_need_minmax_index(const struct u_vbuf *mgr, uint32_t misal
             mgr->nonzero_stride_vb_mask)) != 0;
 }
 
-static boolean u_vbuf_mapping_vertex_buffer_blocks(const struct u_vbuf *mgr, uint32_t misaligned)
+static bool u_vbuf_mapping_vertex_buffer_blocks(const struct u_vbuf *mgr, uint32_t misaligned)
 {
    /* Return true if there are hw buffers which don't need to be translated.
     *
@@ -1450,25 +1450,23 @@ u_vbuf_split_indexed_multidraw(struct u_vbuf *mgr, struct pipe_draw_info *info,
       draw.index_bias = indirect_data[offset + 3];
       info->start_instance = indirect_data[offset + 4];
 
-      u_vbuf_draw_vbo(mgr, info, drawid_offset, NULL, &draw, 1);
+      u_vbuf_draw_vbo(mgr->pipe, info, drawid_offset, NULL, &draw, 1);
    }
 }
 
-void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
+void u_vbuf_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
                      unsigned drawid_offset,
                      const struct pipe_draw_indirect_info *indirect,
                      const struct pipe_draw_start_count_bias *draws,
                      unsigned num_draws)
 {
-   struct pipe_context *pipe = mgr->pipe;
+   struct u_vbuf *mgr = pipe->vbuf;
    int start_vertex;
    unsigned min_index;
    unsigned num_vertices;
-   boolean unroll_indices = FALSE;
+   bool unroll_indices = false;
    const uint32_t used_vb_mask = mgr->ve->used_vb_mask;
    uint32_t user_vb_mask = mgr->user_vb_mask & used_vb_mask;
-   struct pipe_draw_info new_info;
-   struct pipe_draw_start_count_bias new_draw;
    unsigned fixed_restart_index = info->index_size ? util_prim_restart_index_from_size(info->index_size) : 0;
 
    uint32_t misaligned = 0;
@@ -1505,16 +1503,17 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
     */
    if (num_draws > 1 && info->take_index_buffer_ownership)
       p_atomic_add(&info->index.resource->reference.count, num_draws - 1);
-   new_info = *info;
 
    for (unsigned d = 0; d < num_draws; d++) {
-      new_draw = draws[d];
-      if (info->increment_draw_id)
-         drawid_offset++;
+      struct pipe_draw_info new_info = *info;
+      struct pipe_draw_start_count_bias new_draw = draws[d];
 
       /* Handle indirect (multi)draws. */
       if (indirect && indirect->buffer) {
          unsigned draw_count = 0;
+
+         /* num_draws can only be 1 with indirect draws. */
+         assert(num_draws == 1);
 
          /* Get the number of draws. */
          if (indirect->indirect_draw_count) {
@@ -1551,6 +1550,7 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
                u_vbuf_split_indexed_multidraw(mgr, &new_info, drawid_offset, data,
                                               indirect->stride, draw_count);
                free(data);
+               /* We're done (as num_draws is 1), so return early. */
                return;
             }
 
@@ -1567,6 +1567,7 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
                u_vbuf_split_indexed_multidraw(mgr, &new_info, drawid_offset, data,
                                               indirect->stride, draw_count);
                free(data);
+               /* We're done (as num_draws is 1), so return early. */
                return;
             }
 
@@ -1700,7 +1701,7 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
                 !new_info.primitive_restart &&
                 util_is_vbo_upload_ratio_too_large(new_draw.count, num_vertices) &&
                 !u_vbuf_mapping_vertex_buffer_blocks(mgr, misaligned)) {
-               unroll_indices = TRUE;
+               unroll_indices = true;
                user_vb_mask &= ~(mgr->nonzero_stride_vb_mask &
                                  mgr->ve->noninstance_vb_mask_any);
             }
@@ -1728,6 +1729,8 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
          }
 
          if (unroll_indices) {
+            if (!new_info.has_user_indices && info->take_index_buffer_ownership)
+               pipe_drop_resource_references(new_info.index.resource, 1);
             new_info.index_size = 0;
             new_draw.index_bias = 0;
             new_info.index_bounds_valid = true;
@@ -1786,6 +1789,8 @@ void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
          util_primconvert_draw_vbo(mgr->pc, &new_info, drawid_offset, indirect, &new_draw, 1);
       } else
          pipe->draw_vbo(pipe, &new_info, drawid_offset, indirect, &new_draw, 1);
+      if (info->increment_draw_id)
+         drawid_offset++;
    }
 
    if (mgr->using_translate) {

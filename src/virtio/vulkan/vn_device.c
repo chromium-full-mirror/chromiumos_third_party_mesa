@@ -10,6 +10,8 @@
 
 #include "vn_device.h"
 
+#include "util/disk_cache.h"
+#include "util/hex.h"
 #include "venus-protocol/vn_protocol_driver_device.h"
 
 #include "vn_android.h"
@@ -29,6 +31,9 @@ vn_queue_fini(struct vn_queue *queue)
    }
    if (queue->sync_fence != VK_NULL_HANDLE) {
       vn_DestroyFence(dev_handle, queue->sync_fence, NULL);
+   }
+   if (queue->sparse_semaphore != VK_NULL_HANDLE) {
+      vn_DestroySemaphore(dev_handle, queue->sparse_semaphore, NULL);
    }
    vn_object_base_fini(&queue->base);
 }
@@ -166,10 +171,8 @@ static VkResult
 vn_device_memory_report_init(struct vn_device *dev,
                              const VkDeviceCreateInfo *create_info)
 {
-   const VkPhysicalDeviceDeviceMemoryReportFeaturesEXT *mem_report_feats =
-      vk_find_struct_const(create_info->pNext,
-                           PHYSICAL_DEVICE_DEVICE_MEMORY_REPORT_FEATURES_EXT);
-   if (!mem_report_feats || !mem_report_feats->deviceMemoryReport)
+   const struct vk_features *app_feats = &dev->base.base.enabled_features;
+   if (!app_feats->deviceMemoryReport)
       return VK_SUCCESS;
 
    uint32_t count = 0;
@@ -320,8 +323,8 @@ vn_device_fix_create_info(const struct vn_device *dev,
 
    if (app_exts->KHR_external_memory_fd ||
        app_exts->EXT_external_memory_dma_buf || has_wsi) {
-      switch (physical_dev->external_memory.renderer_handle_type) {
-      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
+      if (physical_dev->external_memory.renderer_handle_type ==
+          VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) {
          if (!app_exts->EXT_external_memory_dma_buf) {
             extra_exts[extra_count++] =
                VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
@@ -330,20 +333,6 @@ vn_device_fix_create_info(const struct vn_device *dev,
             extra_exts[extra_count++] =
                VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
          }
-         break;
-      case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
-         if (app_exts->EXT_external_memory_dma_buf) {
-            block_exts[block_count++] =
-               VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME;
-         }
-         if (!app_exts->KHR_external_memory_fd) {
-            extra_exts[extra_count++] =
-               VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
-         }
-         break;
-      default:
-         assert(!physical_dev->instance->renderer->info.has_dma_buf_import);
-         break;
       }
    }
 
@@ -366,6 +355,11 @@ vn_device_fix_create_info(const struct vn_device *dev,
    if (app_exts->EXT_tooling_info) {
       /* see vn_physical_device_get_native_extensions */
       block_exts[block_count++] = VK_EXT_TOOLING_INFO_EXTENSION_NAME;
+   }
+
+   if (app_exts->EXT_pci_bus_info) {
+      /* always filter for simplicity */
+      block_exts[block_count++] = VK_EXT_PCI_BUS_INFO_EXTENSION_NAME;
    }
 
    assert(extra_count <= ARRAY_SIZE(extra_exts));
@@ -410,6 +404,41 @@ vn_device_feedback_pool_fini(struct vn_device *dev)
       return;
 
    vn_feedback_pool_fini(&dev->feedback_pool);
+}
+
+static void
+vn_device_update_shader_cache_id(struct vn_device *dev)
+{
+   /* venus utilizes the host side shader cache.
+    * This is a WA to generate shader cache files containing headers
+    * with a unique cache id that will change based on host driver
+    * identifiers. This allows fossilize replay to detect if the host
+    * side shader cach is no longer up to date.
+    * The shader cache is destroyed after creating the necessary files
+    * and not utilized by venus.
+    */
+#if !defined(ANDROID) && defined(ENABLE_SHADER_CACHE)
+   const VkPhysicalDeviceProperties *vulkan_1_0_props =
+      &dev->physical_device->properties.vulkan_1_0;
+
+   char uuid[VK_UUID_SIZE * 2 + 1];
+   mesa_bytes_to_hex(uuid, vulkan_1_0_props->pipelineCacheUUID, VK_UUID_SIZE);
+
+   struct disk_cache *cache = disk_cache_create("venus", uuid, 0);
+   if (!cache)
+      return;
+
+   /* The entry header is what contains the cache id / timestamp so we
+    * need to create a fake entry.
+    */
+   uint8_t key[20];
+   char data[] = "Fake Shader";
+
+   disk_cache_compute_key(cache, data, sizeof(data), key);
+   disk_cache_put(cache, key, data, sizeof(data), NULL);
+
+   disk_cache_destroy(cache);
+#endif
 }
 
 static VkResult
@@ -458,13 +487,9 @@ vn_device_init(struct vn_device *dev,
       mtx_init(&pool->mutex, mtx_plain);
    }
 
-   result = vn_buffer_cache_init(dev);
-   if (result != VK_SUCCESS)
-      goto out_memory_pool_fini;
-
    result = vn_device_feedback_pool_init(dev);
    if (result != VK_SUCCESS)
-      goto out_buffer_cache_fini;
+      goto out_memory_pool_fini;
 
    result = vn_feedback_cmd_pools_init(dev);
    if (result != VK_SUCCESS)
@@ -474,6 +499,13 @@ vn_device_init(struct vn_device *dev,
    if (result != VK_SUCCESS)
       goto out_cmd_pools_fini;
 
+   vn_buffer_cache_init(dev);
+
+   /* This is a WA to allow fossilize replay to detect if the host side shader
+    * cache is no longer up to date.
+    */
+   vn_device_update_shader_cache_id(dev);
+
    return VK_SUCCESS;
 
 out_cmd_pools_fini:
@@ -481,9 +513,6 @@ out_cmd_pools_fini:
 
 out_feedback_pool_fini:
    vn_device_feedback_pool_fini(dev);
-
-out_buffer_cache_fini:
-   vn_buffer_cache_fini(dev);
 
 out_memory_pool_fini:
    for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
@@ -560,14 +589,14 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
    if (!dev)
       return;
 
+   vn_buffer_cache_fini(dev);
+
    for (uint32_t i = 0; i < dev->queue_count; i++)
       vn_queue_fini(&dev->queues[i]);
 
    vn_feedback_cmd_pools_fini(dev);
 
    vn_device_feedback_pool_fini(dev);
-
-   vn_buffer_cache_fini(dev);
 
    for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
       vn_device_memory_pool_fini(dev, i);

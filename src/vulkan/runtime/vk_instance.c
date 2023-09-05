@@ -23,9 +23,7 @@
 
 #include "vk_instance.h"
 
-#ifdef HAVE_LIBDRM
-#include <xf86drm.h>
-#endif
+#include "util/libdrm.h"
 
 #include "vk_alloc.h"
 #include "vk_common_entrypoints.h"
@@ -39,6 +37,11 @@
 
 #define VERSION_IS_1_0(version) \
    (VK_API_VERSION_MAJOR(version) == 1 && VK_API_VERSION_MINOR(version) == 0)
+
+static const struct debug_control trace_options[] = {
+   {"rmv", VK_TRACE_MODE_RMV},
+   {NULL, 0},
+};
 
 VkResult
 vk_instance_init(struct vk_instance *instance,
@@ -135,6 +138,8 @@ vk_instance_init(struct vk_instance *instance,
        !VERSION_IS_1_0(instance->app_info.api_version))
       return VK_ERROR_INCOMPATIBLE_DRIVER;
 
+   instance->supported_extensions = supported_extensions;
+
    for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; i++) {
       int idx;
       for (idx = 0; idx < VK_INSTANCE_EXTENSION_COUNT; idx++) {
@@ -188,6 +193,10 @@ vk_instance_init(struct vk_instance *instance,
       mtx_destroy(&instance->debug_utils.callbacks_mutex);
       return vk_error(instance, VK_ERROR_INITIALIZATION_FAILED);
    }
+
+   instance->trace_mode = parse_debug_string(getenv("MESA_VK_TRACE"), trace_options);
+   instance->trace_frame = (uint32_t)debug_get_num_option("MESA_VK_TRACE_FRAME", 0xFFFFFFFF);
+   instance->trace_trigger_file = getenv("MESA_VK_TRACE_TRIGGER");
 
    glsl_type_singleton_init_or_ref();
 
@@ -356,10 +365,16 @@ vk_instance_get_physical_device_proc_addr(const struct vk_instance *instance,
                                                              &instance->enabled_extensions);
 }
 
+void
+vk_instance_add_driver_trace_modes(struct vk_instance *instance,
+                                   const struct debug_control *modes)
+{
+   instance->trace_mode |= parse_debug_string(getenv("MESA_VK_TRACE"), modes);
+}
+
 static VkResult
 enumerate_drm_physical_devices_locked(struct vk_instance *instance)
 {
-#ifdef HAVE_LIBDRM
    /* TODO: Check for more devices ? */
    drmDevicePtr devices[8];
    int max_devices = drmGetDevices2(0, devices, ARRAY_SIZE(devices));
@@ -387,15 +402,16 @@ enumerate_drm_physical_devices_locked(struct vk_instance *instance)
 
    drmFreeDevices(devices, max_devices);
    return result;
-#endif
-   return VK_SUCCESS;
 }
 
 static VkResult
 enumerate_physical_devices_locked(struct vk_instance *instance)
 {
-   if (instance->physical_devices.enumerate)
-      return instance->physical_devices.enumerate(instance);
+   if (instance->physical_devices.enumerate) {
+      VkResult result = instance->physical_devices.enumerate(instance);
+      if (result != VK_ERROR_INCOMPATIBLE_DRIVER)
+         return result;
+   }
 
    VkResult result = VK_SUCCESS;
 

@@ -41,7 +41,7 @@ to iterate over the table.
 
 These tables are are generated automatically using a bit of python code that
 parses the vk.xml from the `Vulkan-Docs repo
-<https://github.com/KhronosGroup/Vulkan-docs/>`_, enumerates the
+<https://github.com/KhronosGroup/Vulkan-docs/>`__, enumerates the
 extensions, sorts them by instance vs. device and generates the table.
 Generating it from XML means that we never have to manually maintain any of
 these data structures; they get automatically updated when someone imports
@@ -152,6 +152,7 @@ the following in the driver's ``meson.build``, modified as necessary:
       command : [
         prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
         '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'drv',
+        '--beta', with_vulkan_beta.to_string(),
       ],
       depend_files : vk_entrypoints_gen_depend_files,
     )
@@ -246,7 +247,7 @@ Entrypoint lookup
 
 Implementing ``vkGet*ProcAddr()`` is quite complicated because of the
 Vulkan 1.2 rules around exactly when they have to return ``NULL``.  When a
-client calls `vkGet*ProcAddr()`, we go through a three step process resolve
+client calls ``vkGet*ProcAddr()``, we go through a three step process resolve
 the function pointer:
 
  1. A static (generated at compile time) hash table is used to map the
@@ -256,8 +257,9 @@ the function pointer:
     checks against the enabled core API version and extensions.  We use an
     index into the entrypoint table, not the dispatch table, because the
     rules for when an entrypoint should be exposed are per-entrypoint.  For
-    instance, `vkBindImageMemory2` is available on Vulkan 1.1 and later but
-    `vkBindImageMemory2KHR` is available if VK_KHR_bind_memory2 is enabled.
+    instance, ``vkBindImageMemory2`` is available on Vulkan 1.1 and later but
+    ``vkBindImageMemory2KHR`` is available if :ext:`VK_KHR_bind_memory2` is
+    enabled.
 
  3. A compaction table is used to map from the entrypoint table index to
     the dispatch table index and the function is finally fetched from the

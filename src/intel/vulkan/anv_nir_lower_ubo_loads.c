@@ -47,7 +47,7 @@ lower_ubo_load_instr(nir_builder *b, nir_instr *instr, UNUSED void *_data)
    unsigned byte_size = bit_size / 8;
 
    nir_ssa_def *val;
-   if (nir_src_is_const(load->src[1])) {
+   if (!nir_src_is_divergent(load->src[0]) && nir_src_is_const(load->src[1])) {
       uint32_t offset = nir_src_as_uint(load->src[1]);
 
       /* Things should be component-aligned. */
@@ -63,8 +63,7 @@ lower_ubo_load_instr(nir_builder *b, nir_instr *instr, UNUSED void *_data)
       for (unsigned i = 0; i < 2; i++) {
          nir_ssa_def *pred;
          if (bound) {
-            pred = nir_ilt(b, nir_imm_int(b, aligned_offset + i * 64 + 63),
-                              bound);
+            pred = nir_igt_imm(b, bound, aligned_offset + i * 64 + 63);
          } else {
             pred = nir_imm_true(b);
          }

@@ -1,27 +1,8 @@
 /**************************************************************************
  *
  * Copyright 2011 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR
- * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  *
  **************************************************************************/
 
@@ -94,9 +75,16 @@ struct ruvd_decoder {
 };
 
 /* flush IB to the hardware */
-static int flush(struct ruvd_decoder *dec, unsigned flags)
+static int flush(struct ruvd_decoder *dec, unsigned flags, struct pipe_fence_handle **fence)
 {
-   return dec->ws->cs_flush(&dec->cs, flags, NULL);
+   return dec->ws->cs_flush(&dec->cs, flags, fence);
+}
+
+static int ruvd_dec_get_decoder_fence(struct pipe_video_codec *decoder,
+                                      struct pipe_fence_handle *fence,
+                                      uint64_t timeout) {
+   struct ruvd_decoder *dec = (struct ruvd_decoder *)decoder;
+   return dec->ws->fence_wait(dec->ws, fence, timeout);
 }
 
 /* add a new set register command to the IB */
@@ -394,7 +382,7 @@ static unsigned calc_dpb_size(struct ruvd_decoder *dec)
             dpb_size += align(width_in_mb * height_in_mb * 32, alignment);
          }
       } else {
-         // the firmware seems to allways assume a minimum of ref frames
+         // the firmware seems to always assume a minimum of ref frames
          max_references = MAX2(NUM_H264_REFS, max_references);
          // reference picture buffer
          dpb_size = image_size * max_references;
@@ -426,7 +414,7 @@ static unsigned calc_dpb_size(struct ruvd_decoder *dec)
       break;
 
    case PIPE_VIDEO_FORMAT_VC1:
-      // the firmware seems to allways assume a minimum of ref frames
+      // the firmware seems to always assume a minimum of ref frames
       max_references = MAX2(NUM_VC1_REFS, max_references);
 
       // reference picture buffer
@@ -981,7 +969,7 @@ static void ruvd_destroy(struct pipe_video_codec *decoder)
    dec->msg->stream_handle = dec->stream_handle;
    send_msg_buf(dec);
 
-   flush(dec, 0);
+   flush(dec, 0, NULL);
 
    dec->ws->cs_destroy(&dec->cs);
 
@@ -1052,7 +1040,7 @@ static void ruvd_decode_bitstream(struct pipe_video_codec *decoder,
 
       if (new_size > buf->res->buf->size) {
          dec->ws->buffer_unmap(dec->ws, buf->res->buf);
-         if (!si_vid_resize_buffer(dec->screen, &dec->cs, buf, new_size)) {
+         if (!si_vid_resize_buffer(dec->screen, &dec->cs, buf, new_size, NULL)) {
             RVID_ERR("Can't resize bitstream buffer!");
             return;
          }
@@ -1198,7 +1186,7 @@ static void ruvd_end_frame(struct pipe_video_codec *decoder, struct pipe_video_b
                FB_BUFFER_OFFSET + dec->fb_size, RADEON_USAGE_READ, RADEON_DOMAIN_GTT);
    set_reg(dec, dec->reg.cntl, 1);
 
-   flush(dec, PIPE_FLUSH_ASYNC);
+   flush(dec, PIPE_FLUSH_ASYNC, picture->fence);
    next_buffer(dec);
 }
 
@@ -1262,6 +1250,7 @@ struct pipe_video_codec *si_common_uvd_create_decoder(struct pipe_context *conte
    dec->base.decode_bitstream = ruvd_decode_bitstream;
    dec->base.end_frame = ruvd_end_frame;
    dec->base.flush = ruvd_flush;
+   dec->base.get_decoder_fence = ruvd_dec_get_decoder_fence;
 
    dec->stream_type = profile2stream_type(dec, sctx->family);
    dec->set_dtb = set_dtb;
@@ -1347,7 +1336,7 @@ struct pipe_video_codec *si_common_uvd_create_decoder(struct pipe_context *conte
    dec->msg->body.create.height_in_samples = dec->base.height;
    dec->msg->body.create.dpb_size = dpb_size;
    send_msg_buf(dec);
-   r = flush(dec, 0);
+   r = flush(dec, 0, NULL);
    if (r)
       goto error;
 

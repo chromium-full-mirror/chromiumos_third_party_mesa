@@ -34,6 +34,8 @@ class ReserveReadport : public ConstRegisterVisitor {
 public:
    ReserveReadport(AluReadportReservation& reserv);
 
+   using ConstRegisterVisitor::visit;
+
    void visit(const LocalArray& value) override;
    void visit(const LiteralConstant& value) override;
    void visit(const InlineConstant& value) override;
@@ -53,6 +55,7 @@ public:
 class ReserveReadportVec : public ReserveReadport {
 public:
    using ReserveReadport::ReserveReadport;
+   using ReserveReadport::visit;
 
    void visit(const Register& value) override;
    void visit(const LocalArrayValue& value) override;
@@ -69,6 +72,7 @@ public:
 class ReserveReadportTransPass1 : public ReserveReadportTrans {
 public:
    using ReserveReadportTrans::ReserveReadportTrans;
+   using ReserveReadportTrans::visit;
 
    void visit(const Register& value) override;
    void visit(const LocalArrayValue& value) override;
@@ -80,6 +84,7 @@ public:
 class ReserveReadportTransPass2 : public ReserveReadportTrans {
 public:
    using ReserveReadportTrans::ReserveReadportTrans;
+   using ReserveReadportTrans::visit;
 
    void visit(const Register& value) override;
    void visit(const LocalArrayValue& value) override;
@@ -148,6 +153,20 @@ AluReadportReservation::schedule_trans_instruction(const AluInstr& alu,
       alu.src(i).accept(visitor2);
    }
    return visitor2.success;
+}
+
+void AluReadportReservation::print(std::ostream& os) const
+{
+   os << "AluReadportReservation\n";
+   for (int i = 0; i < max_chan_channels; ++i) {
+      os << "  chan " << i << ":";
+      for (int j = 0; j < max_gpr_readports; ++j) {
+         os << m_hw_gpr[j][i] << " ";
+      }
+      os << "\n";
+   }
+   os << "\n";
+
 }
 
 AluReadportReservation::AluReadportReservation()
@@ -219,8 +238,8 @@ AluReadportReservation::cycle_vec(AluBankSwizzle swz, int src)
    static const int mapping[AluBankSwizzle::alu_vec_unknown][max_gpr_readports] = {
       {0, 1, 2},
       {0, 2, 1},
-      {1, 0, 2},
       {1, 2, 0},
+      {1, 0, 2},
       {2, 0, 1},
       {2, 1, 0}
    };
@@ -272,7 +291,7 @@ ReserveReadportVec::visit(const Register& value)
 void
 ReserveReadportVec::visit(const LocalArrayValue& value)
 {
-   // Set the hightest non-sign bit to indicated that we use the
+   // Set the highest non-sign bit to indicated that we use the
    // AR register
    reserve_gpr(0x4000000 | value.sel(), value.chan());
 }

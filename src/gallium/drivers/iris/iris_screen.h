@@ -114,6 +114,11 @@ struct iris_vtable {
                                      uint32_t offset_in_bytes,
                                      uint32_t report_id);
 
+   void (*rewrite_compute_walker_pc)(struct iris_batch *batch,
+                                     uint32_t *walker,
+                                     struct iris_bo *bo,
+                                     uint32_t offset);
+
    unsigned (*derived_program_state_size)(enum iris_program_cache_id id);
    void (*store_derived_program_state)(const struct intel_device_info *devinfo,
                                        enum iris_program_cache_id cache_id,
@@ -199,7 +204,7 @@ struct iris_screen {
     */
    uint64_t last_seqno;
 
-   struct intel_device_info devinfo;
+   const struct intel_device_info *devinfo;
    struct isl_device isl_dev;
    struct iris_bufmgr *bufmgr;
    struct brw_compiler *compiler;

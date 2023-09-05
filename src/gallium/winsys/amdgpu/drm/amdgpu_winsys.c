@@ -3,28 +3,8 @@
  * Copyright © 2009 Joakim Sindholt <opensource@zhasha.com>
  * Copyright © 2011 Marek Olšák <maraeo@gmail.com>
  * Copyright © 2015 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS, AUTHORS
- * AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "amdgpu_cs.h"
@@ -97,6 +77,8 @@ static bool do_winsys_init(struct amdgpu_winsys *ws,
 {
    if (!ac_query_gpu_info(fd, ws->dev, &ws->info))
       goto fail;
+
+   ac_query_pci_bus_info(fd, &ws->info);
 
    /* TODO: Enable this once the kernel handles it efficiently. */
    if (ws->info.has_dedicated_vram)
@@ -195,17 +177,9 @@ static void amdgpu_winsys_destroy(struct radeon_winsys *rws)
    amdgpu_winsys_destroy_locked(rws, false);
 }
 
-static void amdgpu_winsys_query_info(struct radeon_winsys *rws,
-                                     struct radeon_info *info,
-                                     bool enable_smart_access_memory,
-                                     bool disable_smart_access_memory)
+static void amdgpu_winsys_query_info(struct radeon_winsys *rws, struct radeon_info *info)
 {
    struct amdgpu_winsys *ws = amdgpu_winsys(rws);
-
-   if (disable_smart_access_memory)
-      ws->info.smart_access_memory = false;
-   else if (enable_smart_access_memory && ws->info.all_vram_visible)
-      ws->info.smart_access_memory = true;
 
    *info = ws->info;
 }
@@ -391,6 +365,36 @@ amdgpu_cs_set_pstate(struct radeon_cmdbuf *rcs, enum radeon_ctx_pstate pstate)
       AMDGPU_CTX_OP_SET_STABLE_PSTATE, amdgpu_pstate, NULL) == 0;
 }
 
+static bool
+are_file_descriptions_equal(int fd1, int fd2)
+{
+   int r = os_same_file_description(fd1, fd2);
+
+   if (r == 0)
+      return true;
+
+   if (r < 0) {
+      static bool logged;
+
+      if (!logged) {
+         os_log_message("amdgpu: os_same_file_description couldn't "
+                        "determine if two DRM fds reference the same "
+                        "file description.\n"
+                        "If they do, bad things may happen!\n");
+         logged = true;
+      }
+   }
+   return false;
+}
+
+static int
+amdgpu_drm_winsys_get_fd(struct radeon_winsys *rws)
+{
+   struct amdgpu_screen_winsys *sws = amdgpu_screen_winsys(rws);
+
+   return sws->fd;
+}
+
 PUBLIC struct radeon_winsys *
 amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 		     radeon_screen_create_t screen_create)
@@ -434,25 +438,13 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
 
       simple_mtx_lock(&aws->sws_list_lock);
       for (sws_iter = aws->sws_list; sws_iter; sws_iter = sws_iter->next) {
-         r = os_same_file_description(sws_iter->fd, ws->fd);
-
-         if (r == 0) {
+         if (are_file_descriptions_equal(sws_iter->fd, ws->fd)) {
             close(ws->fd);
             FREE(ws);
             ws = sws_iter;
             pipe_reference(NULL, &ws->reference);
             simple_mtx_unlock(&aws->sws_list_lock);
             goto unlock;
-         } else if (r < 0) {
-            static bool logged;
-
-            if (!logged) {
-               os_log_message("amdgpu: os_same_file_description couldn't "
-                              "determine if two DRM fds reference the same "
-                              "file description.\n"
-                              "If they do, bad things may happen!\n");
-               logged = true;
-            }
          }
       }
       simple_mtx_unlock(&aws->sws_list_lock);
@@ -470,7 +462,25 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
          goto fail;
 
       aws->dev = dev;
-      aws->fd = ws->fd;
+      /* The device fd might be different from the one we passed because of
+       * libdrm_amdgpu device dedup logic. This can happen if radv is initialized
+       * first.
+       * Get the correct fd or the buffer sharing will not work (see #3424).
+       */
+      int device_fd = amdgpu_device_get_fd(dev);
+      if (!are_file_descriptions_equal(device_fd, fd)) {
+         ws->kms_handles = _mesa_hash_table_create(NULL, kms_handle_hash,
+                                                   kms_handle_equals);
+         if (!ws->kms_handles)
+            goto fail;
+         /* We could avoid storing the fd and use amdgpu_device_get_fd() where
+          * we need it but we'd have to use os_same_file_description() to
+          * compare the fds.
+          */
+         aws->fd = device_fd;
+      } else {
+         aws->fd = ws->fd;
+      }
       aws->info.drm_major = drm_major;
       aws->info.drm_minor = drm_minor;
       aws->dummy_ws.aws = aws; /* only the pointer is used */
@@ -554,6 +564,7 @@ amdgpu_winsys_create(int fd, const struct pipe_screen_config *config,
    /* Set functions. */
    ws->base.unref = amdgpu_winsys_unref;
    ws->base.destroy = amdgpu_winsys_destroy;
+   ws->base.get_fd = amdgpu_drm_winsys_get_fd;
    ws->base.query_info = amdgpu_winsys_query_info;
    ws->base.cs_request_feature = amdgpu_cs_request_feature;
    ws->base.query_value = amdgpu_query_value;

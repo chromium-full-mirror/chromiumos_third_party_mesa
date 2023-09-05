@@ -104,11 +104,11 @@ r600_imm_ivec3(nir_builder *build, int x, int y, int z)
 }
 
 bool
-r600_lower_tess_io(nir_shader *shader, enum pipe_prim_type prim_type);
+r600_lower_tess_io(nir_shader *shader, enum mesa_prim prim_type);
 bool
-r600_append_tcs_TF_emission(nir_shader *shader, enum pipe_prim_type prim_type);
+r600_append_tcs_TF_emission(nir_shader *shader, enum mesa_prim prim_type);
 bool
-r600_lower_tess_coord(nir_shader *sh, enum pipe_prim_type prim_type);
+r600_lower_tess_coord(nir_shader *sh, enum mesa_prim prim_type);
 
 bool
 r600_legalize_image_load_store(nir_shader *shader);
@@ -131,6 +131,9 @@ int
 r600_shader_from_nir(struct r600_context *rctx,
                      struct r600_pipe_shader *pipeshader,
                      union r600_shader_key *key);
+
+char *
+r600_finalize_nir(struct pipe_screen *screen, void *shader);
 
 #ifdef __cplusplus
 }

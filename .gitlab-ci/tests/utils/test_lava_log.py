@@ -8,18 +8,16 @@
 from datetime import datetime, timedelta
 
 import pytest
-import yaml
 from lava.exceptions import MesaCIKnownIssueException, MesaCITimeoutError
 from lava.utils import (
     GitlabSection,
     LogFollower,
     LogSectionType,
-    fix_lava_color_log,
     fix_lava_gitlab_section_log,
     hide_sensitive_data,
 )
 
-from ..lava.helpers import create_lava_yaml_msg, does_not_raise
+from ..lava.helpers import create_lava_yaml_msg, does_not_raise, lava_yaml, yaml_dump
 
 GITLAB_SECTION_SCENARIOS = {
     "start collapsed": (
@@ -67,6 +65,11 @@ def test_gl_sections():
         {
             "dt": datetime.now(),
             "lvl": "debug",
+            "msg": "Received signal: <STARTRUN> 0_setup-ssh-server 10145749_1.3.2.3.1",
+        },
+        {
+            "dt": datetime.now(),
+            "lvl": "debug",
             "msg": "Received signal: <STARTRUN> 0_mesa 5971831_1.3.2.3.1",
         },
         # Redundant log message which triggers the same Gitlab Section, it
@@ -94,10 +97,13 @@ def test_gl_sections():
         },
     ]
     lf = LogFollower()
-    for line in lines:
-        lf.manage_gl_sections(line)
+    with lf:
+        for line in lines:
+            lf.manage_gl_sections(line)
+        parsed_lines = lf.flush()
 
-    parsed_lines = lf.flush()
+    section_types = [s.type for s in lf.section_history]
+
     assert "section_start" in parsed_lines[0]
     assert "collapsed=true" not in parsed_lines[0]
     assert "section_end" in parsed_lines[1]
@@ -105,7 +111,17 @@ def test_gl_sections():
     assert "collapsed=true" not in parsed_lines[2]
     assert "section_end" in parsed_lines[3]
     assert "section_start" in parsed_lines[4]
-    assert "collapsed=true" in parsed_lines[4]
+    assert "collapsed=true" not in parsed_lines[4]
+    assert "section_end" in parsed_lines[5]
+    assert "section_start" in parsed_lines[6]
+    assert "collapsed=true" in parsed_lines[6]
+    assert section_types == [
+        # LogSectionType.LAVA_BOOT,  True, if LogFollower started with Boot section
+        LogSectionType.TEST_DUT_SUITE,
+        LogSectionType.TEST_SUITE,
+        LogSectionType.TEST_CASE,
+        LogSectionType.LAVA_POST_PROCESSING,
+    ]
 
 
 def test_log_follower_flush():
@@ -137,112 +153,116 @@ SENSITIVE_DATA_SCENARIOS = {
     "no sensitive data tagged": (
         ["bla  bla", "mytoken: asdkfjsde1341=="],
         ["bla  bla", "mytoken: asdkfjsde1341=="],
-        "HIDEME",
+        ["HIDEME"],
     ),
     "sensitive data tagged": (
         ["bla  bla", "mytoken: asdkfjsde1341== # HIDEME"],
         ["bla  bla"],
-        "HIDEME",
+        ["HIDEME"],
     ),
     "sensitive data tagged with custom word": (
-        ["bla  bla", "mytoken: asdkfjsde1341== # DELETETHISLINE", "third line"],
-        ["bla  bla", "third line"],
-        "DELETETHISLINE",
+        ["bla  bla", "mytoken: asdkfjsde1341== # DELETETHISLINE", "third line # NOTANYMORE"],
+        ["bla  bla", "third line # NOTANYMORE"],
+        ["DELETETHISLINE", "NOTANYMORE"],
     ),
 }
 
 
 @pytest.mark.parametrize(
-    "input, expectation, tag",
+    "input, expectation, tags",
     SENSITIVE_DATA_SCENARIOS.values(),
     ids=SENSITIVE_DATA_SCENARIOS.keys(),
 )
-def test_hide_sensitive_data(input, expectation, tag):
-    yaml_data = yaml.safe_dump(input)
-    yaml_result = hide_sensitive_data(yaml_data, tag)
-    result = yaml.safe_load(yaml_result)
+def test_hide_sensitive_data(input, expectation, tags):
+    yaml_data = yaml_dump(input)
+    yaml_result = hide_sensitive_data(yaml_data, *tags)
+    result = lava_yaml.load(yaml_result)
 
     assert result == expectation
 
 
-COLOR_MANGLED_SCENARIOS = {
-    "Mangled error message at target level": (
-        create_lava_yaml_msg(msg="[0m[0m[31mERROR - dEQP error: ", lvl="target"),
-        "\x1b[0m\x1b[0m\x1b[31mERROR - dEQP error: ",
-    ),
-    "Mangled pass message at target level": (
-        create_lava_yaml_msg(
-            msg="[0mPass: 26718, ExpectedFail: 95, Skip: 25187, Duration: 8:18, Remaining: 13",
-            lvl="target",
+GITLAB_SECTION_SPLIT_SCENARIOS = {
+    "Split section_start at target level": (
+        "\x1b[0Ksection_start:1668454947:test_post_process[collapsed=true]\r\x1b[0Kpost-processing test results",
+        (
+            "\x1b[0Ksection_start:1668454947:test_post_process[collapsed=true]",
+            "\x1b[0Kpost-processing test results",
         ),
-        "\x1b[0mPass: 26718, ExpectedFail: 95, Skip: 25187, Duration: 8:18, Remaining: 13",
     ),
-    "Mangled error message with bold formatting at target level": (
-        create_lava_yaml_msg(msg="[1;31mReview the image changes...", lvl="target"),
-        "\x1b[1;31mReview the image changes...",
+    "Split section_end at target level": (
+        "\x1b[0Ksection_end:1666309222:test_post_process\r\x1b[0K",
+        ("\x1b[0Ksection_end:1666309222:test_post_process", "\x1b[0K"),
     ),
-    "Mangled error message with high intensity background at target level": (
-        create_lava_yaml_msg(msg="[100mReview the image changes...", lvl="target"),
-        "\x1b[100mReview the image changes...",
-    ),
-    "Mangled error message with underline+bg color+fg color at target level": (
-        create_lava_yaml_msg(msg="[4;41;97mReview the image changes...", lvl="target"),
-        "\x1b[4;41;97mReview the image changes...",
-    ),
-    "Bad input for color code.": (
-        create_lava_yaml_msg(
-            msg="[4;97 This message is missing the `m`.", lvl="target"
-        ),
-        "[4;97 This message is missing the `m`.",
+    "Second line is not split from the first": (
+        ("\x1b[0Ksection_end:1666309222:test_post_process", "Any message"),
+        ("\x1b[0Ksection_end:1666309222:test_post_process", "Any message"),
     ),
 }
 
 
 @pytest.mark.parametrize(
-    "message, fixed_message",
-    COLOR_MANGLED_SCENARIOS.values(),
-    ids=COLOR_MANGLED_SCENARIOS.keys(),
+    "expected_message, messages",
+    GITLAB_SECTION_SPLIT_SCENARIOS.values(),
+    ids=GITLAB_SECTION_SPLIT_SCENARIOS.keys(),
 )
-def test_fix_lava_color_log(message, fixed_message):
-    fix_lava_color_log(message)
+def test_fix_lava_gitlab_section_log(expected_message, messages):
+    fixed_messages = []
+    gen = fix_lava_gitlab_section_log()
+    next(gen)
 
-    assert message["msg"] == fixed_message
+    for message in messages:
+        lava_log = create_lava_yaml_msg(msg=message, lvl="target")
+        if recovered_line := gen.send(lava_log):
+            fixed_messages.append((recovered_line, lava_log["msg"]))
+        fixed_messages.append(lava_log["msg"])
+
+    assert expected_message in fixed_messages
 
 
-GITLAB_SECTION_MANGLED_SCENARIOS = {
-    "Mangled section_start at target level": (
-        create_lava_yaml_msg(
-            msg="[0Ksection_start:1652658415:deqp[collapsed=false][0Kdeqp-runner",
-            lvl="target",
+@pytest.mark.parametrize(
+    "expected_message, messages",
+    GITLAB_SECTION_SPLIT_SCENARIOS.values(),
+    ids=GITLAB_SECTION_SPLIT_SCENARIOS.keys(),
+)
+def test_lava_gitlab_section_log_collabora(expected_message, messages, monkeypatch):
+    """Check if LogFollower does not change the message if we are running in Collabora farm."""
+    monkeypatch.setenv("RUNNER_TAG", "mesa-ci-x86_64-lava-test")
+    lf = LogFollower()
+    for message in messages:
+        lf.feed([create_lava_yaml_msg(msg=message)])
+    new_messages = lf.flush()
+    new_messages = tuple(new_messages) if len(new_messages) > 1 else new_messages[0]
+    assert new_messages == expected_message
+
+
+CARRIAGE_RETURN_SCENARIOS = {
+    "Carriage return at the end of the previous line": (
+        (
+            "\x1b[0Ksection_start:1677609903:test_setup[collapsed=true]\r\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m",
         ),
-        "\x1b[0Ksection_start:1652658415:deqp[collapsed=false]\r\x1b[0Kdeqp-runner",
+        (
+            "\x1b[0Ksection_start:1677609903:test_setup[collapsed=true]\r",
+            "\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m\r\n",
+        ),
     ),
-    "Mangled section_start at target level with header with spaces": (
-        create_lava_yaml_msg(
-            msg="[0Ksection_start:1652658415:deqp[collapsed=false][0Kdeqp runner stats",
-            lvl="target",
-        ),
-        "\x1b[0Ksection_start:1652658415:deqp[collapsed=false]\r\x1b[0Kdeqp runner stats",
-    ),
-    "Mangled section_end at target level": (
-        create_lava_yaml_msg(
-            msg="[0Ksection_end:1652658415:test_setup[0K",
-            lvl="target",
-        ),
-        "\x1b[0Ksection_end:1652658415:test_setup\r\x1b[0K",
+    "Newline at the end of the line": (
+        ("\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m", "log"),
+        ("\x1b[0K\x1b[0;36m[303:44] deqp: preparing test setup\x1b[0m\r\n", "log"),
     ),
 }
 
 
 @pytest.mark.parametrize(
-    "message, fixed_message",
-    GITLAB_SECTION_MANGLED_SCENARIOS.values(),
-    ids=GITLAB_SECTION_MANGLED_SCENARIOS.keys(),
+    "expected_message, messages",
+    CARRIAGE_RETURN_SCENARIOS.values(),
+    ids=CARRIAGE_RETURN_SCENARIOS.keys(),
 )
-def test_fix_lava_gitlab_section_log(message, fixed_message):
-    fix_lava_gitlab_section_log(message)
-
-    assert message["msg"] == fixed_message
+def test_lava_log_merge_carriage_return_lines(expected_message, messages):
+    lf = LogFollower()
+    for message in messages:
+        lf.feed([create_lava_yaml_msg(msg=message)])
+    new_messages = tuple(lf.flush())
+    assert new_messages == expected_message
 
 
 WATCHDOG_SCENARIOS = {

@@ -63,7 +63,11 @@ typedef enum pipe_shader_type
    PIPE_SHADER_TYPES = (PIPE_SHADER_COMPUTE + 1),
    /* Vulkan-only stages. */
    MESA_SHADER_TASK         = 6,
+   PIPE_SHADER_TASK = MESA_SHADER_TASK,
    MESA_SHADER_MESH         = 7,
+   PIPE_SHADER_MESH = MESA_SHADER_MESH,
+   PIPE_SHADER_MESH_TYPES = (PIPE_SHADER_MESH + 1),
+
    MESA_SHADER_RAYGEN       = 8,
    MESA_SHADER_ANY_HIT      = 9,
    MESA_SHADER_CLOSEST_HIT  = 10,
@@ -105,6 +109,12 @@ gl_shader_stage_is_callable(gl_shader_stage stage)
           stage == MESA_SHADER_MISS ||
           stage == MESA_SHADER_INTERSECTION ||
           stage == MESA_SHADER_CALLABLE;
+}
+
+static inline bool
+gl_shader_stage_is_rt(gl_shader_stage stage)
+{
+   return stage == MESA_SHADER_RAYGEN || gl_shader_stage_is_callable(stage);
 }
 
 static inline bool
@@ -298,7 +308,7 @@ const char *gl_vert_attrib_name(gl_vert_attrib attrib);
  * - vertResults (in prog_print.c's arb_output_attrib_string())
  * - fragAttribs (in prog_print.c's arb_input_attrib_string())
  * - _mesa_varying_slot_in_fs()
- * - _mesa_varying_slot_name_for_stage()
+ * - gl_varying_slot_name_for_stage()
  */
 typedef enum
 {
@@ -816,6 +826,14 @@ typedef enum
    SYSTEM_VALUE_BARYCENTRIC_PULL_MODEL,
 
    /**
+    * \name VK_KHR_fragment_shader_barycentric
+    */
+   /*@{*/
+   SYSTEM_VALUE_BARYCENTRIC_PERSP_COORD,
+   SYSTEM_VALUE_BARYCENTRIC_LINEAR_COORD,
+   /*@}*/
+
+   /**
     * \name Ray tracing shader system values
     */
    /*@{*/
@@ -835,6 +853,7 @@ typedef enum
    SYSTEM_VALUE_RAY_GEOMETRY_INDEX,
    SYSTEM_VALUE_RAY_INSTANCE_CUSTOM_INDEX,
    SYSTEM_VALUE_CULL_MASK,
+   SYSTEM_VALUE_RAY_TRIANGLE_VERTEX_POSITIONS,
    /*@}*/
 
    /**
@@ -862,6 +881,19 @@ typedef enum
     * Fragment shading rate used for KHR_fragment_shading_rate (Vulkan).
     */
    SYSTEM_VALUE_FRAG_SHADING_RATE,
+
+   /*
+    * Rasterized fragment is fully covered by the generating primitive
+    * (SPV_EXT_fragment_fully_covered).
+    */
+   SYSTEM_VALUE_FULLY_COVERED,
+
+   /*
+    * Fragment size and invocation count used for
+    * EXT_fragment_invocation_density (Vulkan).
+    */
+   SYSTEM_VALUE_FRAG_SIZE,
+   SYSTEM_VALUE_FRAG_INVOCATION_COUNT,
 
    SYSTEM_VALUE_MAX             /**< Number of values */
 } gl_system_value;
@@ -946,12 +978,39 @@ enum gl_frag_depth_layout
 };
 
 /**
- * \brief Buffer access qualifiers
+ * \brief Layout qualifiers for AMD_shader_early_and_late_fragment_tests.
+ */
+enum gl_frag_stencil_layout
+{
+   FRAG_STENCIL_LAYOUT_NONE, /**< No layout is specified. */
+   FRAG_STENCIL_LAYOUT_ANY,
+   FRAG_STENCIL_LAYOUT_GREATER,
+   FRAG_STENCIL_LAYOUT_LESS,
+   FRAG_STENCIL_LAYOUT_UNCHANGED
+};
+
+/**
+ * \brief Memory access qualifiers
  */
 enum gl_access_qualifier
 {
+   /**
+    * This means that the memory scope is the current device. It indicates
+    * that reads and writes are coherent with reads and writes from other
+    * shader invocations and other workgroups.
+    */
    ACCESS_COHERENT      = (1 << 0),
+
+   /**
+    * This means non-aliased. It indicates that the accessed address is not
+    * accessible through any other memory resource in the shader.
+    */
    ACCESS_RESTRICT      = (1 << 1),
+
+   /**
+    * The access cannot be eliminated, duplicated, or combined with other
+    * accesses.
+    */
    ACCESS_VOLATILE      = (1 << 2),
 
    /* The memory used by the access/variable is not read. */
@@ -995,11 +1054,38 @@ enum gl_access_qualifier
     */
    ACCESS_CAN_REORDER = (1 << 6),
 
-   /** Use as little cache space as possible. */
-   ACCESS_STREAM_CACHE_POLICY = (1 << 7),
+   /**
+    * Hints that the accessed address is not likely to be accessed again
+    * in the near future. This reduces data retention in caches.
+    */
+   ACCESS_NON_TEMPORAL = (1 << 7),
 
    /** Execute instruction also in helpers. */
    ACCESS_INCLUDE_HELPERS = (1 << 8),
+
+   /**
+    * Whether the address bits are swizzled by the hw. This practically means
+    * that loads can't be vectorized and must be exactly 32 bits on some chips.
+    * The swizzle amount is determined by the descriptor.
+    */
+   ACCESS_IS_SWIZZLED_AMD = (1 << 9),
+
+   /**
+    * Whether an AMD-specific buffer intrinsic uses a format conversion.
+    *
+    * If unset, the intrinsic will access raw memory without any conversion.
+    *
+    * If set, the memory opcode performs a format conversion according to
+    * the format determined by the descriptor (in a manner identical to image
+    * buffers and sampler buffers).
+    */
+   ACCESS_USES_FORMAT_AMD = (1 << 10),
+
+   /**
+    * Whether a multi sample image load intrinsic uses sample index extracted
+    * from fragment mask buffer.
+    */
+   ACCESS_FMASK_LOWERED_AMD = (1 << 11),
 };
 
 /**
@@ -1064,26 +1150,29 @@ enum tess_primitive_mode
    TESS_PRIMITIVE_ISOLINES,
 };
 
-/* these also map directly to GL and gallium prim types. */
-enum shader_prim
+/**
+ * Mesa primitive types for both GL and Vulkan:
+ */
+enum ENUM_PACKED mesa_prim
 {
-   SHADER_PRIM_POINTS,
-   SHADER_PRIM_LINES,
-   SHADER_PRIM_LINE_LOOP,
-   SHADER_PRIM_LINE_STRIP,
-   SHADER_PRIM_TRIANGLES,
-   SHADER_PRIM_TRIANGLE_STRIP,
-   SHADER_PRIM_TRIANGLE_FAN,
-   SHADER_PRIM_QUADS,
-   SHADER_PRIM_QUAD_STRIP,
-   SHADER_PRIM_POLYGON,
-   SHADER_PRIM_LINES_ADJACENCY,
-   SHADER_PRIM_LINE_STRIP_ADJACENCY,
-   SHADER_PRIM_TRIANGLES_ADJACENCY,
-   SHADER_PRIM_TRIANGLE_STRIP_ADJACENCY,
-   SHADER_PRIM_PATCHES,
-   SHADER_PRIM_MAX = SHADER_PRIM_PATCHES,
-   SHADER_PRIM_UNKNOWN = (SHADER_PRIM_MAX * 2),
+   MESA_PRIM_POINTS,
+   MESA_PRIM_LINES,
+   MESA_PRIM_LINE_LOOP,
+   MESA_PRIM_LINE_STRIP,
+   MESA_PRIM_TRIANGLES,
+   MESA_PRIM_TRIANGLE_STRIP,
+   MESA_PRIM_TRIANGLE_FAN,
+   MESA_PRIM_QUADS,
+   MESA_PRIM_QUAD_STRIP,
+   MESA_PRIM_POLYGON,
+   MESA_PRIM_LINES_ADJACENCY,
+   MESA_PRIM_LINE_STRIP_ADJACENCY,
+   MESA_PRIM_TRIANGLES_ADJACENCY,
+   MESA_PRIM_TRIANGLE_STRIP_ADJACENCY,
+   MESA_PRIM_PATCHES,
+   MESA_PRIM_MAX = MESA_PRIM_PATCHES,
+   MESA_PRIM_COUNT = MESA_PRIM_MAX +1,
+   MESA_PRIM_UNKNOWN = (MESA_PRIM_MAX * 2),
 };
 
 /**
@@ -1225,7 +1314,7 @@ enum cl_sampler_filter_mode {
 #define MAT_BIT_BACK_INDEXES          (1<<MAT_ATTRIB_BACK_INDEXES)
 
 /** An enum representing what kind of input gl_SubgroupSize is. */
-enum PACKED gl_subgroup_size
+enum ENUM_PACKED gl_subgroup_size
 {
    /** Actual subgroup size, whatever that happens to be */
    SUBGROUP_SIZE_VARYING = 0,
@@ -1260,6 +1349,19 @@ enum PACKED gl_subgroup_size
    SUBGROUP_SIZE_REQUIRE_64  = 64,  /**< VK_EXT_subgroup_size_control */
    SUBGROUP_SIZE_REQUIRE_128 = 128, /**< VK_EXT_subgroup_size_control */
 };
+
+/* Ordered from narrower to wider scope. */
+typedef enum {
+   SCOPE_NONE,
+   SCOPE_INVOCATION,
+   SCOPE_SUBGROUP,
+   SCOPE_SHADER_CALL,
+   SCOPE_WORKGROUP,
+   SCOPE_QUEUE_FAMILY,
+   SCOPE_DEVICE,
+} mesa_scope;
+
+const char *mesa_scope_name(mesa_scope scope);
 
 #ifdef __cplusplus
 } /* extern "C" */

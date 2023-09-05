@@ -21,10 +21,10 @@
  * IN THE SOFTWARE.
  *
  */
+#include <llvm/Config/llvm-config.h>
+
 #include "helpers.h"
 #include "sid.h"
-
-#include <llvm/Config/llvm-config.h>
 
 using namespace aco;
 
@@ -178,7 +178,7 @@ BEGIN_TEST(assembler.long_jump.conditional_backwards)
    finish_assembler_test();
 END_TEST
 
-BEGIN_TEST(assembler.long_jump.3f)
+BEGIN_TEST(assembler.long_jump .3f)
    if (!setup_cs(NULL, (amd_gfx_level)GFX10))
       return;
 
@@ -218,7 +218,7 @@ BEGIN_TEST(assembler.long_jump.constaddr)
    bld.reset(program->create_and_insert_block());
 
    //>> s_getpc_b64 s[0:1]                                          ; be801f00
-   //! s_add_u32 s0, s0, 0xe4                                      ; 8000ff00 000000e4
+   //! s_add_u32 s0, s0, 32                                         ; 8000ff00 00000020
    bld.sop1(aco_opcode::p_constaddr_getpc, Definition(PhysReg(0), s2), Operand::zero());
    bld.sop2(aco_opcode::p_constaddr_addlo, Definition(PhysReg(0), s1), bld.def(s1, scc),
             Operand(PhysReg(0), s1), Operand::zero(), Operand::zero());
@@ -269,7 +269,8 @@ BEGIN_TEST(assembler.v_add3)
 
       //~gfx9>> v_add3_u32 v0, 0, 0, 0 ; d1ff0000 02010080
       //~gfx10>> v_add3_u32 v0, 0, 0, 0 ; d76d0000 02010080
-      aco_ptr<VOP3_instruction> add3{create_instruction<VOP3_instruction>(aco_opcode::v_add3_u32, Format::VOP3, 3, 1)};
+      aco_ptr<VALU_instruction> add3{
+         create_instruction<VALU_instruction>(aco_opcode::v_add3_u32, Format::VOP3, 3, 1)};
       add3->operands[0] = Operand::zero();
       add3->operands[1] = Operand::zero();
       add3->operands[2] = Operand::zero();
@@ -287,7 +288,8 @@ BEGIN_TEST(assembler.v_add3_clamp)
 
       //~gfx9>> integer addition + clamp ; d1ff8000 02010080
       //~gfx10>> integer addition + clamp ; d76d8000 02010080
-      aco_ptr<VOP3_instruction> add3{create_instruction<VOP3_instruction>(aco_opcode::v_add3_u32, Format::VOP3, 3, 1)};
+      aco_ptr<VALU_instruction> add3{
+         create_instruction<VALU_instruction>(aco_opcode::v_add3_u32, Format::VOP3, 3, 1)};
       add3->operands[0] = Operand::zero();
       add3->operands[1] = Operand::zero();
       add3->operands[2] = Operand::zero();
@@ -334,11 +336,11 @@ BEGIN_TEST(assembler.p_constaddr)
    dst1.setFixed(PhysReg(2));
 
    //>> s_getpc_b64 s[0:1] ; be801c00
-   //! s_add_u32 s0, s0, 24 ; 8000ff00 00000018
+   //! s_add_u32 s0, s0, 44 ; 8000ff00 0000002c
    bld.pseudo(aco_opcode::p_constaddr, dst0, Operand::zero());
 
    //! s_getpc_b64 s[2:3] ; be821c00
-   //! s_add_u32 s2, s2, 44 ; 8002ff02 0000002c
+   //! s_add_u32 s2, s2, 64 ; 8002ff02 00000040
    bld.pseudo(aco_opcode::p_constaddr, dst1, Operand::c32(32));
 
    aco::lower_to_hw_instr(program.get());
@@ -352,32 +354,37 @@ BEGIN_TEST(assembler.vopc_sdwa)
 
       //~gfx9>> v_cmp_lt_u32_sdwa vcc, 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d9300f9 86860080
       //~gfx10>> v_cmp_lt_u32_sdwa vcc, 0, 0 src0_sel:DWORD src1_sel:DWORD   ; 7d8300f9 86860080
-      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(vcc, s2), Operand::zero(), Operand::zero());
+      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(vcc, s2), Operand::zero(),
+                    Operand::zero());
 
       //~gfx9! v_cmp_lt_u32_sdwa s[44:45], 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d9300f9 8686ac80
       //~gfx10! v_cmp_lt_u32_sdwa s[44:45], 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d8300f9 8686ac80
-      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(PhysReg(0x2c), s2), Operand::zero(), Operand::zero());
+      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(PhysReg(0x2c), s2), Operand::zero(),
+                    Operand::zero());
 
       //~gfx9! v_cmp_lt_u32_sdwa exec, 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7d9300f9 8686fe80
       //~gfx10! v_cmp_lt_u32_sdwa exec, 0, 0 src0_sel:DWORD src1_sel:DWORD  ; 7d8300f9 8686fe80
-      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(exec, s2), Operand::zero(), Operand::zero());
+      bld.vopc_sdwa(aco_opcode::v_cmp_lt_u32, Definition(exec, s2), Operand::zero(),
+                    Operand::zero());
 
       if (i == GFX10) {
          //~gfx10! v_cmpx_lt_u32_sdwa 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7da300f9 86860080
-         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(exec, s2), Operand::zero(), Operand::zero());
+         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(exec, s2), Operand::zero(),
+                       Operand::zero());
       } else {
          //~gfx9! v_cmpx_lt_u32_sdwa vcc, 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7db300f9 86860080
-         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(vcc, s2), Definition(exec, s2), Operand::zero(), Operand::zero());
+         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(vcc, s2), Definition(exec, s2),
+                       Operand::zero(), Operand::zero());
 
          //~gfx9! v_cmpx_lt_u32_sdwa s[44:45], 0, 0 src0_sel:DWORD src1_sel:DWORD ; 7db300f9 8686ac80
-         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(PhysReg(0x2c), s2), Definition(exec, s2), Operand::zero(), Operand::zero());
+         bld.vopc_sdwa(aco_opcode::v_cmpx_lt_u32, Definition(PhysReg(0x2c), s2),
+                       Definition(exec, s2), Operand::zero(), Operand::zero());
       }
 
       finish_assembler_test();
    }
 END_TEST
 
-#if LLVM_VERSION_MAJOR >= 15
 BEGIN_TEST(assembler.gfx11.smem)
    if (!setup_cs(NULL, GFX11))
       return;
@@ -407,10 +414,10 @@ BEGIN_TEST(assembler.gfx11.smem)
    bld.smem(aco_opcode::s_load_dword, dst, op_s2, Operand::c32(42), op_s1);
 
    //! s_buffer_load_b32 s4, s[32:35], s8 glc                      ; f4204110 10000000
-   bld.smem(aco_opcode::s_buffer_load_dword, dst, op_s4, op_s1).instr->smem().glc = true;
+   bld.smem(aco_opcode::s_buffer_load_dword, dst, op_s4, op_s1)->smem().glc = true;
 
    //! s_buffer_load_b32 s4, s[32:35], s8 dlc                      ; f4202110 10000000
-   bld.smem(aco_opcode::s_buffer_load_dword, dst, op_s4, op_s1).instr->smem().dlc = true;
+   bld.smem(aco_opcode::s_buffer_load_dword, dst, op_s4, op_s1)->smem().dlc = true;
 
    finish_assembler_test();
 END_TEST
@@ -437,6 +444,9 @@ BEGIN_TEST(assembler.gfx11.mubuf)
    Operand op_m0(bld.tmp(s1));
    op_m0.setFixed(m0);
 
+   //! llvm_version: #llvm_ver
+   fprintf(output, "llvm_version: %u\n", LLVM_VERSION_MAJOR);
+
    /* Addressing */
    //>> buffer_load_b32 v42, off, s[32:35], s30                     ; e0500000 1e082a80
    bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), op_s1, 0, false);
@@ -448,45 +458,70 @@ BEGIN_TEST(assembler.gfx11.mubuf)
    bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, op_v1, op_s1, 0, true);
 
    //! buffer_load_b32 v42, v10, s[32:35], s30 idxen               ; e0500000 1e882a0a
-   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, op_v1, op_s1, 0, false).instr->mubuf().idxen = true;
+   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, op_v1, op_s1, 0, false)->mubuf().idxen =
+      true;
 
    //! buffer_load_b32 v42, v[20:21], s[32:35], s30 idxen offen    ; e0500000 1ec82a14
-   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, op_v2, op_s1, 0, true).instr->mubuf().idxen = true;
+   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, op_v2, op_s1, 0, true)->mubuf().idxen =
+      true;
 
    //! buffer_load_b32 v42, off, s[32:35], s30 offset:84           ; e0500054 1e082a80
    bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), op_s1, 84, false);
 
    /* Various flags */
    //! buffer_load_b32 v42, off, s[32:35], 0 glc                   ; e0504000 80082a80
-   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false).instr->mubuf().glc = true;
+   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false)
+      ->mubuf()
+      .glc = true;
 
    //! buffer_load_b32 v42, off, s[32:35], 0 dlc                   ; e0502000 80082a80
-   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false).instr->mubuf().dlc = true;
+   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false)
+      ->mubuf()
+      .dlc = true;
 
    //! buffer_load_b32 v42, off, s[32:35], 0 slc                   ; e0501000 80082a80
-   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false).instr->mubuf().slc = true;
+   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false)
+      ->mubuf()
+      .slc = true;
 
-   //! buffer_load_b32 v42, off, s[32:35], 0 tfe                   ; e0500000 80282a80
-   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false).instr->mubuf().tfe = true;
+   //; if llvm_ver >= 16:
+   //;    insert_pattern('buffer_load_b32 v[42:43], off, s[32:35], 0 tfe              ; e0500000 80282a80')
+   //; else:
+   //;    insert_pattern('buffer_load_b32 v42, off, s[32:35], 0 tfe                   ; e0500000 80282a80')
+   bld.mubuf(aco_opcode::buffer_load_dword, dst, op_s4, Operand(v1), Operand::zero(), 0, false)
+      ->mubuf()
+      .tfe = true;
 
    /* LDS */
    //! buffer_load_lds_b32 off, s[32:35], 0                        ; e0c40000 80080080
-   bld.mubuf(aco_opcode::buffer_load_dword, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false).instr->mubuf().lds = true;
+   bld.mubuf(aco_opcode::buffer_load_dword, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false)
+      ->mubuf()
+      .lds = true;
 
    //! buffer_load_lds_i8 off, s[32:35], 0                         ; e0b80000 80080080
-   bld.mubuf(aco_opcode::buffer_load_sbyte, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false).instr->mubuf().lds = true;
+   bld.mubuf(aco_opcode::buffer_load_sbyte, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false)
+      ->mubuf()
+      .lds = true;
 
    //! buffer_load_lds_i16 off, s[32:35], 0                        ; e0c00000 80080080
-   bld.mubuf(aco_opcode::buffer_load_sshort, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false).instr->mubuf().lds = true;
+   bld.mubuf(aco_opcode::buffer_load_sshort, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false)
+      ->mubuf()
+      .lds = true;
 
    //! buffer_load_lds_u8 off, s[32:35], 0                         ; e0b40000 80080080
-   bld.mubuf(aco_opcode::buffer_load_ubyte, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false).instr->mubuf().lds = true;
+   bld.mubuf(aco_opcode::buffer_load_ubyte, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false)
+      ->mubuf()
+      .lds = true;
 
    //! buffer_load_lds_u16 off, s[32:35], 0                        ; e0bc0000 80080080
-   bld.mubuf(aco_opcode::buffer_load_ushort, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false).instr->mubuf().lds = true;
+   bld.mubuf(aco_opcode::buffer_load_ushort, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false)
+      ->mubuf()
+      .lds = true;
 
    //! buffer_load_lds_format_x off, s[32:35], 0                   ; e0c80000 80080080
-   bld.mubuf(aco_opcode::buffer_load_format_x, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false).instr->mubuf().lds = true;
+   bld.mubuf(aco_opcode::buffer_load_format_x, op_s4, Operand(v1), Operand::zero(), op_m0, 0, false)
+      ->mubuf()
+      .lds = true;
 
    /* Stores */
    //! buffer_store_b32 v10, off, s[32:35], s30                    ; e0680000 1e080a80
@@ -520,41 +555,67 @@ BEGIN_TEST(assembler.gfx11.mtbuf)
    unsigned dfmt = V_008F0C_BUF_DATA_FORMAT_32_32;
    unsigned nfmt = V_008F0C_BUF_NUM_FORMAT_FLOAT;
 
+   //! llvm_version: #llvm_ver
+   fprintf(output, "llvm_version: %u\n", LLVM_VERSION_MAJOR);
+
    /* Addressing */
    //>> tbuffer_load_format_x v42, off, s[32:35], s30 format:[BUF_FMT_32_32_FLOAT] ; e9900000 1e082a80
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), op_s1, dfmt, nfmt, 0, false);
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), op_s1, dfmt, nfmt, 0,
+             false);
 
    //! tbuffer_load_format_x v42, off, s[32:35], 42 format:[BUF_FMT_32_32_FLOAT] ; e9900000 aa082a80
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::c32(42), dfmt, nfmt, 0, false);
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::c32(42), dfmt,
+             nfmt, 0, false);
 
    //! tbuffer_load_format_x v42, v10, s[32:35], s30 format:[BUF_FMT_32_32_FLOAT] offen ; e9900000 1e482a0a
    bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, op_v1, op_s1, dfmt, nfmt, 0, true);
 
    //! tbuffer_load_format_x v42, v10, s[32:35], s30 format:[BUF_FMT_32_32_FLOAT] idxen ; e9900000 1e882a0a
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, op_v1, op_s1, dfmt, nfmt, 0, false).instr->mtbuf().idxen = true;
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, op_v1, op_s1, dfmt, nfmt, 0, false)
+      ->mtbuf()
+      .idxen = true;
 
    //! tbuffer_load_format_x v42, v[20:21], s[32:35], s30 format:[BUF_FMT_32_32_FLOAT] idxen offen ; e9900000 1ec82a14
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, op_v2, op_s1, dfmt, nfmt, 0, true).instr->mtbuf().idxen = true;
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, op_v2, op_s1, dfmt, nfmt, 0, true)
+      ->mtbuf()
+      .idxen = true;
 
    //! tbuffer_load_format_x v42, off, s[32:35], s30 format:[BUF_FMT_32_32_FLOAT] offset:84 ; e9900054 1e082a80
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), op_s1, dfmt, nfmt, 84, false);
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), op_s1, dfmt, nfmt, 84,
+             false);
 
    /* Various flags */
    //! tbuffer_load_format_x v42, off, s[32:35], 0 format:[BUF_FMT_32_32_FLOAT] glc ; e9904000 80082a80
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt, nfmt, 0, false).instr->mtbuf().glc = true;
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt,
+             nfmt, 0, false)
+      ->mtbuf()
+      .glc = true;
 
    //! tbuffer_load_format_x v42, off, s[32:35], 0 format:[BUF_FMT_32_32_FLOAT] dlc ; e9902000 80082a80
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt, nfmt, 0, false).instr->mtbuf().dlc = true;
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt,
+             nfmt, 0, false)
+      ->mtbuf()
+      .dlc = true;
 
    //! tbuffer_load_format_x v42, off, s[32:35], 0 format:[BUF_FMT_32_32_FLOAT] slc ; e9901000 80082a80
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt, nfmt, 0, false).instr->mtbuf().slc = true;
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt,
+             nfmt, 0, false)
+      ->mtbuf()
+      .slc = true;
 
-   //! tbuffer_load_format_x v42, off, s[32:35], 0 format:[BUF_FMT_32_32_FLOAT] tfe ; e9900000 80282a80
-   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt, nfmt, 0, false).instr->mtbuf().tfe = true;
+   //; if llvm_ver >= 16:
+   //;    insert_pattern('tbuffer_load_format_x v42, off, s[32:35], 0 format:[BUF_FMT_32_32_FLOAT] ; e9900000 80282a80')
+   //; else:
+   //;    insert_pattern('tbuffer_load_format_x v42, off, s[32:35], 0 format:[BUF_FMT_32_32_FLOAT] tfe ; e9900000 80282a80')
+   bld.mtbuf(aco_opcode::tbuffer_load_format_x, dst, op_s4, Operand(v1), Operand::zero(), dfmt,
+             nfmt, 0, false)
+      ->mtbuf()
+      .tfe = true;
 
    /* Stores */
    //! tbuffer_store_format_x v10, off, s[32:35], s30 format:[BUF_FMT_32_32_FLOAT] ; e9920000 1e080a80
-   bld.mtbuf(aco_opcode::tbuffer_store_format_x, op_s4, Operand(v1), op_s1, op_v1, dfmt, nfmt, 0, false);
+   bld.mtbuf(aco_opcode::tbuffer_store_format_x, op_s4, Operand(v1), op_s1, op_v1, dfmt, nfmt, 0,
+             false);
 
    //! tbuffer_store_format_xy v[20:21], v10, s[32:35], s30 format:[BUF_FMT_32_32_FLOAT] offen ; e9928000 1e48140a
    bld.mtbuf(aco_opcode::tbuffer_store_format_xy, op_s4, op_v1, op_s1, op_v2, dfmt, nfmt, 0, true);
@@ -591,46 +652,53 @@ BEGIN_TEST(assembler.gfx11.mimg)
    bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1);
 
    //! image_sample v[84:87], v[20:21], s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_2D ; f06c0f04 20105414
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v2).instr->mimg().dim = ac_image_2d;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v2)->mimg().dim =
+      ac_image_2d;
 
    //! image_sample v42, v10, s[64:71], s[32:35] dmask:0x1 dim:SQ_RSRC_IMG_1D ; f06c0100 20102a0a
-   bld.mimg(aco_opcode::image_sample, dst_v1, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().dmask = 0x1;
+   bld.mimg(aco_opcode::image_sample, dst_v1, op_s8, op_s4, Operand(v1), op_v1)->mimg().dmask = 0x1;
 
    /* Various flags */
    //! image_sample v[84:87], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D dlc ; f06c2f00 2010540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().dlc = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().dlc = true;
 
    //! image_sample v[84:87], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D glc ; f06c4f00 2010540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().glc = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().glc = true;
 
    //! image_sample v[84:87], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D slc ; f06c1f00 2010540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().slc = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().slc = true;
 
    //! image_sample v[84:88], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D tfe ; f06c0f00 2030540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().tfe = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().tfe = true;
 
    //! image_sample v[84:87], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D lwe ; f06c0f00 2050540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().lwe = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().lwe = true;
 
    //! image_sample v[84:87], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D r128 ; f06c8f00 2010540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().r128 = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().r128 = true;
 
    //! image_sample v[84:87], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D a16 ; f06d0f00 2010540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().a16 = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().a16 = true;
 
    //! image_sample v[84:85], v10, s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_1D d16 ; f06e0f00 2010540a
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1).instr->mimg().d16 = true;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1)->mimg().d16 = true;
 
    /* NSA */
    //! image_sample v[84:87], [v10, v40], s[64:71], s[32:35] dmask:0xf dim:SQ_RSRC_IMG_2D ; f06c0f05 2010540a 00000028
-   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1, Operand(bld.tmp(v1), PhysReg(256 + 40))).instr->mimg().dim = ac_image_2d;
+   bld.mimg(aco_opcode::image_sample, dst_v4, op_s8, op_s4, Operand(v1), op_v1,
+            Operand(bld.tmp(v1), PhysReg(256 + 40)))
+      ->mimg()
+      .dim = ac_image_2d;
 
    /* Stores */
    //! image_store v[30:33], v10, s[64:71] dmask:0xf dim:SQ_RSRC_IMG_1D ; f0180f00 00101e0a
    bld.mimg(aco_opcode::image_store, op_s8, Operand(s4), op_v4, op_v1);
 
    //! image_atomic_add v10, v20, s[64:71] dmask:0xf dim:SQ_RSRC_IMG_2D ; f0300f04 00100a14
-   bld.mimg(aco_opcode::image_atomic_add, Definition(op_v1.physReg(), v1), op_s8, Operand(s4), op_v1, op_v2).instr->mimg().dim = ac_image_2d;
+   bld.mimg(aco_opcode::image_atomic_add, Definition(op_v1.physReg(), v1), op_s8, Operand(s4),
+            op_v1, op_v2)
+      ->mimg()
+      .dim = ac_image_2d;
 
    finish_assembler_test();
 END_TEST
@@ -681,13 +749,13 @@ BEGIN_TEST(assembler.gfx11.flat)
 
    /* Various flags */
    //! flat_load_b32 v42, v[20:21] slc                             ; dc508000 2a7c0014
-   bld.flat(aco_opcode::flat_load_dword, dst_v1, op_v2, Operand(s1)).instr->flat().slc = true;
+   bld.flat(aco_opcode::flat_load_dword, dst_v1, op_v2, Operand(s1))->flat().slc = true;
 
    //! flat_load_b32 v42, v[20:21] glc                             ; dc504000 2a7c0014
-   bld.flat(aco_opcode::flat_load_dword, dst_v1, op_v2, Operand(s1)).instr->flat().glc = true;
+   bld.flat(aco_opcode::flat_load_dword, dst_v1, op_v2, Operand(s1))->flat().glc = true;
 
    //! flat_load_b32 v42, v[20:21] dlc                             ; dc502000 2a7c0014
-   bld.flat(aco_opcode::flat_load_dword, dst_v1, op_v2, Operand(s1)).instr->flat().dlc = true;
+   bld.flat(aco_opcode::flat_load_dword, dst_v1, op_v2, Operand(s1))->flat().dlc = true;
 
    /* Stores */
    //! flat_store_b32 v[20:21], v10                                ; dc680000 007c0a14
@@ -717,7 +785,7 @@ BEGIN_TEST(assembler.gfx11.exp)
    bld.exp(aco_opcode::exp, op[1], op[0], op[3], op[2], 0xf, 3, false, true);
 
    //>> exp mrt3 v1, v0, v3, v2 row_en                              ; f800203f 02030001
-   bld.exp(aco_opcode::exp, op[1], op[0], op[3], op[2], op_m0, 0xf, 3).instr->exp().row_en = true;
+   bld.exp(aco_opcode::exp, op[1], op[0], op[3], op[2], op_m0, 0xf, 3)->exp().row_en = true;
 
    finish_assembler_test();
 END_TEST
@@ -735,41 +803,49 @@ BEGIN_TEST(assembler.gfx11.vinterp)
    Operand op1(bld.tmp(v1));
    op1.setFixed(PhysReg(256 + 20));
 
-   Operand op2(bld.tmp(s1));
-   op2.setFixed(PhysReg(30));
+   Operand op2(bld.tmp(v1));
+   op2.setFixed(PhysReg(256 + 30));
 
-   //>> v_interp_p10_f32 v42, v10, v20, s30 wait_exp:7              ; cd00072a 007a290a
+   //>> v_interp_p10_f32 v42, v10, v20, v30 wait_exp:7              ; cd00072a 047a290a
    bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2);
 
-   //! v_interp_p10_f32 v42, v10, v20, s30 wait_exp:6              ; cd00062a 007a290a
+   //! v_interp_p10_f32 v42, v10, v20, v30 wait_exp:6              ; cd00062a 047a290a
    bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 6);
 
-   //! v_interp_p2_f32 v42, v10, v20, s30                          ; cd01002a 007a290a
+   //! v_interp_p2_f32 v42, v10, v20, v30                          ; cd01002a 047a290a
    bld.vinterp_inreg(aco_opcode::v_interp_p2_f32_inreg, dst, op0, op1, op2, 0);
 
-   //! v_interp_p10_f32 v42, -v10, v20, s30                        ; cd00002a 207a290a
-   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0).instr->vinterp_inreg().neg[0] = true;
+   //! v_interp_p10_f32 v42, -v10, v20, v30                        ; cd00002a 247a290a
+   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0)
+      ->vinterp_inreg()
+      .neg[0] = true;
 
-   //! v_interp_p10_f32 v42, v10, -v20, s30                        ; cd00002a 407a290a
-   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0).instr->vinterp_inreg().neg[1] = true;
+   //! v_interp_p10_f32 v42, v10, -v20, v30                        ; cd00002a 447a290a
+   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0)
+      ->vinterp_inreg()
+      .neg[1] = true;
 
-   //! v_interp_p10_f32 v42, v10, v20, -s30                        ; cd00002a 807a290a
-   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0).instr->vinterp_inreg().neg[2] = true;
+   //! v_interp_p10_f32 v42, v10, v20, -v30                        ; cd00002a 847a290a
+   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0)
+      ->vinterp_inreg()
+      .neg[2] = true;
 
-   //! v_interp_p10_f16_f32 v42, v10, v20, s30 op_sel:[1,0,0,0]    ; cd02082a 007a290a
+   //! v_interp_p10_f16_f32 v42, v10, v20, v30 op_sel:[1,0,0,0]    ; cd02082a 047a290a
    bld.vinterp_inreg(aco_opcode::v_interp_p10_f16_f32_inreg, dst, op0, op1, op2, 0, 0x1);
 
-   //! v_interp_p2_f16_f32 v42, v10, v20, s30 op_sel:[0,1,0,0]     ; cd03102a 007a290a
+   //! v_interp_p2_f16_f32 v42, v10, v20, v30 op_sel:[0,1,0,0]     ; cd03102a 047a290a
    bld.vinterp_inreg(aco_opcode::v_interp_p2_f16_f32_inreg, dst, op0, op1, op2, 0, 0x2);
 
-   //! v_interp_p10_rtz_f16_f32 v42, v10, v20, s30 op_sel:[0,0,1,0] ; cd04202a 007a290a
+   //! v_interp_p10_rtz_f16_f32 v42, v10, v20, v30 op_sel:[0,0,1,0] ; cd04202a 047a290a
    bld.vinterp_inreg(aco_opcode::v_interp_p10_rtz_f16_f32_inreg, dst, op0, op1, op2, 0, 0x4);
 
-   //! v_interp_p2_rtz_f16_f32 v42, v10, v20, s30 op_sel:[0,0,0,1] ; cd05402a 007a290a
+   //! v_interp_p2_rtz_f16_f32 v42, v10, v20, v30 op_sel:[0,0,0,1] ; cd05402a 047a290a
    bld.vinterp_inreg(aco_opcode::v_interp_p2_rtz_f16_f32_inreg, dst, op0, op1, op2, 0, 0x8);
 
-   //! v_interp_p10_f32 v42, v10, v20, s30 clamp                   ; cd00802a 007a290a
-   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0).instr->vinterp_inreg().clamp = true;
+   //! v_interp_p10_f32 v42, v10, v20, v30 clamp                   ; cd00802a 047a290a
+   bld.vinterp_inreg(aco_opcode::v_interp_p10_f32_inreg, dst, op0, op1, op2, 0)
+      ->vinterp_inreg()
+      .clamp = true;
 
    finish_assembler_test();
 END_TEST
@@ -785,26 +861,182 @@ BEGIN_TEST(assembler.gfx11.ldsdir)
    op.setFixed(m0);
 
    //>> lds_direct_load v42 wait_vdst:15                            ; ce1f002a
-   bld.ldsdir(aco_opcode::lds_direct_load, dst, op).instr->ldsdir().wait_vdst = 15;
+   bld.ldsdir(aco_opcode::lds_direct_load, dst, op)->ldsdir().wait_vdst = 15;
 
    //! lds_direct_load v42 wait_vdst:6                             ; ce16002a
-   bld.ldsdir(aco_opcode::lds_direct_load, dst, op).instr->ldsdir().wait_vdst = 6;
+   bld.ldsdir(aco_opcode::lds_direct_load, dst, op)->ldsdir().wait_vdst = 6;
 
    //! lds_direct_load v42                                         ; ce10002a
-   bld.ldsdir(aco_opcode::lds_direct_load, dst, op).instr->ldsdir().wait_vdst = 0;
+   bld.ldsdir(aco_opcode::lds_direct_load, dst, op)->ldsdir().wait_vdst = 0;
 
    //! lds_param_load v42, attr56.x wait_vdst:8                    ; ce08e02a
-   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 56, 0).instr->ldsdir().wait_vdst = 8;
+   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 56, 0)->ldsdir().wait_vdst = 8;
 
    //! lds_param_load v42, attr56.x                                ; ce00e02a
-   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 56, 0).instr->ldsdir().wait_vdst = 0;
+   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 56, 0)->ldsdir().wait_vdst = 0;
 
    //! lds_param_load v42, attr34.y                                ; ce00892a
-   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 34, 1).instr->ldsdir().wait_vdst = 0;
+   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 34, 1)->ldsdir().wait_vdst = 0;
 
    //! lds_param_load v42, attr12.z                                ; ce00322a
-   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 12, 2).instr->ldsdir().wait_vdst = 0;
+   bld.ldsdir(aco_opcode::lds_param_load, dst, op, 12, 2)->ldsdir().wait_vdst = 0;
 
    finish_assembler_test();
 END_TEST
-#endif
+
+BEGIN_TEST(assembler.gfx11.vop12c_v128)
+   if (!setup_cs(NULL, GFX11))
+      return;
+
+   Definition dst_v0 = bld.def(v1);
+   dst_v0.setFixed(PhysReg(256));
+
+   Definition dst_v128 = bld.def(v1);
+   dst_v128.setFixed(PhysReg(256 + 128));
+
+   Operand op_v1(bld.tmp(v1));
+   op_v1.setFixed(PhysReg(256 + 1));
+
+   Operand op_v2(bld.tmp(v1));
+   op_v2.setFixed(PhysReg(256 + 2));
+
+   Operand op_v129(bld.tmp(v1));
+   op_v129.setFixed(PhysReg(256 + 129));
+
+   Operand op_v130(bld.tmp(v1));
+   op_v130.setFixed(PhysReg(256 + 130));
+
+   //! llvm_version: #llvm_ver
+   fprintf(output, "llvm_version: %u\n", LLVM_VERSION_MAJOR);
+
+   //>> BB0:
+   //; if llvm_ver >= 16:
+   //;    insert_pattern('v_mul_f16_e32 v0, v1, v2 ; Error: VGPR_32_Lo128: unknown register 128 ; 6a000501')
+   //; else:
+   //;    insert_pattern('v_mul_f16_e32 v0, v1, v2                                    ; 6a000501')
+   bld.vop2(aco_opcode::v_mul_f16, dst_v0, op_v1, op_v2);
+
+   //! v_mul_f16_e64 v128, v1, v2                                  ; d5350080 00020501
+   bld.vop2(aco_opcode::v_mul_f16, dst_v128, op_v1, op_v2);
+
+   //! v_mul_f16_e64 v0, v129, v2                                  ; d5350000 00020581
+   bld.vop2(aco_opcode::v_mul_f16, dst_v0, op_v129, op_v2);
+
+   //! v_mul_f16_e64 v0, v1, v130                                  ; d5350000 00030501
+   bld.vop2(aco_opcode::v_mul_f16, dst_v0, op_v1, op_v130);
+
+   //! v_rcp_f16_e64 v128, v1                                      ; d5d40080 00000101
+   bld.vop1(aco_opcode::v_rcp_f16, dst_v128, op_v1);
+
+   //! v_cmp_eq_f16_e64 vcc, v129, v2                              ; d402006a 00020581
+   bld.vopc(aco_opcode::v_cmp_eq_f16, bld.def(s2, vcc), op_v129, op_v2);
+
+   //! v_mul_f16_e64_dpp v128, v1, v2 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5350080 000204fa ff0d2101
+   bld.vop2_dpp(aco_opcode::v_mul_f16, dst_v128, op_v1, op_v2, dpp_row_rr(1));
+
+   //! v_mul_f16_e64_dpp v0, v129, v2 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5350000 000204fa ff0d2181
+   bld.vop2_dpp(aco_opcode::v_mul_f16, dst_v0, op_v129, op_v2, dpp_row_rr(1));
+
+   //! v_mul_f16_e64_dpp v0, v1, v130 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5350000 000304fa ff0d2101
+   bld.vop2_dpp(aco_opcode::v_mul_f16, dst_v0, op_v1, op_v130, dpp_row_rr(1));
+
+   //! v_mul_f16_e64_dpp v128, v1, v2 dpp8:[0,0,0,0,0,0,0,0] fi:1  ; d5350080 000204ea 00000001
+   bld.vop2_dpp8(aco_opcode::v_mul_f16, dst_v128, op_v1, op_v2);
+
+   //! v_mul_f16_e64_dpp v0, v129, v2 dpp8:[0,0,0,0,0,0,0,0] fi:1  ; d5350000 000204ea 00000081
+   bld.vop2_dpp8(aco_opcode::v_mul_f16, dst_v0, op_v129, op_v2);
+
+   //! v_mul_f16_e64_dpp v0, v1, v130 dpp8:[0,0,0,0,0,0,0,0] fi:1  ; d5350000 000304ea 00000001
+   bld.vop2_dpp8(aco_opcode::v_mul_f16, dst_v0, op_v1, op_v130);
+
+   //! v_fma_f16 v128, v1, v2, 0x60                                ; d6480080 03fe0501 00000060
+   bld.vop2(aco_opcode::v_fmaak_f16, dst_v128, op_v1, op_v2, Operand::literal32(96));
+
+   //! v_fma_f16 v128, v1, 0x60, v2                                ; d6480080 0409ff01 00000060
+   bld.vop2(aco_opcode::v_fmamk_f16, dst_v128, op_v1, op_v2, Operand::literal32(96));
+
+   //! v_rcp_f16_e64_dpp v128, -v1 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5d40080 200000fa ff1d2101
+   bld.vop1_dpp(aco_opcode::v_rcp_f16, dst_v128, op_v1, dpp_row_rr(1))->dpp16().neg[0] = true;
+
+   //! v_rcp_f16_e64_dpp v128, |v1| row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5d40180 000000fa ff2d2101
+   bld.vop1_dpp(aco_opcode::v_rcp_f16, dst_v128, op_v1, dpp_row_rr(1))->dpp16().abs[0] = true;
+
+   //! v_mul_f16_e64_dpp v128, -v1, v2 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5350080 200204fa ff1d2101
+   bld.vop2_dpp(aco_opcode::v_mul_f16, dst_v128, op_v1, op_v2, dpp_row_rr(1))->dpp16().neg[0] =
+      true;
+
+   //! v_mul_f16_e64_dpp v128, |v1|, v2 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5350180 000204fa ff2d2101
+   bld.vop2_dpp(aco_opcode::v_mul_f16, dst_v128, op_v1, op_v2, dpp_row_rr(1))->dpp16().abs[0] =
+      true;
+
+   //! v_cmp_eq_f16_e64_dpp vcc, -v129, v2 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d402006a 200204fa ff1d2181
+   bld.vopc_dpp(aco_opcode::v_cmp_eq_f16, bld.def(s2, vcc), op_v129, op_v2, dpp_row_rr(1))
+      ->dpp16()
+      .neg[0] = true;
+
+   //! v_cmp_eq_f16_e64_dpp vcc, |v129|, v2 row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d402016a 000204fa ff2d2181
+   bld.vopc_dpp(aco_opcode::v_cmp_eq_f16, bld.def(s2, vcc), op_v129, op_v2, dpp_row_rr(1))
+      ->dpp16()
+      .abs[0] = true;
+
+   finish_assembler_test();
+END_TEST
+
+BEGIN_TEST(assembler.vop3_dpp)
+   if (!setup_cs(NULL, GFX11))
+      return;
+
+   Definition dst_v0 = bld.def(v1);
+   dst_v0.setFixed(PhysReg(256));
+
+   Definition dst_non_vcc = bld.def(s2);
+   dst_non_vcc.setFixed(PhysReg(4));
+
+   Operand op_v1(bld.tmp(v1));
+   op_v1.setFixed(PhysReg(256 + 1));
+
+   Operand op_v2(bld.tmp(v1));
+   op_v2.setFixed(PhysReg(256 + 2));
+
+   Operand op_s1(bld.tmp(s1));
+   op_s1.setFixed(PhysReg(1));
+
+   //>> BB0:
+   //! v_fma_f32_e64_dpp v0, v1, v2, s1 clamp row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d6138000 000604fa ff0d2101
+   bld.vop3_dpp(aco_opcode::v_fma_f32, dst_v0, op_v1, op_v2, op_s1, dpp_row_rr(1))->valu().clamp =
+      true;
+
+   //! v_fma_mix_f32_e64_dpp v0, |v1|, |v2|, |s1| op_sel:[1,0,0] op_sel_hi:[1,0,1] row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; cc204f00 080604fa ffad2101
+   bld.vop3p_dpp(aco_opcode::v_fma_mix_f32, dst_v0, op_v1, op_v2, op_s1, 0x1, 0x5, dpp_row_rr(1))
+      ->valu()
+      .abs = 0x7;
+
+   //! v_fma_f32_e64_dpp v0, -v1, -v2, -s1 dpp8:[0,0,0,0,0,0,0,0] fi:1 ; d6130000 e00604ea 00000001
+   bld.vop3_dpp8(aco_opcode::v_fma_f32, dst_v0, op_v1, op_v2, op_s1)->valu().neg = 0x7;
+
+   //! v_fma_mix_f32_e64_dpp v0, -v1, -v2, s1 op_sel_hi:[1,1,1] dpp8:[0,0,0,0,0,0,0,0] fi:1 ; cc204000 780604ea 00000001
+   bld.vop3p_dpp8(aco_opcode::v_fma_mix_f32, dst_v0, op_v1, op_v2, op_s1, 0x0, 0x7)->valu().neg =
+      0x3;
+
+   //! v_add_f32_e64_dpp v0, v1, v2 clamp row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5038000 000204fa ff0d2101
+   bld.vop2_e64_dpp(aco_opcode::v_add_f32, dst_v0, op_v1, op_v2, dpp_row_rr(1))->valu().clamp =
+      true;
+
+   //! v_sqrt_f32_e64_dpp v0, v1 clamp row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d5b38000 000000fa ff0d2101
+   bld.vop1_e64_dpp(aco_opcode::v_sqrt_f32, dst_v0, op_v1, dpp_row_rr(1))->valu().clamp = true;
+
+   //! v_cmp_lt_f32_e64_dpp s[4:5], |v1|, |v2| row_ror:1 row_mask:0xf bank_mask:0xf bound_ctrl:1 fi:1 ; d4110304 000204fa ffad2101
+   bld.vopc_e64_dpp(aco_opcode::v_cmp_lt_f32, dst_non_vcc, op_v1, op_v2, dpp_row_rr(1))->valu().abs =
+      0x3;
+
+   //! v_add_f32_e64_dpp v0, v1, v2 mul:4 dpp8:[0,0,0,0,0,0,0,0] fi:1 ; d5030000 100204ea 00000001
+   bld.vop2_e64_dpp8(aco_opcode::v_add_f32, dst_v0, op_v1, op_v2)->valu().omod = 2;
+
+   //! v_sqrt_f32_e64_dpp v0, v1 clamp dpp8:[0,0,0,0,0,0,0,0] fi:1 ; d5b38000 000000ea 00000001
+   bld.vop1_e64_dpp8(aco_opcode::v_sqrt_f32, dst_v0, op_v1)->valu().clamp = true;
+
+   //! v_cmp_lt_f32_e64_dpp s[4:5], |v1|, v2 dpp8:[0,0,0,0,0,0,0,0] fi:1 ; d4110104 000204ea 00000001
+   bld.vopc_e64_dpp8(aco_opcode::v_cmp_lt_f32, dst_non_vcc, op_v1, op_v2)->valu().abs = 0x1;
+
+   finish_assembler_test();
+END_TEST

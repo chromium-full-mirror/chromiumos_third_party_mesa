@@ -51,6 +51,12 @@ static void tile_info(vlVaContext *context, VADecPictureParameterBufferAV1 *av1)
    unsigned TileColsLog2 = util_logbase2_ceil(av1->tile_cols);
    unsigned TileRowsLog2 = util_logbase2_ceil(av1->tile_rows);
 
+   if (av1->pic_info_fields.bits.use_superres) {
+      unsigned width = ((av1->frame_width_minus1 + 1) * 8 + av1->superres_scale_denominator / 2)
+         / av1->superres_scale_denominator;
+      MiCols = 2 * (((width - 1) + 8) >> 3);
+   }
+
    sbCols = (av1->seq_info_fields.fields.use_128x128_superblock) ?
       ((MiCols + 31) >> 5) : ((MiCols + 15) >> 4);
    sbRows = (av1->seq_info_fields.fields.use_128x128_superblock) ?
@@ -178,10 +184,18 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
       av1->pic_info_fields.bits.allow_warped_motion;
    context->desc.av1.picture_parameter.pic_info_fields.uniform_tile_spacing_flag =
       av1->pic_info_fields.bits.uniform_tile_spacing_flag;
+   context->desc.av1.picture_parameter.pic_info_fields.large_scale_tile =
+      av1->pic_info_fields.bits.large_scale_tile;
 
    context->desc.av1.picture_parameter.matrix_coefficients =
       av1->matrix_coefficients;
-   context->desc.av1.picture_parameter.current_frame_id = av1->current_frame;
+
+   context->desc.av1.film_grain_target = NULL;
+   if (av1->film_grain_info.film_grain_info_fields.bits.apply_grain)
+      context->desc.av1.picture_parameter.current_frame_id = av1->current_display_picture;
+   else
+      context->desc.av1.picture_parameter.current_frame_id = av1->current_frame;
+
    context->desc.av1.picture_parameter.order_hint = av1->order_hint;
    context->desc.av1.picture_parameter.primary_ref_frame = av1->primary_ref_frame;
    context->desc.av1.picture_parameter.frame_width = av1->frame_width_minus1 + 1;
@@ -380,7 +394,7 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
    }
 }
 
-void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slice_buffers, unsigned num_slices)
+void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices)
 {
    for (uint32_t buffer_idx = 0; buffer_idx < buf->num_elements; buffer_idx++) {
       uint32_t slice_index =

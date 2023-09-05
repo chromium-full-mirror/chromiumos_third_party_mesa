@@ -1,30 +1,14 @@
 /*
  * Copyright 2018 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #define AC_SURFACE_INCLUDE_NIR
 #include "ac_surface.h"
 #include "si_pipe.h"
+
+#include "nir_format_convert.h"
 
 static void *create_shader_state(struct si_context *sctx, nir_shader *nir)
 {
@@ -67,14 +51,14 @@ static nir_ssa_def *get_global_ids(nir_builder *b, unsigned num_components)
 
 static void unpack_2x16(nir_builder *b, nir_ssa_def *src, nir_ssa_def **x, nir_ssa_def **y)
 {
-   *x = nir_iand(b, src, nir_imm_int(b, 0xffff));
-   *y = nir_ushr(b, src, nir_imm_int(b, 16));
+   *x = nir_iand_imm(b, src, 0xffff);
+   *y = nir_ushr_imm(b, src, 16);
 }
 
 static void unpack_2x16_signed(nir_builder *b, nir_ssa_def *src, nir_ssa_def **x, nir_ssa_def **y)
 {
    *x = nir_i2i32(b, nir_u2u16(b, src));
-   *y = nir_ishr(b, src, nir_imm_int(b, 16));
+   *y = nir_ishr_imm(b, src, 16);
 }
 
 static nir_ssa_def *
@@ -215,9 +199,9 @@ void *gfx9_create_clear_dcc_msaa_cs(struct si_context *sctx, struct si_texture *
 
    /* Multiply the coordinates by the DCC block size (they are DCC block coordinates). */
    coord = nir_imul(&b, coord,
-                    nir_channels(&b, nir_imm_ivec4(&b, tex->surface.u.gfx9.color.dcc_block_width,
-                                                   tex->surface.u.gfx9.color.dcc_block_height,
-                                                   tex->surface.u.gfx9.color.dcc_block_depth, 0), 0x7));
+                    nir_imm_ivec3(&b, tex->surface.u.gfx9.color.dcc_block_width,
+                                      tex->surface.u.gfx9.color.dcc_block_height,
+                                      tex->surface.u.gfx9.color.dcc_block_depth));
 
    nir_ssa_def *offset =
       ac_nir_dcc_addr_from_coord(&b, &sctx->screen->info, tex->surface.bpe,
@@ -254,7 +238,7 @@ void *si_create_clear_buffer_rmw_cs(struct si_context *sctx)
    nir_ssa_def *address = get_global_ids(&b, 1);
 
    /* address = address * 16; (byte offset, loading one vec4 per thread) */
-   address = nir_ishl(&b, address, nir_imm_int(&b, 4));
+   address = nir_ishl_imm(&b, address, 4);
    
    nir_ssa_def *zero = nir_imm_int(&b, 0);
    nir_ssa_def *data = nir_load_ssbo(&b, 4, 32, zero, address, .align_mul = 4);
@@ -268,7 +252,7 @@ void *si_create_clear_buffer_rmw_cs(struct si_context *sctx)
    data = nir_ior(&b, data, nir_channel(&b, user_sgprs, 0));
 
    nir_store_ssbo(&b, data, zero, address,
-      .access = SI_COMPUTE_DST_CACHE_POLICY != L2_LRU ? ACCESS_STREAM_CACHE_POLICY : 0,
+      .access = SI_COMPUTE_DST_CACHE_POLICY != L2_LRU ? ACCESS_NON_TEMPORAL : 0,
       .align_mul = 4);
 
    return create_shader_state(sctx, b.shader);
@@ -303,28 +287,37 @@ static nir_ssa_def *convert_linear_to_srgb(nir_builder *b, nir_ssa_def *input)
    /* There are small precision differences compared to CB, so the gfx blit will return slightly
     * different results.
     */
-   nir_ssa_def *cmp[3];
-   for (unsigned i = 0; i < 3; i++)
-      cmp[i] = nir_flt(b, nir_channel(b, input, i), nir_imm_float(b, 0.0031308));
-
-   nir_ssa_def *ltvals[3];
-   for (unsigned i = 0; i < 3; i++)
-      ltvals[i] = nir_fmul(b, nir_channel(b, input, i), nir_imm_float(b, 12.92));
-
-   nir_ssa_def *gtvals[3];
-
-   for (unsigned i = 0; i < 3; i++) {
-      gtvals[i] = nir_fpow(b, nir_channel(b, input, i), nir_imm_float(b, 1.0/2.4));
-      gtvals[i] = nir_fmul(b, gtvals[i], nir_imm_float(b, 1.055));
-      gtvals[i] = nir_fsub(b, gtvals[i], nir_imm_float(b, 0.055));
-   }
 
    nir_ssa_def *comp[4];
    for (unsigned i = 0; i < 3; i++)
-      comp[i] = nir_bcsel(b, cmp[i], ltvals[i], gtvals[i]);
+      comp[i] = nir_format_linear_to_srgb(b, nir_channel(b, input, i));
    comp[3] = nir_channel(b, input, 3);
 
    return nir_vec(b, comp, 4);
+}
+
+static nir_ssa_def *average_samples(nir_builder *b, nir_ssa_def **samples, unsigned num_samples)
+{
+   /* This works like add-reduce by computing the sum of each pair independently, and then
+    * computing the sum of each pair of sums, and so on, to get better instruction-level
+    * parallelism.
+    */
+   if (num_samples == 16) {
+      for (unsigned i = 0; i < 8; i++)
+         samples[i] = nir_fadd(b, samples[i * 2], samples[i * 2 + 1]);
+   }
+   if (num_samples >= 8) {
+      for (unsigned i = 0; i < 4; i++)
+         samples[i] = nir_fadd(b, samples[i * 2], samples[i * 2 + 1]);
+   }
+   if (num_samples >= 4) {
+      for (unsigned i = 0; i < 2; i++)
+         samples[i] = nir_fadd(b, samples[i * 2], samples[i * 2 + 1]);
+   }
+   if (num_samples >= 2)
+      samples[0] = nir_fadd(b, samples[0], samples[1]);
+
+   return nir_fmul_imm(b, samples[0], 1.0 / num_samples); /* average the sum */
 }
 
 static nir_ssa_def *image_resolve_msaa(nir_builder *b, nir_variable *img, unsigned num_samples,
@@ -363,12 +356,7 @@ static nir_ssa_def *image_resolve_msaa(nir_builder *b, nir_variable *img, unsign
                                         coord, sample_index[i], zero);
    }
 
-   /* Average all samples. (the only options on gfx11) */
-   result = NULL;
-   for (unsigned i = 0; i < num_samples; i++) {
-      result = i ? nir_fadd(b, result, samples[i]) : samples[i];
-   }
-   result = nir_fmul_imm(b, result, 1.0 / num_samples); /* average the sum */
+   result = average_samples(b, samples, num_samples);
 
    if (gfx_level < GFX11) {
       /* Exit the conditional branch and get the result out of the branch. */
@@ -391,6 +379,19 @@ static nir_ssa_def *apply_blit_output_modifiers(nir_builder *b, nir_ssa_def *col
 
    if (options->dst_is_srgb)
       color = convert_linear_to_srgb(b, color);
+
+   nir_ssa_def *zero = nir_imm_int(b, 0);
+   nir_ssa_def *one = options->use_integer_one ? nir_imm_int(b, 1) : nir_imm_float(b, 1);
+
+   /* Set channels not present in src to 0 or 1. This will eliminate code loading and resolving
+    * those channels.
+    */
+   for (unsigned chan = options->last_src_channel + 1; chan <= options->last_dst_channel; chan++)
+      color = nir_vector_insert_imm(b, color, chan == 3 ? one : zero, chan);
+
+   /* Discard channels not present in dst. The hardware fills unstored channels with 0. */
+   if (options->last_dst_channel < 3)
+      color = nir_trim_vector(b, color, options->last_dst_channel + 1);
 
    /* Convert to FP16 with rtz to match the pixel shader. Not necessary, but it helps verify
     * the behavior of the whole shader by comparing it to the gfx blit.
@@ -473,22 +474,24 @@ void *si_create_blit_cs(struct si_context *sctx, const union si_compute_blit_sha
 
    /* Add box.xyz. */
    nir_ssa_def *coord_src = NULL, *coord_dst = NULL;
-   unpack_2x16_signed(&b, nir_channels(&b, nir_load_user_data_amd(&b), 0x7),
+   unpack_2x16_signed(&b, nir_trim_vector(&b, nir_load_user_data_amd(&b), 3),
                       &coord_src, &coord_dst);
    coord_dst = nir_iadd(&b, coord_dst, dst_xyz);
    coord_src = nir_iadd(&b, coord_src, src_xyz);
 
    /* Clamp to edge for src, only X and Y because Z can't be out of bounds. */
-   unsigned src_clamp_channels = options->src_is_1d ? 0x1 : 0x3;
-   nir_ssa_def *dim = nir_image_deref_size(&b, 4, 32, deref_ssa(&b, img_src), zero);
-   dim = nir_channels(&b, dim, src_clamp_channels);
+   if (options->xy_clamp_to_edge) {
+      unsigned src_clamp_channels = options->src_is_1d ? 0x1 : 0x3;
+      nir_ssa_def *dim = nir_image_deref_size(&b, 4, 32, deref_ssa(&b, img_src), zero);
+      dim = nir_channels(&b, dim, src_clamp_channels);
 
-   nir_ssa_def *coord_src_clamped = nir_channels(&b, coord_src, src_clamp_channels);
-   coord_src_clamped = nir_imax(&b, coord_src_clamped, nir_imm_int(&b, 0));
-   coord_src_clamped = nir_imin(&b, coord_src_clamped, nir_iadd_imm(&b, dim, -1));
+      nir_ssa_def *coord_src_clamped = nir_channels(&b, coord_src, src_clamp_channels);
+      coord_src_clamped = nir_imax(&b, coord_src_clamped, nir_imm_int(&b, 0));
+      coord_src_clamped = nir_imin(&b, coord_src_clamped, nir_iadd_imm(&b, dim, -1));
 
-   for (unsigned i = 0; i < util_bitcount(src_clamp_channels); i++)
-      coord_src = nir_vector_insert_imm(&b, coord_src, nir_channel(&b, coord_src_clamped, i), i);
+      for (unsigned i = 0; i < util_bitcount(src_clamp_channels); i++)
+         coord_src = nir_vector_insert_imm(&b, coord_src, nir_channel(&b, coord_src_clamped, i), i);
+   }
 
    /* Swizzle coordinates for 1D_ARRAY. */
    static unsigned swizzle_xz[] = {0, 2, 0, 0};

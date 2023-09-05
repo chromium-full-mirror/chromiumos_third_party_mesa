@@ -27,7 +27,6 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "tgsi/tgsi_dump.h"
-#include "tgsi/tgsi_parse.h"
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
@@ -41,6 +40,7 @@
 
 #include "ir3/ir3_cache.h"
 #include "ir3/ir3_compiler.h"
+#include "ir3/ir3_descriptor.h"
 #include "ir3/ir3_gallium.h"
 #include "ir3/ir3_nir.h"
 #include "ir3/ir3_shader.h"
@@ -123,6 +123,8 @@ ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key,
    struct ir3_shader_variant *v;
    bool created = false;
 
+   MESA_TRACE_FUNC();
+
    /* Some shader key values may not be used by a given ir3_shader (for
     * example, fragment shader saturates in the vertex shader), so clean out
     * those flags to avoid recompiling.
@@ -159,9 +161,13 @@ copy_stream_out(struct ir3_stream_output_info *i,
    STATIC_ASSERT(ARRAY_SIZE(i->stride) == ARRAY_SIZE(p->stride));
    STATIC_ASSERT(ARRAY_SIZE(i->output) == ARRAY_SIZE(p->output));
 
+   i->streams_written = 0;
    i->num_outputs = p->num_outputs;
-   for (int n = 0; n < ARRAY_SIZE(i->stride); n++)
+   for (int n = 0; n < ARRAY_SIZE(i->stride); n++) {
       i->stride[n] = p->stride[n];
+      if (p->stride[n])
+         i->streams_written |= BIT(n);
+   }
 
    for (int n = 0; n < ARRAY_SIZE(i->output); n++) {
       i->output[n].register_index = p->output[n].register_index;
@@ -247,6 +253,8 @@ create_initial_variants_async(void *job, void *gdata, int thread_index)
    struct ir3_shader_state *hwcso = job;
    struct util_debug_callback debug = {};
 
+   MESA_TRACE_FUNC();
+
    create_initial_variants(hwcso, &debug);
 }
 
@@ -257,6 +265,8 @@ create_initial_compute_variants_async(void *job, void *gdata, int thread_index)
    struct ir3_shader *shader = hwcso->shader;
    struct util_debug_callback debug = {};
    static struct ir3_shader_key key; /* static is implicitly zeroed */
+
+   MESA_TRACE_FUNC();
 
    ir3_shader_variant(shader, key, false, &debug);
    shader->initial_variants_done = true;
@@ -306,6 +316,9 @@ ir3_shader_compute_state_create(struct pipe_context *pctx,
       nir = tgsi_to_nir(cso->prog, pctx->screen, false);
    }
 
+   if (ctx->screen->gen >= 6)
+      ir3_nir_lower_io_to_bindless(nir);
+
    struct ir3_shader *shader =
       ir3_shader_from_nir(compiler, nir, &(struct ir3_shader_options){
                               /* TODO: force to single on a6xx with legacy
@@ -315,7 +328,7 @@ ir3_shader_compute_state_create(struct pipe_context *pctx,
                               .real_wavesize = IR3_SINGLE_OR_DOUBLE,
                           }, NULL);
    shader->cs.req_input_mem = align(cso->req_input_mem, 4) / 4;     /* byte->dword */
-   shader->cs.req_local_mem = cso->req_local_mem;
+   shader->cs.req_local_mem = cso->static_shared_mem;
 
    struct ir3_shader_state *hwcso = calloc(1, sizeof(*hwcso));
 
@@ -363,6 +376,9 @@ ir3_shader_state_create(struct pipe_context *pctx,
       }
       nir = tgsi_to_nir(cso->tokens, pctx->screen, false);
    }
+
+   if (ctx->screen->gen >= 6)
+      ir3_nir_lower_io_to_bindless(nir);
 
    /*
     * Create ir3_shader:
@@ -443,6 +459,8 @@ ir3_get_shader(struct ir3_shader_state *hwcso)
    if (!hwcso)
       return NULL;
 
+   MESA_TRACE_FUNC();
+
    struct ir3_shader *shader = hwcso->shader;
    perf_time (1000, "waited for %s:%s:%s variants",
               _mesa_shader_stage_to_abbrev(shader->type),
@@ -495,6 +513,8 @@ ir3_screen_finalize_nir(struct pipe_screen *pscreen, void *nir)
 {
    struct fd_screen *screen = fd_screen(pscreen);
 
+   MESA_TRACE_FUNC();
+
    ir3_nir_lower_io_to_temporaries(nir);
    ir3_finalize_nir(screen->compiler, nir);
 
@@ -510,7 +530,8 @@ ir3_set_max_shader_compiler_threads(struct pipe_screen *pscreen,
    /* This function doesn't allow a greater number of threads than
     * the queue had at its creation.
     */
-   util_queue_adjust_num_threads(&screen->compile_queue, max_threads);
+   util_queue_adjust_num_threads(&screen->compile_queue, max_threads,
+                                 false);
 }
 
 static bool
@@ -547,8 +568,17 @@ ir3_screen_init(struct pipe_screen *pscreen)
 {
    struct fd_screen *screen = fd_screen(pscreen);
 
-   screen->compiler = ir3_compiler_create(screen->dev, screen->dev_id,
-                                          &(struct ir3_compiler_options) {});
+   struct ir3_compiler_options options = {
+      .bindless_fb_read_descriptor =
+         ir3_shader_descriptor_set(PIPE_SHADER_FRAGMENT),
+      .bindless_fb_read_slot = IR3_BINDLESS_IMAGE_OFFSET +
+                               IR3_BINDLESS_IMAGE_COUNT - 1 - screen->max_rts,
+   };
+
+   if (screen->gen >= 6) {
+      options.lower_base_vertex = true;
+   }
+   screen->compiler = ir3_compiler_create(screen->dev, screen->dev_id, &options);
 
    /* TODO do we want to limit things to # of fast cores, or just limit
     * based on total # of both big and little cores.  The little cores
@@ -556,7 +586,7 @@ ir3_screen_init(struct pipe_screen *pscreen)
     * big cores.  OTOH if they are sitting idle, maybe it is useful to
     * use them?
     */
-   unsigned num_threads = sysconf(_SC_NPROCESSORS_ONLN) - 1;
+   unsigned num_threads = sysconf(_SC_NPROCESSORS_ONLN) / 2;
 
    /* Create at least one thread - even on single core CPU systems. */
    num_threads = MAX2(1, num_threads);

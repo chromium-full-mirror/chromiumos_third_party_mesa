@@ -2,24 +2,7 @@
 ************************************************************************************************************************
 *
 *  Copyright (C) 2017-2022 Advanced Micro Devices, Inc.  All rights reserved.
-*
-* Permission is hereby granted, free of charge, to any person obtaining a
-* copy of this software and associated documentation files (the "Software"),
-* to deal in the Software without restriction, including without limitation
-* the rights to use, copy, modify, merge, publish, distribute, sublicense,
-* and/or sell copies of the Software, and to permit persons to whom the
-* Software is furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
-* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
-* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
-* OTHER DEALINGS IN THE SOFTWARE
+*  SPDX-License-Identifier: MIT
 *
 ***********************************************************************************************************************/
 
@@ -47,8 +30,8 @@
 #define FAMILY_GFX1100 0x91
 #define FAMILY_GFX1103 0x94
 #define FAMILY_RMB     0x92 //# 146 / Rembrandt
-#define FAMILY_GC_10_3_6  0x95
-#define FAMILY_GC_10_3_7  0x97
+#define FAMILY_RPL     0x95 //# 149 / Raphael
+#define FAMILY_MDN     0x97 //# 151 / Mendocino
 
 // AMDGPU_FAMILY_IS(familyId, familyName)
 #define FAMILY_IS(f, fn)     (f == FAMILY_##fn)
@@ -116,13 +99,14 @@
 #define AMDGPU_GFX1101_RANGE    0x20, 0xFF //# 32 <= x < 255
 #define AMDGPU_GFX1102_RANGE    0x10, 0x20 //# 16 <= x < 32
 
-#define AMDGPU_GFX1103_RANGE    0x01, 0xFF //# 1 <= x < max
+#define AMDGPU_GFX1103_R1_RANGE 0x01, 0x80 //# 1 <= x < 128
+#define AMDGPU_GFX1103_R2_RANGE 0x80, 0xFF //# 128 <= x < max
 
 #define AMDGPU_REMBRANDT_RANGE  0x01, 0xFF //# 01 <= x < 255
 
-#define AMDGPU_GFX1036_RANGE    0x01, 0xFF //# 1 <= x < max
+#define AMDGPU_RAPHAEL_RANGE    0x01, 0xFF //# 1 <= x < max
 
-#define AMDGPU_GFX1037_RANGE    0x01, 0xFF //# 1 <= x < max
+#define AMDGPU_MENDOCINO_RANGE  0x01, 0xFF //# 1 <= x < max
 
 #define AMDGPU_EXPAND_FIX(x) x
 #define AMDGPU_RANGE_HELPER(val, min, max) ((val >= min) && (val < max))
@@ -187,12 +171,13 @@
 #define ASICREV_IS_GFX1100(r)          ASICREV_IS(r, GFX1100)
 #define ASICREV_IS_GFX1101(r)          ASICREV_IS(r, GFX1101)
 #define ASICREV_IS_GFX1102(r)          ASICREV_IS(r, GFX1102)
-#define ASICREV_IS_GFX1103(r)          ASICREV_IS(r, GFX1103)
+#define ASICREV_IS_GFX1103_R1(r)       ASICREV_IS(r, GFX1103_R1)
+#define ASICREV_IS_GFX1103_R2(r)       ASICREV_IS(r, GFX1103_R2)
 
 #define ASICREV_IS_REMBRANDT(r)        ASICREV_IS(r, REMBRANDT)
 
-#define ASICREV_IS_GFX1036(r)          ASICREV_IS(r, GFX1036)
+#define ASICREV_IS_RAPHAEL(r)          ASICREV_IS(r, RAPHAEL)
 
-#define ASICREV_IS_GFX1037(r)          ASICREV_IS(r, GFX1037)
+#define ASICREV_IS_MENDOCINO(r)        ASICREV_IS(r, MENDOCINO)
 
 #endif // _AMDGPU_ASIC_ADDR_H

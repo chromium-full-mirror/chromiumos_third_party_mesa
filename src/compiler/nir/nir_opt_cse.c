@@ -19,11 +19,6 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
- *
- * Authors:
- *    Jason Ekstrand (jason@jlekstrand.net)
- *    Connor Abbott (cwabbott0@gmail.com)
- *
  */
 
 #include "nir_instr_set.h"
@@ -69,9 +64,8 @@ nir_opt_cse(nir_shader *shader)
 {
    bool progress = false;
 
-   nir_foreach_function(function, shader) {
-      if (function->impl)
-         progress |= nir_opt_cse_impl(function->impl);
+   nir_foreach_function_impl(impl, shader) {
+      progress |= nir_opt_cse_impl(impl);
    }
 
    return progress;

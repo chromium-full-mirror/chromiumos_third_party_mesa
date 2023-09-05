@@ -30,6 +30,7 @@
 #include "util/set.h"
 #include "util/u_drm.h"
 #include "util/u_inlines.h"
+#include "util/u_sample_positions.h"
 #include "util/u_string.h"
 #include "util/u_surface.h"
 #include "util/u_transfer.h"
@@ -81,7 +82,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
       for (unsigned i = 0; i < vb->count && !(ctx->dirty & FD_DIRTY_VTXBUF);
            i++) {
          if (vb->vb[i].buffer.resource == prsc)
-            fd_context_dirty(ctx, FD_DIRTY_VTXBUF);
+            fd_dirty_resource(ctx, prsc, FD_DIRTY_VTXBUF, false);
       }
    }
 
@@ -93,7 +94,7 @@ rebind_resource_in_ctx(struct fd_context *ctx,
             i < so->num_targets && !(ctx->dirty & FD_DIRTY_STREAMOUT);
             i++) {
          if (so->targets[i]->buffer == prsc)
-            fd_context_dirty(ctx, FD_DIRTY_STREAMOUT);
+            fd_dirty_resource(ctx, prsc, FD_DIRTY_STREAMOUT, true);
       }
    }
 
@@ -114,7 +115,8 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          const unsigned num_ubos = util_last_bit(cb->enabled_mask);
          for (unsigned i = 1; i < num_ubos; i++) {
             if (cb->cb[i].buffer == prsc) {
-               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_CONST);
+               fd_dirty_shader_resource(ctx, prsc, stage,
+                                        FD_DIRTY_SHADER_CONST, false);
                break;
             }
          }
@@ -126,7 +128,8 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          struct fd_texture_stateobj *tex = &ctx->tex[stage];
          for (unsigned i = 0; i < tex->num_textures; i++) {
             if (tex->textures[i] && (tex->textures[i]->texture == prsc)) {
-               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_TEX);
+               fd_dirty_shader_resource(ctx, prsc, stage,
+                                        FD_DIRTY_SHADER_TEX, false);
                break;
             }
          }
@@ -139,7 +142,9 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          const unsigned num_images = util_last_bit(si->enabled_mask);
          for (unsigned i = 0; i < num_images; i++) {
             if (si->si[i].resource == prsc) {
-               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_IMAGE);
+               bool write = si->si[i].access & PIPE_IMAGE_ACCESS_WRITE;
+               fd_dirty_shader_resource(ctx, prsc, stage,
+                                        FD_DIRTY_SHADER_IMAGE, write);
                break;
             }
          }
@@ -152,7 +157,9 @@ rebind_resource_in_ctx(struct fd_context *ctx,
          const unsigned num_ssbos = util_last_bit(sb->enabled_mask);
          for (unsigned i = 0; i < num_ssbos; i++) {
             if (sb->sb[i].buffer == prsc) {
-               fd_context_dirty_shader(ctx, stage, FD_DIRTY_SHADER_SSBO);
+               bool write = sb->writable_mask & BIT(i);
+               fd_dirty_shader_resource(ctx, prsc, stage,
+                                        FD_DIRTY_SHADER_SSBO, write);
                break;
             }
          }
@@ -182,7 +189,7 @@ fd_resource_set_bo(struct fd_resource *rsc, struct fd_bo *bo)
    struct fd_screen *screen = fd_screen(rsc->b.b.screen);
 
    rsc->bo = bo;
-   rsc->seqno = p_atomic_inc_return(&screen->rsc_seqno);
+   rsc->seqno = seqno_next_u16(&screen->rsc_seqno);
 }
 
 int
@@ -209,7 +216,9 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
    struct fd_screen *screen = fd_screen(rsc->b.b.screen);
    uint32_t flags =
       COND(rsc->layout.tile_mode, FD_BO_NOMAP) |
-      COND(prsc->usage & PIPE_USAGE_STAGING, FD_BO_CACHED_COHERENT) |
+      COND((prsc->usage & PIPE_USAGE_STAGING) &&
+           (prsc->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT),
+           FD_BO_CACHED_COHERENT) |
       COND(prsc->bind & PIPE_BIND_SHARED, FD_BO_SHARED) |
       COND(prsc->bind & PIPE_BIND_SCANOUT, FD_BO_SCANOUT);
    /* TODO other flags? */
@@ -308,7 +317,7 @@ fd_replace_buffer_storage(struct pipe_context *pctx, struct pipe_resource *pdst,
    fd_resource_tracking_reference(&dst->track, src->track);
    src->is_replacement = true;
 
-   dst->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
+   dst->seqno = seqno_next_u16(&ctx->screen->rsc_seqno);
 
    fd_screen_unlock(ctx->screen);
 }
@@ -450,16 +459,16 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
    DBG("shadow: %p (%d, %p) -> %p (%d, %p)", rsc, rsc->b.b.reference.count,
        rsc->track, shadow, shadow->b.b.reference.count, shadow->track);
 
-   swap(rsc->bo, shadow->bo);
-   swap(rsc->valid, shadow->valid);
+   SWAP(rsc->bo, shadow->bo);
+   SWAP(rsc->valid, shadow->valid);
 
    /* swap() doesn't work because you can't typeof() the bitfield. */
    bool temp = shadow->needs_ubwc_clear;
    shadow->needs_ubwc_clear = rsc->needs_ubwc_clear;
    rsc->needs_ubwc_clear = temp;
 
-   swap(rsc->layout, shadow->layout);
-   rsc->seqno = p_atomic_inc_return(&ctx->screen->rsc_seqno);
+   SWAP(rsc->layout, shadow->layout);
+   rsc->seqno = seqno_next_u16(&ctx->screen->rsc_seqno);
 
    /* at this point, the newly created shadow buffer is not referenced
     * by any batches, but the existing rsc (probably) is.  We need to
@@ -471,7 +480,7 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
       _mesa_set_remove(batch->resources, entry);
       _mesa_set_add_pre_hashed(batch->resources, shadow->hash, shadow);
    }
-   swap(rsc->track, shadow->track);
+   SWAP(rsc->track, shadow->track);
 
    fd_screen_unlock(ctx->screen);
 
@@ -567,7 +576,7 @@ fd_resource_uncompress(struct fd_context *ctx, struct fd_resource *rsc, bool lin
 
    uint64_t modifier = linear ? DRM_FORMAT_MOD_LINEAR : FD_FORMAT_MOD_QCOM_TILED;
 
-   bool success = fd_try_shadow_resource(ctx, rsc, 0, NULL, modifier);
+   ASSERTED bool success = fd_try_shadow_resource(ctx, rsc, 0, NULL, modifier);
 
    /* shadow should not fail in any cases where we need to uncompress: */
    assert(success);
@@ -586,7 +595,7 @@ fd_resource_dump(struct fd_resource *rsc, const char *name)
 
 static struct fd_resource *
 fd_alloc_staging(struct fd_context *ctx, struct fd_resource *rsc,
-                 unsigned level, const struct pipe_box *box)
+                 unsigned level, const struct pipe_box *box, unsigned usage)
    assert_dt
 {
    struct pipe_context *pctx = &ctx->base;
@@ -616,6 +625,7 @@ fd_alloc_staging(struct fd_context *ctx, struct fd_resource *rsc,
    tmpl.last_level = 0;
    tmpl.bind |= PIPE_BIND_LINEAR;
    tmpl.usage = PIPE_USAGE_STAGING;
+   tmpl.flags = (usage & PIPE_MAP_READ) ? PIPE_RESOURCE_FLAG_MAP_COHERENT : 0;
 
    struct pipe_resource *pstaging =
       pctx->screen->resource_create(pctx->screen, &tmpl);
@@ -699,6 +709,14 @@ fd_flush_resource(struct pipe_context *pctx, struct pipe_resource *prsc)
    struct fd_context *ctx = fd_context(pctx);
    struct fd_resource *rsc = fd_resource(prsc);
 
+   /* Flushing the resource is only required if we are relying on
+    * implicit-sync, in which case the rendering must be flushed
+    * to the kernel for the fence to be added to the backing GEM
+    * object.
+    */
+   if (ctx->no_implicit_sync)
+      return;
+
    flush_resource(ctx, rsc, PIPE_MAP_READ);
 
    /* If we had to flush a batch, make sure it makes it's way all the
@@ -725,8 +743,6 @@ fd_resource_transfer_unmap(struct pipe_context *pctx,
    if (trans->upload_ptr) {
       fd_bo_upload(rsc->bo, trans->upload_ptr, ptrans->box.x, ptrans->box.width);
       free(trans->upload_ptr);
-   } else if (!(ptrans->usage & PIPE_MAP_UNSYNCHRONIZED)) {
-      fd_bo_cpu_fini(rsc->bo);
    }
 
    util_range_add(&rsc->b.b, &rsc->valid_buffer_range, ptrans->box.x,
@@ -776,7 +792,7 @@ resource_transfer_map_staging(struct pipe_context *pctx,
 
    assert(prsc->target != PIPE_BUFFER);
 
-   staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
+   staging_rsc = fd_alloc_staging(ctx, rsc, level, box, usage);
    if (!staging_rsc)
       return NULL;
 
@@ -920,7 +936,7 @@ resource_transfer_map(struct pipe_context *pctx, struct pipe_resource *prsc,
              * use a staging buffer to do the upload.
              */
             if (is_renderable(prsc))
-               staging_rsc = fd_alloc_staging(ctx, rsc, level, box);
+               staging_rsc = fd_alloc_staging(ctx, rsc, level, box, usage);
             if (staging_rsc) {
                trans->staging_prsc = &staging_rsc->b.b;
                trans->b.b.stride = fd_resource_pitch(staging_rsc, 0);
@@ -1088,6 +1104,7 @@ static bool
 fd_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
                        struct pipe_resource *prsc, struct winsys_handle *handle,
                        unsigned usage)
+   assert_dt
 {
    struct fd_resource *rsc = fd_resource(prsc);
 
@@ -1100,8 +1117,38 @@ fd_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
 
    DBG("%" PRSC_FMT ", modifier=%" PRIx64, PRSC_ARGS(prsc), handle->modifier);
 
-   return fd_screen_bo_get_handle(pscreen, rsc->bo, rsc->scanout,
-                                  fd_resource_pitch(rsc, 0), handle);
+   bool ret = fd_screen_bo_get_handle(pscreen, rsc->bo, rsc->scanout,
+                                      fd_resource_pitch(rsc, 0), handle);
+
+   if (!ret && !(prsc->bind & PIPE_BIND_SHARED)) {
+
+      pctx = threaded_context_unwrap_sync(pctx);
+
+      struct fd_context *ctx = pctx ?
+            fd_context(pctx) : fd_screen_aux_context_get(pscreen);
+
+      /* Since gl is horrible, we can end up getting asked to export a handle
+       * for a rsc which was not originally allocated in a way that can be
+       * exported (for ex, sub-allocation or in the case of virtgpu we need
+       * to tell the kernel at allocation time that the buffer can be shared)
+       *
+       * If we get into this scenario we can try to reallocate.
+       */
+
+      prsc->bind |= PIPE_BIND_SHARED;
+
+      ret = fd_try_shadow_resource(ctx, rsc, 0, NULL, handle->modifier);
+
+      if (!pctx)
+         fd_screen_aux_context_put(pscreen);
+
+      if (!ret)
+         return false;
+
+      return fd_resource_get_handle(pscreen, pctx, prsc, handle, usage);
+   }
+
+   return ret;
 }
 
 /* special case to resize query buf after allocated.. */
@@ -1180,20 +1227,36 @@ enum fd_layout_type {
    UBWC,
 };
 
+static bool
+has_implicit_modifier(const uint64_t *modifiers, int count)
+{
+    return count == 0 ||
+           drm_find_modifier(DRM_FORMAT_MOD_INVALID, modifiers, count);
+}
+
+static bool
+has_explicit_modifier(const uint64_t *modifiers, int count)
+{
+    for (int i = 0; i < count; i++) {
+        if (modifiers[i] != DRM_FORMAT_MOD_INVALID)
+            return true;
+    }
+    return false;
+}
+
 static enum fd_layout_type
-get_best_layout(struct fd_screen *screen, struct pipe_resource *prsc,
+get_best_layout(struct fd_screen *screen,
                 const struct pipe_resource *tmpl, const uint64_t *modifiers,
                 int count)
 {
-   bool implicit_modifiers =
-      (count == 0 ||
-       drm_find_modifier(DRM_FORMAT_MOD_INVALID, modifiers, count));
+   const bool can_implicit = has_implicit_modifier(modifiers, count);
+   const bool can_explicit = has_explicit_modifier(modifiers, count);
 
    /* First, find all the conditions which would force us to linear */
    if (!screen->tile_mode)
       return LINEAR;
 
-   if (!screen->tile_mode(prsc))
+   if (!screen->tile_mode(tmpl))
       return LINEAR;
 
    if (tmpl->target == PIPE_BUFFER)
@@ -1202,18 +1265,18 @@ get_best_layout(struct fd_screen *screen, struct pipe_resource *prsc,
    if (tmpl->bind & PIPE_BIND_LINEAR) {
       if (tmpl->usage != PIPE_USAGE_STAGING)
          perf_debug("%" PRSC_FMT ": forcing linear: bind flags",
-                    PRSC_ARGS(prsc));
+                    PRSC_ARGS(tmpl));
       return LINEAR;
    }
 
    if (FD_DBG(NOTILE))
        return LINEAR;
 
-   /* Shared resources with implicit modifiers must always be linear */
-   if (implicit_modifiers && (tmpl->bind & PIPE_BIND_SHARED)) {
+   /* Shared resources without explicit modifiers must always be linear */
+   if (!can_explicit && (tmpl->bind & PIPE_BIND_SHARED)) {
       perf_debug("%" PRSC_FMT
                  ": forcing linear: shared resource + implicit modifiers",
-                 PRSC_ARGS(prsc));
+                 PRSC_ARGS(tmpl));
       return LINEAR;
    }
 
@@ -1228,11 +1291,11 @@ get_best_layout(struct fd_screen *screen, struct pipe_resource *prsc,
    if (tmpl->bind & PIPE_BIND_USE_FRONT_RENDERING)
       ubwc_ok = false;
 
-   if (ubwc_ok && !implicit_modifiers &&
+   if (ubwc_ok && !can_implicit &&
        !drm_find_modifier(DRM_FORMAT_MOD_QCOM_COMPRESSED, modifiers, count)) {
       perf_debug("%" PRSC_FMT
                  ": not using UBWC: not in acceptable modifier set",
-                 PRSC_ARGS(prsc));
+                 PRSC_ARGS(tmpl));
       ubwc_ok = false;
    }
 
@@ -1246,18 +1309,18 @@ get_best_layout(struct fd_screen *screen, struct pipe_resource *prsc,
     * TODO we should probably also limit TILED in a similar way to UBWC above,
     * once we have a public modifier token defined.
     */
-   if (implicit_modifiers ||
+   if (can_implicit ||
        drm_find_modifier(FD_FORMAT_MOD_QCOM_TILED, modifiers, count))
       return TILED;
 
    if (!drm_find_modifier(DRM_FORMAT_MOD_LINEAR, modifiers, count)) {
       perf_debug("%" PRSC_FMT ": need linear but not in modifier set",
-                 PRSC_ARGS(prsc));
+                 PRSC_ARGS(tmpl));
       return ERROR;
    }
 
    perf_debug("%" PRSC_FMT ": not using tiling: explicit modifiers and no UBWC",
-              PRSC_ARGS(prsc));
+              PRSC_ARGS(tmpl));
    return LINEAR;
 }
 
@@ -1298,7 +1361,7 @@ fd_resource_allocate_and_resolve(struct pipe_screen *pscreen,
    fd_resource_layout_init(prsc);
 
    enum fd_layout_type layout =
-      get_best_layout(screen, prsc, tmpl, modifiers, count);
+      get_best_layout(screen, tmpl, modifiers, count);
    if (layout == ERROR) {
       free(prsc);
       return NULL;
@@ -1364,7 +1427,7 @@ fd_resource_create_with_modifiers(struct pipe_screen *pscreen,
     */
    if (screen->ro &&
        ((tmpl->bind & PIPE_BIND_SCANOUT) ||
-        !(count == 1 && modifiers[0] == DRM_FORMAT_MOD_INVALID))) {
+        has_explicit_modifier(modifiers, count))) {
       struct pipe_resource scanout_templat = *tmpl;
       struct renderonly_scanout *scanout;
       struct winsys_handle handle;
@@ -1534,13 +1597,13 @@ fd_invalidate_resource(struct pipe_context *pctx,
 
       if (pfb->zsbuf && pfb->zsbuf->texture == prsc) {
          batch->resolve &= ~(FD_BUFFER_DEPTH | FD_BUFFER_STENCIL);
-         fd_context_dirty(ctx, FD_DIRTY_ZSA);
+         fd_dirty_resource(ctx, prsc, FD_DIRTY_ZSA, true);
       }
 
       for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
          if (pfb->cbufs[i] && pfb->cbufs[i]->texture == prsc) {
             batch->resolve &= ~(PIPE_CLEAR_COLOR0 << i);
-            fd_context_dirty(ctx, FD_DIRTY_FRAMEBUFFER);
+            fd_dirty_resource(ctx, prsc, FD_DIRTY_FRAMEBUFFER, true);
          }
       }
    }
@@ -1710,47 +1773,6 @@ fd_resource_screen_init(struct pipe_screen *pscreen)
 }
 
 static void
-fd_get_sample_position(struct pipe_context *context, unsigned sample_count,
-                       unsigned sample_index, float *pos_out)
-{
-   /* The following is copied from nouveau/nv50 except for position
-    * values, which are taken from blob driver */
-   static const uint8_t pos1[1][2] = {{0x8, 0x8}};
-   static const uint8_t pos2[2][2] = {{0xc, 0xc}, {0x4, 0x4}};
-   static const uint8_t pos4[4][2] = {{0x6, 0x2},
-                                      {0xe, 0x6},
-                                      {0x2, 0xa},
-                                      {0xa, 0xe}};
-   /* TODO needs to be verified on supported hw */
-   static const uint8_t pos8[8][2] = {{0x9, 0x5}, {0x7, 0xb}, {0xd, 0x9},
-                                      {0x5, 0x3}, {0x3, 0xd}, {0x1, 0x7},
-                                      {0xb, 0xf}, {0xf, 0x1}};
-
-   const uint8_t(*ptr)[2];
-
-   switch (sample_count) {
-   case 1:
-      ptr = pos1;
-      break;
-   case 2:
-      ptr = pos2;
-      break;
-   case 4:
-      ptr = pos4;
-      break;
-   case 8:
-      ptr = pos8;
-      break;
-   default:
-      assert(0);
-      return;
-   }
-
-   pos_out[0] = ptr[sample_index][0] / 16.0f;
-   pos_out[1] = ptr[sample_index][1] / 16.0f;
-}
-
-static void
 fd_blit_pipe(struct pipe_context *pctx,
              const struct pipe_blit_info *blit_info) in_dt
 {
@@ -1774,5 +1796,5 @@ fd_resource_context_init(struct pipe_context *pctx)
    pctx->blit = fd_blit_pipe;
    pctx->flush_resource = fd_flush_resource;
    pctx->invalidate_resource = fd_invalidate_resource;
-   pctx->get_sample_position = fd_get_sample_position;
+   pctx->get_sample_position = u_default_get_sample_position;
 }

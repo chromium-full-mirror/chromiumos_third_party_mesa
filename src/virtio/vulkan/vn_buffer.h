@@ -25,6 +25,7 @@ struct vn_buffer_cache_entry {
 
 struct vn_buffer_cache {
    uint64_t max_buffer_size;
+   uint32_t queue_family_count;
 
    /* cache memory type requirement for AHB backed VkBuffer */
    uint32_t ahb_mem_type_bits;
@@ -67,7 +68,7 @@ vn_buffer_create(struct vn_device *dev,
                  const VkAllocationCallbacks *alloc,
                  struct vn_buffer **out_buf);
 
-VkResult
+void
 vn_buffer_cache_init(struct vn_device *dev);
 
 void

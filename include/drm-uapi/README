@@ -13,8 +13,9 @@ $ make headers_install INSTALL_HDR_PATH=/path/to/install
 
 The last update was done at the following kernel commit :
 
-commit 247f34f7b80357943234f93f247a1ae6b6c3a740
-Author: Linus Torvalds <torvalds@linux-foundation.org>
-Date:   Sun Oct 23 15:27:33 2022 -0700
+commit 2e1492835e439fceba57a5b0f9b17da8e78ffa3d
+Merge: 85d712f033d2 43049f17b526
+Author: Dave Airlie <airlied@redhat.com>
+Date:   Fri Jun 2 13:38:48 2023 +1000
 
-    Linux 6.1-rc2
+    Merge tag 'drm-misc-next-2023-06-01' of git://anongit.freedesktop.org/drm/drm-misc into drm-next

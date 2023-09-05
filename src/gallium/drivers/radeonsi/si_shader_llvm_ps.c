@@ -1,116 +1,12 @@
 /*
  * Copyright 2020 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "si_pipe.h"
 #include "si_shader_internal.h"
 #include "sid.h"
-
-LLVMValueRef si_get_sample_id(struct si_shader_context *ctx)
-{
-   return si_unpack_param(ctx, ctx->args.ancillary, 8, 4);
-}
-
-static LLVMValueRef load_sample_position(struct ac_shader_abi *abi, LLVMValueRef sample_id)
-{
-   struct si_shader_context *ctx = si_shader_context_from_abi(abi);
-   LLVMValueRef buf_index = LLVMConstInt(ctx->ac.i32, SI_PS_CONST_SAMPLE_POSITIONS, 0);
-   LLVMValueRef resource = ac_build_load_to_sgpr(
-      &ctx->ac, ac_get_ptr_arg(&ctx->ac, &ctx->args, ctx->internal_bindings), buf_index);
-
-   /* offset = sample_id * 8  (8 = 2 floats containing samplepos.xy) */
-   LLVMValueRef offset0 =
-      LLVMBuildMul(ctx->ac.builder, sample_id, LLVMConstInt(ctx->ac.i32, 8, 0), "");
-   LLVMValueRef offset1 =
-      LLVMBuildAdd(ctx->ac.builder, offset0, LLVMConstInt(ctx->ac.i32, 4, 0), "");
-
-   LLVMValueRef pos[4] = {si_buffer_load_const(ctx, resource, offset0),
-                          si_buffer_load_const(ctx, resource, offset1),
-                          LLVMConstReal(ctx->ac.f32, 0), LLVMConstReal(ctx->ac.f32, 0)};
-
-   return ac_build_gather_values(&ctx->ac, pos, 4);
-}
-
-static LLVMValueRef si_nir_emit_fbfetch(struct ac_shader_abi *abi)
-{
-   struct si_shader_context *ctx = si_shader_context_from_abi(abi);
-   struct ac_image_args args = {};
-   LLVMValueRef ptr, image, fmask;
-
-   /* Ignore src0, because KHR_blend_func_extended disallows multiple render
-    * targets.
-    */
-
-   /* Load the image descriptor. */
-   STATIC_ASSERT(SI_PS_IMAGE_COLORBUF0 % 2 == 0);
-   STATIC_ASSERT(SI_PS_IMAGE_COLORBUF0_FMASK % 2 == 0);
-
-   ptr = ac_get_arg(&ctx->ac, ctx->internal_bindings);
-   ptr =
-      LLVMBuildPointerCast(ctx->ac.builder, ptr, ac_array_in_const32_addr_space(ctx->ac.v8i32), "");
-   struct ac_llvm_pointer desc = { .v = ptr, .t = ctx->ac.v8i32 };
-
-   image = ac_build_load_to_sgpr(&ctx->ac, desc, LLVMConstInt(ctx->ac.i32, SI_PS_IMAGE_COLORBUF0 / 2, 0));
-
-   unsigned chan = 0;
-
-   args.coords[chan++] = si_unpack_param(ctx, ctx->pos_fixed_pt, 0, 16);
-
-   if (!ctx->shader->key.ps.mono.fbfetch_is_1D)
-      args.coords[chan++] = si_unpack_param(ctx, ctx->pos_fixed_pt, 16, 16);
-
-   /* Get the current render target layer index. */
-   if (ctx->shader->key.ps.mono.fbfetch_layered)
-      args.coords[chan++] = si_unpack_param(ctx, ctx->args.ancillary, 16, 11);
-
-   if (ctx->shader->key.ps.mono.fbfetch_msaa)
-      args.coords[chan++] = si_get_sample_id(ctx);
-
-   if (ctx->screen->info.gfx_level < GFX11 &&
-       ctx->shader->key.ps.mono.fbfetch_msaa &&
-       !(ctx->screen->debug_flags & DBG(NO_FMASK))) {
-
-      fmask = ac_build_load_to_sgpr(&ctx->ac, desc, LLVMConstInt(ctx->ac.i32, SI_PS_IMAGE_COLORBUF0_FMASK / 2, 0));
-
-      ac_apply_fmask_to_sample(&ctx->ac, fmask, args.coords,
-                               ctx->shader->key.ps.mono.fbfetch_layered);
-   }
-
-   args.opcode = ac_image_load;
-   args.resource = image;
-   args.dmask = 0xf;
-   args.attributes = AC_FUNC_ATTR_READNONE;
-
-   if (ctx->shader->key.ps.mono.fbfetch_msaa)
-      args.dim =
-         ctx->shader->key.ps.mono.fbfetch_layered ? ac_image_2darraymsaa : ac_image_2dmsaa;
-   else if (ctx->shader->key.ps.mono.fbfetch_is_1D)
-      args.dim = ctx->shader->key.ps.mono.fbfetch_layered ? ac_image_1darray : ac_image_1d;
-   else
-      args.dim = ctx->shader->key.ps.mono.fbfetch_layered ? ac_image_2darray : ac_image_2d;
-
-   return ac_build_image_opcode(&ctx->ac, &args);
-}
 
 static LLVMValueRef si_build_fs_interp(struct si_shader_context *ctx, unsigned attr_index,
                                        unsigned chan, LLVMValueRef prim_mask, LLVMValueRef i,
@@ -120,7 +16,7 @@ static LLVMValueRef si_build_fs_interp(struct si_shader_context *ctx, unsigned a
       return ac_build_fs_interp(&ctx->ac, LLVMConstInt(ctx->ac.i32, chan, 0),
                                 LLVMConstInt(ctx->ac.i32, attr_index, 0), prim_mask, i, j);
    }
-   return ac_build_fs_interp_mov(&ctx->ac, LLVMConstInt(ctx->ac.i32, 2, 0), /* P0 */
+   return ac_build_fs_interp_mov(&ctx->ac, 0, /* P0 */
                                  LLVMConstInt(ctx->ac.i32, chan, 0),
                                  LLVMConstInt(ctx->ac.i32, attr_index, 0), prim_mask);
 }
@@ -567,15 +463,16 @@ static void si_llvm_emit_polygon_stipple(struct si_shader_context *ctx,
  * - polygon stippling
  *
  * All preloaded SGPRs and VGPRs are passed through unmodified unless they are
- * overriden by other states. (e.g. per-sample interpolation)
+ * overridden by other states. (e.g. per-sample interpolation)
  * Interpolated colors are stored after the preloaded VGPRs.
  */
-void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part_key *key)
+void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part_key *key,
+                             bool separate_prolog)
 {
    LLVMValueRef ret, func;
    int num_returns, i, num_color_channels;
 
-   memset(&ctx->args, 0, sizeof(ctx->args));
+   memset(ctx->args, 0, sizeof(*ctx->args));
 
    /* Declare inputs. */
    LLVMTypeRef return_types[AC_MAX_ARGS];
@@ -584,7 +481,7 @@ void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part
    assert(key->ps_prolog.num_input_sgprs + key->ps_prolog.num_input_vgprs + num_color_channels <=
           AC_MAX_ARGS);
    for (i = 0; i < key->ps_prolog.num_input_sgprs; i++) {
-      ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
+      ac_add_arg(&ctx->args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, NULL);
       return_types[num_returns++] = ctx->ac.i32;
    }
 
@@ -601,7 +498,7 @@ void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part
          /* POS_FIXED_PT is always last. */
          arg = &pos_fixed_pt;
       }
-      ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_FLOAT, arg);
+      ac_add_arg(&ctx->args->ac, AC_ARG_VGPR, 1, AC_ARG_FLOAT, arg);
       return_types[num_returns++] = ctx->ac.f32;
    }
 
@@ -617,7 +514,7 @@ void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part
     * but it will prevent the compiler from overwriting them unintentionally.
     */
    ret = ctx->return_value;
-   for (i = 0; i < ctx->args.arg_count; i++) {
+   for (i = 0; i < ctx->args->ac.arg_count; i++) {
       LLVMValueRef p = LLVMGetParam(func, i);
       ret = LLVMBuildInsertValue(ctx->ac.builder, ret, p, i, "");
    }
@@ -694,13 +591,13 @@ void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part
 
       /* Read LINEAR_SAMPLE. */
       for (i = 0; i < 2; i++)
-         linear_sample[i] = LLVMGetParam(func, base + 6 + i);
+         linear_sample[i] = LLVMGetParam(func, base + (separate_prolog ? 6 : 9) + i);
       /* Overwrite LINEAR_CENTER. */
       for (i = 0; i < 2; i++)
-         ret = LLVMBuildInsertValue(ctx->ac.builder, ret, linear_sample[i], base + 8 + i, "");
+         ret = LLVMBuildInsertValue(ctx->ac.builder, ret, linear_sample[i], base + (separate_prolog ? 8 : 11) + i, "");
       /* Overwrite LINEAR_CENTROID. */
       for (i = 0; i < 2; i++)
-         ret = LLVMBuildInsertValue(ctx->ac.builder, ret, linear_sample[i], base + 10 + i, "");
+         ret = LLVMBuildInsertValue(ctx->ac.builder, ret, linear_sample[i], base + (separate_prolog ? 10 : 13) + i, "");
    }
 
    /* Force center interpolation. */
@@ -769,7 +666,7 @@ void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part
       while (writemask) {
          unsigned chan = u_bit_scan(&writemask);
          ret = LLVMBuildInsertValue(ctx->ac.builder, ret, color[chan],
-                                    ctx->args.arg_count + color_out_idx++, "");
+                                    ctx->args->ac.arg_count + color_out_idx++, "");
       }
    }
 
@@ -790,15 +687,8 @@ void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part
     * entire pixel/fragment, so mask bits out based on the sample ID.
     */
    if (key->ps_prolog.states.samplemask_log_ps_iter) {
-      /* The bit pattern matches that used by fixed function fragment
-       * processing. */
-      static const uint16_t ps_iter_masks[] = {
-         0xffff, /* not used */
-         0x5555, 0x1111, 0x0101, 0x0001,
-      };
-      assert(key->ps_prolog.states.samplemask_log_ps_iter < ARRAY_SIZE(ps_iter_masks));
-
-      uint32_t ps_iter_mask = ps_iter_masks[key->ps_prolog.states.samplemask_log_ps_iter];
+      uint32_t ps_iter_mask =
+         ac_get_ps_iter_mask(1 << key->ps_prolog.states.samplemask_log_ps_iter);
       LLVMValueRef sampleid = si_unpack_param(ctx, ancillary, 8, 4);
       LLVMValueRef samplemask = ac_get_arg(&ctx->ac, param_sample_mask);
 
@@ -825,28 +715,29 @@ void si_llvm_build_ps_prolog(struct si_shader_context *ctx, union si_shader_part
  * Build the pixel shader epilog function. This handles everything that must be
  * emulated for pixel shader exports. (alpha-test, format conversions, etc)
  */
-void si_llvm_build_ps_epilog(struct si_shader_context *ctx, union si_shader_part_key *key)
+void si_llvm_build_ps_epilog(struct si_shader_context *ctx, union si_shader_part_key *key,
+                             UNUSED bool separate_epilog)
 {
    int i;
    struct si_ps_exports exp = {};
    LLVMValueRef color[8][4] = {};
 
-   memset(&ctx->args, 0, sizeof(ctx->args));
+   memset(ctx->args, 0, sizeof(*ctx->args));
 
    /* Declare input SGPRs. */
-   ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->internal_bindings);
-   ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->bindless_samplers_and_images);
-   ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->const_and_shader_buffers);
-   ac_add_arg(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->samplers_and_images);
-   si_add_arg_checked(&ctx->args, AC_ARG_SGPR, 1, AC_ARG_FLOAT, NULL, SI_PARAM_ALPHA_REF);
+   ac_add_arg(&ctx->args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args->internal_bindings);
+   ac_add_arg(&ctx->args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args->bindless_samplers_and_images);
+   ac_add_arg(&ctx->args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args->const_and_shader_buffers);
+   ac_add_arg(&ctx->args->ac, AC_ARG_SGPR, 1, AC_ARG_INT, &ctx->args->samplers_and_images);
+   si_add_arg_checked(&ctx->args->ac, AC_ARG_SGPR, 1, AC_ARG_FLOAT, NULL, SI_PARAM_ALPHA_REF);
 
    /* Declare input VGPRs. */
    unsigned required_num_params =
-      ctx->args.num_sgprs_used + util_bitcount(key->ps_epilog.colors_written) * 4 +
+      ctx->args->ac.num_sgprs_used + util_bitcount(key->ps_epilog.colors_written) * 4 +
       key->ps_epilog.writes_z + key->ps_epilog.writes_stencil + key->ps_epilog.writes_samplemask;
 
-   while (ctx->args.arg_count < required_num_params)
-      ac_add_arg(&ctx->args, AC_ARG_VGPR, 1, AC_ARG_FLOAT, NULL);
+   while (ctx->args->ac.arg_count < required_num_params)
+      ac_add_arg(&ctx->args->ac, AC_ARG_VGPR, 1, AC_ARG_FLOAT, NULL);
 
    /* Create the function. */
    si_llvm_create_func(ctx, "ps_epilog", NULL, 0, 0);
@@ -854,7 +745,7 @@ void si_llvm_build_ps_epilog(struct si_shader_context *ctx, union si_shader_part
    ac_llvm_add_target_dep_function_attr(ctx->main_fn.value, "InitialPSInputAddr", 0xffffff);
 
    /* Prepare color. */
-   unsigned vgpr = ctx->args.num_sgprs_used;
+   unsigned vgpr = ctx->args->ac.num_sgprs_used;
    unsigned colors_written = key->ps_epilog.colors_written;
 
    while (colors_written) {
@@ -886,7 +777,7 @@ void si_llvm_build_ps_epilog(struct si_shader_context *ctx, union si_shader_part
        key->ps_epilog.writes_samplemask ||
        mrtz_alpha) {
       LLVMValueRef depth = NULL, stencil = NULL, samplemask = NULL;
-      unsigned vgpr_index = ctx->args.num_sgprs_used +
+      unsigned vgpr_index = ctx->args->ac.num_sgprs_used +
                             util_bitcount(key->ps_epilog.colors_written) * 4;
 
       if (key->ps_epilog.writes_z)
@@ -932,38 +823,3 @@ void si_llvm_build_ps_epilog(struct si_shader_context *ctx, union si_shader_part
    LLVMBuildRetVoid(ctx->ac.builder);
 }
 
-void si_llvm_build_monolithic_ps(struct si_shader_context *ctx, struct si_shader *shader)
-{
-   struct ac_llvm_pointer parts[3];
-   unsigned num_parts = 0, main_index;
-   struct ac_llvm_pointer main_fn = ctx->main_fn;
-   /* Preserve main arguments. */
-   enum ac_arg_type main_arg_types[AC_MAX_ARGS];
-   for (int i = 0; i < ctx->args.arg_count; i++)
-      main_arg_types[i] = ctx->args.args[i].type;
-
-
-   union si_shader_part_key prolog_key;
-   si_get_ps_prolog_key(shader, &prolog_key, false);
-
-   if (si_need_ps_prolog(&prolog_key)) {
-      si_llvm_build_ps_prolog(ctx, &prolog_key);
-      parts[num_parts++] = ctx->main_fn;
-   }
-
-   main_index = num_parts;
-   parts[num_parts++] = main_fn;
-
-   union si_shader_part_key epilog_key;
-   si_get_ps_epilog_key(shader, &epilog_key);
-   si_llvm_build_ps_epilog(ctx, &epilog_key);
-   parts[num_parts++] = ctx->main_fn;
-
-   si_build_wrapper_function(ctx, parts, num_parts, main_index, 0, main_arg_types, false);
-}
-
-void si_llvm_init_ps_callbacks(struct si_shader_context *ctx)
-{
-   ctx->abi.load_sample_position = load_sample_position;
-   ctx->abi.emit_fbfetch = si_nir_emit_fbfetch;
-}

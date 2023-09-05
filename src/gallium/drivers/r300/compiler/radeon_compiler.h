@@ -56,11 +56,12 @@ struct radeon_compiler {
 	unsigned has_presub:1;
 	unsigned has_omod:1;
 	unsigned disable_optimizations:1;
-	unsigned needs_trig_input_transform:1;
 	unsigned max_temp_regs;
 	unsigned max_constants;
 	int max_alu_insts;
 	unsigned max_tex_insts;
+
+	int max_temp_index;
 
 	/* Whether to remove unused constants and empty holes in constant space. */
 	unsigned remove_unused_constants:1;

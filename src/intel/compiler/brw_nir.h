@@ -98,7 +98,68 @@ struct brw_nir_compiler_opts {
 
    /* Whether robust image access is enabled */
    bool robust_image_access;
+
+   /* Input vertices for TCS stage (0 means dynamic) */
+   unsigned input_vertices;
 };
+
+/* UBO surface index can come in 2 flavors :
+ *    - nir_intrinsic_resource_intel
+ *    - anything else
+ *
+ * In the first case, checking that the surface index is const requires
+ * checking resource_intel::src[1]. In any other case it's a simple
+ * nir_src_is_const().
+ *
+ * This function should only be called on src[0] of load_ubo intrinsics.
+ */
+static inline bool
+brw_nir_ubo_surface_index_is_pushable(nir_src src)
+{
+   nir_intrinsic_instr *intrin = src.is_ssa &&
+      src.ssa->parent_instr->type == nir_instr_type_intrinsic ?
+      nir_instr_as_intrinsic(src.ssa->parent_instr) : NULL;
+
+   if (intrin && intrin->intrinsic == nir_intrinsic_resource_intel) {
+      return (nir_intrinsic_resource_access_intel(intrin) &
+              nir_resource_intel_pushable) &&
+             nir_src_is_const(intrin->src[1]);
+   }
+
+   return nir_src_is_const(src);
+}
+
+static inline unsigned
+brw_nir_ubo_surface_index_get_push_block(nir_src src)
+{
+   if (nir_src_is_const(src))
+      return nir_src_as_uint(src);
+
+   if (!brw_nir_ubo_surface_index_is_pushable(src))
+      return UINT32_MAX;
+
+   assert(src.ssa->parent_instr->type == nir_instr_type_intrinsic);
+
+   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(src.ssa->parent_instr);
+   assert(intrin->intrinsic == nir_intrinsic_resource_intel);
+
+   return nir_intrinsic_resource_block_intel(intrin);
+}
+
+static inline unsigned
+brw_nir_ubo_surface_index_get_bti(nir_src src)
+{
+   if (nir_src_is_const(src))
+      return nir_src_as_uint(src);
+
+   assert(src.ssa->parent_instr->type == nir_instr_type_intrinsic);
+
+   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(src.ssa->parent_instr);
+   assert(intrin->intrinsic == nir_intrinsic_resource_intel);
+   assert(nir_src_is_const(intrin->src[1]));
+
+   return nir_src_as_uint(intrin->src[1]);
+}
 
 void brw_preprocess_nir(const struct brw_compiler *compiler,
                         nir_shader *nir,
@@ -109,7 +170,9 @@ brw_nir_link_shaders(const struct brw_compiler *compiler,
                      nir_shader *producer, nir_shader *consumer);
 
 bool brw_nir_lower_cs_intrinsics(nir_shader *nir);
-bool brw_nir_lower_alpha_to_coverage(nir_shader *shader);
+bool brw_nir_lower_alpha_to_coverage(nir_shader *shader,
+                                     const struct brw_wm_prog_key *key,
+                                     const struct brw_wm_prog_data *prog_data);
 void brw_nir_lower_vs_inputs(nir_shader *nir,
                              bool edgeflag_is_last,
                              const uint8_t *vs_attrib_wa_flags);
@@ -126,20 +189,30 @@ void brw_nir_lower_fs_outputs(nir_shader *nir);
 
 bool brw_nir_lower_conversions(nir_shader *nir);
 
-bool brw_nir_lower_scoped_barriers(nir_shader *nir);
-
 bool brw_nir_lower_shading_rate_output(nir_shader *nir);
 
+struct brw_nir_lower_storage_image_opts {
+   const struct intel_device_info *devinfo;
+
+   bool lower_loads;
+   bool lower_stores;
+   bool lower_atomics;
+   bool lower_get_size;
+};
+
 bool brw_nir_lower_storage_image(nir_shader *nir,
-                                 const struct intel_device_info *devinfo);
+                                 const struct brw_nir_lower_storage_image_opts *opts);
 
 bool brw_nir_lower_mem_access_bit_sizes(nir_shader *shader,
                                         const struct
                                         intel_device_info *devinfo);
 
+bool brw_nir_lower_non_uniform_resource_intel(nir_shader *shader);
+
+bool brw_nir_cleanup_resource_intel(nir_shader *shader);
+
 void brw_postprocess_nir(nir_shader *nir,
                          const struct brw_compiler *compiler,
-                         bool is_scalar,
                          bool debug_enabled,
                          bool robust_buffer_access);
 
@@ -157,25 +230,22 @@ void brw_nir_apply_tcs_quads_workaround(nir_shader *nir);
 void brw_nir_apply_key(nir_shader *nir,
                        const struct brw_compiler *compiler,
                        const struct brw_base_prog_key *key,
-                       unsigned max_subgroup_size,
-                       bool is_scalar);
+                       unsigned max_subgroup_size);
+
+unsigned brw_nir_api_subgroup_size(const nir_shader *nir,
+                                   unsigned hw_subgroup_size);
 
 enum brw_conditional_mod brw_cmod_for_nir_comparison(nir_op op);
-uint32_t brw_aop_for_nir_intrinsic(const nir_intrinsic_instr *atomic);
+enum lsc_opcode lsc_aop_for_nir_intrinsic(const nir_intrinsic_instr *atomic);
 enum brw_reg_type brw_type_for_nir_type(const struct intel_device_info *devinfo,
                                         nir_alu_type type);
 
-void brw_nir_setup_glsl_uniforms(void *mem_ctx, nir_shader *shader,
-                                 const struct gl_program *prog,
-                                 struct brw_stage_prog_data *stage_prog_data,
-                                 bool is_scalar);
-
-void brw_nir_setup_arb_uniforms(void *mem_ctx, nir_shader *shader,
-                                struct gl_program *prog,
-                                struct brw_stage_prog_data *stage_prog_data);
-
-void brw_nir_lower_gl_images(nir_shader *shader,
-                             const struct gl_program *prog);
+bool brw_nir_should_vectorize_mem(unsigned align_mul, unsigned align_offset,
+                                  unsigned bit_size,
+                                  unsigned num_components,
+                                  nir_intrinsic_instr *low,
+                                  nir_intrinsic_instr *high,
+                                  void *data);
 
 void brw_nir_analyze_ubo_ranges(const struct brw_compiler *compiler,
                                 nir_shader *nir,
@@ -184,15 +254,23 @@ void brw_nir_analyze_ubo_ranges(const struct brw_compiler *compiler,
 
 bool brw_nir_opt_peephole_ffma(nir_shader *shader);
 
+bool brw_nir_opt_peephole_imul32x16(nir_shader *shader);
+
+bool brw_nir_clamp_per_vertex_loads(nir_shader *shader);
+
+bool brw_nir_lower_patch_vertices_in(nir_shader *shader, unsigned input_vertices);
+
+bool brw_nir_blockify_uniform_loads(nir_shader *shader,
+                                    const struct intel_device_info *devinfo);
+
 void brw_nir_optimize(nir_shader *nir,
-                      const struct brw_compiler *compiler,
-                      bool is_scalar,
-                      bool allow_copies);
+                      const struct brw_compiler *compiler);
 
 nir_shader *brw_nir_create_passthrough_tcs(void *mem_ctx,
                                            const struct brw_compiler *compiler,
-                                           const nir_shader_compiler_options *options,
                                            const struct brw_tcs_prog_key *key);
+
+bool brw_nir_pulls_at_sample(nir_shader *shader);
 
 #define BRW_NIR_FRAG_OUTPUT_INDEX_SHIFT 0
 #define BRW_NIR_FRAG_OUTPUT_INDEX_MASK INTEL_MASK(0, 0)
@@ -200,7 +278,6 @@ nir_shader *brw_nir_create_passthrough_tcs(void *mem_ctx,
 #define BRW_NIR_FRAG_OUTPUT_LOCATION_MASK INTEL_MASK(31, 1)
 
 bool brw_nir_move_interpolation_to_top(nir_shader *nir);
-bool brw_nir_demote_sample_qualifiers(nir_shader *nir);
 nir_ssa_def *brw_nir_load_global_const(nir_builder *b,
                                        nir_intrinsic_instr *load_uniform,
                                        nir_ssa_def *base_addr,

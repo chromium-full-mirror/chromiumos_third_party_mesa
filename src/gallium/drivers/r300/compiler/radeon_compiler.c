@@ -45,6 +45,7 @@ void rc_init(struct radeon_compiler * c, const struct rc_regalloc_state *rs)
 	c->Program.Instructions.Next = &c->Program.Instructions;
 	c->Program.Instructions.U.I.Opcode = RC_OPCODE_ILLEGAL_OPCODE;
 	c->regalloc_state = rs;
+	c->max_temp_index = -1;
 }
 
 void rc_destroy(struct radeon_compiler * c)
@@ -414,7 +415,7 @@ static void print_stats(struct radeon_compiler * c)
 	rc_get_stats(c, &s);
 
 	/* Note that we print some dummy values for instruction categories that
-	 * only the FS has, becasue shader-db's report.py wants all shaders to
+	 * only the FS has, because shader-db's report.py wants all shaders to
 	 * have the same set.
 	 */
 	util_debug_message(c->debug, SHADER_INFO, "%s shader: %u inst, %u vinst, %u sinst, %u predicate, %u flowcontrol, %u loops, %u tex, %u presub, %u omod, %u temps, %u consts, %u lits",

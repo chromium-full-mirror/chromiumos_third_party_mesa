@@ -112,7 +112,7 @@ d3d12_video_nalu_writer_hevc::generic_write_bytes( std::vector<BYTE> &headerBits
         assert(false);
     }
 
-    rbsp.set_start_code_prevention(TRUE);
+    rbsp.set_start_code_prevention(true);
     if (write_bytes_from_struct(&rbsp, pStructure, nal_header->nal_unit_type) <= 0u) {
         debug_printf("write_bytes_from_struct(&rbsp, pStructure, nal_header->nal_unit_type) didn't write any bytes.\n");
         assert(false);
@@ -386,12 +386,12 @@ d3d12_video_nalu_writer_hevc::wrap_rbsp_into_nalu(d3d12_video_encoder_bitstream 
                     d3d12_video_encoder_bitstream *pRBSP,
                     HEVCNaluHeader *pHeader)
 {
-    bool isAligned = pRBSP->is_byte_aligned();   // causes side-effects in object state, don't put inside assert()
+    ASSERTED bool isAligned = pRBSP->is_byte_aligned();   // causes side-effects in object state, don't put inside assert()
     assert(isAligned);
 
     int32_t iBytesWritten = pNALU->get_byte_count();
 
-    pNALU->set_start_code_prevention(FALSE);
+    pNALU->set_start_code_prevention(false);
 
     // NAL start code
     pNALU->put_bits(24, 0);
@@ -412,7 +412,7 @@ d3d12_video_nalu_writer_hevc::wrap_rbsp_into_nalu(d3d12_video_encoder_bitstream 
         pNALU->append_byte_stream(pRBSP);
     } else {
         // Copy with start code prevention.
-        pNALU->set_start_code_prevention(TRUE);
+        pNALU->set_start_code_prevention(true);
         int32_t  iLength = pRBSP->get_byte_count();
         uint8_t *pBuffer = pRBSP->get_bitstream_buffer();
 
@@ -435,10 +435,10 @@ void
 d3d12_video_nalu_writer_hevc::write_nalu_end(d3d12_video_encoder_bitstream *pNALU)
 {
     pNALU->flush();
-    pNALU->set_start_code_prevention(FALSE);
+    pNALU->set_start_code_prevention(false);
     int32_t iNALUnitLen = pNALU->get_byte_count();
 
-    if (FALSE == pNALU->m_bBufferOverflow && 0x00 == pNALU->get_bitstream_buffer()[iNALUnitLen - 1]) {
+    if (false == pNALU->m_bBufferOverflow && 0x00 == pNALU->get_bitstream_buffer()[iNALUnitLen - 1]) {
         pNALU->put_bits(8, 0x03);
         pNALU->flush();
     }
@@ -454,7 +454,7 @@ d3d12_video_nalu_writer_hevc::rbsp_trailing(d3d12_video_encoder_bitstream *pBits
         pBitstream->put_bits(iLeft, 0);
     }
 
-    bool isAligned = pBitstream->is_byte_aligned();   // causes side-effects in object state, don't put inside assert()
+    ASSERTED bool isAligned = pBitstream->is_byte_aligned();   // causes side-effects in object state, don't put inside assert()
     assert(isAligned);
 }
 

@@ -261,7 +261,7 @@ handleIQMatrixBuffer(vlVaContext *context, vlVaBuffer *buf)
 }
 
 static void
-handleSliceParameterBuffer(vlVaContext *context, vlVaBuffer *buf, unsigned num_slice_buffers, unsigned num_slices)
+handleSliceParameterBuffer(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices)
 {
    switch (u_reduce_video_profile(context->templat.profile)) {
    case PIPE_VIDEO_FORMAT_MPEG12:
@@ -293,7 +293,7 @@ handleSliceParameterBuffer(vlVaContext *context, vlVaBuffer *buf, unsigned num_s
       break;
 
    case PIPE_VIDEO_FORMAT_AV1:
-      vlVaHandleSliceParameterBufferAV1(context, buf, num_slice_buffers, num_slices);
+      vlVaHandleSliceParameterBufferAV1(context, buf, num_slices);
       break;
 
    default:
@@ -323,10 +323,15 @@ static void
 handleVAProtectedSliceDataBufferType(vlVaContext *context, vlVaBuffer *buf)
 {
 	uint8_t* encrypted_data = (uint8_t*) buf->data;
+        uint8_t* drm_key;
 
 	unsigned int drm_key_size = buf->size;
 
-	context->desc.base.decrypt_key = CALLOC(1, drm_key_size);
+        drm_key = REALLOC(context->desc.base.decrypt_key,
+                          context->desc.base.key_size, drm_key_size);
+        if (!drm_key)
+            return;
+        context->desc.base.decrypt_key = drm_key;
 	memcpy(context->desc.base.decrypt_key, encrypted_data, drm_key_size);
 	context->desc.base.key_size = drm_key_size;
 	context->desc.base.protected_playback = true;
@@ -432,6 +437,11 @@ handleVAEncMiscParameterTypeRateControl(vlVaContext *context, VAEncMiscParameter
       status = vlVaHandleVAEncMiscParameterTypeRateControlHEVC(context, misc);
       break;
 
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncMiscParameterTypeRateControlAV1(context, misc);
+      break;
+#endif
    default:
       break;
    }
@@ -453,6 +463,11 @@ handleVAEncMiscParameterTypeFrameRate(vlVaContext *context, VAEncMiscParameterBu
       status = vlVaHandleVAEncMiscParameterTypeFrameRateHEVC(context, misc);
       break;
 
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncMiscParameterTypeFrameRateAV1(context, misc);
+      break;
+#endif
    default:
       break;
    }
@@ -494,6 +509,12 @@ handleVAEncSequenceParameterBufferType(vlVaDriver *drv, vlVaContext *context, vl
       status = vlVaHandleVAEncSequenceParameterBufferTypeHEVC(drv, context, buf);
       break;
 
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncSequenceParameterBufferTypeAV1(drv, context, buf);
+      break;
+#endif
+
    default:
       break;
    }
@@ -514,6 +535,12 @@ handleVAEncMiscParameterTypeQualityLevel(vlVaContext *context, VAEncMiscParamete
    case PIPE_VIDEO_FORMAT_HEVC:
       status = vlVaHandleVAEncMiscParameterTypeQualityLevelHEVC(context, misc);
       break;
+
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncMiscParameterTypeQualityLevelAV1(context, misc);
+      break;
+#endif
 
    default:
       break;
@@ -536,6 +563,12 @@ handleVAEncMiscParameterTypeMaxFrameSize(vlVaContext *context, VAEncMiscParamete
       status = vlVaHandleVAEncMiscParameterTypeMaxFrameSizeHEVC(context, misc);
       break;
 
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncMiscParameterTypeMaxFrameSizeAV1(context, misc);
+      break;
+#endif
+
    default:
       break;
    }
@@ -555,6 +588,12 @@ handleVAEncMiscParameterTypeHRD(vlVaContext *context, VAEncMiscParameterBuffer *
    case PIPE_VIDEO_FORMAT_HEVC:
       status = vlVaHandleVAEncMiscParameterTypeHRDHEVC(context, misc);
       break;
+
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncMiscParameterTypeHRDAV1(context, misc);
+      break;
+#endif
 
    default:
       break;
@@ -616,6 +655,12 @@ handleVAEncPictureParameterBufferType(vlVaDriver *drv, vlVaContext *context, vlV
       status = vlVaHandleVAEncPictureParameterBufferTypeHEVC(drv, context, buf);
       break;
 
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncPictureParameterBufferTypeAV1(drv, context, buf);
+      break;
+#endif
+
    default:
       break;
    }
@@ -637,6 +682,12 @@ handleVAEncSliceParameterBufferType(vlVaDriver *drv, vlVaContext *context, vlVaB
       status = vlVaHandleVAEncSliceParameterBufferTypeHEVC(drv, context, buf);
       break;
 
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncSliceParameterBufferTypeAV1(drv, context, buf);
+      break;
+#endif
+
    default:
       break;
    }
@@ -648,20 +699,22 @@ static VAStatus
 handleVAEncPackedHeaderParameterBufferType(vlVaContext *context, vlVaBuffer *buf)
 {
    VAStatus status = VA_STATUS_SUCCESS;
+   VAEncPackedHeaderParameterBuffer *param = buf->data;
 
    switch (u_reduce_video_profile(context->templat.profile)) {
    case PIPE_VIDEO_FORMAT_HEVC:
+      if (param->type == VAEncPackedHeaderSequence)
+         context->packed_header_type = param->type;
+      else
+         status = VA_STATUS_ERROR_UNIMPLEMENTED;
+      break;
+   case PIPE_VIDEO_FORMAT_AV1:
+         context->packed_header_type = param->type;
       break;
 
    default:
       return VA_STATUS_ERROR_UNIMPLEMENTED;
    }
-
-   VAEncPackedHeaderParameterBuffer *param = (VAEncPackedHeaderParameterBuffer *)buf->data;
-   if (param->type == VAEncPackedHeaderSequence)
-      context->packed_header_type = param->type;
-   else
-      status = VA_STATUS_ERROR_UNIMPLEMENTED;
 
    return status;
 }
@@ -671,19 +724,46 @@ handleVAEncPackedHeaderDataBufferType(vlVaContext *context, vlVaBuffer *buf)
 {
    VAStatus status = VA_STATUS_SUCCESS;
 
-   if (context->packed_header_type != VAEncPackedHeaderSequence)
-      return VA_STATUS_ERROR_UNIMPLEMENTED;
-
    switch (u_reduce_video_profile(context->templat.profile)) {
    case PIPE_VIDEO_FORMAT_HEVC:
+      if (context->packed_header_type != VAEncPackedHeaderSequence)
+         return VA_STATUS_ERROR_UNIMPLEMENTED;
+
       status = vlVaHandleVAEncPackedHeaderDataBufferTypeHEVC(context, buf);
       break;
+
+#if VA_CHECK_VERSION(1, 16, 0)
+   case PIPE_VIDEO_FORMAT_AV1:
+      status = vlVaHandleVAEncPackedHeaderDataBufferTypeAV1(context, buf);
+      break;
+#endif
 
    default:
       break;
    }
 
    return status;
+}
+
+static VAStatus
+handleVAStatsStatisticsBufferType(VADriverContextP ctx, vlVaContext *context, vlVaBuffer *buf)
+{
+   if (context->decoder->entrypoint != PIPE_VIDEO_ENTRYPOINT_ENCODE)
+      return VA_STATUS_ERROR_UNIMPLEMENTED;
+
+   vlVaDriver *drv;
+   drv = VL_VA_DRIVER(ctx);
+
+   if (!drv)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+   if (!buf->derived_surface.resource)
+      buf->derived_surface.resource = pipe_buffer_create(drv->pipe->screen, PIPE_BIND_VERTEX_BUFFER,
+                                            PIPE_USAGE_STREAM, buf->size);
+
+   context->target->statistics_data = buf->derived_surface.resource;
+
+   return VA_STATUS_SUCCESS;
 }
 
 VAStatus
@@ -694,7 +774,6 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
    VAStatus vaStatus = VA_STATUS_SUCCESS;
 
    unsigned i;
-   unsigned slice_param_idx = 0;
    unsigned slice_idx = 0;
 
    if (!ctx)
@@ -740,14 +819,10 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
          /* Some apps like gstreamer send all the slices at once
             and some others send individual VASliceParameterBufferType buffers
 
-            slice_param_idx is the zero based count of VASliceParameterBufferType
-               (including multiple buffers with num_elements > 1) received
-               before this call to handleSliceParameterBuffer
-
             slice_idx is the zero based number of total slices received
                before this call to handleSliceParameterBuffer
          */
-         handleSliceParameterBuffer(context, buf, slice_param_idx++, slice_idx);
+         handleSliceParameterBuffer(context, buf, slice_idx);
          slice_idx += buf->num_elements;
       } break;
 
@@ -786,6 +861,10 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
          handleVAEncPackedHeaderDataBufferType(context, buf);
          break;
 
+      case VAStatsStatisticsBufferType:
+         handleVAStatsStatisticsBufferType(ctx, context, buf);
+         break;
+
       default:
          break;
       }
@@ -793,6 +872,25 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
    mtx_unlock(&drv->mutex);
 
    return vaStatus;
+}
+
+static bool vlVaQueryApplyFilmGrainAV1(vlVaContext *context,
+                                 int *output_id,
+                                 struct pipe_video_buffer ***out_target)
+{
+   struct pipe_av1_picture_desc *av1 = NULL;
+
+   if (u_reduce_video_profile(context->templat.profile) != PIPE_VIDEO_FORMAT_AV1 ||
+       context->decoder->entrypoint != PIPE_VIDEO_ENTRYPOINT_BITSTREAM)
+      return false;
+
+   av1 = &context->desc.av1;
+   if (!av1->picture_parameter.film_grain_info.film_grain_info_fields.apply_grain)
+      return false;
+
+   *output_id = av1->picture_parameter.current_frame_id;
+   *out_target = &av1->film_grain_target;
+   return true;
 }
 
 VAStatus
@@ -806,7 +904,10 @@ vlVaEndPicture(VADriverContextP ctx, VAContextID context_id)
    struct pipe_screen *screen;
    bool supported;
    bool realloc = false;
+   bool apply_av1_fg = false;
    enum pipe_format format;
+   struct pipe_video_buffer **out_target;
+   int output_id;
 
    if (!ctx)
       return VA_STATUS_ERROR_INVALID_CONTEXT;
@@ -829,8 +930,22 @@ vlVaEndPicture(VADriverContextP ctx, VAContextID context_id)
       return VA_STATUS_SUCCESS;
    }
 
+   output_id = context->target_id;
+   out_target = &context->target;
+   apply_av1_fg = vlVaQueryApplyFilmGrainAV1(context, &output_id, &out_target);
+
    mtx_lock(&drv->mutex);
-   surf = handle_table_get(drv->htab, context->target_id);
+   surf = handle_table_get(drv->htab, output_id);
+   if (!surf || !surf->buffer) {
+      mtx_unlock(&drv->mutex);
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+   }
+
+   if (apply_av1_fg) {
+      surf->ctx = context_id;
+      *out_target = surf->buffer;
+   }
+
    context->mpeg4.frame_num++;
 
    screen = context->decoder->context->screen;
@@ -904,7 +1019,8 @@ vlVaEndPicture(VADriverContextP ctx, VAContextID context_id)
    }
 
    if (u_reduce_video_profile(context->templat.profile) == PIPE_VIDEO_FORMAT_AV1 &&
-       surf->buffer->buffer_format == PIPE_FORMAT_NV12) {
+       surf->buffer->buffer_format == PIPE_FORMAT_NV12 &&
+       context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM) {
       if (context->desc.av1.picture_parameter.bit_depth_idx == 1) {
          surf->templat.buffer_format = PIPE_FORMAT_P010;
          realloc = true;
@@ -938,10 +1054,11 @@ vlVaEndPicture(VADriverContextP ctx, VAContextID context_id)
       }
 
       old_buf->destroy(old_buf);
-      context->target = surf->buffer;
+      *out_target = surf->buffer;
    }
 
    if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE) {
+      context->desc.base.fence = &surf->fence;
       struct pipe_screen *screen = context->decoder->context->screen;
       coded_buf = context->coded_buf;
       if (u_reduce_video_profile(context->templat.profile) == PIPE_VIDEO_FORMAT_MPEG4_AVC)
@@ -969,6 +1086,10 @@ vlVaEndPicture(VADriverContextP ctx, VAContextID context_id)
       surf->feedback = feedback;
       surf->coded_buf = coded_buf;
       coded_buf->associated_encode_input_surf = context->target_id;
+   } else if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM) {
+      context->desc.base.fence = &surf->fence;
+   } else if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_PROCESSING) {
+      context->desc.base.fence = &surf->fence;
    }
 
    context->decoder->end_frame(context->decoder, context->target, &context->desc.base);
@@ -999,11 +1120,18 @@ vlVaEndPicture(VADriverContextP ctx, VAContextID context_id)
                context->first_single_submitted = false;
             surf->force_flushed = true;
          }
-         if (!context->desc.h264enc.not_referenced)
-            context->desc.h264enc.frame_num++;
-      } else if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE &&
-               u_reduce_video_profile(context->templat.profile) == PIPE_VIDEO_FORMAT_HEVC)
+      }
+   }
+
+   /* Update frame_num disregarding PIPE_VIDEO_CAP_REQUIRES_FLUSH_ON_END_FRAME check above */
+   if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE) {
+      if ((u_reduce_video_profile(context->templat.profile) == PIPE_VIDEO_FORMAT_MPEG4_AVC)
+         && (!context->desc.h264enc.not_referenced))
+         context->desc.h264enc.frame_num++;
+      else if (u_reduce_video_profile(context->templat.profile) == PIPE_VIDEO_FORMAT_HEVC)
          context->desc.h265enc.frame_num++;
+      else if (u_reduce_video_profile(context->templat.profile) == PIPE_VIDEO_FORMAT_AV1)
+         context->desc.av1enc.frame_num++;
    }
 
    mtx_unlock(&drv->mutex);

@@ -203,7 +203,14 @@ convert_loop_exit_for_ssa(nir_ssa_def *def, void *void_state)
          return true;
    }
 
-   nir_foreach_use(use, def) {
+   nir_foreach_use_including_if(use, def) {
+      if (use->is_if) {
+         if (!is_if_use_inside_loop(use, state->loop))
+            all_uses_inside_loop = false;
+
+         continue;
+      }
+
       if (use->parent_instr->type == nir_instr_type_phi &&
           use->parent_instr->block == state->block_after_loop) {
          continue;
@@ -214,20 +221,14 @@ convert_loop_exit_for_ssa(nir_ssa_def *def, void *void_state)
       }
    }
 
-   nir_foreach_if_use(use, def) {
-      if (!is_if_use_inside_loop(use, state->loop)) {
-         all_uses_inside_loop = false;
-      }
-   }
-
    /* There where no sources that had defs outside the loop */
    if (all_uses_inside_loop)
       return true;
 
    /* Initialize a phi-instruction */
    nir_phi_instr *phi = nir_phi_instr_create(state->shader);
-   nir_ssa_dest_init(&phi->instr, &phi->dest,
-                     def->num_components, def->bit_size, "LCSSA-phi");
+   nir_ssa_dest_init(&phi->instr, &phi->dest, def->num_components,
+                     def->bit_size);
 
    /* Create a phi node with as many sources pointing to the same ssa_def as
     * the block has predecessors.
@@ -252,8 +253,7 @@ convert_loop_exit_for_ssa(nir_ssa_def *def, void *void_state)
       cast->cast.ptr_stride = nir_deref_instr_array_stride(instr);
 
       nir_ssa_dest_init(&cast->instr, &cast->dest,
-                        phi->dest.ssa.num_components,
-                        phi->dest.ssa.bit_size, NULL);
+                        phi->dest.ssa.num_components, phi->dest.ssa.bit_size);
       nir_instr_insert(nir_after_phis(state->block_after_loop), &cast->instr);
       dest = &cast->dest.ssa;
    }
@@ -261,7 +261,14 @@ convert_loop_exit_for_ssa(nir_ssa_def *def, void *void_state)
    /* Run through all uses and rewrite those outside the loop to point to
     * the phi instead of pointing to the ssa-def.
     */
-   nir_foreach_use_safe(use, def) {
+   nir_foreach_use_including_if_safe(use, def) {
+      if (use->is_if) {
+         if (!is_if_use_inside_loop(use, state->loop))
+            nir_if_rewrite_condition(use->parent_if, nir_src_for_ssa(dest));
+
+         continue;
+      }
+
       if (use->parent_instr->type == nir_instr_type_phi &&
           state->block_after_loop == use->parent_instr->block) {
          continue;
@@ -269,12 +276,6 @@ convert_loop_exit_for_ssa(nir_ssa_def *def, void *void_state)
 
       if (!is_use_inside_loop(use, state->loop)) {
          nir_instr_rewrite_src(use->parent_instr, use, nir_src_for_ssa(dest));
-      }
-   }
-
-   nir_foreach_if_use_safe(use, def) {
-      if (!is_if_use_inside_loop(use, state->loop)) {
-         nir_if_rewrite_condition(use->parent_if, nir_src_for_ssa(dest));
       }
    }
 
@@ -317,6 +318,7 @@ convert_to_lcssa(nir_cf_node *cf_node, lcssa_state *state)
 
       /* first, convert inner loops */
       nir_loop *loop = nir_cf_node_as_loop(cf_node);
+      assert(!nir_loop_has_continue_construct(loop));
       foreach_list_typed(nir_cf_node, nested_node, node, &loop->body)
          convert_to_lcssa(nested_node, state);
 
@@ -370,6 +372,7 @@ end:
 void
 nir_convert_loop_to_lcssa(nir_loop *loop)
 {
+   assert(!nir_loop_has_continue_construct(loop));
    nir_function_impl *impl = nir_cf_node_get_function(&loop->cf_node);
 
    nir_metadata_require(impl, nir_metadata_block_index);
@@ -397,22 +400,19 @@ nir_convert_to_lcssa(nir_shader *shader, bool skip_invariants, bool skip_bool_in
    state->skip_invariants = skip_invariants;
    state->skip_bool_invariants = skip_bool_invariants;
 
-   nir_foreach_function(function, shader) {
-      if (function->impl == NULL)
-         continue;
-
+   nir_foreach_function_impl(impl, shader) {
       state->progress = false;
-      nir_metadata_require(function->impl, nir_metadata_block_index);
+      nir_metadata_require(impl, nir_metadata_block_index);
 
-      foreach_list_typed(nir_cf_node, node, node, &function->impl->body)
+      foreach_list_typed(nir_cf_node, node, node, &impl->body)
          convert_to_lcssa(node, state);
 
       if (state->progress) {
          progress = true;
-         nir_metadata_preserve(function->impl, nir_metadata_block_index |
+         nir_metadata_preserve(impl, nir_metadata_block_index |
                                                nir_metadata_dominance);
       } else {
-         nir_metadata_preserve(function->impl, nir_metadata_all);
+         nir_metadata_preserve(impl, nir_metadata_all);
       }
    }
 

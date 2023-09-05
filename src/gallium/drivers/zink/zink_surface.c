@@ -23,6 +23,7 @@
 
 #include "zink_context.h"
 #include "zink_framebuffer.h"
+#include "zink_format.h"
 #include "zink_resource.h"
 #include "zink_screen.h"
 #include "zink_surface.h"
@@ -109,7 +110,7 @@ create_ivci(struct zink_screen *screen,
 
 /* this is used for framebuffer attachments to set up imageless framebuffers */
 static void
-init_surface_info(struct zink_surface *surface, struct zink_resource *res, VkImageViewCreateInfo *ivci)
+init_surface_info(struct zink_screen *screen, struct zink_surface *surface, struct zink_resource *res, VkImageViewCreateInfo *ivci)
 {
    VkImageViewUsageCreateInfo *usage_info = (VkImageViewUsageCreateInfo *)ivci->pNext;
    surface->info.flags = res->obj->vkflags;
@@ -122,6 +123,54 @@ init_surface_info(struct zink_surface *surface, struct zink_resource *res, VkIma
       struct kopper_displaytarget *cdt = res->obj->dt;
       if (zink_kopper_has_srgb(cdt))
          surface->info.format[1] = ivci->format == cdt->formats[0] ? cdt->formats[1] : cdt->formats[0];
+   } else {
+      enum pipe_format srgb = util_format_is_srgb(surface->base.format) ? util_format_linear(surface->base.format) : util_format_srgb(surface->base.format);
+      if (srgb == surface->base.format)
+         srgb = PIPE_FORMAT_NONE;
+      if (srgb) {
+         VkFormat format = zink_get_format(screen, srgb);
+         if (format)
+            surface->info.format[1] = format;
+      }
+   }
+}
+
+static void
+init_pipe_surface_info(struct pipe_context *pctx, struct pipe_surface *psurf, const struct pipe_surface *templ, const struct pipe_resource *pres)
+{
+   unsigned int level = templ->u.tex.level;
+   psurf->context = pctx;
+   psurf->format = templ->format;
+   psurf->width = u_minify(pres->width0, level);
+   assert(psurf->width);
+   psurf->height = u_minify(pres->height0, level);
+   assert(psurf->height);
+   psurf->nr_samples = templ->nr_samples;
+   psurf->u.tex.level = level;
+   psurf->u.tex.first_layer = templ->u.tex.first_layer;
+   psurf->u.tex.last_layer = templ->u.tex.last_layer;
+}
+
+static void
+apply_view_usage_for_format(struct zink_screen *screen, struct zink_resource *res, struct zink_surface *surface, enum pipe_format format, VkImageViewCreateInfo *ivci)
+{
+   VkFormatFeatureFlags feats = res->linear ?
+                                screen->format_props[format].linearTilingFeatures :
+                                screen->format_props[format].optimalTilingFeatures;
+   VkImageUsageFlags attachment = (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+   surface->usage_info.usage = res->obj->vkusage & ~attachment;
+   if (res->obj->modifier_aspect) {
+      feats = res->obj->vkfeats;
+      /* intersect format features for current modifier */
+      for (unsigned i = 0; i < screen->modifier_props[format].drmFormatModifierCount; i++) {
+         if (res->obj->modifier == screen->modifier_props[format].pDrmFormatModifierProperties[i].drmFormatModifier)
+            feats &= screen->modifier_props[format].pDrmFormatModifierProperties[i].drmFormatModifierTilingFeatures;
+      }
+   }
+   /* if the format features don't support framebuffer attachment, use VkImageViewUsageCreateInfo to remove it */
+   if ((res->obj->vkusage & attachment) &&
+       !(feats & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
+      ivci->pNext = &surface->usage_info;
    }
 }
 
@@ -134,7 +183,6 @@ create_surface(struct pipe_context *pctx,
 {
    struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_resource *res = zink_resource(pres);
-   unsigned int level = templ->u.tex.level;
 
    struct zink_surface *surface = CALLOC_STRUCT(zink_surface);
    if (!surface)
@@ -142,40 +190,14 @@ create_surface(struct pipe_context *pctx,
 
    surface->usage_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO;
    surface->usage_info.pNext = NULL;
-   VkFormatFeatureFlags feats = res->linear ?
-                                screen->format_props[templ->format].linearTilingFeatures :
-                                screen->format_props[templ->format].optimalTilingFeatures;
-   VkImageUsageFlags attachment = (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
-   surface->usage_info.usage = res->obj->vkusage & ~attachment;
-   if (res->obj->modifier_aspect) {
-      feats = res->obj->vkfeats;
-      /* intersect format features for current modifier */
-      for (unsigned i = 0; i < screen->modifier_props[templ->format].drmFormatModifierCount; i++) {
-         if (res->obj->modifier == screen->modifier_props[templ->format].pDrmFormatModifierProperties[i].drmFormatModifier)
-            feats &= screen->modifier_props[templ->format].pDrmFormatModifierProperties[i].drmFormatModifierTilingFeatures;
-      }
-   }
-   /* if the format features don't support framebuffer attachment, use VkImageViewUsageCreateInfo to remove it */
-   if ((res->obj->vkusage & attachment) &&
-       !(feats & (VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
-      ivci->pNext = &surface->usage_info;
-   }
+   apply_view_usage_for_format(screen, res, surface, templ->format, ivci);
 
    pipe_resource_reference(&surface->base.texture, pres);
    pipe_reference_init(&surface->base.reference, 1);
-   surface->base.context = pctx;
-   surface->base.format = templ->format;
-   surface->base.width = u_minify(pres->width0, level);
-   assert(surface->base.width);
-   surface->base.height = u_minify(pres->height0, level);
-   assert(surface->base.height);
-   surface->base.nr_samples = templ->nr_samples;
-   surface->base.u.tex.level = level;
-   surface->base.u.tex.first_layer = templ->u.tex.first_layer;
-   surface->base.u.tex.last_layer = templ->u.tex.last_layer;
+   init_pipe_surface_info(pctx, &surface->base, templ, pres);
    surface->obj = zink_resource(pres)->obj;
 
-   init_surface_info(surface, res, ivci);
+   init_surface_info(screen, surface, res, ivci);
 
    if (!actually)
       return surface;
@@ -203,7 +225,7 @@ do_create_surface(struct pipe_context *pctx, struct pipe_resource *pres, const s
    /* create a new surface */
    struct zink_surface *surface = create_surface(pctx, pres, templ, ivci, actually);
    /* only transient surfaces have nr_samples set */
-   surface->base.nr_samples = 0;
+   surface->base.nr_samples = zink_screen(pctx->screen)->info.have_EXT_multisampled_render_to_single_sampled ? templ->nr_samples : 0;
    surface->hash = hash;
    surface->ivci = *ivci;
    return surface;
@@ -227,7 +249,7 @@ zink_get_surface(struct zink_context *ctx,
       /* create a new surface, but don't actually create the imageview if mutable isn't set and the format is different;
        * mutable will be set later and the imageview will be filled in
        */
-      bool actually = pres->format == templ->format || (res->obj->vkflags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+      bool actually = !zink_format_needs_mutable(pres->format, templ->format) || (pres->bind & ZINK_BIND_MUTABLE);
       surface = do_create_surface(&ctx->base, pres, templ, ivci, hash, actually);
       entry = _mesa_hash_table_insert_pre_hashed(&res->surface_cache, hash, &surface->ivci, surface);
       if (!entry) {
@@ -247,9 +269,14 @@ zink_get_surface(struct zink_context *ctx,
 
 /* wrap a surface for use as a framebuffer attachment */
 static struct pipe_surface *
-wrap_surface(struct pipe_context *pctx, struct pipe_surface *psurf)
+wrap_surface(struct pipe_context *pctx, const struct pipe_surface *psurf)
 {
    struct zink_ctx_surface *csurf = CALLOC_STRUCT(zink_ctx_surface);
+   if (!csurf) {
+      mesa_loge("ZINK: failed to allocate csurf!");
+      return NULL;
+   }
+      
    csurf->base = *psurf;
    pipe_reference_init(&csurf->base.reference, 1);
    csurf->surf = (struct zink_surface*)psurf;
@@ -266,10 +293,26 @@ zink_create_surface(struct pipe_context *pctx,
 {
    struct zink_resource *res = zink_resource(pres);
    bool is_array = templ->u.tex.last_layer != templ->u.tex.first_layer;
+   bool needs_mutable = false;
    enum pipe_texture_target target_2d[] = {PIPE_TEXTURE_2D, PIPE_TEXTURE_2D_ARRAY};
-   if (!res->obj->dt && pres->format != templ->format)
+   if (!res->obj->dt && zink_format_needs_mutable(pres->format, templ->format)) {
       /* mutable not set by default */
+      needs_mutable = !(res->base.b.bind & ZINK_BIND_MUTABLE);
+      /*
+         VUID-VkImageViewCreateInfo-image-07072
+         If image was created with the VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT flag and
+         format is a non-compressed format, the levelCount and layerCount members of
+         subresourceRange must both be 1
+       */
+      if (util_format_is_compressed(pres->format) && templ->u.tex.first_layer != templ->u.tex.last_layer)
+         return NULL;
+   }
+
+   if (!zink_screen(pctx->screen)->threaded && needs_mutable) {
+      /* this is fine without tc */
+      needs_mutable = false;
       zink_resource_object_init_mutable(zink_context(pctx), res);
+   }
 
    if (!zink_get_format(zink_screen(pctx->screen), templ->format))
       return NULL;
@@ -285,15 +328,21 @@ zink_create_surface(struct pipe_context *pctx,
          surface->is_swapchain = true;
          psurf = &surface->base;
       }
-   } else
+   } else if (!needs_mutable) {
       psurf = zink_get_surface(zink_context(pctx), pres, templ, &ivci);
-   if (!psurf)
+   }
+   if (!psurf && !needs_mutable)
       return NULL;
 
-   struct zink_ctx_surface *csurf = (struct zink_ctx_surface*)wrap_surface(pctx, psurf);
+   struct zink_ctx_surface *csurf = (struct zink_ctx_surface*)wrap_surface(pctx, needs_mutable ? templ : psurf);
+   csurf->needs_mutable = needs_mutable;
+   if (needs_mutable) {
+      csurf->surf = NULL;
+      pipe_resource_reference(&csurf->base.texture, pres);
+      init_pipe_surface_info(pctx, &csurf->base, templ, pres);
+   }
 
-   /* TODO: use VK_EXT_multisampled_render_to_single_sampled and skip this entirely */
-   if (templ->nr_samples) {
+   if (templ->nr_samples && !zink_screen(pctx->screen)->info.have_EXT_multisampled_render_to_single_sampled) {
       /* transient fb attachment: not cached */
       struct pipe_resource rtempl = *pres;
       rtempl.nr_samples = templ->nr_samples;
@@ -319,7 +368,7 @@ zink_destroy_surface(struct zink_screen *screen, struct pipe_surface *psurface)
 {
    struct zink_surface *surface = zink_surface(psurface);
    struct zink_resource *res = zink_resource(psurface->texture);
-   if (!psurface->nr_samples && !surface->is_swapchain) {
+   if ((!psurface->nr_samples || screen->info.have_EXT_multisampled_render_to_single_sampled) && !surface->is_swapchain) {
       simple_mtx_lock(&res->surface_mtx);
       if (psurface->reference.count) {
          /* a different context got a cache hit during deletion: this surface is alive again */
@@ -352,6 +401,9 @@ zink_surface_destroy(struct pipe_context *pctx,
                      struct pipe_surface *psurface)
 {
    struct zink_ctx_surface *csurf = (struct zink_ctx_surface *)psurface;
+   if (csurf->needs_mutable)
+      /* this has an extra resource ref */
+      pipe_resource_reference(&csurf->base.texture, NULL);
    zink_surface_reference(zink_screen(pctx->screen), &csurf->surf, NULL);
    pipe_surface_release(pctx, (struct pipe_surface**)&csurf->transient);
    FREE(csurf);
@@ -384,6 +436,7 @@ zink_rebind_surface(struct zink_context *ctx, struct pipe_surface **psurface)
    assert(entry);
    _mesa_hash_table_remove(&res->surface_cache, entry);
    VkImageView image_view;
+   apply_view_usage_for_format(screen, res, surface, surface->base.format, &ivci);
    VkResult result = VKSCR(CreateImageView)(screen->dev, &ivci, NULL, &image_view);
    if (result != VK_SUCCESS) {
       mesa_loge("ZINK: failed to create new imageview (%s)", vk_Result_to_str(result));
@@ -451,7 +504,7 @@ zink_surface_swapchain_update(struct zink_context *ctx, struct zink_surface *sur
    struct kopper_displaytarget *cdt = res->obj->dt;
    if (!cdt)
       return; //dead swapchain
-   if (res->obj->dt != surface->dt) {
+   if (cdt->swapchain != surface->dt_swapchain) {
       /* new swapchain: clear out previous swapchain imageviews/array and setup a new one;
        * old views will be pruned normally in zink_batch or on object destruction
        */
@@ -462,9 +515,14 @@ zink_surface_swapchain_update(struct zink_context *ctx, struct zink_surface *sur
       free(surface->swapchain);
       surface->swapchain_size = cdt->swapchain->num_images;
       surface->swapchain = calloc(surface->swapchain_size, sizeof(VkImageView));
+      if (!surface->swapchain) {
+         mesa_loge("ZINK: failed to allocate surface->swapchain!");
+         return;
+      }
       surface->base.width = res->base.b.width0;
       surface->base.height = res->base.b.height0;
-      init_surface_info(surface, res, &surface->ivci);
+      init_surface_info(screen, surface, res, &surface->ivci);
+      surface->dt_swapchain = cdt->swapchain;
    }
    if (!surface->swapchain[res->obj->dt_idx]) {
       /* no current swapchain imageview exists: create it */

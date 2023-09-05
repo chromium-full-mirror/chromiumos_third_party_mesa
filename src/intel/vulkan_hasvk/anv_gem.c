@@ -117,7 +117,7 @@ anv_gem_mmap(struct anv_device *device, uint32_t gem_handle,
              uint64_t offset, uint64_t size, uint32_t flags)
 {
    void *map;
-   if (device->physical->has_mmap_offset)
+   if (device->physical->info.has_mmap_offset)
       map = anv_gem_mmap_offset(device, gem_handle, offset, size, flags);
    else
       map = anv_gem_mmap_legacy(device, gem_handle, offset, size, flags);
@@ -147,7 +147,7 @@ anv_gem_userptr(struct anv_device *device, void *mem, size_t size)
       .flags = 0,
    };
 
-   if (device->physical->has_userptr_probe)
+   if (device->physical->info.has_userptr_probe)
       userptr.flags |= I915_USERPTR_PROBE;
 
    int ret = intel_ioctl(device->fd, DRM_IOCTL_I915_GEM_USERPTR, &userptr);
@@ -225,8 +225,6 @@ int
 anv_gem_set_tiling(struct anv_device *device,
                    uint32_t gem_handle, uint32_t stride, uint32_t tiling)
 {
-   int ret;
-
    /* On discrete platforms we don't have DRM_IOCTL_I915_GEM_SET_TILING. So
     * nothing needs to be done.
     */
@@ -236,34 +234,13 @@ anv_gem_set_tiling(struct anv_device *device,
    /* set_tiling overwrites the input on the error path, so we have to open
     * code intel_ioctl.
     */
-   do {
-      struct drm_i915_gem_set_tiling set_tiling = {
-         .handle = gem_handle,
-         .tiling_mode = tiling,
-         .stride = stride,
-      };
-
-      ret = ioctl(device->fd, DRM_IOCTL_I915_GEM_SET_TILING, &set_tiling);
-   } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
-
-   return ret;
-}
-
-int
-anv_gem_get_param(int fd, uint32_t param)
-{
-   int tmp;
-
-   drm_i915_getparam_t gp = {
-      .param = param,
-      .value = &tmp,
+   struct drm_i915_gem_set_tiling set_tiling = {
+      .handle = gem_handle,
+      .tiling_mode = tiling,
+      .stride = stride,
    };
 
-   int ret = intel_ioctl(fd, DRM_IOCTL_I915_GETPARAM, &gp);
-   if (ret == 0)
-      return tmp;
-
-   return 0;
+   return intel_ioctl(device->fd, DRM_IOCTL_I915_GEM_SET_TILING, &set_tiling);
 }
 
 bool
@@ -274,38 +251,10 @@ anv_gem_has_context_priority(int fd, int priority)
 }
 
 int
-anv_gem_create_context(struct anv_device *device)
+anv_gem_set_context_param(int fd, uint32_t context, uint32_t param, uint64_t value)
 {
-   struct drm_i915_gem_context_create create = { 0 };
-
-   int ret = intel_ioctl(device->fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE, &create);
-   if (ret == -1)
-      return -1;
-
-   return create.ctx_id;
-}
-
-int
-anv_gem_destroy_context(struct anv_device *device, int context)
-{
-   struct drm_i915_gem_context_destroy destroy = {
-      .ctx_id = context,
-   };
-
-   return intel_ioctl(device->fd, DRM_IOCTL_I915_GEM_CONTEXT_DESTROY, &destroy);
-}
-
-int
-anv_gem_set_context_param(int fd, int context, uint32_t param, uint64_t value)
-{
-   struct drm_i915_gem_context_param p = {
-      .ctx_id = context,
-      .param = param,
-      .value = value,
-   };
    int err = 0;
-
-   if (intel_ioctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_SETPARAM, &p))
+   if (!intel_gem_set_context_param(fd, context, param, value))
       err = -errno;
    return err;
 }

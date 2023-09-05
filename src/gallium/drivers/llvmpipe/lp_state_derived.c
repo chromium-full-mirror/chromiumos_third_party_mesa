@@ -186,18 +186,20 @@ compute_vertex_info(struct llvmpipe_context *llvmpipe)
 static void
 check_linear_rasterizer(struct llvmpipe_context *lp)
 {
-   const bool bgr8 =
+   const bool valid_cb_format =
       (lp->framebuffer.nr_cbufs == 1 && lp->framebuffer.cbufs[0] &&
        util_res_sample_count(lp->framebuffer.cbufs[0]->texture) == 1 &&
        lp->framebuffer.cbufs[0]->texture->target == PIPE_TEXTURE_2D &&
        (lp->framebuffer.cbufs[0]->format == PIPE_FORMAT_B8G8R8A8_UNORM ||
-        lp->framebuffer.cbufs[0]->format == PIPE_FORMAT_B8G8R8X8_UNORM));
+        lp->framebuffer.cbufs[0]->format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+        lp->framebuffer.cbufs[0]->format == PIPE_FORMAT_R8G8B8A8_UNORM ||
+        lp->framebuffer.cbufs[0]->format == PIPE_FORMAT_R8G8B8X8_UNORM));
 
    /* permit_linear means guardband, hence fake scissor, which we can only
     * handle if there's just one vp. */
    const bool single_vp = lp->viewport_index_slot < 0;
    const bool permit_linear = (!lp->framebuffer.zsbuf &&
-                               bgr8 &&
+                               valid_cb_format &&
                                single_vp);
 
    /* Tell draw that we're happy doing our own x/y clipping.
@@ -206,12 +208,12 @@ check_linear_rasterizer(struct llvmpipe_context *lp)
    if (lp->permit_linear_rasterizer != permit_linear) {
       lp->permit_linear_rasterizer = permit_linear;
       lp_setup_set_linear_mode(lp->setup, permit_linear);
-      clipping_changed = TRUE;
+      clipping_changed = true;
    }
 
    if (lp->single_vp != single_vp) {
       lp->single_vp = single_vp;
-      clipping_changed = TRUE;
+      clipping_changed = true;
    }
 
    /* Disable xy clipping in linear mode.
@@ -228,8 +230,8 @@ check_linear_rasterizer(struct llvmpipe_context *lp)
     */
    if (clipping_changed) {
       draw_set_driver_clipping(lp->draw,
-                               FALSE, // bypass_clip_xy
-                               FALSE, //bypass_clip_z
+                               false, // bypass_clip_xy
+                               false, //bypass_clip_z
                                permit_linear, // guard_band_xy,
                                single_vp); // bypass_clip_points)
    }
@@ -268,12 +270,19 @@ llvmpipe_update_derived(struct llvmpipe_context *llvmpipe)
       llvmpipe->dirty |= LP_NEW_SAMPLER_VIEW;
    }
 
+   if (llvmpipe->dirty & (LP_NEW_TASK))
+      llvmpipe_update_task_shader(llvmpipe);
+
+   if (llvmpipe->dirty & (LP_NEW_MESH))
+      llvmpipe_update_mesh_shader(llvmpipe);
+
    /* This needs LP_NEW_RASTERIZER because of draw_prepare_shader_outputs(). */
    if (llvmpipe->dirty & (LP_NEW_RASTERIZER |
                           LP_NEW_FS |
                           LP_NEW_GS |
                           LP_NEW_TCS |
                           LP_NEW_TES |
+                          LP_NEW_MESH |
                           LP_NEW_VS))
       compute_vertex_info(llvmpipe);
 
@@ -293,21 +302,8 @@ llvmpipe_update_derived(struct llvmpipe_context *llvmpipe)
                           LP_NEW_RASTERIZER |
                           LP_NEW_SAMPLE_MASK |
                           LP_NEW_DEPTH_STENCIL_ALPHA)) {
-
-      /*
-       * Rasterization is disabled if there is no pixel shader and
-       * both depth and stencil testing are disabled:
-       * http://msdn.microsoft.com/en-us/library/windows/desktop/bb205125
-       * FIXME: set rasterizer_discard in state tracker instead.
-       */
-      boolean null_fs = !llvmpipe->fs ||
-                        llvmpipe->fs->info.base.num_instructions <= 1;
-      boolean discard =
-         (llvmpipe->sample_mask) == 0 ||
-         (llvmpipe->rasterizer ? llvmpipe->rasterizer->rasterizer_discard : FALSE) ||
-         (null_fs &&
-          !llvmpipe->depth_stencil->depth_enabled &&
-          !llvmpipe->depth_stencil->stencil[0].enabled);
+      bool discard =
+         llvmpipe->rasterizer ? llvmpipe->rasterizer->rasterizer_discard : false;
       lp_setup_set_rasterizer_discard(llvmpipe->setup, discard);
    }
 
@@ -369,6 +365,9 @@ llvmpipe_update_derived(struct llvmpipe_context *llvmpipe)
                              PIPE_MAX_VIEWPORTS,
                              llvmpipe->viewports);
    }
+
+   llvmpipe_task_update_derived(llvmpipe);
+   llvmpipe_mesh_update_derived(llvmpipe);
 
    llvmpipe_update_derived_clear(llvmpipe);
 

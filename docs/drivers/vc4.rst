@@ -78,7 +78,7 @@ problem, that's still the best.  If the problem takes a long time to
 reproduce or you can't capture it in a trace, describing how to
 reproduce and including a GPU hang dump would be the most
 useful. Install `vc4-gpu-tools
-<https://github.com/anholt/vc4-gpu-tools/>` and use
+<https://github.com/anholt/vc4-gpu-tools/>`__ and use
 ``vc4_dump_hang_state my-app.hang``. Sometimes the hang file will
 provide useful information.
 
@@ -154,7 +154,7 @@ can unroll, that can actually count as constant indexing.
 
 * Increasing GPU memory Increase CMA pool size
 
-The memory for the VC4 driver is allocated from the standard Linux cma
+The memory for the VC4 driver is allocated from the standard Linux CMA
 pool. The size of this pool defaults to 64 MB.  To increase this, pass
 an additional parameter on the kernel command line.  Edit the boot
 partition's ``cmdline.txt`` to add::
@@ -299,7 +299,7 @@ development.
 
 Developers with NDA access with Broadcom or Raspberry Pi can
 potentially get access to "simpenrose", the C software simulator of
-the GPU.  The Mesa driver includes a backend (`vc4_simulator.c`) to
+the GPU.  The Mesa driver includes a backend (``vc4_simulator.c``) to
 use simpenrose from an x86 system with the i915 graphics driver with
 all of the VC4 rendering commands emulated on simpenrose and memcpyed
 to the real GPU.

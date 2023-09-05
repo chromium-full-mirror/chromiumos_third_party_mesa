@@ -25,6 +25,8 @@
 #include "aco_builder.h"
 #include "aco_ir.h"
 
+#include "util/bitset.h"
+
 #include <algorithm>
 #include <bitset>
 #include <set>
@@ -252,8 +254,7 @@ public:
    void join_min(const VGPRCounterMap& other)
    {
       unsigned i;
-      BITSET_FOREACH_SET(i, other.resident, 256)
-      {
+      BITSET_FOREACH_SET (i, other.resident, 256) {
          if (BITSET_TEST(resident, i))
             val[i] = MIN2(val[i] + base, other.val[i] + other.base) - base;
          else
@@ -268,8 +269,7 @@ public:
          return false;
 
       unsigned i;
-      BITSET_FOREACH_SET(i, other.resident, 256)
-      {
+      BITSET_FOREACH_SET (i, other.resident, 256) {
          if (!BITSET_TEST(resident, i))
             return false;
          if (val[i] + base != other.val[i] + other.base)
@@ -363,11 +363,11 @@ search_backwards_internal(State& state, GlobalState& global_state, BlockState bl
          return;
    }
 
-PRAGMA_DIAGNOSTIC_PUSH
-PRAGMA_DIAGNOSTIC_IGNORED(-Waddress)
+   PRAGMA_DIAGNOSTIC_PUSH
+   PRAGMA_DIAGNOSTIC_IGNORED(-Waddress)
    if (block_cb != nullptr && !block_cb(global_state, block_state, block))
       return;
-PRAGMA_DIAGNOSTIC_POP
+   PRAGMA_DIAGNOSTIC_POP
 
    for (unsigned lin_pred : block->linear_preds) {
       search_backwards_internal<GlobalState, BlockState, block_cb, instr_cb>(
@@ -1044,6 +1044,9 @@ struct LdsDirectVALUHazardGlobalState {
 struct LdsDirectVALUHazardBlockState {
    unsigned num_valu = 0;
    bool has_trans = false;
+
+   unsigned num_instrs = 0;
+   unsigned num_blocks = 0;
 };
 
 bool
@@ -1051,10 +1054,8 @@ handle_lds_direct_valu_hazard_instr(LdsDirectVALUHazardGlobalState& global_state
                                     LdsDirectVALUHazardBlockState& block_state,
                                     aco_ptr<Instruction>& instr)
 {
-   if (instr->isVALU() || instr->isVINTERP_INREG()) {
-      instr_class cls = instr_info.classes[(int)instr->opcode];
-      block_state.has_trans |= cls == instr_class::valu_transcendental32 ||
-                               cls == instr_class::valu_double_transcendental;
+   if (instr->isVALU()) {
+      block_state.has_trans |= instr->isTrans();
 
       bool uses_vgpr = false;
       for (Definition& def : instr->definitions)
@@ -1076,6 +1077,14 @@ handle_lds_direct_valu_hazard_instr(LdsDirectVALUHazardGlobalState& global_state
    if (parse_vdst_wait(instr) == 0)
       return true;
 
+   block_state.num_instrs++;
+   if (block_state.num_instrs > 256 || block_state.num_blocks > 32) {
+      /* Exit to limit compile times and set wait_vdst to be safe. */
+      global_state.wait_vdst =
+         MIN2(global_state.wait_vdst, block_state.has_trans ? 0 : block_state.num_valu);
+      return true;
+   }
+
    return block_state.num_valu >= global_state.wait_vdst;
 }
 
@@ -1088,6 +1097,8 @@ handle_lds_direct_valu_hazard_block(LdsDirectVALUHazardGlobalState& global_state
          return false;
       global_state.loop_headers_visited.insert(block->index);
    }
+
+   block_state.num_blocks++;
 
    return true;
 }
@@ -1129,6 +1140,9 @@ struct VALUPartialForwardingHazardBlockState {
    enum VALUPartialForwardingHazardState state = nothing_written;
    unsigned num_valu_since_read = 0;
    unsigned num_valu_since_write = 0;
+
+   unsigned num_instrs = 0;
+   unsigned num_blocks = 0;
 };
 
 bool
@@ -1139,7 +1153,7 @@ handle_valu_partial_forwarding_hazard_instr(VALUPartialForwardingHazardGlobalSta
    if (instr->isSALU() && !instr->definitions.empty()) {
       if (block_state.state == written_after_exec_write && instr_writes_exec(instr))
          block_state.state = exec_written;
-   } else if (instr->isVALU() || instr->isVINTERP_INREG()) {
+   } else if (instr->isVALU()) {
       bool vgpr_write = false;
       for (Definition& def : instr->definitions) {
          if (def.physReg().reg() < 256)
@@ -1191,6 +1205,13 @@ handle_valu_partial_forwarding_hazard_instr(VALUPartialForwardingHazardGlobalSta
    if (block_state.num_vgprs_read == 0)
       return true; /* All VGPRs have been written and a hazard was never found. */
 
+   block_state.num_instrs++;
+   if (block_state.num_instrs > 256 || block_state.num_blocks > 32) {
+      /* Exit to limit compile times and set hazard_found=true to be safe. */
+      global_state.hazard_found = true;
+      return true;
+   }
+
    return false;
 }
 
@@ -1205,6 +1226,8 @@ handle_valu_partial_forwarding_hazard_block(VALUPartialForwardingHazardGlobalSta
       global_state.loop_headers_visited.insert(block->index);
    }
 
+   block_state.num_blocks++;
+
    return true;
 }
 
@@ -1216,7 +1239,7 @@ handle_valu_partial_forwarding_hazard(State& state, aco_ptr<Instruction>& instr)
     * For the hazard, there must be less than 3 VALU between the first and second VGPR writes.
     * There also must be less than 5 VALU between the second VGPR write and the current instruction.
     */
-   if (state.program->wave_size != 64 || (!instr->isVALU() && !instr->isVINTERP_INREG()))
+   if (state.program->wave_size != 64 || !instr->isVALU())
       return false;
 
    unsigned num_vgprs = 0;
@@ -1296,7 +1319,7 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
     * VALU reads VGPR written by transcendental instruction without 6+ VALU or 2+ transcendental
     * in-between.
     */
-   if (va_vdst > 0 && (instr->isVALU() || instr->isVINTERP_INREG())) {
+   if (va_vdst > 0 && instr->isVALU()) {
       uint8_t num_valu = 15;
       uint8_t num_trans = 15;
       for (Operand& op : instr->operands) {
@@ -1339,10 +1362,8 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
    if (sa_sdst == 0)
       ctx.sgpr_read_by_valu_as_lanemask_then_wr_by_salu.reset();
 
-   if (instr->isVALU() || instr->isVINTERP_INREG()) {
-      instr_class cls = instr_info.classes[(int)instr->opcode];
-      bool is_trans = cls == instr_class::valu_transcendental32 ||
-                      cls == instr_class::valu_double_transcendental;
+   if (instr->isVALU()) {
+      bool is_trans = instr->isTrans();
 
       ctx.valu_since_wr_by_trans.inc();
       if (is_trans)
@@ -1398,7 +1419,7 @@ handle_instruction_gfx11(State& state, NOP_ctx_gfx11& ctx, aco_ptr<Instruction>&
       for (Operand& op : instr->operands)
          fill_vgpr_bitset(ctx.vgpr_used_by_ds, op.physReg(), op.bytes());
    }
-   if (instr->isVALU() || instr->isVINTERP_INREG() || instr->isEXP() || vm_vsrc == 0) {
+   if (instr->isVALU() || instr->isEXP() || vm_vsrc == 0) {
       ctx.vgpr_used_by_vmem_load.reset();
       ctx.vgpr_used_by_vmem_store.reset();
       ctx.vgpr_used_by_ds.reset();

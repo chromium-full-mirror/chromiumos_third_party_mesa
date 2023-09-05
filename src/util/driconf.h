@@ -164,6 +164,10 @@
    DRI_CONF_OPT_B(disable_glsl_line_continuations, def, \
                   "Disable backslash-based line continuations in GLSL source")
 
+#define DRI_CONF_DISABLE_UNIFORM_ARRAY_RESIZE(def) \
+   DRI_CONF_OPT_B(disable_uniform_array_resize, def, \
+                  "Disable the glsl optimisation that resizes uniform arrays")
+
 #define DRI_CONF_FORCE_GLSL_VERSION(def) \
    DRI_CONF_OPT_I(force_glsl_version, def, 0, 999, \
                   "Force a default GLSL version for shaders that lack an explicit #version line")
@@ -298,6 +302,17 @@
    DRI_CONF_OPT_B(limit_trig_input_range, def, \
                   "Limit trig input range to [-2p : 2p] to improve sin/cos calculation precision on Intel")
 
+#define DRI_CONF_NO_16BIT(def) \
+   DRI_CONF_OPT_B(no_16bit, def, \
+                  "Disable 16-bit instructions")
+
+#define DRI_CONF_IGNORE_DISCARD_FRAMEBUFFER(def) \
+   DRI_CONF_OPT_B(ignore_discard_framebuffer, def, \
+                  "Ignore glDiscardFramebuffer/glInvalidateFramebuffer, workaround for games that use it incorrectly")
+
+#define DRI_CONF_FORCE_VK_VENDOR(def) \
+   DRI_CONF_OPT_I(force_vk_vendor, 0, -1, 2147483647, "Override GPU vendor id")
+
 /**
  * \brief Image quality-related options
  */
@@ -380,12 +395,16 @@
    DRI_CONF_OPT_B(vk_x11_ensure_min_image_count, def, \
                   "Force the X11 WSI to create at least the number of image specified by the driver in VkSurfaceCapabilitiesKHR::minImageCount")
 
+#define DRI_CONF_VK_KHR_PRESENT_WAIT(def) \
+   DRI_CONF_OPT_B(vk_khr_present_wait, def, \
+                  "Expose VK_KHR_present_wait and id extensions despite them not being implemented for all supported surface types")
+
 #define DRI_CONF_VK_XWAYLAND_WAIT_READY(def) \
    DRI_CONF_OPT_B(vk_xwayland_wait_ready, def, \
                   "Wait for fences before submitting buffers to Xwayland")
 
-#define DRI_CONF_MESA_GLTHREAD(def) \
-   DRI_CONF_OPT_B(mesa_glthread, def, \
+#define DRI_CONF_MESA_GLTHREAD_DRIVER(def) \
+   DRI_CONF_OPT_B(mesa_glthread_driver, def, \
                   "Enable offloading GL driver work to a separate thread")
 
 #define DRI_CONF_MESA_NO_ERROR(def) \
@@ -425,6 +444,13 @@
 #define DRI_CONF_FORCE_INTEGER_TEX_NEAREST(def) \
    DRI_CONF_OPT_B(force_integer_tex_nearest, def, \
                   "Force integer textures to use nearest filtering")
+
+/* The GL spec does not allow this but wine has translation bug:
+   https://bugs.winehq.org/show_bug.cgi?id=54787
+*/
+#define DRI_CONF_ALLOW_MULTISAMPLED_COPYTEXIMAGE(def) \
+   DRI_CONF_OPT_B(allow_multisampled_copyteximage, def, \
+                  "Allow CopyTexSubImage and other to copy sampled framebuffer")
 
 /**
  * \brief Initialization configuration options
@@ -483,6 +509,10 @@
    DRI_CONF_OPT_B(force_sw_rendering_on_cpu, def, \
                   "If set to false, emulates software rendering on the requested device, else uses a software renderer.")
 
+#define DRI_CONF_NINE_FORCEFEATURESEMULATION(def) \
+   DRI_CONF_OPT_B(force_features_emulation, def, \
+                  "If set to true, force emulation of d3d9 features when possible instead of using native hw support.")
+
 #define DRI_CONF_V3D_NONMSAA_TEXTURE_SIZE_LIMIT(def) \
    DRI_CONF_OPT_B(v3d_nonmsaa_texture_size_limit, def, \
                   "Report the non-MSAA-only texture size limit")
@@ -510,6 +540,14 @@
 #define DRI_CONF_VIRGL_SHADER_SYNC(def) \
    DRI_CONF_OPT_B(virgl_shader_sync, def, \
                   "Make shader compilation synchronous")
+
+/**
+ * \brief freedreno specific configuration options
+ */
+
+#define DRI_CONF_DISABLE_CONSERVATIVE_LRZ(def) \
+   DRI_CONF_OPT_B(disable_conservative_lrz, def, \
+                  "Disable conservative LRZ")
 
 /**
  * \brief venus specific configuration options
@@ -595,6 +633,20 @@
    DRI_CONF_OPT_B(radv_enable_unified_heap_on_apu, def, \
                   "Enable an unified heap with DEVICE_LOCAL on integrated GPUs")
 
+#define DRI_CONF_RADV_TEX_NON_UNIFORM(def) \
+   DRI_CONF_OPT_B(radv_tex_non_uniform, def, \
+                  "Always mark texture sample operations as non-uniform.")
+
+#define DRI_CONF_RADV_FLUSH_BEFORE_TIMESTAMP_WRITE(def) \
+   DRI_CONF_OPT_B(radv_flush_before_timestamp_write, def, \
+                  "Wait for previous commands to finish before writing timestamps")
+
+#define DRI_CONF_RADV_RT_WAVE64(def) \
+   DRI_CONF_OPT_B(radv_rt_wave64, def, \
+                  "Force wave64 in RT shaders")
+
+#define DRI_CONF_RADV_APP_LAYER() DRI_CONF_OPT_S_NODEF(radv_app_layer, "Select an application layer.")
+
 /**
  * \brief ANV specific configuration options
  */
@@ -607,8 +659,43 @@
    DRI_CONF_OPT_B(anv_sample_mask_out_opengl_behaviour, def, \
                   "Ignore sample mask out when having single sampled target")
 
+#define DRI_CONF_ANV_MESH_CONV_PRIM_ATTRS_TO_VERT_ATTRS(def) \
+   DRI_CONF_OPT_E(anv_mesh_conv_prim_attrs_to_vert_attrs, def, -2, 2, \
+                  "Apply workaround for gfx12.5 per-prim attribute corruption HW bug", \
+                  DRI_CONF_ENUM(-2, "enable attribute conversion and vertex duplication ONLY if needed") \
+                  DRI_CONF_ENUM(-1, "enable attribute conversion ONLY if needed") \
+                  DRI_CONF_ENUM(0,  "disable workaround") \
+                  DRI_CONF_ENUM(1,  "enable attribute conversion ALWAYS") \
+                  DRI_CONF_ENUM(2,  "enable attribute conversion and vertex duplication ALWAYS") )
+
 #define DRI_CONF_ANV_FP64_WORKAROUND_ENABLED(def) \
    DRI_CONF_OPT_B(fp64_workaround_enabled, def, \
                   "Use softpf64 when the shader uses float64, but the device doesn't support that type")
+
+#define DRI_CONF_ANV_GENERATED_INDIRECT_THRESHOLD(def) \
+   DRI_CONF_OPT_I(generated_indirect_threshold, def, 0, INT32_MAX, \
+                  "Indirect threshold count above which we start generating commands")
+
+#define DRI_CONF_ANV_QUERY_CLEAR_WITH_BLORP_THRESHOLD(def) \
+   DRI_CONF_OPT_I(query_clear_with_blorp_threshold, def, 0, INT32_MAX, \
+                  "Query threshold count above which query buffers are cleared with blorp")
+
+#define DRI_CONF_ANV_QUERY_COPY_WITH_SHADER_THRESHOLD(def) \
+   DRI_CONF_OPT_I(query_copy_with_shader_threshold, def, 0, INT32_MAX, \
+                  "Query threshold count above which query copies are executed with a shader")
+
+#define DRI_CONF_ANV_FORCE_INDIRECT_DESCRIPTORS(def) \
+   DRI_CONF_OPT_B(force_indirect_descriptors, def, \
+                  "Use an indirection to access buffer/image/texture/sampler handles")
+
+/**
+ * \brief DZN specific configuration options
+ */
+
+#define DRI_CONF_DZN_CLAIM_WIDE_LINES(def) \
+   DRI_CONF_OPT_B(dzn_claim_wide_lines, def, "Claim wide line support")
+
+#define DRI_CONF_DZN_ENABLE_8BIT_LOADS_STORES(def) \
+   DRI_CONF_OPT_B(dzn_enable_8bit_loads_stores, def, "Enable VK_KHR_8bit_loads_stores")
 
 #endif

@@ -1,37 +1,21 @@
 /*
  * Copyright © 2011 Marek Olšák <maraeo@gmail.com>
  * Copyright © 2015 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS, AUTHORS
- * AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
+ * SPDX-License-Identifier: MIT
  */
+
+#include <sys/ioctl.h>
 
 #include "amdgpu_cs.h"
 
 #include "util/hash_table.h"
 #include "util/os_time.h"
 #include "util/u_hash_table.h"
+#include "util/u_process.h"
 #include "frontend/drm_driver.h"
 #include "drm-uapi/amdgpu_drm.h"
+#include "drm-uapi/dma-buf.h"
 #include <xf86drm.h>
 #include <stdio.h>
 #include <inttypes.h>
@@ -340,7 +324,7 @@ void *amdgpu_bo_map(struct radeon_winsys *rws,
                }
             }
 
-            amdgpu_bo_wait(rws, (struct pb_buffer*)bo, PIPE_TIMEOUT_INFINITE,
+            amdgpu_bo_wait(rws, (struct pb_buffer*)bo, OS_TIMEOUT_INFINITE,
                            RADEON_USAGE_WRITE);
          } else {
             /* Mapping for write. */
@@ -355,7 +339,7 @@ void *amdgpu_bo_map(struct radeon_winsys *rws,
                }
             }
 
-            amdgpu_bo_wait(rws, (struct pb_buffer*)bo, PIPE_TIMEOUT_INFINITE,
+            amdgpu_bo_wait(rws, (struct pb_buffer*)bo, OS_TIMEOUT_INFINITE,
                            RADEON_USAGE_READWRITE);
          }
 
@@ -579,10 +563,6 @@ static struct amdgpu_winsys_bo *amdgpu_create_bo(struct amdgpu_winsys *ws,
 
       if (flags & RADEON_FLAG_GL2_BYPASS)
          vm_flags |= AMDGPU_VM_MTYPE_UC;
-
-      if (flags & RADEON_FLAG_MALL_NOALLOC &&
-          ws->info.drm_minor >= 47)
-         vm_flags |= AMDGPU_VM_PAGE_NOALLOC;
 
       r = amdgpu_bo_va_op_raw(ws->dev, buf_handle, 0, size, va, vm_flags,
 			   AMDGPU_VA_OP_MAP);
@@ -1308,8 +1288,8 @@ static void amdgpu_buffer_get_metadata(struct radeon_winsys *rws,
    if (r)
       return;
 
-   ac_surface_set_bo_metadata(&ws->info, surf, info.metadata.tiling_info,
-                              &md->mode);
+   ac_surface_apply_bo_metadata(&ws->info, surf, info.metadata.tiling_info,
+                                &md->mode);
 
    md->size_metadata = info.metadata.size_metadata;
    memcpy(md->metadata, info.metadata.umd_metadata, sizeof(md->metadata));
@@ -1326,7 +1306,7 @@ static void amdgpu_buffer_set_metadata(struct radeon_winsys *rws,
 
    assert(bo->bo && "must not be called for slab entries");
 
-   ac_surface_get_bo_metadata(&ws->info, surf, &metadata.tiling_info);
+   ac_surface_compute_bo_metadata(&ws->info, surf, &metadata.tiling_info);
 
    metadata.size_metadata = md->size_metadata;
    memcpy(metadata.umd_metadata, md->metadata, sizeof(md->metadata));
@@ -1635,6 +1615,15 @@ static bool amdgpu_bo_get_handle(struct radeon_winsys *rws,
    r = amdgpu_bo_export(bo->bo, type, &whandle->handle);
    if (r)
       return false;
+
+#if defined(DMA_BUF_SET_NAME_B)
+   if (whandle->type == WINSYS_HANDLE_TYPE_FD &&
+       !bo->u.real.is_shared) {
+      char dmabufname[32];
+      snprintf(dmabufname, 32, "%d-%s", getpid(), util_get_process_name());
+      r = ioctl(whandle->handle, DMA_BUF_SET_NAME_B, (uint64_t)(uintptr_t)dmabufname);
+   }
+#endif
 
    if (whandle->type == WINSYS_HANDLE_TYPE_KMS) {
       int dma_fd = whandle->handle;

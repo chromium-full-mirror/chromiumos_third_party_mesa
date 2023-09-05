@@ -19,15 +19,6 @@
 #include "vn_query_pool.h"
 #include "vn_render_pass.h"
 
-/* query feedback batch for deferred recording */
-struct vn_command_buffer_query_batch {
-   struct vn_query_pool *query_pool;
-   uint32_t query;
-   uint32_t query_count;
-
-   struct list_head head;
-};
-
 static void
 vn_cmd_submit(struct vn_command_buffer *cmd);
 
@@ -82,7 +73,7 @@ vn_cmd_get_tmp_data(struct vn_command_buffer *cmd, size_t size)
    /* avoid shrinking in case of non efficient reallocation implementation */
    if (size > cmd->builder.tmp.size) {
       void *data =
-         vk_realloc(&cmd->allocator, cmd->builder.tmp.data, size,
+         vk_realloc(&cmd->pool->allocator, cmd->builder.tmp.data, size,
                     VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       if (!data)
          return NULL;
@@ -514,6 +505,48 @@ vn_cmd_transfer_present_src_images(
                                  count, img_barriers);
 }
 
+/* query feedback batch for deferred recording */
+struct vn_command_buffer_query_batch {
+   struct vn_query_pool *query_pool;
+   uint32_t query;
+   uint32_t query_count;
+
+   struct list_head head;
+};
+
+static bool
+vn_cmd_query_batch_push(struct vn_command_buffer *cmd,
+                        struct vn_query_pool *query_pool,
+                        uint32_t query,
+                        uint32_t query_count)
+{
+   struct vn_command_buffer_query_batch *batch;
+   if (list_is_empty(&cmd->pool->free_query_batches)) {
+      batch = vk_alloc(&cmd->pool->allocator, sizeof(*batch),
+                       VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!batch)
+         return false;
+   } else {
+      batch = list_first_entry(&cmd->pool->free_query_batches,
+                               struct vn_command_buffer_query_batch, head);
+      list_del(&batch->head);
+   }
+
+   batch->query_pool = query_pool;
+   batch->query = query;
+   batch->query_count = query_count;
+   list_add(&batch->head, &cmd->query_batches);
+
+   return true;
+}
+
+static inline void
+vn_cmd_query_batch_pop(struct vn_command_buffer *cmd,
+                       struct vn_command_buffer_query_batch *batch)
+{
+   list_move_to(&batch->head, &cmd->pool->free_query_batches);
+}
+
 static void
 vn_cmd_record_batched_query_feedback(struct vn_command_buffer *cmd)
 {
@@ -524,32 +557,23 @@ vn_cmd_record_batched_query_feedback(struct vn_command_buffer *cmd)
          vn_query_pool_to_handle(batch->query_pool), batch->query,
          batch->query_count);
 
-      list_del(&batch->head);
-      vk_free(&cmd->allocator, batch);
+      vn_cmd_query_batch_pop(cmd, batch);
    }
 }
 
-static void
+static inline void
 vn_cmd_merge_batched_query_feedback(struct vn_command_buffer *primary_cmd,
                                     struct vn_command_buffer *secondary_cmd)
 {
    list_for_each_entry_safe(struct vn_command_buffer_query_batch,
                             secondary_batch, &secondary_cmd->query_batches,
                             head) {
-      /* TODO: add a cache for batch allocs inside cmd pool */
-      struct vn_command_buffer_query_batch *primary_batch =
-         vk_zalloc(&primary_cmd->allocator, sizeof(*primary_batch),
-                   VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-      if (!primary_batch) {
+      if (!vn_cmd_query_batch_push(primary_cmd, secondary_batch->query_pool,
+                                   secondary_batch->query,
+                                   secondary_batch->query_count)) {
          primary_cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
          return;
       }
-
-      primary_batch->query_pool = secondary_batch->query_pool;
-      primary_batch->query = secondary_batch->query;
-      primary_batch->query_count = secondary_batch->query_count;
-
-      list_add(&primary_batch->head, &primary_cmd->query_batches);
    }
 }
 
@@ -589,7 +613,7 @@ vn_cmd_begin_render_pass(struct vn_command_buffer *cmd,
    }
 
    const struct vn_image **images =
-      vk_alloc(&cmd->allocator, sizeof(*images) * pass->present_count,
+      vk_alloc(&cmd->pool->allocator, sizeof(*images) * pass->present_count,
                VN_DEFAULT_ALIGN, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!images) {
       cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
@@ -637,7 +661,7 @@ vn_cmd_end_render_pass(struct vn_command_buffer *cmd)
          pass->present_release_attachments, pass->present_release_count);
    }
 
-   vk_free(&cmd->allocator, images);
+   vk_free(&cmd->pool->allocator, images);
 }
 
 /* command pool commands */
@@ -662,8 +686,10 @@ vn_CreateCommandPool(VkDevice device,
    vn_object_base_init(&pool->base, VK_OBJECT_TYPE_COMMAND_POOL, &dev->base);
 
    pool->allocator = *alloc;
+   pool->device = dev;
    pool->queue_family_index = pCreateInfo->queueFamilyIndex;
    list_inithead(&pool->command_buffers);
+   list_inithead(&pool->free_query_batches);
 
    VkCommandPool pool_handle = vn_command_pool_to_handle(pool);
    vn_async_vkCreateCommandPool(dev->instance, device, pCreateInfo, NULL,
@@ -701,14 +727,22 @@ vn_DestroyCommandPool(VkDevice device,
       vn_cs_encoder_fini(&cmd->cs);
       vn_object_base_fini(&cmd->base);
 
+      if (cmd->builder.present_src_images)
+         vk_free(alloc, cmd->builder.present_src_images);
+
+      if (cmd->builder.tmp.data)
+         vk_free(alloc, cmd->builder.tmp.data);
+
       list_for_each_entry_safe(struct vn_command_buffer_query_batch, batch,
-                               &cmd->query_batches, head) {
-         list_del(&batch->head);
-         vk_free(&cmd->allocator, batch);
-      }
+                               &cmd->query_batches, head)
+         vk_free(alloc, batch);
 
       vk_free(alloc, cmd);
    }
+
+   list_for_each_entry_safe(struct vn_command_buffer_query_batch, batch,
+                            &pool->free_query_batches, head)
+      vk_free(alloc, batch);
 
    vn_object_base_fini(&pool->base);
    vk_free(alloc, pool);
@@ -718,6 +752,13 @@ static void
 vn_cmd_reset(struct vn_command_buffer *cmd)
 {
    vn_cs_encoder_reset(&cmd->cs);
+
+   cmd->builder.render_pass = NULL;
+   if (cmd->builder.present_src_images) {
+      vk_free(&cmd->pool->allocator, cmd->builder.present_src_images);
+      cmd->builder.present_src_images = NULL;
+   }
+
    cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
    cmd->draw_cmd_batched = 0;
 
@@ -727,10 +768,8 @@ vn_cmd_reset(struct vn_command_buffer *cmd)
    cmd->subpass_index = 0;
    cmd->view_mask = 0;
    list_for_each_entry_safe(struct vn_command_buffer_query_batch, batch,
-                            &cmd->query_batches, head) {
-      list_del(&batch->head);
-      vk_free(&cmd->allocator, batch);
-   }
+                            &cmd->query_batches, head)
+      vn_cmd_query_batch_pop(cmd, batch);
 }
 
 VkResult
@@ -743,9 +782,8 @@ vn_ResetCommandPool(VkDevice device,
    struct vn_command_pool *pool = vn_command_pool_from_handle(commandPool);
 
    list_for_each_entry_safe(struct vn_command_buffer, cmd,
-                            &pool->command_buffers, head) {
+                            &pool->command_buffers, head)
       vn_cmd_reset(cmd);
-   }
 
    vn_async_vkResetCommandPool(dev->instance, device, commandPool, flags);
 
@@ -795,8 +833,7 @@ vn_AllocateCommandBuffers(VkDevice device,
 
       vn_object_base_init(&cmd->base, VK_OBJECT_TYPE_COMMAND_BUFFER,
                           &dev->base);
-      cmd->device = dev;
-      cmd->allocator = pool->allocator;
+      cmd->pool = pool;
       cmd->level = pAllocateInfo->level;
       cmd->queue_family_index = pool->queue_family_index;
 
@@ -842,14 +879,15 @@ vn_FreeCommandBuffers(VkDevice device,
       if (cmd->builder.tmp.data)
          vk_free(alloc, cmd->builder.tmp.data);
 
+      if (cmd->builder.present_src_images)
+         vk_free(alloc, cmd->builder.present_src_images);
+
       vn_cs_encoder_fini(&cmd->cs);
       list_del(&cmd->head);
 
       list_for_each_entry_safe(struct vn_command_buffer_query_batch, batch,
-                               &cmd->query_batches, head) {
-         list_del(&batch->head);
-         vk_free(&cmd->allocator, batch);
-      }
+                               &cmd->query_batches, head)
+         vn_cmd_query_batch_pop(cmd, batch);
 
       vn_object_base_fini(&cmd->base);
       vk_free(alloc, cmd);
@@ -863,10 +901,11 @@ vn_ResetCommandBuffer(VkCommandBuffer commandBuffer,
    VN_TRACE_FUNC();
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
+   struct vn_instance *instance = cmd->pool->device->instance;
 
    vn_cmd_reset(cmd);
 
-   vn_async_vkResetCommandBuffer(cmd->device->instance, commandBuffer, flags);
+   vn_async_vkResetCommandBuffer(instance, commandBuffer, flags);
 
    return VK_SUCCESS;
 }
@@ -974,11 +1013,11 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
    VN_TRACE_FUNC();
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
-   struct vn_instance *instance = cmd->device->instance;
+   struct vn_instance *instance = cmd->pool->device->instance;
    size_t cmd_size;
 
-   vn_cs_encoder_reset(&cmd->cs);
-   cmd->draw_cmd_batched = 0;
+   /* reset regardless of VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT */
+   vn_cmd_reset(cmd);
 
    struct vn_command_buffer_begin_info local_begin_info;
    pBeginInfo =
@@ -1031,7 +1070,7 @@ vn_BeginCommandBuffer(VkCommandBuffer commandBuffer,
 static void
 vn_cmd_submit(struct vn_command_buffer *cmd)
 {
-   struct vn_instance *instance = cmd->device->instance;
+   struct vn_instance *instance = cmd->pool->device->instance;
 
    if (cmd->state != VN_COMMAND_BUFFER_STATE_RECORDING)
       return;
@@ -1065,7 +1104,7 @@ vn_EndCommandBuffer(VkCommandBuffer commandBuffer)
    VN_TRACE_FUNC();
    struct vn_command_buffer *cmd =
       vn_command_buffer_from_handle(commandBuffer);
-   struct vn_instance *instance = cmd->device->instance;
+   struct vn_instance *instance = cmd->pool->device->instance;
    size_t cmd_size;
 
    if (cmd->state != VN_COMMAND_BUFFER_STATE_RECORDING)
@@ -1748,54 +1787,34 @@ vn_CmdBeginQuery(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdBeginQuery, commandBuffer, queryPool, query, flags);
 }
 
-static void
-vn_cmd_add_query_feedback(VkCommandBuffer commandBuffer,
-                          VkQueryPool queryPool,
-                          uint32_t query,
-                          uint32_t queryCount)
+static inline void
+vn_cmd_add_query_feedback(VkCommandBuffer cmd_handle,
+                          VkQueryPool pool_handle,
+                          uint32_t query)
 {
-   struct vn_command_buffer *cmd =
-      vn_command_buffer_from_handle(commandBuffer);
-   struct vn_query_pool *pool = vn_query_pool_from_handle(queryPool);
+   struct vn_command_buffer *cmd = vn_command_buffer_from_handle(cmd_handle);
 
+   /* Outside the render pass instance, vkCmdCopyQueryPoolResults can be
+    * directly appended. Otherwise, defer the copy cmd until outside.
+    */
+   if (!cmd->in_render_pass) {
+      vn_feedback_query_copy_cmd_record(cmd_handle, pool_handle, query, 1);
+      return;
+   }
+
+   struct vn_query_pool *pool = vn_query_pool_from_handle(pool_handle);
    if (!pool->feedback)
       return;
 
-   /* vkCmdCopyQueryPoolResults cannot be called within a render pass so batch
-    * and defer the query feedback copies until after the render pass
+   /* Per 1.3.255 spec "If queries are used while executing a render pass
+    * instance that has multiview enabled, the query uses N consecutive query
+    * indices in the query pool (starting at query) where N is the number of
+    * bits set in the view mask in the subpass the query is used in."
     */
-   if (cmd->in_render_pass) {
-      /* Per 1.3.255 spec "If queries are used while executing a render pass
-       * instance that has  multiview enabled, the query uses N consecutive
-       * query indices in the query pool (starting at query) where N is the
-       * number of bits set in the view mask in the subpass the query is used
-       * in."
-       *
-       * viewMask is passed in for `vkCmdBeginRendering` but for
-       * `vkCmdBeginRenderPass/2` they are set by `vkCreateRenderPass` per
-       * subpass
-       */
-      uint32_t num_queries =
-         cmd->view_mask ? util_bitcount(cmd->view_mask) : 1;
-
-      /* TODO: add a cache for batch allocs inside cmd pool */
-      struct vn_command_buffer_query_batch *batch =
-         vk_zalloc(&cmd->allocator, sizeof(*batch), VN_DEFAULT_ALIGN,
-                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-      if (!batch) {
-         cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
-         return;
-      }
-
-      batch->query_pool = vn_query_pool_from_handle(queryPool);
-      batch->query = query;
-      batch->query_count = num_queries;
-
-      list_add(&batch->head, &cmd->query_batches);
-   } else {
-      vn_feedback_query_copy_cmd_record(commandBuffer, queryPool, query,
-                                        queryCount);
-   }
+   const uint32_t query_count =
+      cmd->view_mask ? util_bitcount(cmd->view_mask) : 1;
+   if (!vn_cmd_query_batch_push(cmd, pool, query, query_count))
+      cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
 }
 
 void
@@ -1805,7 +1824,7 @@ vn_CmdEndQuery(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdEndQuery, commandBuffer, queryPool, query);
 
-   vn_cmd_add_query_feedback(commandBuffer, queryPool, query, 1);
+   vn_cmd_add_query_feedback(commandBuffer, queryPool, query);
 }
 
 void
@@ -1830,7 +1849,7 @@ vn_CmdWriteTimestamp(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdWriteTimestamp, commandBuffer, pipelineStage,
                   queryPool, query);
 
-   vn_cmd_add_query_feedback(commandBuffer, queryPool, query, 1);
+   vn_cmd_add_query_feedback(commandBuffer, queryPool, query);
 }
 
 void
@@ -1842,7 +1861,7 @@ vn_CmdWriteTimestamp2(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdWriteTimestamp2, commandBuffer, stage, queryPool,
                   query);
 
-   vn_cmd_add_query_feedback(commandBuffer, queryPool, query, 1);
+   vn_cmd_add_query_feedback(commandBuffer, queryPool, query);
 }
 
 void
@@ -1968,8 +1987,8 @@ vn_CmdExecuteCommands(VkCommandBuffer commandBuffer,
       for (uint32_t i = 0; i < commandBufferCount; i++) {
          struct vn_command_buffer *secondary_cmd =
             vn_command_buffer_from_handle(pCommandBuffers[i]);
-         if (secondary_cmd->in_render_pass)
-            vn_cmd_merge_batched_query_feedback(primary_cmd, secondary_cmd);
+         assert(secondary_cmd->in_render_pass);
+         vn_cmd_merge_batched_query_feedback(primary_cmd, secondary_cmd);
       }
    }
 }
@@ -2022,7 +2041,7 @@ vn_CmdEndQueryIndexedEXT(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdEndQueryIndexedEXT, commandBuffer, queryPool, query,
                   index);
 
-   vn_cmd_add_query_feedback(commandBuffer, queryPool, query, 1);
+   vn_cmd_add_query_feedback(commandBuffer, queryPool, query);
 }
 
 void
@@ -2192,6 +2211,15 @@ vn_CmdSetLogicOpEXT(VkCommandBuffer commandBuffer, VkLogicOp logicOp)
 }
 
 void
+vn_CmdSetColorWriteEnableEXT(VkCommandBuffer commandBuffer,
+                             uint32_t attachmentCount,
+                             const VkBool32 *pColorWriteEnables)
+{
+   VN_CMD_ENQUEUE(vkCmdSetColorWriteEnableEXT, commandBuffer, attachmentCount,
+                  pColorWriteEnables);
+}
+
+void
 vn_CmdSetPatchControlPointsEXT(VkCommandBuffer commandBuffer,
                                uint32_t patchControlPoints)
 {
@@ -2276,11 +2304,10 @@ vn_CmdPushDescriptorSetKHR(VkCommandBuffer commandBuffer,
          vn_command_buffer_from_handle(commandBuffer);
       struct vn_update_descriptor_sets *update =
          vn_update_descriptor_sets_parse_writes(
-            descriptorWriteCount, pDescriptorWrites, &cmd->allocator, layout);
+            descriptorWriteCount, pDescriptorWrites, &cmd->pool->allocator,
+            layout);
       if (!update) {
          cmd->state = VN_COMMAND_BUFFER_STATE_INVALID;
-         vn_log(cmd->device->instance,
-                "descriptor set push ignored due to OOM");
          return;
       }
 
@@ -2288,7 +2315,7 @@ vn_CmdPushDescriptorSetKHR(VkCommandBuffer commandBuffer,
                      pipelineBindPoint, layout, set, update->write_count,
                      update->writes);
 
-      vk_free(&cmd->allocator, update);
+      vk_free(&cmd->pool->allocator, update);
    } else {
       VN_CMD_ENQUEUE(vkCmdPushDescriptorSetKHR, commandBuffer,
                      pipelineBindPoint, layout, set, descriptorWriteCount,

@@ -394,14 +394,14 @@ v3d_emit_gs_state_record(struct v3d_job *job,
 }
 
 static uint8_t
-v3d_gs_output_primitive(enum shader_prim prim_type)
+v3d_gs_output_primitive(enum mesa_prim prim_type)
 {
     switch (prim_type) {
-    case SHADER_PRIM_POINTS:
+    case MESA_PRIM_POINTS:
         return GEOMETRY_SHADER_POINTS;
-    case SHADER_PRIM_LINE_STRIP:
+    case MESA_PRIM_LINE_STRIP:
         return GEOMETRY_SHADER_LINE_STRIP;
-    case SHADER_PRIM_TRIANGLE_STRIP:
+    case MESA_PRIM_TRIANGLE_STRIP:
         return GEOMETRY_SHADER_TRI_STRIP;
     default:
         unreachable("Unsupported primitive type");
@@ -600,7 +600,7 @@ v3d_emit_gl_shader_state(struct v3d_context *v3d,
                 shader.enable_clipping = true;
                 /* V3D_DIRTY_PRIM_MODE | V3D_DIRTY_RASTERIZER */
                 shader.point_size_in_shaded_vertex_data =
-                        (info->mode == PIPE_PRIM_POINTS &&
+                        (info->mode == MESA_PRIM_POINTS &&
                          v3d->rasterizer->base.point_size_per_vertex);
 
                 /* Must be set if the shader modifies Z, discards, or modifies
@@ -985,6 +985,9 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             !u_trim_pipe_prim(info->mode, (unsigned*)&draws[0].count))
                 return;
 
+        if (!v3d_render_condition_check(v3d))
+                return;
+
         /* Fall back for weird desktop GL primitive restart values. */
         if (info->primitive_restart &&
             info->index_size) {
@@ -1030,8 +1033,12 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
          * rendering to each texture's BO.
          */
         if (v3d->tex[PIPE_SHADER_VERTEX].num_textures || (indirect && indirect->buffer)) {
-                perf_debug("Blocking binner on last render "
-                           "due to vertex texturing or indirect drawing.\n");
+                static bool warned = false;
+                if (!warned) {
+                        perf_debug("Blocking binner on last render due to "
+                                   "vertex texturing or indirect drawing.\n");
+                        warned = true;
+                }
                 job->submit.in_sync_bcl = v3d->out_sync;
         }
 
@@ -1086,11 +1093,7 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
          */
         v3d_emit_wait_for_tf_if_needed(v3d, job);
 
-#if V3D_VERSION >= 41
-        v3d41_emit_state(pctx);
-#else
-        v3d33_emit_state(pctx);
-#endif
+        v3dX(emit_state)(pctx);
 
         if (v3d->dirty & (V3D_DIRTY_VTXBUF |
                           V3D_DIRTY_VTXSTATE |
@@ -1132,7 +1135,9 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
                 prim_tf_enable = (V3D_PRIM_POINTS_TF - V3D_PRIM_POINTS);
 #endif
 
-        if (!v3d->prog.gs)
+        v3d->prim_restart = info->primitive_restart;
+
+        if (!v3d->prog.gs && !v3d->prim_restart)
                 v3d_update_primitives_generated_counter(v3d, info, &draws[0]);
 
         uint32_t hw_prim_type = v3d_hw_prim_type(info->mode);
@@ -1259,9 +1264,16 @@ v3d_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
         /* Increment the TF offsets by how many verts we wrote.  XXX: This
          * needs some clamping to the buffer size.
+         *
+         * If primitive restart is enabled or we have a geometry shader, we
+         * update it later, when we can query the device to know how many
+         * vertices were written.
          */
-        for (int i = 0; i < v3d->streamout.num_targets; i++)
-                v3d->streamout.offsets[i] += draws[0].count;
+        if (!v3d->prog.gs && !v3d->prim_restart) {
+                for (int i = 0; i < v3d->streamout.num_targets; i++)
+                        v3d_stream_output_target(v3d->streamout.targets[i])->offset +=
+                                u_stream_outputs_for_vertices(info->mode, draws[0].count);
+        }
 
         if (v3d->zsa && job->zsbuf && v3d->zsa->base.depth_enabled) {
                 struct v3d_resource *rsc = v3d_resource(job->zsbuf->texture);
@@ -1517,7 +1529,7 @@ v3d_draw_clear(struct v3d_context *v3d,
                const union pipe_color_union *color,
                double depth, unsigned stencil)
 {
-        v3d_blitter_save(v3d, false);
+        v3d_blitter_save(v3d, false, true);
         util_blitter_clear(v3d->blitter,
                            v3d->framebuffer.width,
                            v3d->framebuffer.height,
@@ -1586,6 +1598,9 @@ v3d_tlb_clear(struct v3d_job *job, unsigned buffers,
                         clamped_color.f[2] = orig_color.f[0];
                         clamped_color.f[3] = orig_color.f[3];
                 }
+
+                if (util_format_is_alpha(psurf->format))
+                        clamped_color.f[0] = clamped_color.f[3];
 
                 switch (surf->internal_type) {
                 case V3D_INTERNAL_TYPE_8:
@@ -1657,8 +1672,10 @@ v3d_clear(struct pipe_context *pctx, unsigned buffers, const struct pipe_scissor
 
         buffers &= ~v3d_tlb_clear(job, buffers, color, depth, stencil);
 
-        if (buffers)
-                v3d_draw_clear(v3d, buffers, color, depth, stencil);
+        if (!buffers || !v3d_render_condition_check(v3d))
+                return;
+
+        v3d_draw_clear(v3d, buffers, color, depth, stencil);
 }
 
 static void
@@ -1667,7 +1684,13 @@ v3d_clear_render_target(struct pipe_context *pctx, struct pipe_surface *ps,
                         unsigned x, unsigned y, unsigned w, unsigned h,
                         bool render_condition_enabled)
 {
-        fprintf(stderr, "unimpl: clear RT\n");
+        struct v3d_context *v3d = v3d_context(pctx);
+
+        if (render_condition_enabled && !v3d_render_condition_check(v3d))
+                return;
+
+        v3d_blitter_save(v3d, false, render_condition_enabled);
+        util_blitter_clear_render_target(v3d->blitter, ps, color, x, y, w, h);
 }
 
 static void
@@ -1676,7 +1699,14 @@ v3d_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *ps,
                         unsigned x, unsigned y, unsigned w, unsigned h,
                         bool render_condition_enabled)
 {
-        fprintf(stderr, "unimpl: clear DS\n");
+        struct v3d_context *v3d = v3d_context(pctx);
+
+        if (render_condition_enabled && !v3d_render_condition_check(v3d))
+                return;
+
+        v3d_blitter_save(v3d, false, render_condition_enabled);
+        util_blitter_clear_depth_stencil(v3d->blitter, ps, buffers, depth,
+                                         stencil, x, y, w, h);
 }
 
 void

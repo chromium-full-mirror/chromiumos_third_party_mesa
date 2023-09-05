@@ -28,6 +28,7 @@
 #include "compiler/glsl/ir_uniform.h" /* for gl_uniform_storage */
 #include "linker_util.h"
 #include "util/u_dynarray.h"
+#include "util/u_math.h"
 #include "main/consts_exts.h"
 #include "main/shader_types.h"
 
@@ -525,69 +526,59 @@ add_var_use_shader(nir_shader *shader, struct hash_table *live)
    /* Size of the derefs buffer in bytes. */
    unsigned derefs_size = 0;
 
-   nir_foreach_function(function, shader) {
-      if (function->impl) {
-         nir_foreach_block(block, function->impl) {
-            nir_foreach_instr(instr, block) {
-               if (instr->type == nir_instr_type_intrinsic) {
-                  nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
-                  switch (intr->intrinsic) {
-                  case nir_intrinsic_atomic_counter_read_deref:
-                  case nir_intrinsic_atomic_counter_inc_deref:
-                  case nir_intrinsic_atomic_counter_pre_dec_deref:
-                  case nir_intrinsic_atomic_counter_post_dec_deref:
-                  case nir_intrinsic_atomic_counter_add_deref:
-                  case nir_intrinsic_atomic_counter_min_deref:
-                  case nir_intrinsic_atomic_counter_max_deref:
-                  case nir_intrinsic_atomic_counter_and_deref:
-                  case nir_intrinsic_atomic_counter_or_deref:
-                  case nir_intrinsic_atomic_counter_xor_deref:
-                  case nir_intrinsic_atomic_counter_exchange_deref:
-                  case nir_intrinsic_atomic_counter_comp_swap_deref:
-                  case nir_intrinsic_image_deref_load:
-                  case nir_intrinsic_image_deref_store:
-                  case nir_intrinsic_image_deref_atomic_add:
-                  case nir_intrinsic_image_deref_atomic_umin:
-                  case nir_intrinsic_image_deref_atomic_imin:
-                  case nir_intrinsic_image_deref_atomic_umax:
-                  case nir_intrinsic_image_deref_atomic_imax:
-                  case nir_intrinsic_image_deref_atomic_and:
-                  case nir_intrinsic_image_deref_atomic_or:
-                  case nir_intrinsic_image_deref_atomic_xor:
-                  case nir_intrinsic_image_deref_atomic_exchange:
-                  case nir_intrinsic_image_deref_atomic_comp_swap:
-                  case nir_intrinsic_image_deref_size:
-                  case nir_intrinsic_image_deref_samples:
-                  case nir_intrinsic_load_deref:
-                  case nir_intrinsic_store_deref:
-                     add_var_use_deref(nir_src_as_deref(intr->src[0]), live,
-                                       &derefs, &derefs_size);
-                     break;
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type == nir_instr_type_intrinsic) {
+               nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+               switch (intr->intrinsic) {
+               case nir_intrinsic_atomic_counter_read_deref:
+               case nir_intrinsic_atomic_counter_inc_deref:
+               case nir_intrinsic_atomic_counter_pre_dec_deref:
+               case nir_intrinsic_atomic_counter_post_dec_deref:
+               case nir_intrinsic_atomic_counter_add_deref:
+               case nir_intrinsic_atomic_counter_min_deref:
+               case nir_intrinsic_atomic_counter_max_deref:
+               case nir_intrinsic_atomic_counter_and_deref:
+               case nir_intrinsic_atomic_counter_or_deref:
+               case nir_intrinsic_atomic_counter_xor_deref:
+               case nir_intrinsic_atomic_counter_exchange_deref:
+               case nir_intrinsic_atomic_counter_comp_swap_deref:
+               case nir_intrinsic_image_deref_load:
+               case nir_intrinsic_image_deref_store:
+               case nir_intrinsic_image_deref_atomic:
+               case nir_intrinsic_image_deref_atomic_swap:
+               case nir_intrinsic_image_deref_size:
+               case nir_intrinsic_image_deref_samples:
+               case nir_intrinsic_load_deref:
+               case nir_intrinsic_store_deref:
+                  add_var_use_deref(nir_src_as_deref(intr->src[0]), live,
+                                    &derefs, &derefs_size);
+                  break;
 
-                  default:
-                     /* Nothing to do */
-                     break;
-                  }
-               } else if (instr->type == nir_instr_type_tex) {
-                  nir_tex_instr *tex_instr = nir_instr_as_tex(instr);
-                  int sampler_idx =
-                     nir_tex_instr_src_index(tex_instr,
-                                             nir_tex_src_sampler_deref);
-                  int texture_idx =
-                     nir_tex_instr_src_index(tex_instr,
-                                             nir_tex_src_texture_deref);
+               default:
+                  /* Nothing to do */
+                  break;
+               }
+            } else if (instr->type == nir_instr_type_tex) {
+               nir_tex_instr *tex_instr = nir_instr_as_tex(instr);
+               int sampler_idx =
+                  nir_tex_instr_src_index(tex_instr,
+                                          nir_tex_src_sampler_deref);
+               int texture_idx =
+                  nir_tex_instr_src_index(tex_instr,
+                                          nir_tex_src_texture_deref);
 
-                  if (sampler_idx >= 0) {
-                     nir_deref_instr *deref =
-                        nir_src_as_deref(tex_instr->src[sampler_idx].src);
-                     add_var_use_deref(deref, live, &derefs, &derefs_size);
-                  }
+               if (sampler_idx >= 0) {
+                  nir_deref_instr *deref =
+                     nir_src_as_deref(tex_instr->src[sampler_idx].src);
+                  add_var_use_deref(deref, live, &derefs, &derefs_size);
+               }
 
-                  if (texture_idx >= 0) {
-                     nir_deref_instr *deref =
-                        nir_src_as_deref(tex_instr->src[texture_idx].src);
-                     add_var_use_deref(deref, live, &derefs, &derefs_size);
-                  }
+               if (texture_idx >= 0) {
+                  nir_deref_instr *deref =
+                     nir_src_as_deref(tex_instr->src[texture_idx].src);
+                  add_var_use_deref(deref, live, &derefs, &derefs_size);
                }
             }
          }
@@ -830,12 +821,6 @@ update_uniforms_shader_info(struct gl_shader_program *prog,
       /* Set image access qualifiers */
       enum gl_access_qualifier image_access =
          state->current_var->data.access;
-      const GLenum access =
-         (image_access & ACCESS_NON_WRITEABLE) ?
-         ((image_access & ACCESS_NON_READABLE) ? GL_NONE :
-                                                 GL_READ_ONLY) :
-         ((image_access & ACCESS_NON_READABLE) ? GL_WRITE_ONLY :
-                                                 GL_READ_WRITE);
 
       int image_index;
       if (state->current_var->data.bindless) {
@@ -850,7 +835,7 @@ update_uniforms_shader_info(struct gl_shader_program *prog,
 
          for (unsigned j = sh->Program->sh.NumBindlessImages;
               j < state->next_bindless_image_index; j++) {
-            sh->Program->sh.BindlessImages[j].access = access;
+            sh->Program->sh.BindlessImages[j].image_access = image_access;
          }
 
          sh->Program->sh.NumBindlessImages = state->next_bindless_image_index;
@@ -866,7 +851,7 @@ update_uniforms_shader_info(struct gl_shader_program *prog,
 
          for (unsigned i = image_index;
               i < MIN2(state->next_image_index, MAX_IMAGE_UNIFORMS); i++) {
-            sh->Program->sh.ImageAccess[i] = access;
+            sh->Program->sh.image_access[i] = image_access;
          }
       }
 
@@ -1161,10 +1146,10 @@ enter_record(struct nir_link_uniforms_state *state,
                                     use_std430);
 
    if (packing == GLSL_INTERFACE_PACKING_STD430)
-      state->offset = glsl_align(
+      state->offset = align(
          state->offset, glsl_get_std430_base_alignment(type, row_major));
    else
-      state->offset = glsl_align(
+      state->offset = align(
          state->offset, glsl_get_std140_base_alignment(type, row_major));
 }
 
@@ -1184,10 +1169,10 @@ leave_record(struct nir_link_uniforms_state *state,
                                     use_std430);
 
    if (packing == GLSL_INTERFACE_PACKING_STD430)
-      state->offset = glsl_align(
+      state->offset = align(
          state->offset, glsl_get_std430_base_alignment(type, row_major));
    else
-      state->offset = glsl_align(
+      state->offset = align(
          state->offset, glsl_get_std140_base_alignment(type, row_major));
 }
 
@@ -1430,7 +1415,7 @@ nir_link_uniform(const struct gl_constants *consts,
                alignment =
                   glsl_get_std430_base_alignment(type, uniform->row_major);
             }
-            state->offset = glsl_align(state->offset, alignment);
+            state->offset = align(state->offset, alignment);
          }
       }
 
@@ -1556,14 +1541,16 @@ gl_nir_link_uniforms(const struct gl_constants *consts,
          add_var_use_shader(nir, state.referenced_uniforms[stage]);
       }
 
-      /* Resize uniform arrays based on the maximum array index */
-      for (unsigned stage = 0; stage < MESA_SHADER_STAGES; stage++) {
-         struct gl_linked_shader *sh = prog->_LinkedShaders[stage];
-         if (!sh)
-            continue;
+      if(!consts->DisableUniformArrayResize) {
+         /* Resize uniform arrays based on the maximum array index */
+         for (unsigned stage = 0; stage < MESA_SHADER_STAGES; stage++) {
+            struct gl_linked_shader *sh = prog->_LinkedShaders[stage];
+            if (!sh)
+               continue;
 
-         nir_foreach_gl_uniform_variable(var, sh->Program->nir)
-            update_array_sizes(prog, var, state.referenced_uniforms, stage);
+            nir_foreach_gl_uniform_variable(var, sh->Program->nir)
+               update_array_sizes(prog, var, state.referenced_uniforms, stage);
+         }
       }
    }
 

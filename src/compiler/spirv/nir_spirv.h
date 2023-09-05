@@ -19,10 +19,6 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
- *
- * Authors:
- *    Jason Ekstrand (jason@jlekstrand.net)
- *
  */
 
 #ifndef _NIR_SPIRV_H_
@@ -65,11 +61,6 @@ struct spirv_to_nir_options {
    /* Create a nir library. */
    bool create_library;
 
-   /* Whether to use nir_intrinsic_deref_buffer_array_length intrinsic instead
-    * of nir_intrinsic_get_ssbo_size to lower OpArrayLength.
-    */
-   bool use_deref_buffer_array_length;
-
    /* Initial value for shader_info::float_controls_execution_mode,
     * indicates hardware requirements rather than shader author intent
     */
@@ -101,6 +92,18 @@ struct spirv_to_nir_options {
    nir_address_format temp_addr_format;
    nir_address_format constant_addr_format;
 
+   /** Minimum UBO alignment.
+    *
+    * This should match VkPhysicalDeviceLimits::minUniformBufferOffsetAlignment
+    */
+   uint32_t min_ubo_alignment;
+
+   /** Minimum SSBO alignment.
+    *
+    * This should match VkPhysicalDeviceLimits::minStorageBufferOffsetAlignment
+    */
+   uint32_t min_ssbo_alignment;
+
    const nir_shader *clc_shader;
 
    struct {
@@ -110,11 +113,28 @@ struct spirv_to_nir_options {
                    const char *message);
       void *private_data;
    } debug;
+
+   /* Force texture sampling to be non-uniform. */
+   bool force_tex_non_uniform;
+
+   /* In Debug Builds, instead of emitting an OS break on failure, just return NULL from
+    * spirv_to_nir().  This is useful for the unit tests that want to report a test failed
+    * but continue executing other tests.
+    */
+   bool skip_os_break_in_debug_build;
 };
 
-bool gl_spirv_validation(const uint32_t *words, size_t word_count,
-                         struct nir_spirv_specialization *spec, unsigned num_spec,
-                         gl_shader_stage stage, const char *entry_point_name);
+enum spirv_verify_result {
+   SPIRV_VERIFY_OK = 0,
+   SPIRV_VERIFY_PARSER_ERROR = 1,
+   SPIRV_VERIFY_ENTRY_POINT_NOT_FOUND = 2,
+   SPIRV_VERIFY_UNKNOWN_SPEC_INDEX = 3,
+};
+
+enum spirv_verify_result spirv_verify_gl_specialization_constants(
+   const uint32_t *words, size_t word_count,
+   struct nir_spirv_specialization *spec, unsigned num_spec,
+   gl_shader_stage stage, const char *entry_point_name);
 
 nir_shader *spirv_to_nir(const uint32_t *words, size_t word_count,
                          struct nir_spirv_specialization *specializations,
@@ -122,16 +142,6 @@ nir_shader *spirv_to_nir(const uint32_t *words, size_t word_count,
                          gl_shader_stage stage, const char *entry_point_name,
                          const struct spirv_to_nir_options *options,
                          const nir_shader_compiler_options *nir_options);
-
-bool nir_can_find_libclc(unsigned ptr_bit_size);
-
-nir_shader *
-nir_load_libclc_shader(unsigned ptr_bit_size,
-                       struct disk_cache *disk_cache,
-                       const struct spirv_to_nir_options *spirv_options,
-                       const nir_shader_compiler_options *nir_options);
-
-bool nir_lower_libclc(nir_shader *shader, const nir_shader *clc_shader);
 
 #ifdef __cplusplus
 }

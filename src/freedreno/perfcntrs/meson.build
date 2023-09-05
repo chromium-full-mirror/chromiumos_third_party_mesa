@@ -34,14 +34,15 @@ libfreedreno_perfcntrs = static_library(
   include_directories : [inc_freedreno, inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
+  link_with : [libfreedreno_common],
   dependencies : idep_nir_headers,
   build_by_default : false,
 )
 
 dep_libconfig = dependency('libconfig', required : false)
-dep_ncurses = dependency('ncurses', required : false)
+dep_curses = dependency('curses', required : false)
 
-if dep_libconfig.found() and dep_ncurses.found()
+if dep_libconfig.found() and dep_curses.found()
   fdperf = executable(
     'fdperf',
     ['fdperf.c', freedreno_xml_header_files],
@@ -55,13 +56,14 @@ if dep_libconfig.found() and dep_ncurses.found()
       inc_gallium_aux,
     ],
     link_with : [
+      libfreedreno_common,
       libfreedreno_drm,
       libfreedreno_perfcntrs,
     ],
     dependencies : [
       dep_libconfig,
       dep_libdrm,
-      dep_ncurses,
+      dep_curses,
       idep_mesautil,
     ],
     build_by_default : with_tools.contains('freedreno'),

@@ -55,10 +55,9 @@ build_umod(nir_builder *b, nir_ssa_def *n, uint64_t d)
    if (d == 0) {
       return nir_imm_intN_t(b, 0, n->bit_size);
    } else if (util_is_power_of_two_or_zero64(d)) {
-      return nir_iand(b, n, nir_imm_intN_t(b, d - 1, n->bit_size));
+      return nir_iand_imm(b, n, d - 1);
    } else {
-      return nir_isub(b, n, nir_imul(b, build_udiv(b, n, d),
-                                        nir_imm_intN_t(b, d, n->bit_size)));
+      return nir_isub(b, n, nir_imul_imm(b, build_udiv(b, n, d), d));
    }
 }
 
@@ -67,7 +66,7 @@ build_idiv(nir_builder *b, nir_ssa_def *n, int64_t d)
 {
    int64_t int_min = u_intN_min(n->bit_size);
    if (d == int_min)
-      return nir_b2i(b, nir_ieq_imm(b, n, int_min), n->bit_size);
+      return nir_b2iN(b, nir_ieq_imm(b, n, int_min), n->bit_size);
 
    uint64_t abs_d = d < 0 ? -d : d;
 
@@ -79,7 +78,7 @@ build_idiv(nir_builder *b, nir_ssa_def *n, int64_t d)
       return nir_ineg(b, n);
    } else if (util_is_power_of_two_or_zero64(abs_d)) {
       nir_ssa_def *uq = nir_ushr_imm(b, nir_iabs(b, n), util_logbase2_64(abs_d));
-      nir_ssa_def *n_neg = nir_ilt(b, n, nir_imm_intN_t(b, 0, n->bit_size));
+      nir_ssa_def *n_neg = nir_ilt_imm(b, n, 0);
       nir_ssa_def *neg = d < 0 ? nir_inot(b, n_neg) : n_neg;
       return nir_bcsel(b, neg, nir_ineg(b, uq), uq);
    } else {
@@ -111,12 +110,11 @@ build_irem(nir_builder *b, nir_ssa_def *n, int64_t d)
    } else {
       d = d < 0 ? -d : d;
       if (util_is_power_of_two_or_zero64(d)) {
-         nir_ssa_def *tmp = nir_bcsel(b, nir_ilt(b, n, nir_imm_intN_t(b, 0, n->bit_size)),
+         nir_ssa_def *tmp = nir_bcsel(b, nir_ilt_imm(b, n, 0),
                                       nir_iadd_imm(b, n, d - 1), n);
          return nir_isub(b, n, nir_iand_imm(b, tmp, -d));
       } else {
-         return nir_isub(b, n, nir_imul(b, build_idiv(b, n, d),
-                                        nir_imm_intN_t(b, d, n->bit_size)));
+         return nir_isub(b, n, nir_imul_imm(b, build_idiv(b, n, d), d));
       }
    }
 }
@@ -133,7 +131,7 @@ build_imod(nir_builder *b, nir_ssa_def *n, int64_t d)
       nir_ssa_def *is_zero = nir_ieq_imm(b, n, 0);
       return nir_bcsel(b, nir_ior(b, is_neg_not_int_min, is_zero), n, nir_iadd(b, int_min_def, n));
    } else if (d > 0 && util_is_power_of_two_or_zero64(d)) {
-      return nir_iand(b, n, nir_imm_intN_t(b, d - 1, n->bit_size));
+      return nir_iand_imm(b, n, d - 1);
    } else if (d < 0 && util_is_power_of_two_or_zero64(-d)) {
       nir_ssa_def *d_def = nir_imm_intN_t(b, d, n->bit_size);
       nir_ssa_def *res = nir_ior(b, n, d_def);
@@ -148,10 +146,26 @@ build_imod(nir_builder *b, nir_ssa_def *n, int64_t d)
 }
 
 static bool
-nir_opt_idiv_const_instr(nir_builder *b, nir_alu_instr *alu)
+nir_opt_idiv_const_instr(nir_builder *b, nir_instr *instr, void *user_data)
 {
+   unsigned *min_bit_size = user_data;
+
+   if (instr->type != nir_instr_type_alu)
+      return false;
+
+   nir_alu_instr *alu = nir_instr_as_alu(instr);
+   if (alu->op != nir_op_udiv &&
+       alu->op != nir_op_idiv &&
+       alu->op != nir_op_umod &&
+       alu->op != nir_op_imod &&
+       alu->op != nir_op_irem)
+      return false;
+
    assert(alu->dest.dest.is_ssa);
    assert(alu->src[0].src.is_ssa && alu->src[1].src.is_ssa);
+
+   if (alu->dest.dest.ssa.bit_size < *min_bit_size)
+      return false;
 
    if (!nir_src_is_const(alu->src[1].src))
       return false;
@@ -208,54 +222,11 @@ nir_opt_idiv_const_instr(nir_builder *b, nir_alu_instr *alu)
    return true;
 }
 
-static bool
-nir_opt_idiv_const_impl(nir_function_impl *impl, unsigned min_bit_size)
-{
-   bool progress = false;
-
-   nir_builder b;
-   nir_builder_init(&b, impl);
-
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr_safe(instr, block) {
-         if (instr->type != nir_instr_type_alu)
-            continue;
-
-         nir_alu_instr *alu = nir_instr_as_alu(instr);
-         if (alu->op != nir_op_udiv &&
-             alu->op != nir_op_idiv &&
-             alu->op != nir_op_umod &&
-             alu->op != nir_op_imod &&
-             alu->op != nir_op_irem)
-            continue;
-
-         assert(alu->dest.dest.is_ssa);
-         if (alu->dest.dest.ssa.bit_size < min_bit_size)
-            continue;
-
-         progress |= nir_opt_idiv_const_instr(&b, alu);
-      }
-   }
-
-   if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                  nir_metadata_dominance);
-   } else {
-      nir_metadata_preserve(impl, nir_metadata_all);
-   }
-
-   return progress;
-}
-
 bool
 nir_opt_idiv_const(nir_shader *shader, unsigned min_bit_size)
 {
-   bool progress = false;
-
-   nir_foreach_function(function, shader) {
-      if (function->impl)
-         progress |= nir_opt_idiv_const_impl(function->impl, min_bit_size);
-   }
-
-   return progress;
+   return nir_shader_instructions_pass(shader, nir_opt_idiv_const_instr,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
+                                       &min_bit_size);
 }

@@ -152,8 +152,9 @@ public:
    auto prepare_instr() const { return m_prepare_instr; }
 
    bool replace_source(PRegister old_src, PVirtualValue new_src) override;
+   void update_indirect_addr(PRegister addr) override;
 
-   uint8_t allowed_dest_chan_mask() const override;
+   uint8_t allowed_src_chan_mask() const override;
 
 private:
    bool do_ready() const override;
@@ -186,17 +187,19 @@ private:
    bool set_coord_offsets(nir_src *offset);
    void set_rect_coordinate_flags(nir_tex_instr *instr);
    void add_prepare_instr(TexInstr *ir) { m_prepare_instr.push_back(ir); };
+   void forward_set_blockid(int id, int index) override;
+
 
    Opcode m_opcode;
 
    RegisterVec4 m_src;
    std::bitset<num_tex_flag> m_tex_flags;
-   int m_offset[3];
+   int m_coord_offset[3];
    int m_inst_mode;
    unsigned m_resource_id;
 
    static const std::map<Opcode, std::string> s_opcode_map;
-   std::list<TexInstr *> m_prepare_instr;
+   std::list<TexInstr *, Allocator<TexInstr *>> m_prepare_instr;
 };
 
 bool

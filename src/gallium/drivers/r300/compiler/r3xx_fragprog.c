@@ -26,7 +26,6 @@
 
 #include "radeon_compiler_util.h"
 #include "radeon_dataflow.h"
-#include "radeon_emulate_branches.h"
 #include "radeon_program_alu.h"
 #include "radeon_program_tex.h"
 #include "radeon_rename_regs.h"
@@ -86,14 +85,12 @@ void r3xx_compile_fragment_program(struct r300_fragment_program_compiler* c)
 	struct radeon_program_transformation native_rewrite_r500[] = {
 		{ &radeonTransformALU, NULL },
 		{ &radeonTransformDeriv, NULL },
-		{ &radeonTransformTrigScale, NULL },
 		{ NULL, NULL }
 	};
 
 	struct radeon_program_transformation native_rewrite_r300[] = {
 		{ &radeonTransformALU, NULL },
 		{ &radeonStubDeriv, NULL },
-		{ &r300_transform_trig_simple, NULL },
 		{ NULL, NULL }
 	};
 
@@ -101,10 +98,6 @@ void r3xx_compile_fragment_program(struct r300_fragment_program_compiler* c)
 	struct radeon_compiler_pass fs_list[] = {
 		/* NAME				DUMP PREDICATE	FUNCTION			PARAM */
 		{"rewrite depth out",		1, 1,		rc_rewrite_depth_out,		NULL},
-		/* This transformation needs to be done before any of the IF
-		 * instructions are modified. */
-		{"transform KILP",		1, 1,		rc_transform_KILL,		NULL},
-		{"emulate branches",		1, !is_r500,	rc_emulate_branches,		NULL},
 		{"force alpha to one",		1, alpha2one,	rc_local_transform,		force_alpha_to_one},
 		{"transform TEX",		1, 1,		rc_local_transform,		rewrite_tex},
 		{"transform IF",		1, is_r500,	r500_transform_IF,		NULL},

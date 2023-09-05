@@ -7,8 +7,9 @@
 #include "util/format/u_format.h"
 #include "util/format/u_format_s3tc.h"
 #include "util/u_string.h"
+#include "util/hex.h"
 
-#include "os/os_mman.h"
+#include "util/os_mman.h"
 #include "util/os_time.h"
 
 #include <stdio.h>
@@ -49,7 +50,7 @@ nouveau_screen_get_name(struct pipe_screen *pscreen)
 static const char *
 nouveau_screen_get_vendor(struct pipe_screen *pscreen)
 {
-   return "nouveau";
+   return "Mesa";
 }
 
 static const char *
@@ -106,14 +107,14 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
 
    if (whandle->offset != 0) {
       debug_printf("%s: attempt to import unsupported winsys offset %d\n",
-                   __FUNCTION__, whandle->offset);
+                   __func__, whandle->offset);
       return NULL;
    }
 
    if (whandle->type != WINSYS_HANDLE_TYPE_SHARED &&
        whandle->type != WINSYS_HANDLE_TYPE_FD) {
       debug_printf("%s: attempt to import unsupported handle type %d\n",
-                   __FUNCTION__, whandle->type);
+                   __func__, whandle->type);
       return NULL;
    }
 
@@ -124,7 +125,7 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
 
    if (ret) {
       debug_printf("%s: ref name 0x%08x failed with %d\n",
-                   __FUNCTION__, whandle->handle, ret);
+                   __func__, whandle->handle, ret);
       return NULL;
    }
 
@@ -144,6 +145,21 @@ nouveau_screen_bo_get_handle(struct pipe_screen *pscreen,
    if (whandle->type == WINSYS_HANDLE_TYPE_SHARED) {
       return nouveau_bo_name_get(bo, &whandle->handle) == 0;
    } else if (whandle->type == WINSYS_HANDLE_TYPE_KMS) {
+      int fd;
+      int ret;
+
+      /* The handle is exported in this case, but the global list of
+       * handles is in libdrm and there is no libdrm API to add
+       * handles to the list without additional side effects. The
+       * closest API available also gets a fd for the handle, which
+       * is not necessary in this case. Call it and close the fd.
+       */
+      ret = nouveau_bo_set_prime(bo, &fd);
+      if (ret != 0)
+        return false;
+
+      close(fd);
+
       whandle->handle = bo->handle;
       return true;
    } else if (whandle->type == WINSYS_HANDLE_TYPE_FD) {
@@ -167,12 +183,9 @@ nouveau_disk_cache_create(struct nouveau_screen *screen)
       return;
 
    _mesa_sha1_final(&ctx, sha1);
-   disk_cache_format_hex_id(cache_id, sha1, 20 * 2);
+   mesa_bytes_to_hex(cache_id, sha1, 20);
 
-   if (screen->prefer_nir)
-      driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_NIR;
-   else
-      driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_TGSI;
+   driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_NIR;
 
    screen->disk_shader_cache =
       disk_cache_create(nouveau_screen_get_name(&screen->base),
@@ -241,6 +254,8 @@ nouveau_pushbuf_create(struct nouveau_screen *screen, struct nouveau_context *co
 void
 nouveau_pushbuf_destroy(struct nouveau_pushbuf **push)
 {
+   if (!*push)
+      return;
    FREE((*push)->user_priv);
    nouveau_pushbuf_del(push);
 }
@@ -257,6 +272,14 @@ nouveau_check_for_uma(int chipset, struct nouveau_object *obj)
    return (info.platform == NV_DEVICE_INFO_V0_IGP) || (info.platform == NV_DEVICE_INFO_V0_SOC);
 }
 
+static int
+nouveau_screen_get_fd(struct pipe_screen *pscreen)
+{
+   const struct nouveau_screen *screen = nouveau_screen(pscreen);
+
+   return screen->drm->fd;
+}
+
 int
 nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
 {
@@ -271,8 +294,6 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    char *nv_dbg = getenv("NOUVEAU_MESA_DEBUG");
    if (nv_dbg)
       nouveau_mesa_debug = atoi(nv_dbg);
-
-   screen->prefer_nir = !debug_get_bool_option("NV50_PROG_USE_TGSI", false);
 
    screen->force_enable_cl = debug_get_bool_option("NOUVEAU_ENABLE_CL", false);
    if (screen->force_enable_cl)
@@ -303,7 +324,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    bool enable_svm = debug_get_bool_option("NOUVEAU_SVM", false);
    screen->has_svm = false;
    /* we only care about HMM with OpenCL enabled */
-   if (dev->chipset > 0x130 && screen->force_enable_cl && enable_svm) {
+   if (dev->chipset > 0x130 && enable_svm) {
       /* Before being able to enable SVM we need to carve out some memory for
        * driver bo allocations. Let's just base the size on the available VRAM.
        *
@@ -386,6 +407,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
 
    snprintf(screen->chipset_name, sizeof(screen->chipset_name), "NV%02X", dev->chipset);
    pscreen->get_name = nouveau_screen_get_name;
+   pscreen->get_screen_fd = nouveau_screen_get_fd;
    pscreen->get_vendor = nouveau_screen_get_vendor;
    pscreen->get_device_vendor = nouveau_screen_get_device_vendor;
    pscreen->get_disk_shader_cache = nouveau_screen_get_disk_shader_cache;

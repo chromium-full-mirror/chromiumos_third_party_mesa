@@ -24,7 +24,7 @@
 
 
 #include "bufferobj.h"
-#include "glheader.h"
+#include "util/glheader.h"
 #include "context.h"
 #include "enums.h"
 #include "hash.h"
@@ -133,6 +133,10 @@ query_type_is_dummy(struct gl_context *ctx, unsigned type)
    case PIPE_QUERY_OCCLUSION_PREDICATE:
    case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
       return !st->has_occlusion_query;
+   case PIPE_QUERY_PIPELINE_STATISTICS:
+      return !st->has_pipeline_stat;
+   case PIPE_QUERY_PIPELINE_STATISTICS_SINGLE:
+      return !st->has_single_pipe_stat;
    default:
       break;
    }
@@ -273,10 +277,10 @@ end_query(struct gl_context *ctx, struct gl_query_object *q)
 }
 
 
-static boolean
+static bool
 get_query_result(struct pipe_context *pipe,
                  struct gl_query_object *q,
-                 boolean wait)
+                 bool wait)
 {
    union pipe_query_result data;
 
@@ -286,11 +290,11 @@ get_query_result(struct pipe_context *pipe,
        *
        * Return TRUE in either case so we don't spin on this forever.
        */
-      return TRUE;
+      return true;
    }
 
    if (!pipe->get_query_result(pipe, q->pq, wait, &data))
-      return FALSE;
+      return false;
 
    switch (q->type) {
    case PIPE_QUERY_PIPELINE_STATISTICS:
@@ -347,13 +351,13 @@ get_query_result(struct pipe_context *pipe,
        q->type == PIPE_QUERY_TIMESTAMP) {
       /* Calculate the elapsed time from the two timestamp queries */
       assert(q->pq_begin);
-      pipe->get_query_result(pipe, q->pq_begin, TRUE, &data);
+      pipe->get_query_result(pipe, q->pq_begin, true, &data);
       q->Result -= data.u64;
    } else {
       assert(!q->pq_begin);
    }
 
-   return TRUE;
+   return true;
 }
 
 
@@ -366,7 +370,7 @@ _mesa_wait_query(struct gl_context *ctx, struct gl_query_object *q)
    assert(!q->Ready);
 
    while (!q->Ready &&
-          !get_query_result(pipe, q, TRUE))
+          !get_query_result(pipe, q, true))
    {
       /* nothing */
    }
@@ -380,7 +384,7 @@ _mesa_check_query(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = ctx->pipe;
    assert(!q->Ready);   /* we should not get called if Ready is TRUE */
-   q->Ready = get_query_result(pipe, q, FALSE);
+   q->Ready = get_query_result(pipe, q, false);
 }
 
 
@@ -467,7 +471,7 @@ get_pipe_stats_binding_point(struct gl_context *ctx,
    const int which = target - GL_VERTICES_SUBMITTED;
    assert(which < MAX_PIPELINE_STATISTICS);
 
-   if (!_mesa_has_ARB_pipeline_statistics_query(ctx))
+   if (!_mesa_has_pipeline_statistics(ctx))
       return NULL;
 
    return &ctx->Query.pipeline_stats[which];
@@ -483,14 +487,12 @@ get_query_binding_point(struct gl_context *ctx, GLenum target, GLuint index)
 {
    switch (target) {
    case GL_SAMPLES_PASSED:
-      if (_mesa_has_ARB_occlusion_query(ctx) ||
-          _mesa_has_ARB_occlusion_query2(ctx))
+      if (_mesa_has_occlusion_query(ctx))
          return &ctx->Query.CurrentOcclusionObject;
       else
          return NULL;
    case GL_ANY_SAMPLES_PASSED:
-      if (_mesa_has_ARB_occlusion_query2(ctx) ||
-          _mesa_has_EXT_occlusion_query_boolean(ctx))
+      if (_mesa_has_occlusion_query_boolean(ctx))
          return &ctx->Query.CurrentOcclusionObject;
       else
          return NULL;
@@ -1353,17 +1355,32 @@ _mesa_init_queryobj(struct gl_context *ctx)
    ctx->Const.QueryCounterBits.PrimitivesGenerated = 64;
    ctx->Const.QueryCounterBits.PrimitivesWritten = 64;
 
-   ctx->Const.QueryCounterBits.VerticesSubmitted = 64;
-   ctx->Const.QueryCounterBits.PrimitivesSubmitted = 64;
-   ctx->Const.QueryCounterBits.VsInvocations = 64;
-   ctx->Const.QueryCounterBits.TessPatches = 64;
-   ctx->Const.QueryCounterBits.TessInvocations = 64;
-   ctx->Const.QueryCounterBits.GsInvocations = 64;
-   ctx->Const.QueryCounterBits.GsPrimitives = 64;
-   ctx->Const.QueryCounterBits.FsInvocations = 64;
-   ctx->Const.QueryCounterBits.ComputeInvocations = 64;
-   ctx->Const.QueryCounterBits.ClInPrimitives = 64;
-   ctx->Const.QueryCounterBits.ClOutPrimitives = 64;
+   if (screen->get_param(screen, PIPE_CAP_QUERY_PIPELINE_STATISTICS) ||
+       screen->get_param(screen, PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE)) {
+      ctx->Const.QueryCounterBits.VerticesSubmitted = 64;
+      ctx->Const.QueryCounterBits.PrimitivesSubmitted = 64;
+      ctx->Const.QueryCounterBits.VsInvocations = 64;
+      ctx->Const.QueryCounterBits.TessPatches = 64;
+      ctx->Const.QueryCounterBits.TessInvocations = 64;
+      ctx->Const.QueryCounterBits.GsInvocations = 64;
+      ctx->Const.QueryCounterBits.GsPrimitives = 64;
+      ctx->Const.QueryCounterBits.FsInvocations = 64;
+      ctx->Const.QueryCounterBits.ComputeInvocations = 64;
+      ctx->Const.QueryCounterBits.ClInPrimitives = 64;
+      ctx->Const.QueryCounterBits.ClOutPrimitives = 64;
+   } else {
+      ctx->Const.QueryCounterBits.VerticesSubmitted = 0;
+      ctx->Const.QueryCounterBits.PrimitivesSubmitted = 0;
+      ctx->Const.QueryCounterBits.VsInvocations = 0;
+      ctx->Const.QueryCounterBits.TessPatches = 0;
+      ctx->Const.QueryCounterBits.TessInvocations = 0;
+      ctx->Const.QueryCounterBits.GsInvocations = 0;
+      ctx->Const.QueryCounterBits.GsPrimitives = 0;
+      ctx->Const.QueryCounterBits.FsInvocations = 0;
+      ctx->Const.QueryCounterBits.ComputeInvocations = 0;
+      ctx->Const.QueryCounterBits.ClInPrimitives = 0;
+      ctx->Const.QueryCounterBits.ClOutPrimitives = 0;
+   }
 }
 
 

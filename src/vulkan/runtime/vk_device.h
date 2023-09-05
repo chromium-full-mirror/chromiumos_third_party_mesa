@@ -23,11 +23,14 @@
 #ifndef VK_DEVICE_H
 #define VK_DEVICE_H
 
+#include "rmv/vk_rmv_common.h"
 #include "vk_dispatch_table.h"
 #include "vk_extensions.h"
 #include "vk_object.h"
+#include "vk_physical_device_features.h"
 
 #include "util/list.h"
+#include "util/simple_mtx.h"
 #include "util/u_atomic.h"
 
 #ifdef __cplusplus
@@ -104,12 +107,8 @@ struct vk_device {
    /** Table of enabled extensions */
    struct vk_device_extension_table enabled_extensions;
 
-   struct {
-      bool robustBufferAccess;
-      bool robustBufferAccess2;
-      bool robustImageAccess;
-      bool robustImageAccess2;
-   } enabled_features;
+   /** Table of enabled features */
+   struct vk_features enabled_features;
 
    /** Device-level dispatch table */
    struct vk_device_dispatch_table dispatch_table;
@@ -130,6 +129,19 @@ struct vk_device {
 
    /** Command buffer vtable when using the common command pool */
    const struct vk_command_buffer_ops *command_buffer_ops;
+
+   /** Driver provided callback for capturing traces
+    * 
+    * Triggers for this callback are:
+    *    - Keyboard input (F12)
+    *    - Creation of a trigger file
+    *    - Reaching the trace frame
+    */
+   VkResult (*capture_trace)(VkQueue queue);
+
+   uint32_t current_frame;
+   bool trace_hotkey_trigger;
+   simple_mtx_t trace_mtx;
 
    /* For VK_EXT_private_data */
    uint32_t private_data_next_index;
@@ -241,6 +253,8 @@ struct vk_device {
     * details.
     */
    enum vk_queue_submit_mode submit_mode;
+
+   struct vk_memory_trace_data memory_trace_data;
 
 #ifdef ANDROID
    mtx_t swapchain_private_mtx;

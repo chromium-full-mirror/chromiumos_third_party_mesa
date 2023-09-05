@@ -38,6 +38,94 @@ struct lower_context {
    std::vector<aco_ptr<Instruction>> instructions;
 };
 
+/* Class for obtaining where s_sendmsg(MSG_ORDERED_PS_DONE) must be done in a Primitive Ordered
+ * Pixel Shader on GFX9-10.3.
+ *
+ * MSG_ORDERED_PS_DONE must be sent once after the ordered section is done along all execution paths
+ * from the POPS packer ID hardware register setting to s_endpgm. It is, however, also okay to send
+ * it if the packer ID is not going to be set at all by the wave, so some conservativeness is fine.
+ *
+ * For simplicity, sending the message from top-level blocks as dominance and post-dominance
+ * checking for any location in the shader is trivial in them. Also, for simplicity, sending it
+ * regardless of whether the POPS packer ID hardware register has already potentially been set up.
+ *
+ * Note that there can be multiple interlock end instructions in the shader.
+ * SPV_EXT_fragment_shader_interlock requires OpEndInvocationInterlockEXT to be executed exactly
+ * once by the invocation. However, there may be, for instance, multiple ordered sections, and which
+ * one will be executed may depend on divergent control flow (some lanes may execute one ordered
+ * section, other lanes may execute another). MSG_ORDERED_PS_DONE, however, is sent via a scalar
+ * instruction, so it must be ensured that the message is sent after the last ordered section in the
+ * entire wave.
+ */
+class gfx9_pops_done_msg_bounds {
+public:
+   explicit gfx9_pops_done_msg_bounds() = default;
+
+   explicit gfx9_pops_done_msg_bounds(const Program* const program)
+   {
+      /* Find the top-level location after the last ordered section end pseudo-instruction in the
+       * program.
+       * Consider `p_pops_gfx9_overlapped_wave_wait_done` a boundary too - make sure the message
+       * isn't sent if any wait hasn't been fully completed yet (if a begin-end-begin situation
+       * occurs somehow, as the location of `p_pops_gfx9_ordered_section_done` is controlled by the
+       * application) for safety, assuming that waits are the only thing that need the packer
+       * hardware register to be set at some point during or before them, and it won't be set
+       * anymore after the last wait.
+       */
+      int last_top_level_block_idx = -1;
+      for (int block_idx = (int)program->blocks.size() - 1; block_idx >= 0; block_idx--) {
+         const Block& block = program->blocks[block_idx];
+         if (block.kind & block_kind_top_level) {
+            last_top_level_block_idx = block_idx;
+         }
+         for (size_t instr_idx = block.instructions.size() - 1; instr_idx + size_t(1) > 0;
+              instr_idx--) {
+            const aco_opcode opcode = block.instructions[instr_idx]->opcode;
+            if (opcode == aco_opcode::p_pops_gfx9_ordered_section_done ||
+                opcode == aco_opcode::p_pops_gfx9_overlapped_wave_wait_done) {
+               end_block_idx_ = last_top_level_block_idx;
+               /* The same block if it's already a top-level block, or the beginning of the next
+                * top-level block.
+                */
+               instr_after_end_idx_ = block_idx == end_block_idx_ ? instr_idx + 1 : 0;
+               break;
+            }
+         }
+         if (end_block_idx_ != -1) {
+            break;
+         }
+      }
+   }
+
+   /* If this is not -1, during the normal execution flow (not early exiting), MSG_ORDERED_PS_DONE
+    * must be sent in this block.
+    */
+   int end_block_idx() const { return end_block_idx_; }
+
+   /* If end_block_idx() is an existing block, during the normal execution flow (not early exiting),
+    * MSG_ORDERED_PS_DONE must be sent before this instruction in the block end_block_idx().
+    * If this is out of the bounds of the instructions in the end block, it must be sent in the end
+    * of that block.
+    */
+   size_t instr_after_end_idx() const { return instr_after_end_idx_; }
+
+   /* Whether an instruction doing early exit (such as discard) needs to send MSG_ORDERED_PS_DONE
+    * before actually ending the program.
+    */
+   bool early_exit_needs_done_msg(const int block_idx, const size_t instr_idx) const
+   {
+      return block_idx <= end_block_idx_ &&
+             (block_idx != end_block_idx_ || instr_idx < instr_after_end_idx_);
+   }
+
+private:
+   /* Initialize to an empty range for which "is inside" comparisons will be failing for any
+    * block.
+    */
+   int end_block_idx_ = -1;
+   size_t instr_after_end_idx_ = 0;
+};
+
 /* used by handle_operands() indirectly through Builder::copy */
 uint8_t int8_mul_table[512] = {
    0, 20,  1,  1,   1,  2,   1,  3,   1,  4,   1, 5,   1,  6,   1,  7,   1,  8,   1,  9,
@@ -71,7 +159,7 @@ aco_opcode
 get_reduce_opcode(amd_gfx_level gfx_level, ReduceOp op)
 {
    /* Because some 16-bit instructions are already VOP3 on GFX10, we use the
-    * 32-bit opcodes (VOP2) which allows to remove the tempory VGPR and to use
+    * 32-bit opcodes (VOP2) which allows to remove the temporary VGPR and to use
     * DPP with the arithmetic instructions. This requires to sign-extend.
     */
    switch (op) {
@@ -488,19 +576,20 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
    bld.sop1(Builder::s_or_saveexec, Definition(stmp, bld.lm), Definition(scc, s1),
             Definition(exec, bld.lm), Operand::c64(UINT64_MAX), Operand(exec, bld.lm));
 
-   for (unsigned i = 0; i < src.size(); i++) {
-      /* p_exclusive_scan needs it to be a sgpr or inline constant for the v_writelane_b32
-       * except on GFX10, where v_writelane_b32 can take a literal. */
-      if (identity[i].isLiteral() && op == aco_opcode::p_exclusive_scan &&
-          ctx->program->gfx_level < GFX10) {
-         bld.sop1(aco_opcode::s_mov_b32, Definition(PhysReg{sitmp + i}, s1), identity[i]);
-         identity[i] = Operand(PhysReg{sitmp + i}, s1);
+   /* On GFX10+ v_writelane_b32/v_cndmask_b32_e64 can take a literal */
+   if (ctx->program->gfx_level < GFX10) {
+      for (unsigned i = 0; i < src.size(); i++) {
+         /* p_exclusive_scan uses identity for v_writelane_b32 */
+         if (identity[i].isLiteral() && op == aco_opcode::p_exclusive_scan) {
+            bld.sop1(aco_opcode::s_mov_b32, Definition(PhysReg{sitmp + i}, s1), identity[i]);
+            identity[i] = Operand(PhysReg{sitmp + i}, s1);
 
-         bld.vop1(aco_opcode::v_mov_b32, Definition(PhysReg{tmp + i}, v1), identity[i]);
-         vcndmask_identity[i] = Operand(PhysReg{tmp + i}, v1);
-      } else if (identity[i].isLiteral()) {
-         bld.vop1(aco_opcode::v_mov_b32, Definition(PhysReg{tmp + i}, v1), identity[i]);
-         vcndmask_identity[i] = Operand(PhysReg{tmp + i}, v1);
+            bld.vop1(aco_opcode::v_mov_b32, Definition(PhysReg{tmp + i}, v1), identity[i]);
+            vcndmask_identity[i] = Operand(PhysReg{tmp + i}, v1);
+         } else if (identity[i].isLiteral()) {
+            bld.vop1(aco_opcode::v_mov_b32, Definition(PhysReg{tmp + i}, v1), identity[i]);
+            vcndmask_identity[i] = Operand(PhysReg{tmp + i}, v1);
+         }
       }
    }
 
@@ -648,14 +737,15 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
 
          /* fill in the gaps in rows 1 and 3 */
          bld.sop1(aco_opcode::s_mov_b32, Definition(exec_lo, s1), Operand::c32(0x10000u));
-         bld.sop1(aco_opcode::s_mov_b32, Definition(exec_hi, s1), Operand::c32(0x10000u));
+         if (ctx->program->wave_size == 64)
+            bld.sop1(aco_opcode::s_mov_b32, Definition(exec_hi, s1), Operand::c32(0x10000u));
          for (unsigned i = 0; i < src.size(); i++) {
             Instruction* perm =
                bld.vop3(aco_opcode::v_permlanex16_b32, Definition(PhysReg{vtmp + i}, v1),
                         Operand(PhysReg{tmp + i}, v1), Operand::c32(0xffffffffu),
                         Operand::c32(0xffffffffu))
                   .instr;
-            perm->vop3().opsel = 1; /* FI (Fetch Inactive) */
+            perm->valu().opsel = 1; /* FI (Fetch Inactive) */
          }
          bld.sop1(Builder::s_mov, Definition(exec, bld.lm), Operand::c64(UINT64_MAX));
 
@@ -718,7 +808,7 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
 
       for (unsigned i = 0; i < src.size(); i++) {
          if (!identity[i].isConstant() ||
-             identity[i].constantValue()) { /* bound_ctrl should take care of this overwise */
+             identity[i].constantValue()) { /* bound_ctrl should take care of this otherwise */
             if (ctx->program->gfx_level < GFX10)
                assert((identity[i].isConstant() && !identity[i].isLiteral()) ||
                       identity[i].physReg() == PhysReg{sitmp + i});
@@ -781,15 +871,17 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
       if (ctx->program->gfx_level >= GFX10) {
          bld.sop2(aco_opcode::s_bfm_b32, Definition(exec_lo, s1), Operand::c32(16u),
                   Operand::c32(16u));
-         bld.sop2(aco_opcode::s_bfm_b32, Definition(exec_hi, s1), Operand::c32(16u),
-                  Operand::c32(16u));
+         if (ctx->program->wave_size == 64) {
+            bld.sop2(aco_opcode::s_bfm_b32, Definition(exec_hi, s1), Operand::c32(16u),
+                     Operand::c32(16u));
+         }
          for (unsigned i = 0; i < src.size(); i++) {
             Instruction* perm =
                bld.vop3(aco_opcode::v_permlanex16_b32, Definition(PhysReg{vtmp + i}, v1),
                         Operand(PhysReg{tmp + i}, v1), Operand::c32(0xffffffffu),
                         Operand::c32(0xffffffffu))
                   .instr;
-            perm->vop3().opsel = 1; /* FI (Fetch Inactive) */
+            perm->valu().opsel = 1; /* FI (Fetch Inactive) */
          }
          emit_op(ctx, tmp, tmp, vtmp, PhysReg{0}, reduce_op, src.size());
 
@@ -839,6 +931,67 @@ emit_reduction(lower_context* ctx, aco_opcode op, ReduceOp reduce_op, unsigned c
 }
 
 void
+emit_gfx11_wave64_bpermute(Program* program, aco_ptr<Instruction>& instr, Builder& bld)
+{
+   /* Emulates proper bpermute on GFX11 in wave64 mode.
+    *
+    * Similar to emit_gfx10_wave64_bpermute, but uses the new
+    * v_permlane64_b32 instruction to swap data between lo and hi halves.
+    */
+
+   assert(program->gfx_level >= GFX11);
+   assert(program->wave_size == 64);
+
+   Definition dst = instr->definitions[0];
+   Definition tmp_exec = instr->definitions[1];
+   Definition clobber_scc = instr->definitions[2];
+   Operand tmp_op = instr->operands[0];
+   Operand index_x4 = instr->operands[1];
+   Operand input_data = instr->operands[2];
+   Operand same_half = instr->operands[3];
+
+   assert(dst.regClass() == v1);
+   assert(tmp_exec.regClass() == bld.lm);
+   assert(clobber_scc.isFixed() && clobber_scc.physReg() == scc);
+   assert(same_half.regClass() == bld.lm);
+   assert(tmp_op.regClass() == v1.as_linear());
+   assert(index_x4.regClass() == v1);
+   assert(input_data.regClass().type() == RegType::vgpr);
+   assert(input_data.bytes() <= 4);
+
+   Definition tmp_def(tmp_op.physReg(), tmp_op.regClass());
+
+   /* Permute the input within the same half-wave. */
+   bld.ds(aco_opcode::ds_bpermute_b32, dst, index_x4, input_data);
+
+   /* Save EXEC and enable all lanes. */
+   bld.sop1(aco_opcode::s_or_saveexec_b64, tmp_exec, clobber_scc, Definition(exec, s2),
+            Operand::c32(-1u), Operand(exec, s2));
+
+   /* Copy input data from other half to current half's linear VGPR. */
+   bld.vop1(aco_opcode::v_permlane64_b32, tmp_def, input_data);
+
+   /* Permute the input from the other half-wave, write to linear VGPR. */
+   bld.ds(aco_opcode::ds_bpermute_b32, tmp_def, index_x4, tmp_op);
+
+   /* Restore saved EXEC. */
+   bld.sop1(aco_opcode::s_mov_b64, Definition(exec, s2), Operand(tmp_exec.physReg(), s2));
+
+   /* Select correct permute result. */
+   bld.vop2_e64(aco_opcode::v_cndmask_b32, dst, tmp_op, Operand(dst.physReg(), dst.regClass()),
+                same_half);
+
+   /* RA assumes that the result is always in the low part of the register, so we have to shift,
+    * if it's not there already.
+    */
+   if (input_data.physReg().byte()) {
+      unsigned right_shift = input_data.physReg().byte() * 8;
+      bld.vop2(aco_opcode::v_lshrrev_b32, dst, Operand::c32(right_shift),
+               Operand(dst.physReg(), dst.regClass()));
+   }
+}
+
+void
 emit_gfx10_wave64_bpermute(Program* program, aco_ptr<Instruction>& instr, Builder& bld)
 {
    /* Emulates proper bpermute on GFX10 in wave64 mode.
@@ -848,7 +1001,7 @@ emit_gfx10_wave64_bpermute(Program* program, aco_ptr<Instruction>& instr, Builde
     * manually swap the data between the two halves using two shared VGPRs.
     */
 
-   assert(program->gfx_level >= GFX10);
+   assert(program->gfx_level >= GFX10 && program->gfx_level <= GFX10_3);
    assert(program->wave_size == 64);
 
    unsigned shared_vgpr_reg_0 = align(program->config->num_vgprs, 4) + 256;
@@ -907,8 +1060,9 @@ emit_gfx10_wave64_bpermute(Program* program, aco_ptr<Instruction>& instr, Builde
    /* Restore saved EXEC */
    bld.sop1(aco_opcode::s_mov_b64, Definition(exec, s2), Operand(tmp_exec.physReg(), s2));
 
-   /* RA assumes that the result is always in the low part of the register, so we have to shift, if
-    * it's not there already */
+   /* RA assumes that the result is always in the low part of the register, so we have to shift,
+    * if it's not there already.
+    */
    if (input_data.physReg().byte()) {
       unsigned right_shift = input_data.physReg().byte() * 8;
       bld.vop2(aco_opcode::v_lshrrev_b32, dst, Operand::c32(right_shift),
@@ -976,8 +1130,10 @@ split_copy(lower_context* ctx, unsigned offset, Definition* def, Operand* op,
    def_reg.reg_b += offset;
    op_reg.reg_b += offset;
 
-   /* 64-bit VGPR copies (implemented with v_lshrrev_b64) are slow before GFX10 */
-   if (ctx->program->gfx_level < GFX10 && src.def.regClass().type() == RegType::vgpr)
+   /* 64-bit VGPR copies (implemented with v_lshrrev_b64) are slow before GFX10, and on GFX11
+    * v_lshrrev_b64 doesn't get dual issued. */
+   if ((ctx->program->gfx_level < GFX10 || ctx->program->gfx_level >= GFX11) &&
+       src.def.regClass().type() == RegType::vgpr)
       max_size = MIN2(max_size, 4);
    unsigned max_align = src.def.regClass().type() == RegType::vgpr ? 4 : 16;
 
@@ -1038,6 +1194,25 @@ create_bperm(Builder& bld, uint8_t swiz[4], Definition dst, Operand src1,
 }
 
 void
+emit_v_mov_b16(Builder& bld, Definition dst, Operand op)
+{
+   /* v_mov_b16 uses 32bit inline constants. */
+   if (op.isConstant()) {
+      if (!op.isLiteral() && op.physReg() >= 240) {
+         /* v_add_f16 is smaller because it can use 16bit fp inline constants. */
+         Instruction* instr = bld.vop2_e64(aco_opcode::v_add_f16, dst, op, Operand::zero());
+         instr->valu().opsel[3] = dst.physReg().byte() == 2;
+         return;
+      }
+      op = Operand::c32((int32_t)(int16_t)op.constantValue());
+   }
+
+   Instruction* instr = bld.vop1(aco_opcode::v_mov_b16, dst, op);
+   instr->valu().opsel[0] = op.physReg().byte() == 2;
+   instr->valu().opsel[3] = dst.physReg().byte() == 2;
+}
+
+void
 copy_constant(lower_context* ctx, Builder& bld, Definition dst, Operand op)
 {
    assert(op.bytes() == dst.bytes());
@@ -1054,12 +1229,20 @@ copy_constant(lower_context* ctx, Builder& bld, Definition dst, Operand op)
          else
             bld.vop1(aco_opcode::v_bfrev_b32, dst, Operand::c32(rev));
          return;
-      } else if (dst.regClass() == s1 && imm != 0) {
+      } else if (dst.regClass() == s1) {
          unsigned start = (ffs(imm) - 1) & 0x1f;
          unsigned size = util_bitcount(imm) & 0x1f;
-         if ((((1u << size) - 1u) << start) == imm) {
+         if (BITFIELD_RANGE(start, size) == imm) {
             bld.sop2(aco_opcode::s_bfm_b32, dst, Operand::c32(size), Operand::c32(start));
             return;
+         }
+         if (ctx->program->gfx_level >= GFX9) {
+            Operand op_lo = Operand::c32(int32_t(int16_t(imm)));
+            Operand op_hi = Operand::c32(int32_t(int16_t(imm >> 16)));
+            if (!op_lo.isLiteral() && !op_hi.isLiteral()) {
+               bld.sop2(aco_opcode::s_pack_ll_b32_b16, dst, op_lo, op_hi);
+               return;
+            }
          }
       }
    }
@@ -1072,6 +1255,15 @@ copy_constant(lower_context* ctx, Builder& bld, Definition dst, Operand op)
    } else if (dst.regClass() == s2) {
       /* s_ashr_i64 writes SCC, so we can't use it */
       assert(Operand::is_constant_representable(op.constantValue64(), 8, true, false));
+      uint64_t imm = op.constantValue64();
+      if (op.isLiteral()) {
+         unsigned start = (ffsll(imm) - 1) & 0x3f;
+         unsigned size = util_bitcount64(imm) & 0x3f;
+         if (BITFIELD64_RANGE(start, size) == imm) {
+            bld.sop2(aco_opcode::s_bfm_b64, dst, Operand::c32(size), Operand::c32(start));
+            return;
+         }
+      }
       bld.sop1(aco_opcode::s_mov_b64, dst, op);
    } else if (dst.regClass() == v2) {
       if (Operand::is_constant_representable(op.constantValue64(), 8, true, false)) {
@@ -1102,6 +1294,8 @@ copy_constant(lower_context* ctx, Builder& bld, Definition dst, Operand op)
          } else {
             bld.vop1_sdwa(aco_opcode::v_mov_b32, dst, op32);
          }
+      } else if (dst.regClass() == v2b && ctx->program->gfx_level >= GFX11) {
+         emit_v_mov_b16(bld, dst, op);
       } else if (dst.regClass() == v2b && use_sdwa && !op.isLiteral()) {
          if (op.constantValue() >= 0xfff0 || op.constantValue() <= 64) {
             /* use v_mov_b32 to avoid possible issues with denormal flushing or
@@ -1116,12 +1310,12 @@ copy_constant(lower_context* ctx, Builder& bld, Definition dst, Operand op)
          if (dst.physReg().byte() == 2) {
             Operand def_lo(dst.physReg().advance(-2), v2b);
             Instruction* instr = bld.vop3(aco_opcode::v_pack_b32_f16, dst, def_lo, op);
-            instr->vop3().opsel = 0;
+            instr->valu().opsel = 0;
          } else {
             assert(dst.physReg().byte() == 0);
             Operand def_hi(dst.physReg().advance(2), v2b);
             Instruction* instr = bld.vop3(aco_opcode::v_pack_b32_f16, dst, op, def_hi);
-            instr->vop3().opsel = 2;
+            instr->valu().opsel = 2;
          }
       } else if (can_use_perm) {
          uint8_t swiz[] = {4, 5, 6, 7};
@@ -1197,11 +1391,11 @@ addsub_subdword_gfx11(Builder& bld, Definition dst, Operand src0, Operand src1, 
    Instruction* instr =
       bld.vop3(sub ? aco_opcode::v_sub_u16_e64 : aco_opcode::v_add_u16_e64, dst, src0, src1).instr;
    if (src0.physReg().byte() == 2)
-      instr->vop3().opsel |= 0x1;
+      instr->valu().opsel |= 0x1;
    if (src1.physReg().byte() == 2)
-      instr->vop3().opsel |= 0x2;
+      instr->valu().opsel |= 0x2;
    if (dst.physReg().byte() == 2)
-      instr->vop3().opsel |= 0x8;
+      instr->valu().opsel |= 0x8;
 }
 
 bool
@@ -1276,7 +1470,7 @@ do_copy(lower_context* ctx, Builder& bld, const copy_operation& copy, bool* pres
          swiz[def.physReg().byte()] = op.physReg().byte();
          create_bperm(bld, swiz, def, op);
       } else if (def.regClass() == v2b && ctx->program->gfx_level >= GFX11) {
-         addsub_subdword_gfx11(bld, def, op, Operand::zero(), false);
+         emit_v_mov_b16(bld, def, op);
       } else if (def.regClass().is_subdword()) {
          bld.vop1_sdwa(aco_opcode::v_mov_b32, def, op);
       } else {
@@ -1445,14 +1639,14 @@ do_pack_2x16(lower_context* ctx, Builder& bld, Definition def, Operand lo, Opera
    if (can_use_pack) {
       Instruction* instr = bld.vop3(aco_opcode::v_pack_b32_f16, def, lo, hi);
       /* opsel: 0 = select low half, 1 = select high half. [0] = src0, [1] = src1 */
-      instr->vop3().opsel = hi.physReg().byte() | (lo.physReg().byte() >> 1);
+      instr->valu().opsel = hi.physReg().byte() | (lo.physReg().byte() >> 1);
       return;
    }
 
    /* a single alignbyte can be sufficient: hi can be a 32-bit integer constant */
    if (lo.physReg().byte() == 2 && hi.physReg().byte() == 0 &&
-       (!hi.isConstant() || !Operand::c32(hi.constantValue()).isLiteral() ||
-        ctx->program->gfx_level >= GFX10)) {
+       (!hi.isConstant() || (hi.constantValue() && (!Operand::c32(hi.constantValue()).isLiteral() ||
+                                                    ctx->program->gfx_level >= GFX10)))) {
       if (hi.isConstant())
          bld.vop3(aco_opcode::v_alignbyte_b32, def, Operand::c32(hi.constantValue()), lo,
                   Operand::c32(2u));
@@ -1470,18 +1664,22 @@ do_pack_2x16(lower_context* ctx, Builder& bld, Definition def, Operand lo, Opera
          bld.vop2(aco_opcode::v_lshlrev_b32, def_hi, Operand::c32(16u), hi);
       else
          bld.vop2(aco_opcode::v_and_b32, def_hi, Operand::c32(~0xFFFFu), hi);
-      bld.vop2(aco_opcode::v_or_b32, def, Operand::c32(lo.constantValue()),
-               Operand(def.physReg(), v1));
+      if (lo.constantValue())
+         bld.vop2(aco_opcode::v_or_b32, def, Operand::c32(lo.constantValue()),
+                  Operand(def.physReg(), v1));
       return;
    }
    if (hi.isConstant()) {
       /* move lo and zero high bits */
       if (lo.physReg().byte() == 2)
          bld.vop2(aco_opcode::v_lshrrev_b32, def_lo, Operand::c32(16u), lo);
+      else if (ctx->program->gfx_level >= GFX11)
+         bld.vop1(aco_opcode::v_cvt_u32_u16, def, lo);
       else
          bld.vop2(aco_opcode::v_and_b32, def_lo, Operand::c32(0xFFFFu), lo);
-      bld.vop2(aco_opcode::v_or_b32, def, Operand::c32(hi.constantValue() << 16u),
-               Operand(def.physReg(), v1));
+      if (hi.constantValue())
+         bld.vop2(aco_opcode::v_or_b32, def, Operand::c32(hi.constantValue() << 16u),
+                  Operand(def.physReg(), v1));
       return;
    }
 
@@ -1509,9 +1707,9 @@ do_pack_2x16(lower_context* ctx, Builder& bld, Definition def, Operand lo, Opera
    /* either hi or lo are already placed correctly */
    if (ctx->program->gfx_level >= GFX11) {
       if (lo.physReg().reg() == def.physReg().reg())
-         addsub_subdword_gfx11(bld, def_hi, hi, Operand::zero(), false);
+         emit_v_mov_b16(bld, def_hi, hi);
       else
-         addsub_subdword_gfx11(bld, def_lo, lo, Operand::zero(), false);
+         emit_v_mov_b16(bld, def_lo, lo);
       return;
    } else if (ctx->program->gfx_level >= GFX8) {
       if (lo.physReg().reg() == def.physReg().reg())
@@ -1653,7 +1851,7 @@ handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context* ctx,
    bool skip_partial_copies = true;
    for (auto it = copy_map.begin();;) {
       if (copy_map.empty()) {
-         ctx->program->statistics[statistic_copies] +=
+         ctx->program->statistics[aco_statistic_copies] +=
             ctx->instructions.size() - num_instructions_before;
          return;
       }
@@ -1961,7 +2159,8 @@ handle_operands(std::map<PhysReg, copy_operation>& copy_map, lower_context* ctx,
             break;
       }
    }
-   ctx->program->statistics[statistic_copies] += ctx->instructions.size() - num_instructions_before;
+   ctx->program->statistics[aco_statistic_copies] +=
+      ctx->instructions.size() - num_instructions_before;
 }
 
 void
@@ -2001,9 +2200,106 @@ emit_set_mode_from_block(Builder& bld, Program& program, Block* block, bool alwa
 }
 
 void
+hw_init_scratch(Builder& bld, Definition def, Operand scratch_addr, Operand scratch_offset)
+{
+   /* Since we know what the high 16 bits of scratch_hi is, we can set all the high 16
+    * bits in the same instruction that we add the carry.
+    */
+   Operand hi_add = Operand::c32(0xffff0000 - S_008F04_SWIZZLE_ENABLE_GFX6(1));
+   Operand scratch_addr_lo(scratch_addr.physReg(), s1);
+   Operand scratch_addr_hi(scratch_addr_lo.physReg().advance(4), s1);
+
+   if (bld.program->gfx_level >= GFX10) {
+      PhysReg scratch_lo = def.physReg();
+      PhysReg scratch_hi = def.physReg().advance(4);
+
+      bld.sop2(aco_opcode::s_add_u32, Definition(scratch_lo, s1), Definition(scc, s1),
+               scratch_addr_lo, scratch_offset);
+      bld.sop2(aco_opcode::s_addc_u32, Definition(scratch_hi, s1), Definition(scc, s1),
+               scratch_addr_hi, hi_add, Operand(scc, s1));
+
+      /* "((size - 1) << 11) | register" (FLAT_SCRATCH_LO/HI is encoded as register
+       * 20/21) */
+      bld.sopk(aco_opcode::s_setreg_b32, Operand(scratch_lo, s1), (31 << 11) | 20);
+      bld.sopk(aco_opcode::s_setreg_b32, Operand(scratch_hi, s1), (31 << 11) | 21);
+   } else {
+      bld.sop2(aco_opcode::s_add_u32, Definition(flat_scr_lo, s1), Definition(scc, s1),
+               scratch_addr_lo, scratch_offset);
+      bld.sop2(aco_opcode::s_addc_u32, Definition(flat_scr_hi, s1), Definition(scc, s1),
+               scratch_addr_hi, hi_add, Operand(scc, s1));
+   }
+}
+
+void
+lower_image_sample(lower_context* ctx, aco_ptr<Instruction>& instr)
+{
+   Operand linear_vgpr = instr->operands[3];
+
+   unsigned nsa_size = ctx->program->dev.max_nsa_vgprs;
+   unsigned vaddr_size = linear_vgpr.size();
+   unsigned num_copied_vgprs = instr->operands.size() - 4;
+   nsa_size = num_copied_vgprs > 0 && (ctx->program->gfx_level >= GFX11 || vaddr_size <= nsa_size)
+                 ? nsa_size
+                 : 0;
+
+   Operand vaddr[16];
+   unsigned num_vaddr = 0;
+
+   if (nsa_size) {
+      assert(num_copied_vgprs <= nsa_size);
+      for (unsigned i = 0; i < num_copied_vgprs; i++)
+         vaddr[num_vaddr++] = instr->operands[4 + i];
+      for (unsigned i = num_copied_vgprs; i < std::min(vaddr_size, nsa_size); i++)
+         vaddr[num_vaddr++] = Operand(linear_vgpr.physReg().advance(i * 4), v1);
+      if (vaddr_size > nsa_size) {
+         RegClass rc = RegClass::get(RegType::vgpr, (vaddr_size - nsa_size) * 4);
+         vaddr[num_vaddr++] = Operand(PhysReg(linear_vgpr.physReg().advance(nsa_size * 4)), rc);
+      }
+   } else {
+      PhysReg reg = linear_vgpr.physReg();
+      std::map<PhysReg, copy_operation> copy_operations;
+      for (unsigned i = 4; i < instr->operands.size(); i++) {
+         Operand arg = instr->operands[i];
+         Definition def(reg, RegClass::get(RegType::vgpr, arg.bytes()));
+         copy_operations[def.physReg()] = {arg, def, def.bytes()};
+         reg = reg.advance(arg.bytes());
+      }
+      vaddr[num_vaddr++] = linear_vgpr;
+
+      Pseudo_instruction pi = {};
+      handle_operands(copy_operations, ctx, ctx->program->gfx_level, &pi);
+   }
+
+   instr->mimg().strict_wqm = false;
+
+   if ((3 + num_vaddr) > instr->operands.size()) {
+      MIMG_instruction* new_instr = create_instruction<MIMG_instruction>(
+         instr->opcode, Format::MIMG, 3 + num_vaddr, instr->definitions.size());
+      std::copy(instr->definitions.cbegin(), instr->definitions.cend(),
+                new_instr->definitions.begin());
+      new_instr->operands[0] = instr->operands[0];
+      new_instr->operands[1] = instr->operands[1];
+      new_instr->operands[2] = instr->operands[2];
+      memcpy((uint8_t*)new_instr + sizeof(Instruction), (uint8_t*)instr.get() + sizeof(Instruction),
+             sizeof(MIMG_instruction) - sizeof(Instruction));
+      instr.reset(new_instr);
+   } else {
+      while (instr->operands.size() > (3 + num_vaddr))
+         instr->operands.pop_back();
+   }
+   std::copy(vaddr, vaddr + num_vaddr, std::next(instr->operands.begin(), 3));
+}
+
+void
 lower_to_hw_instr(Program* program)
 {
-   Block* discard_block = NULL;
+   gfx9_pops_done_msg_bounds pops_done_msg_bounds;
+   if (program->has_pops_overlapped_waves_wait && program->gfx_level < GFX11) {
+      pops_done_msg_bounds = gfx9_pops_done_msg_bounds(program);
+   }
+
+   Block* discard_exit_block = NULL;
+   Block* discard_pops_done_and_exit_block = NULL;
 
    bool should_dealloc_vgprs = dealloc_vgprs(program);
 
@@ -2019,6 +2315,19 @@ lower_to_hw_instr(Program* program)
 
       for (size_t instr_idx = 0; instr_idx < block->instructions.size(); instr_idx++) {
          aco_ptr<Instruction>& instr = block->instructions[instr_idx];
+
+         /* Send the ordered section done message from the middle of the block if needed (if the
+          * ordered section is ended by an instruction inside this block).
+          * Also make sure the done message is sent if it's needed in case early exit happens for
+          * any reason.
+          */
+         if ((block_idx == pops_done_msg_bounds.end_block_idx() &&
+              instr_idx == pops_done_msg_bounds.instr_after_end_idx()) ||
+             (instr->opcode == aco_opcode::s_endpgm &&
+              pops_done_msg_bounds.early_exit_needs_done_msg(block_idx, instr_idx))) {
+            bld.sopp(aco_opcode::s_sendmsg, -1, sendmsg_ordered_ps_done);
+         }
+
          aco_ptr<Instruction> mov;
          if (instr->isPseudo() && instr->opcode != aco_opcode::p_unit_test) {
             Pseudo_instruction* pi = &instr->pseudo();
@@ -2095,12 +2404,25 @@ lower_to_hw_instr(Program* program)
                handle_operands(copy_operations, &ctx, program->gfx_level, pi);
                break;
             }
+            case aco_opcode::p_start_linear_vgpr: {
+               if (instr->operands.empty())
+                  break;
+
+               Definition def(instr->definitions[0].physReg(),
+                              RegClass::get(RegType::vgpr, instr->definitions[0].bytes()));
+
+               std::map<PhysReg, copy_operation> copy_operations;
+               copy_operations[def.physReg()] = {instr->operands[0], def,
+                                                 instr->operands[0].bytes()};
+               handle_operands(copy_operations, &ctx, program->gfx_level, pi);
+               break;
+            }
             case aco_opcode::p_exit_early_if: {
                /* don't bother with an early exit near the end of the program */
                if ((block->instructions.size() - 1 - instr_idx) <= 4 &&
                    block->instructions.back()->opcode == aco_opcode::s_endpgm) {
                   unsigned null_exp_dest =
-                     (ctx.program->stage.hw == HWStage::FS) ? 9 /* NULL */ : V_008DFC_SQ_EXP_POS;
+                     program->gfx_level >= GFX11 ? V_008DFC_SQ_EXP_MRT : V_008DFC_SQ_EXP_NULL;
                   bool ignore_early_exit = true;
 
                   for (unsigned k = instr_idx + 1; k < block->instructions.size(); ++k) {
@@ -2109,7 +2431,8 @@ lower_to_hw_instr(Program* program)
                          instr2->opcode == aco_opcode::p_logical_end)
                         continue;
                      else if (instr2->opcode == aco_opcode::exp &&
-                              instr2->exp().dest == null_exp_dest)
+                              instr2->exp().dest == null_exp_dest &&
+                              instr2->exp().enabled_mask == 0)
                         continue;
                      else if (instr2->opcode == aco_opcode::p_parallelcopy &&
                               instr2->definitions[0].isFixed() &&
@@ -2123,15 +2446,46 @@ lower_to_hw_instr(Program* program)
                      break;
                }
 
+               const bool discard_sends_pops_done =
+                  pops_done_msg_bounds.early_exit_needs_done_msg(block_idx, instr_idx);
+
+               Block* discard_block =
+                  discard_sends_pops_done ? discard_pops_done_and_exit_block : discard_exit_block;
                if (!discard_block) {
                   discard_block = program->create_and_insert_block();
                   discard_block->kind = block_kind_discard_early_exit;
+                  if (discard_sends_pops_done) {
+                     discard_pops_done_and_exit_block = discard_block;
+                  } else {
+                     discard_exit_block = discard_block;
+                  }
                   block = &program->blocks[block_idx];
 
                   bld.reset(discard_block);
-                  bld.exp(aco_opcode::exp, Operand(v1), Operand(v1), Operand(v1), Operand(v1), 0,
-                          program->gfx_level >= GFX11 ? V_008DFC_SQ_EXP_MRT : V_008DFC_SQ_EXP_NULL,
-                          false, true, true);
+                  if (program->has_pops_overlapped_waves_wait &&
+                      (program->gfx_level >= GFX11 || discard_sends_pops_done)) {
+                     /* If this discard early exit potentially exits the POPS ordered section, do
+                      * the waitcnt necessary before resuming overlapping waves as the normal
+                      * waitcnt insertion doesn't work in a discard early exit block.
+                      */
+                     if (program->gfx_level >= GFX10)
+                        bld.sopk(aco_opcode::s_waitcnt_vscnt, Definition(sgpr_null, s1), 0);
+                     wait_imm pops_exit_wait_imm;
+                     pops_exit_wait_imm.vm = 0;
+                     if (program->has_smem_buffer_or_global_loads)
+                        pops_exit_wait_imm.lgkm = 0;
+                     bld.sopp(aco_opcode::s_waitcnt, -1,
+                              pops_exit_wait_imm.pack(program->gfx_level));
+                  }
+                  if (discard_sends_pops_done)
+                     bld.sopp(aco_opcode::s_sendmsg, -1, sendmsg_ordered_ps_done);
+                  unsigned target = V_008DFC_SQ_EXP_NULL;
+                  if (program->gfx_level >= GFX11)
+                     target =
+                        program->has_color_exports ? V_008DFC_SQ_EXP_MRT : V_008DFC_SQ_EXP_MRTZ;
+                  if (program->stage == fragment_fs)
+                     bld.exp(aco_opcode::exp, Operand(v1), Operand(v1), Operand(v1), Operand(v1), 0,
+                             target, false, true, true);
                   if (should_dealloc_vgprs)
                      bld.sopp(aco_opcode::s_sendmsg, -1, sendmsg_dealloc_vgprs);
                   bld.sopp(aco_opcode::s_endpgm);
@@ -2186,13 +2540,21 @@ lower_to_hw_instr(Program* program)
                }
                break;
             }
-            case aco_opcode::p_bpermute: {
-               if (ctx.program->gfx_level <= GFX7)
-                  emit_gfx6_bpermute(program, instr, bld);
-               else if (ctx.program->gfx_level >= GFX10 && ctx.program->wave_size == 64)
-                  emit_gfx10_wave64_bpermute(program, instr, bld);
-               else
-                  unreachable("Current hardware supports ds_bpermute, don't emit p_bpermute.");
+            case aco_opcode::p_pops_gfx9_add_exiting_wave_id: {
+               bld.sop2(aco_opcode::s_add_i32, instr->definitions[0], instr->definitions[1],
+                        Operand(pops_exiting_wave_id, s1), instr->operands[0]);
+               break;
+            }
+            case aco_opcode::p_bpermute_gfx6: {
+               emit_gfx6_bpermute(program, instr, bld);
+               break;
+            }
+            case aco_opcode::p_bpermute_gfx10w64: {
+               emit_gfx10_wave64_bpermute(program, instr, bld);
+               break;
+            }
+            case aco_opcode::p_bpermute_gfx11w64: {
+               emit_gfx11_wave64_bpermute(program, instr, bld);
                break;
             }
             case aco_opcode::p_constaddr: {
@@ -2201,6 +2563,28 @@ lower_to_hw_instr(Program* program)
                bld.sop1(aco_opcode::p_constaddr_getpc, instr->definitions[0], Operand::c32(id));
                bld.sop2(aco_opcode::p_constaddr_addlo, Definition(reg, s1), bld.def(s1, scc),
                         Operand(reg, s1), instr->operands[0], Operand::c32(id));
+               /* s_addc_u32 not needed because the program is in a 32-bit VA range */
+               break;
+            }
+            case aco_opcode::p_resume_shader_address: {
+               /* Find index of resume block. */
+               unsigned resume_idx = instr->operands[0].constantValue();
+               unsigned resume_block_idx = 0;
+               for (Block& resume_block : program->blocks) {
+                  if (resume_block.kind & block_kind_resume) {
+                     if (resume_idx == 0) {
+                        resume_block_idx = resume_block.index;
+                        break;
+                     }
+                     resume_idx--;
+                  }
+               }
+               assert(resume_block_idx != 0);
+               unsigned id = instr->definitions[0].tempId();
+               PhysReg reg = instr->definitions[0].physReg();
+               bld.sop1(aco_opcode::p_resumeaddr_getpc, instr->definitions[0], Operand::c32(id));
+               bld.sop2(aco_opcode::p_resumeaddr_addlo, Definition(reg, s1), bld.def(s1, scc),
+                        Operand(reg, s1), Operand::c32(resume_block_idx), Operand::c32(id));
                /* s_addc_u32 not needed because the program is in a 32-bit VA range */
                break;
             }
@@ -2236,6 +2620,9 @@ lower_to_hw_instr(Program* program)
                   if (offset == (32 - bits) && op.regClass() != s1) {
                      bld.vop2(signext ? aco_opcode::v_ashrrev_i32 : aco_opcode::v_lshrrev_b32, dst,
                               Operand::c32(offset), op);
+                  } else if (offset == 0 && bits == 16 && ctx.program->gfx_level >= GFX11) {
+                     bld.vop1(signext ? aco_opcode::v_cvt_i32_i16 : aco_opcode::v_cvt_u32_u16, dst,
+                              op);
                   } else {
                      bld.vop3(signext ? aco_opcode::v_bfe_i32 : aco_opcode::v_bfe_u32, dst, op,
                               Operand::c32(offset), Operand::c32(bits));
@@ -2274,8 +2661,7 @@ lower_to_hw_instr(Program* program)
                         create_bperm(bld, ext_swiz, dst, Operand::zero());
                      }
                   } else {
-                     SDWA_instruction& sdwa =
-                        bld.vop1_sdwa(aco_opcode::v_mov_b32, dst, op).instr->sdwa();
+                     SDWA_instruction& sdwa = bld.vop1_sdwa(aco_opcode::v_mov_b32, dst, op)->sdwa();
                      sdwa.sel[0] = SubdwordSel(bits / 8, offset / 8, signext);
                   }
                }
@@ -2313,7 +2699,7 @@ lower_to_hw_instr(Program* program)
                   } else if (offset == 0 && (dst.regClass() == v1 || program->gfx_level <= GFX7)) {
                      bld.vop3(aco_opcode::v_bfe_u32, dst, op, Operand::zero(), Operand::c32(bits));
                   } else if (has_sdwa && (op.regClass() != s1 || program->gfx_level >= GFX9)) {
-                     bld.vop1_sdwa(aco_opcode::v_mov_b32, dst, op).instr->sdwa().dst_sel =
+                     bld.vop1_sdwa(aco_opcode::v_mov_b32, dst, op)->sdwa().dst_sel =
                         SubdwordSel(bits / 8, offset / 8, false);
                   } else if (program->gfx_level >= GFX11) {
                      uint8_t swiz[] = {4, 5, 6, 7};
@@ -2330,7 +2716,7 @@ lower_to_hw_instr(Program* program)
                } else {
                   assert(dst.regClass() == v2b);
                   bld.vop2_sdwa(aco_opcode::v_lshlrev_b32, dst, Operand::c32(offset), op)
-                     .instr->sdwa()
+                     ->sdwa()
                      .sel[1] = SubdwordSel::ubyte;
                }
                break;
@@ -2341,57 +2727,37 @@ lower_to_hw_instr(Program* program)
                   break;
 
                Operand scratch_addr = instr->operands[0];
-               Operand scratch_addr_lo(scratch_addr.physReg(), s1);
-               if (program->stage.hw != HWStage::CS) {
+               if (scratch_addr.isUndefined()) {
+                  PhysReg reg = instr->definitions[0].physReg();
+                  bld.sop1(aco_opcode::p_load_symbol, Definition(reg, s1),
+                           Operand::c32(aco_symbol_scratch_addr_lo));
+                  bld.sop1(aco_opcode::p_load_symbol, Definition(reg.advance(4), s1),
+                           Operand::c32(aco_symbol_scratch_addr_hi));
+                  scratch_addr.setFixed(reg);
+               } else if (program->stage.hw != AC_HW_COMPUTE_SHADER) {
                   bld.smem(aco_opcode::s_load_dwordx2, instr->definitions[0], scratch_addr,
                            Operand::zero());
-                  scratch_addr_lo.setFixed(instr->definitions[0].physReg());
+                  scratch_addr.setFixed(instr->definitions[0].physReg());
                }
-               Operand scratch_addr_hi(scratch_addr_lo.physReg().advance(4), s1);
 
-               /* Since we know what the high 16 bits of scratch_hi is, we can set all the high 16
-                * bits in the same instruction that we add the carry.
-                */
-               uint32_t hi_add = 0xffff0000 - S_008F04_SWIZZLE_ENABLE_GFX6(1);
-
-               if (program->gfx_level >= GFX10) {
-                  Operand scratch_lo(instr->definitions[0].physReg(), s1);
-                  Operand scratch_hi(instr->definitions[0].physReg().advance(4), s1);
-
-                  bld.sop2(aco_opcode::s_add_u32, Definition(scratch_lo.physReg(), s1),
-                           Definition(scc, s1), scratch_addr_lo, instr->operands[1]);
-                  bld.sop2(aco_opcode::s_addc_u32, Definition(scratch_hi.physReg(), s1),
-                           Definition(scc, s1), scratch_addr_hi, Operand::c32(hi_add),
-                           Operand(scc, s1));
-
-                  /* "((size - 1) << 11) | register" (FLAT_SCRATCH_LO/HI is encoded as register
-                   * 20/21) */
-                  bld.sopk(aco_opcode::s_setreg_b32, scratch_lo, (31 << 11) | 20);
-                  bld.sopk(aco_opcode::s_setreg_b32, scratch_hi, (31 << 11) | 21);
-               } else {
-                  bld.sop2(aco_opcode::s_add_u32, Definition(flat_scr_lo, s1), Definition(scc, s1),
-                           scratch_addr_lo, instr->operands[1]);
-                  bld.sop2(aco_opcode::s_addc_u32, Definition(flat_scr_hi, s1), Definition(scc, s1),
-                           scratch_addr_hi, Operand::c32(hi_add), Operand(scc, s1));
-               }
+               hw_init_scratch(bld, instr->definitions[0], scratch_addr, instr->operands[1]);
                break;
             }
             case aco_opcode::p_jump_to_epilog: {
+               if (pops_done_msg_bounds.early_exit_needs_done_msg(block_idx, instr_idx)) {
+                  bld.sopp(aco_opcode::s_sendmsg, -1, sendmsg_ordered_ps_done);
+               }
                bld.sop1(aco_opcode::s_setpc_b64, instr->operands[0]);
                break;
             }
             case aco_opcode::p_interp_gfx11: {
                assert(instr->definitions[0].regClass() == v1 ||
                       instr->definitions[0].regClass() == v2b);
-               assert(instr->definitions[1].regClass() == bld.lm);
-               assert(instr->definitions[2].isFixed() && instr->definitions[2].physReg() == scc);
                assert(instr->operands[0].regClass() == v1.as_linear());
                assert(instr->operands[1].isConstant());
                assert(instr->operands[2].isConstant());
                assert(instr->operands.back().physReg() == m0);
                Definition dst = instr->definitions[0];
-               PhysReg exec_tmp = instr->definitions[1].physReg();
-               Definition clobber_scc = instr->definitions[2];
                PhysReg lin_vgpr = instr->operands[0].physReg();
                unsigned attribute = instr->operands[1].constantValue();
                unsigned component = instr->operands[2].constantValue();
@@ -2407,12 +2773,8 @@ lower_to_hw_instr(Program* program)
                   dpp_ctrl = instr->operands[3].constantValue();
                }
 
-               bld.sop1(Builder::s_mov, Definition(exec_tmp, bld.lm), Operand(exec, bld.lm));
-               bld.sop1(Builder::s_wqm, Definition(exec, bld.lm), clobber_scc,
-                        Operand(exec, bld.lm));
                bld.ldsdir(aco_opcode::lds_param_load, Definition(lin_vgpr, v1), Operand(m0, s1),
                           attribute, component);
-               bld.sop1(Builder::s_mov, Definition(exec, bld.lm), Operand(exec_tmp, bld.lm));
 
                Operand p(lin_vgpr, v1);
                Operand dst_op(dst.physReg(), v1);
@@ -2472,7 +2834,7 @@ lower_to_hw_instr(Program* program)
                   Builder::Result ret =
                      bld.vop1_dpp8(aco_opcode::v_mov_b32, Definition(dst0, v1), src0);
                   for (unsigned j = 0; j < 8; j++) {
-                     ret.instr->dpp8().lane_sel[j] = j ^ 1;
+                     ret->dpp8().lane_sel[j] = j ^ 1;
                   }
 
                   /* Swap even lanes between mrt0 and mrt1. */
@@ -2485,7 +2847,7 @@ lower_to_hw_instr(Program* program)
                   ret = bld.vop1_dpp8(aco_opcode::v_mov_b32, Definition(dst0, v1),
                                       Operand(tmp.physReg(), v1));
                   for (unsigned j = 0; j < 8; j++) {
-                     ret.instr->dpp8().lane_sel[j] = j ^ 1;
+                     ret->dpp8().lane_sel[j] = j ^ 1;
                   }
 
                   mrt0[i] = Operand(dst0, v1);
@@ -2515,7 +2877,8 @@ lower_to_hw_instr(Program* program)
          } else if (instr->isBranch()) {
             Pseudo_branch_instruction* branch = &instr->branch();
             const uint32_t target = branch->target[0];
-            const bool uniform_branch = !(branch->opcode == aco_opcode::p_cbranch_z &&
+            const bool uniform_branch = !((branch->opcode == aco_opcode::p_cbranch_z ||
+                                           branch->opcode == aco_opcode::p_cbranch_nz) &&
                                           branch->operands[0].physReg() == exec);
 
             /* Check if the branch instruction can be removed.
@@ -2527,9 +2890,7 @@ lower_to_hw_instr(Program* program)
              * - The compiler stack knows that it's a divergent branch always taken
              */
             const bool prefer_remove =
-               (branch->selection_control == nir_selection_control_flatten ||
-                branch->selection_control == nir_selection_control_divergent_always_taken) &&
-               ctx.program->gfx_level >= GFX10;
+               branch->selection_control_remove && ctx.program->gfx_level >= GFX10;
             bool can_remove = block->index < target;
             unsigned num_scalar = 0;
             unsigned num_vector = 0;
@@ -2552,14 +2913,15 @@ lower_to_hw_instr(Program* program)
                      bool is_break_continue =
                         program->blocks[i].kind & (block_kind_break | block_kind_continue);
                      bool discard_early_exit =
-                        discard_block && (unsigned)inst->sopp().block == discard_block->index;
+                        inst->sopp().block != -1 &&
+                        (program->blocks[inst->sopp().block].kind & block_kind_discard_early_exit);
                      if ((inst->opcode != aco_opcode::s_cbranch_scc0 &&
                           inst->opcode != aco_opcode::s_cbranch_scc1) ||
                          (!discard_early_exit && !is_break_continue))
                         can_remove = false;
                   } else if (inst->isSALU()) {
                      num_scalar++;
-                  } else if (inst->isVALU() || inst->isVINTRP() || inst->isVINTERP_INREG()) {
+                  } else if (inst->isVALU() || inst->isVINTRP()) {
                      num_vector++;
                      /* VALU which writes SGPRs are always executed on GFX10+ */
                      if (ctx.program->gfx_level >= GFX10) {
@@ -2669,10 +3031,23 @@ lower_to_hw_instr(Program* program)
             ctx.instructions.emplace_back(std::move(instr));
 
             emit_set_mode(bld, block->fp_mode, set_round, false);
+         } else if (instr->isMIMG() && instr->mimg().strict_wqm) {
+            lower_image_sample(&ctx, instr);
+            ctx.instructions.emplace_back(std::move(instr));
          } else {
             ctx.instructions.emplace_back(std::move(instr));
          }
       }
+
+      /* Send the ordered section done message from this block if it's needed in this block, but
+       * instr_after_end_idx() points beyond the end of its instructions. This may commonly happen
+       * if the common post-dominator of multiple end locations turns out to be an empty block.
+       */
+      if (block_idx == pops_done_msg_bounds.end_block_idx() &&
+          pops_done_msg_bounds.instr_after_end_idx() >= block->instructions.size()) {
+         bld.sopp(aco_opcode::s_sendmsg, -1, sendmsg_ordered_ps_done);
+      }
+
       block->instructions = std::move(ctx.instructions);
    }
 }

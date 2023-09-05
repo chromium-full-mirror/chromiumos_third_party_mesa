@@ -294,10 +294,6 @@ v3d_choose_spill_node(struct v3d_compile *c)
                         if (inst->is_last_thrsw)
                                 started_last_seg = true;
 
-                        if (v3d_qpu_writes_vpm(&inst->qpu) ||
-                            v3d_qpu_uses_tlb(&inst->qpu))
-                                started_last_seg = true;
-
                         /* Track when we're in between a TMU setup and the
                          * final LDTMU or TMUWT from that TMU setup.  We
                          * penalize spills during that time.
@@ -309,6 +305,11 @@ v3d_choose_spill_node(struct v3d_compile *c)
                                 in_tmu_operation = true;
                 }
         }
+
+        /* We always emit a "last thrsw" to ensure all our spilling occurs
+         * before the last thread section. See vir_emit_last_thrsw.
+         */
+        assert(started_last_seg);
 
         for (unsigned i = 0; i < c->num_temps; i++) {
                 if (BITSET_TEST(c->spillable, i)) {
@@ -443,6 +444,7 @@ v3d_emit_spill_tmua(struct v3d_compile *c,
         struct qreg tmua = vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_TMUAU);
         struct qinst *inst = vir_ADD_dest(c, tmua, c->spill_base, offset);
         inst->qpu.flags.ac = cond;
+        inst->ldtmu_count = 1;
         inst->uniform = vir_get_uniform_index(c, QUNIFORM_CONSTANT,
                                               0xffffff7f); /* per-quad */
 

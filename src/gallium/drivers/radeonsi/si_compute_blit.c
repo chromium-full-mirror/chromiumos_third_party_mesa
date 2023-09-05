@@ -1,32 +1,14 @@
 /*
  * Copyright 2018 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
 #include "si_pipe.h"
 #include "util/format/u_format.h"
 #include "util/format_srgb.h"
 #include "util/u_helpers.h"
+#include "util/hash_table.h"
 
 static bool si_can_use_compute_blit(struct si_context *sctx, enum pipe_format format,
                                     unsigned num_samples, bool is_store, bool has_dcc)
@@ -171,9 +153,6 @@ static void si_launch_grid_internal(struct si_context *sctx, const struct pipe_g
    if (flags & SI_OP_SYNC_CS_BEFORE)
       sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH;
 
-   if (!(flags & SI_OP_CS_IMAGE))
-      sctx->flags |= SI_CONTEXT_PFP_SYNC_ME;
-
    /* Invalidate L0-L1 caches. */
    /* sL0 is never invalidated, because src resources don't use it. */
    if (!(flags & SI_OP_SKIP_CACHE_INV_BEFORE))
@@ -181,10 +160,14 @@ static void si_launch_grid_internal(struct si_context *sctx, const struct pipe_g
 
    /* Set settings for driver-internal compute dispatches. */
    sctx->flags &= ~SI_CONTEXT_START_PIPELINE_STATS;
-   sctx->flags |= SI_CONTEXT_STOP_PIPELINE_STATS;
+   if (sctx->num_hw_pipestat_streamout_queries)
+      sctx->flags |= SI_CONTEXT_STOP_PIPELINE_STATS;
 
    if (!(flags & SI_OP_CS_RENDER_COND_ENABLE))
       sctx->render_cond_enabled = false;
+
+   /* Force-disable fbfetch because there are unsolvable recursion problems. */
+   si_force_disable_ps_colorbuf0_slot(sctx);
 
    /* Skip decompression to prevent infinite recursion. */
    sctx->blitter_running = true;
@@ -197,9 +180,14 @@ static void si_launch_grid_internal(struct si_context *sctx, const struct pipe_g
 
    /* Restore default settings. */
    sctx->flags &= ~SI_CONTEXT_STOP_PIPELINE_STATS;
-   sctx->flags |= SI_CONTEXT_START_PIPELINE_STATS;
+   if (sctx->num_hw_pipestat_streamout_queries)
+      sctx->flags |= SI_CONTEXT_START_PIPELINE_STATS;
+
    sctx->render_cond_enabled = sctx->render_cond;
    sctx->blitter_running = false;
+
+   /* We force-disabled fbfetch, so recompute the state. */
+   si_update_ps_colorbuf0_slot(sctx);
 
    if (flags & SI_OP_SYNC_AFTER) {
       sctx->flags |= SI_CONTEXT_CS_PARTIAL_FLUSH;
@@ -488,7 +476,7 @@ void si_clear_buffer(struct si_context *sctx, struct pipe_resource *dst,
 
       sctx->b.buffer_subdata(&sctx->b, dst,
                              PIPE_MAP_WRITE |
-                             /* TC forbids drivers to invalidate buffers and infer unsychronized mappings,
+                             /* TC forbids drivers to invalidate buffers and infer unsynchronized mappings,
                               * so suppress those optimizations. */
                              (sctx->tc ? TC_TRANSFER_MAP_NO_INFER_UNSYNCHRONIZED |
                                          TC_TRANSFER_MAP_NO_INVALIDATE : 0),
@@ -579,7 +567,7 @@ static void si_launch_grid_internal_images(struct si_context *sctx,
       /* Simplify the format according to what image stores support. */
       if (images[i].access & PIPE_IMAGE_ACCESS_WRITE) {
          images[i].format = util_format_linear(images[i].format); /* SRGB not supported */
-         images[i].format = util_format_luminance_to_red(images[i].format);
+         /* Keep L8A8 formats as-is because GFX7 is unable to store into R8A8 for some reason. */
          images[i].format = util_format_intensity_to_red(images[i].format);
          images[i].format = util_format_rgbx_to_rgba(images[i].format); /* prevent partial writes */
       }
@@ -704,11 +692,6 @@ bool si_compute_copy_image(struct si_context *sctx, struct pipe_resource *dst, u
       dst_access |= SI_IMAGE_ACCESS_BLOCK_FORMAT_AS_UINT;
 
       dstx = util_format_get_nblocksx(src_format, dstx);
-
-      new_box = *src_box;
-      new_box.x = util_format_get_nblocksx(src_format, src_box->x);
-      new_box.width = util_format_get_nblocksx(src_format, src_box->width);
-      src_box = &new_box;
 
       src_format = dst_format = PIPE_FORMAT_R32_UINT;
 
@@ -1036,7 +1019,48 @@ void si_compute_clear_render_target(struct pipe_context *ctx, struct pipe_surfac
    ctx->set_constant_buffer(ctx, PIPE_SHADER_COMPUTE, 0, true, &saved_cb);
 }
 
-bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info)
+/* Return the last component that a compute blit should load and store. */
+static unsigned si_format_get_last_blit_component(enum pipe_format format, bool is_dst)
+{
+   const struct util_format_description *desc = util_format_description(format);
+   unsigned num = 0;
+
+   for (unsigned i = 1; i < 4; i++) {
+      if (desc->swizzle[i] <= PIPE_SWIZZLE_W ||
+          /* If the swizzle is 1 for dst, we need to store 1 explicitly.
+           * The hardware stores 0 by default. */
+          (is_dst && desc->swizzle[i] == PIPE_SWIZZLE_1))
+         num = i;
+   }
+   return num;
+}
+
+static bool si_should_blit_clamp_xy(const struct pipe_blit_info *info)
+{
+   int src_width = u_minify(info->src.resource->width0, info->src.level);
+   int src_height = u_minify(info->src.resource->height0, info->src.level);
+   struct pipe_box box = info->src.box;
+
+   /* Eliminate negative width/height/depth. */
+   if (box.width < 0) {
+      box.x += box.width;
+      box.width *= -1;
+   }
+   if (box.height < 0) {
+      box.y += box.height;
+      box.height *= -1;
+   }
+
+   bool in_bounds = box.x >= 0 && box.x < src_width &&
+                    box.y >= 0 && box.y < src_height &&
+                    box.x + box.width > 0 && box.x + box.width <= src_width &&
+                    box.y + box.height > 0 && box.y + box.height <= src_height;
+
+   /* Return if the box is not in bounds. */
+   return !in_bounds;
+}
+
+bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info, bool testing)
 {
    /* Compute blits require D16 right now (see the ISA).
     *
@@ -1046,7 +1070,7 @@ bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info)
     *
     * TODO: benchmark the performance on gfx11
     */
-   if (sctx->gfx_level < GFX11)
+   if (sctx->gfx_level < GFX11 && !testing)
       return false;
 
    if (!si_can_use_compute_blit(sctx, info->dst.format, info->dst.resource->nr_samples, true,
@@ -1102,6 +1126,7 @@ bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info)
                           util_format_is_pure_integer(info->src.format);
    unsigned num_samples = MAX2(info->src.resource->nr_samples, info->dst.resource->nr_samples);
    options.log2_samples = options.sample0_only ? 0 : util_logbase2(num_samples);
+   options.xy_clamp_to_edge = si_should_blit_clamp_xy(info);
    options.flip_x = info->src.box.width < 0;
    options.flip_y = info->src.box.height < 0;
    options.sint_to_uint = util_format_is_pure_sint(info->src.format) &&
@@ -1109,10 +1134,22 @@ bool si_compute_blit(struct si_context *sctx, const struct pipe_blit_info *info)
    options.uint_to_sint = util_format_is_pure_uint(info->src.format) &&
                           util_format_is_pure_sint(info->dst.format);
    options.dst_is_srgb = util_format_is_srgb(info->dst.format);
+   options.last_dst_channel = si_format_get_last_blit_component(info->dst.format, true);
+   options.last_src_channel = MIN2(si_format_get_last_blit_component(info->src.format, false),
+                                   options.last_dst_channel);
+   options.use_integer_one = util_format_is_pure_integer(info->dst.format) &&
+                             options.last_src_channel < options.last_dst_channel &&
+                             options.last_dst_channel == 3;
+
+   /* WARNING: We need this option for AMD_TEST to get results identical with the gfx blit,
+    * otherwise we wouldn't be able to fully validate whether everything else works.
+    * The test expects that the behavior is identical to u_blitter.
+    *
+    * Additionally, we need to keep this enabled even when not testing because not doing fp16_rtz
+    * breaks "piglit/bin/texsubimage -auto pbo".
+    */
    options.fp16_rtz = !util_format_is_pure_integer(info->dst.format) &&
-                      (dst_desc->channel[i].size <= 10 ||
-                       (dst_desc->channel[i].type == UTIL_FORMAT_TYPE_FLOAT &&
-                        dst_desc->channel[i].size <= 16));
+                      dst_desc->channel[i].size <= 10;
 
    struct hash_entry *entry = _mesa_hash_table_search(sctx->cs_blit_shaders,
                                                       (void*)(uintptr_t)options.key);

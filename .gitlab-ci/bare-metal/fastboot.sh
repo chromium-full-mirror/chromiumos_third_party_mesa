@@ -1,9 +1,14 @@
 #!/bin/bash
+# shellcheck disable=SC1091 # The relative paths in this file only become valid at runtime.
+# shellcheck disable=SC2034
+# shellcheck disable=SC2086 # we want word splitting
+
+. "$SCRIPTS_DIR"/setup-test-env.sh
 
 BM=$CI_PROJECT_DIR/install/bare-metal
 CI_COMMON=$CI_PROJECT_DIR/install/common
 
-if [ -z "$BM_SERIAL" -a -z "$BM_SERIAL_SCRIPT" ]; then
+if [ -z "$BM_SERIAL" ] && [ -z "$BM_SERIAL_SCRIPT" ]; then
   echo "Must set BM_SERIAL OR BM_SERIAL_SCRIPT in your gitlab-runner config.toml [[runners]] environment"
   echo "BM_SERIAL:"
   echo "  This is the serial device to talk to for waiting for fastboot to be ready and logging from the kernel."
@@ -82,10 +87,10 @@ else
   fi
 
   pushd rootfs
-  find -H | \
-    egrep -v "external/(openglcts|vulkancts|amber|glslang|spirv-tools)" |
-    egrep -v "traces-db|apitrace|renderdoc" | \
-    egrep -v $EXCLUDE_FILTER | \
+  find -H . | \
+    grep -E -v "external/(openglcts|vulkancts|amber|glslang|spirv-tools)" |
+    grep -E -v "traces-db|apitrace|renderdoc" | \
+    grep -E -v $EXCLUDE_FILTER | \
     cpio -H newc -o | \
     xz --check=crc32 -T4 - > $CI_PROJECT_DIR/rootfs.cpio.gz
   popd
@@ -100,10 +105,12 @@ fi
 # moving that container to the runner.  So, if BM_KERNEL+BM_DTB are URLs,
 # fetch them instead of looking in the container.
 if echo "$BM_KERNEL $BM_DTB" | grep -q http; then
-  apt install -y wget
+  apt-get install -y curl
 
-  wget $BM_KERNEL -O kernel
-  wget $BM_DTB -O dtb
+  curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
+      "$BM_KERNEL" -o kernel
+  curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
+      "$BM_DTB" -o dtb
 
   cat kernel dtb > Image.gz-dtb
   rm kernel

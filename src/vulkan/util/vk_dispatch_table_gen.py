@@ -461,7 +461,7 @@ vk_device_entrypoint_is_enabled(int index, uint32_t core_version,
 #ifdef _MSC_VER
 VKAPI_ATTR void VKAPI_CALL vk_entrypoint_stub(void)
 {
-   unreachable(!"Entrypoint not implemented");
+   unreachable("Entrypoint not implemented");
 }
 
 static const void *get_function_target(const void *func)
@@ -673,6 +673,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out-c', help='Output C file.')
     parser.add_argument('--out-h', help='Output H file.')
+    parser.add_argument('--beta', required=True, help='Enable beta extensions.')
     parser.add_argument('--xml',
                         help='Vulkan API XML file.',
                         required=True,
@@ -680,7 +681,7 @@ def main():
                         dest='xml_files')
     args = parser.parse_args()
 
-    entrypoints = get_entrypoints_from_xml(args.xml_files)
+    entrypoints = get_entrypoints_from_xml(args.xml_files, args.beta)
 
     device_entrypoints = []
     physical_device_entrypoints = []

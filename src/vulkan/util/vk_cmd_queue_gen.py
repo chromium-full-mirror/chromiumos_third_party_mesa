@@ -33,7 +33,8 @@ from mako.template import Template
 
 # Mesa-local imports must be declared in meson variable
 # '{file_without_suffix}_depend_files'.
-from vk_entrypoints import get_entrypoints_from_xml, EntrypointParam
+from vk_entrypoints import EntrypointParam, get_entrypoints_from_xml
+from vk_extensions import filter_api, get_all_required
 
 # These have hand-typed implementations in vk_cmd_enqueue.c
 MANUAL_COMMANDS = [
@@ -67,7 +68,10 @@ TEMPLATE_H = Template(COPYRIGHT + """\
 #include "util/list.h"
 
 #define VK_PROTOTYPES
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+#include <vulkan/vulkan_beta.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -93,6 +97,7 @@ enum vk_cmd_type {
 };
 
 extern const char *vk_cmd_queue_type_names[];
+extern size_t vk_cmd_queue_type_sizes[];
 
 % for c in commands:
 % if len(c.params) <= 1:             # Avoid "error C2016: C requires that a struct or union have at least one member"
@@ -111,9 +116,24 @@ struct ${to_struct_name(c.name)} {
 % endif
 % endfor
 
+struct vk_cmd_queue_entry;
+
+/* this ordering must match vk_cmd_queue_entry */
+struct vk_cmd_queue_entry_base {
+   struct list_head cmd_link;
+   enum vk_cmd_type type;
+   void *driver_data;
+   void (*driver_free_cb)(struct vk_cmd_queue *queue,
+                          struct vk_cmd_queue_entry *cmd);
+};
+
+/* this ordering must match vk_cmd_queue_entry_base */
 struct vk_cmd_queue_entry {
    struct list_head cmd_link;
    enum vk_cmd_type type;
+   void *driver_data;
+   void (*driver_free_cb)(struct vk_cmd_queue *queue,
+                          struct vk_cmd_queue_entry *cmd);
    union {
 % for c in commands:
 % if len(c.params) <= 1:
@@ -128,9 +148,6 @@ struct vk_cmd_queue_entry {
 % endif
 % endfor
    } u;
-   void *driver_data;
-   void (*driver_free_cb)(struct vk_cmd_queue *queue,
-                          struct vk_cmd_queue_entry *cmd);
 };
 
 % for c in commands:
@@ -189,7 +206,10 @@ TEMPLATE_C = Template(COPYRIGHT + """
 #include "${header}"
 
 #define VK_PROTOTYPES
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+#include <vulkan/vulkan_beta.h>
+#endif
 
 #include "vk_alloc.h"
 #include "vk_cmd_enqueue_entrypoints.h"
@@ -203,6 +223,21 @@ const char *vk_cmd_queue_type_names[] = {
 #ifdef ${c.guard}
 % endif
    "${to_enum_name(c.name)}",
+% if c.guard is not None:
+#endif // ${c.guard}
+% endif
+% endfor
+};
+
+size_t vk_cmd_queue_type_sizes[] = {
+% for c in commands:
+% if c.guard is not None:
+#ifdef ${c.guard}
+% endif
+% if len(c.params) > 1:
+   sizeof(struct ${to_struct_name(c.name)}) +
+% endif
+   sizeof(struct vk_cmd_queue_entry_base),
 % if c.guard is not None:
 #endif // ${c.guard}
 % endif
@@ -239,8 +274,7 @@ VkResult vk_enqueue_${to_underscore(c.name)}(struct vk_cmd_queue *queue
 % endfor
 )
 {
-   struct vk_cmd_queue_entry *cmd = vk_zalloc(queue->alloc,
-                                              sizeof(*cmd), 8,
+   struct vk_cmd_queue_entry *cmd = vk_zalloc(queue->alloc, vk_cmd_queue_type_sizes[${to_enum_name(c.name)}], 8,
                                               VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!cmd) return VK_ERROR_OUT_OF_HOST_MEMORY;
 
@@ -448,11 +482,18 @@ def get_pnext_member_copy(struct, src_type, member, types, level):
     pnext_decl = "const VkBaseInStructure *pnext = %s;" % field_name
     case_stmts = ""
     for type in types[src_type].extended_by:
+        guard_pre_stmt = ""
+        guard_post_stmt = ""
+        if type.guard is not None:
+            guard_pre_stmt = "#ifdef %s" % type.guard
+            guard_post_stmt = "#endif"
         case_stmts += """
+%s
       case %s:
          %s
          break;
-      """ % (type.enum, get_struct_copy(field_name, "pnext", type.name, "sizeof(%s)" % type.name, types, level))
+%s
+      """ % (guard_pre_stmt, type.enum, get_struct_copy(field_name, "pnext", type.name, "sizeof(%s)" % type.name, types, level), guard_post_stmt)
     return """
       %s
       if (pnext) {
@@ -498,18 +539,48 @@ def get_struct_free(command, param, types):
                 member_frees += "vk_free(queue->alloc, (%s)%s);\n" % (const_cast, member_name)
     return "%s      %s\n" % (member_frees, struct_free)
 
-EntrypointType = namedtuple('EntrypointType', 'name enum members extended_by')
+EntrypointType = namedtuple('EntrypointType', 'name enum members extended_by guard')
 
-def get_types(doc):
+def get_types_defines(doc):
+    """Maps types to extension defines."""
+    types_to_defines = {}
+
+    platform_define = {}
+    for platform in doc.findall('./platforms/platform'):
+        name = platform.attrib['name']
+        define = platform.attrib['protect']
+        platform_define[name] = define
+
+    for extension in doc.findall('./extensions/extension[@platform]'):
+        platform = extension.attrib['platform']
+        define = platform_define[platform]
+
+        for types in extension.findall('./require/type'):
+            fullname = types.attrib['name']
+            types_to_defines[fullname] = define
+
+    return types_to_defines
+
+def get_types(doc, beta, api, types_to_defines):
     """Extract the types from the registry."""
     types = {}
+
+    required = get_all_required(doc, 'type', api, beta)
 
     for _type in doc.findall('./types/type'):
         if _type.attrib.get('category') != 'struct':
             continue
+        if not filter_api(_type, api):
+            continue
+        if _type.attrib['name'] not in required:
+            continue
+
         members = []
         type_enum = None
         for p in _type.findall('./member'):
+            if not filter_api(p, api):
+                continue
+
             mem_type = p.find('./type').text
             mem_name = p.find('./name').text
             mem_decl = ''.join(p.itertext())
@@ -525,10 +596,14 @@ def get_types(doc):
 
             if mem_name == 'sType':
                 type_enum = p.attrib.get('values')
-        types[_type.attrib['name']] = EntrypointType(name=_type.attrib['name'], enum=type_enum, members=members, extended_by=[])
+        types[_type.attrib['name']] = EntrypointType(name=_type.attrib['name'], enum=type_enum, members=members, extended_by=[], guard=types_to_defines.get(_type.attrib['name']))
 
     for _type in doc.findall('./types/type'):
         if _type.attrib.get('category') != 'struct':
+            continue
+        if not filter_api(_type, api):
+            continue
+        if _type.attrib['name'] not in required:
             continue
         if _type.attrib.get('structextends') is None:
             continue
@@ -537,12 +612,12 @@ def get_types(doc):
 
     return types
 
-def get_types_from_xml(xml_files):
+def get_types_from_xml(xml_files, beta, api='vulkan'):
     types = {}
 
     for filename in xml_files:
         doc = et.parse(filename)
-        types.update(get_types(doc))
+        types.update(get_types(doc, beta, api, get_types_defines(doc)))
 
     return types
 
@@ -550,18 +625,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out-c', required=True, help='Output C file.')
     parser.add_argument('--out-h', required=True, help='Output H file.')
+    parser.add_argument('--beta', required=True, help='Enable beta extensions.')
     parser.add_argument('--xml',
                         help='Vulkan API XML file.',
                         required=True, action='append', dest='xml_files')
     args = parser.parse_args()
 
     commands = []
-    for e in get_entrypoints_from_xml(args.xml_files):
+    for e in get_entrypoints_from_xml(args.xml_files, args.beta):
         if e.name.startswith('Cmd') and \
            not e.alias:
             commands.append(e)
 
-    types = get_types_from_xml(args.xml_files)
+    types = get_types_from_xml(args.xml_files, args.beta)
 
     assert os.path.dirname(args.out_c) == os.path.dirname(args.out_h)
 

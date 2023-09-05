@@ -243,7 +243,7 @@ v3dv_pipeline_shared_data_write_to_blob(const struct v3dv_pipeline_shared_data *
                                         struct blob *blob);
 
 /**
- * It searchs for pipeline cached data, and returns a v3dv_pipeline_shared_data with
+ * It searches for pipeline cached data, and returns a v3dv_pipeline_shared_data with
  * it, or NULL if doesn't have it cached. On the former, it will increases the
  * ref_count, so caller is responsible to unref it.
  */
@@ -542,7 +542,7 @@ shader_variant_create_from_blob(struct v3dv_device *device,
    if (blob->overrun)
       return NULL;
 
-   uint ulist_data_size = sizeof(uint32_t) * ulist_count;
+   size_t ulist_data_size = sizeof(uint32_t) * ulist_count;
    const void *ulist_data_data = blob_read_bytes(blob, ulist_data_size);
    if (blob->overrun)
       return NULL;

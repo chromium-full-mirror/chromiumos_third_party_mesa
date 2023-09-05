@@ -25,6 +25,7 @@
  */
 
 #include "sfn_peephole.h"
+#include "sfn_instr_alugroup.h"
 
 namespace r600 {
 
@@ -48,10 +49,10 @@ public:
    void visit(LDSReadInstr *instr) override { (void)instr; };
    void visit(RatInstr *instr) override { (void)instr; };
 
-   bool src_is_zero(PVirtualValue value);
-   bool src_is_one(PVirtualValue value);
-
    void convert_to_mov(AluInstr *alu, int src_idx);
+
+   void apply_source_mods(AluInstr *alu);
+   void apply_dest_clamp(AluInstr *alu);
 
    bool progress{false};
 };
@@ -84,62 +85,46 @@ void
 PeepholeVisitor::visit(AluInstr *instr)
 {
    switch (instr->opcode()) {
+   case op1_mov:
+      if (instr->has_alu_flag(alu_dst_clamp))
+         apply_dest_clamp(instr);
+      break;
    case op2_add:
    case op2_add_int:
-      if (src_is_zero(instr->psrc(0)))
+      if (value_is_const_uint(instr->src(0), 0))
          convert_to_mov(instr, 1);
-      else if (src_is_zero(instr->psrc(1)))
+      else if (value_is_const_uint(instr->src(1), 0))
          convert_to_mov(instr, 0);
       break;
    case op2_mul:
    case op2_mul_ieee:
-      if (src_is_one(instr->psrc(0)))
+      if (value_is_const_float(instr->src(0), 1.0f))
          convert_to_mov(instr, 1);
-      else if (src_is_one(instr->psrc(1)))
+      else if (value_is_const_float(instr->src(1), 1.0f))
          convert_to_mov(instr, 0);
       break;
    case op3_muladd:
    case op3_muladd_ieee:
-      if (src_is_zero(instr->psrc(0)) || src_is_zero(instr->psrc(1)))
+      if (value_is_const_uint(instr->src(0), 0) || value_is_const_uint(instr->src(1), 0))
          convert_to_mov(instr, 2);
       break;
    case op2_killne_int:
-      if (src_is_zero(instr->psrc(1))) {
+      if (value_is_const_uint(instr->src(1), 0)) {
          auto src0 = instr->psrc(0)->as_register();
-         if (src0 && src0->is_ssa()) {
+         if (src0 && src0->has_flag(Register::ssa)) {
             auto parent = *src0->parents().begin();
             ReplacePredicate visitor(instr);
             parent->accept(visitor);
             progress |= visitor.success;
          }
       }
-
+      break;
    default:;
    }
-}
 
-bool
-PeepholeVisitor::src_is_zero(PVirtualValue value)
-{
-   if (value->as_inline_const() && value->as_inline_const()->sel() == ALU_SRC_0)
-      return true;
-
-   if (value->as_literal() && value->as_literal()->value() == 0)
-      return true;
-
-   return false;
-}
-
-bool
-PeepholeVisitor::src_is_one(PVirtualValue value)
-{
-   if (value->as_inline_const() && value->as_inline_const()->sel() == ALU_SRC_1)
-      return true;
-
-   if (value->as_literal() && value->as_literal()->value() == 0x3f800000)
-      return true;
-
-   return false;
+   auto opinfo = alu_ops.at(instr->opcode());
+   if (opinfo.can_srcmod)
+         apply_source_mods(instr);
 }
 
 void
@@ -152,8 +137,13 @@ PeepholeVisitor::convert_to_mov(AluInstr *alu, int src_idx)
 }
 
 void
-PeepholeVisitor::visit(AluGroup *instr)
+PeepholeVisitor::visit(UNUSED AluGroup *instr)
 {
+   for (auto alu : *instr) {
+      if (!alu)
+         continue;
+      visit(alu);
+   }
 }
 
 void
@@ -169,9 +159,9 @@ PeepholeVisitor::visit(IfInstr *instr)
    auto pred = instr->predicate();
 
    auto& src1 = pred->src(1);
-   if (src1.as_inline_const() && src1.as_inline_const()->sel() == ALU_SRC_0) {
+   if (value_is_const_uint(src1, 0)) {
       auto src0 = pred->src(0).as_register();
-      if (src0 && src0->is_ssa() && !src0->parents().empty()) {
+      if (src0 && src0->has_flag(Register::ssa) && !src0->parents().empty()) {
          assert(src0->parents().size() == 1);
          auto parent = *src0->parents().begin();
 
@@ -181,6 +171,108 @@ PeepholeVisitor::visit(IfInstr *instr)
       }
    }
 }
+
+void PeepholeVisitor::apply_source_mods(AluInstr *alu)
+{
+   bool has_abs = alu->n_sources() / alu->alu_slots() < 3;
+
+   for (unsigned i = 0; i < alu->n_sources(); ++i) {
+
+      auto reg = alu->psrc(i)->as_register();
+      if (!reg)
+         continue;
+      if (!reg->has_flag(Register::ssa))
+         continue;
+      if (reg->parents().size() != 1)
+         continue;
+
+      auto p = (*reg->parents().begin())->as_alu();
+      if (!p)
+         continue;
+
+      if (p->opcode() != op1_mov)
+         continue;
+
+      if (!has_abs && p->has_source_mod(0, AluInstr::mod_abs))
+         continue;
+
+      if (!p->has_source_mod(0, AluInstr::mod_abs) &&
+          !p->has_source_mod(0, AluInstr::mod_neg))
+         continue;
+
+      if (p->has_alu_flag(alu_dst_clamp))
+         continue;
+
+      auto new_src = p->psrc(0);
+      bool new_src_not_pinned = new_src->pin() == pin_free ||
+                                new_src->pin() == pin_none;
+
+      bool old_src_not_pinned = reg->pin() == pin_free ||
+                                reg->pin() == pin_none;
+
+      bool sources_equal_channel = reg->pin() == pin_chan &&
+                                   new_src->pin() == pin_chan &&
+                                   new_src->chan() == reg->chan();
+
+      if (!new_src_not_pinned &&
+          !old_src_not_pinned &&
+          !sources_equal_channel)
+         continue;
+
+      uint32_t to_set = 0;
+      AluInstr::SourceMod to_clear = AluInstr::mod_none;
+
+      if (p->has_source_mod(0, AluInstr::mod_abs))
+         to_set |= AluInstr::mod_abs;
+      if (p->has_source_mod(0, AluInstr::mod_neg)) {
+         if (!alu->has_source_mod(i, AluInstr::mod_neg))
+            to_set |= AluInstr::mod_neg;
+         else
+            to_clear = AluInstr::mod_neg;
+      }
+
+      progress |= alu->replace_src(i, new_src, to_set, to_clear);
+   }
+}
+
+void PeepholeVisitor::apply_dest_clamp(AluInstr *alu)
+{
+   if (alu->has_source_mod(0, AluInstr::mod_abs) ||
+       alu->has_source_mod(0, AluInstr::mod_neg))
+       return;
+
+   auto dest = alu->dest();
+
+   assert(dest);
+
+   if (!dest->has_flag(Register::ssa))
+      return;
+
+   auto src = alu->psrc(0)->as_register();
+   if (!src)
+      return;
+
+   if (src->parents().size() != 1)
+      return;
+
+   if (src->uses().size() != 1)
+      return;
+
+   auto new_parent = (*src->parents().begin())->as_alu();
+   if (!new_parent)
+      return;
+
+   auto opinfo = alu_ops.at(new_parent->opcode());
+   if (!opinfo.can_clamp)
+      return;
+
+   // Move clamp flag to the parent, and let copy propagation do the rest
+   new_parent->set_alu_flag(alu_dst_clamp);
+   alu->reset_alu_flag(alu_dst_clamp);
+
+   progress = true;
+}
+
 
 static EAluOp
 pred_from_op(EAluOp pred_op, EAluOp op)
@@ -273,7 +365,7 @@ ReplacePredicate::visit(AluInstr *alu)
 
    for (auto& s : alu->sources()) {
       auto reg = s->as_register();
-      /* Protext against propagating
+      /* Protect against propagating
        *
        *   V = COND(R, X)
        *   R = SOME_OP
@@ -284,23 +376,21 @@ ReplacePredicate::visit(AluInstr *alu)
        *   R = SOME_OP
        *   IF (COND(R, X))
        */
-      if (reg && !reg->is_ssa())
+      if (reg && !reg->has_flag(Register::ssa))
          return;
    }
 
    m_pred->set_op(new_op);
    m_pred->set_sources(alu->sources());
 
-   if (alu->has_alu_flag(alu_src0_abs))
-      m_pred->set_alu_flag(alu_src0_abs);
-   if (alu->has_alu_flag(alu_src1_abs))
-      m_pred->set_alu_flag(alu_src1_abs);
+   std::array<AluInstr::SourceMod, 2> mods = { AluInstr::mod_abs, AluInstr::mod_neg };
 
-   if (alu->has_alu_flag(alu_src0_neg))
-      m_pred->set_alu_flag(alu_src0_neg);
-
-   if (alu->has_alu_flag(alu_src1_neg))
-      m_pred->set_alu_flag(alu_src1_neg);
+   for (int i = 0; i < 2; ++i) {
+      for (auto m : mods) {
+         if (alu->has_source_mod(i, m))
+            m_pred->set_source_mod(i, m);
+      }
+   }
 
    success = true;
 }

@@ -1,4 +1,7 @@
 #!/bin/bash
+# shellcheck disable=SC1091 # The relative paths in this file only become valid at runtime.
+# shellcheck disable=SC2034
+# shellcheck disable=SC2086 # we want word splitting
 
 # Boot script for Chrome OS devices attached to a servo debug connector, using
 # NFS and TFTP to boot.
@@ -80,8 +83,9 @@ mkdir -p /nfs/results
 
 rm -rf /tftp/*
 if echo "$BM_KERNEL" | grep -q http; then
-  apt install -y wget
-  wget $BM_KERNEL -O /tftp/vmlinuz
+  apt-get install -y curl
+  curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
+      $BM_KERNEL -o /tftp/vmlinuz
 else
   cp $BM_KERNEL /tftp/vmlinuz
 fi

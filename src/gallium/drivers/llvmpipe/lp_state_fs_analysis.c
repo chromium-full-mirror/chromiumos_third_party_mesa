@@ -29,8 +29,6 @@
 #include "util/u_memory.h"
 #include "util/u_math.h"
 #include "tgsi/tgsi_parse.h"
-#include "tgsi/tgsi_text.h"
-#include "tgsi/tgsi_util.h"
 #include "tgsi/tgsi_dump.h"
 #include "lp_debug.h"
 #include "lp_state.h"
@@ -84,19 +82,19 @@
  *  performance impact it has. The ultimate purpose of detecting these shaders
  *  is to override with nearest texture filtering.
  */
-static inline boolean
+static inline bool
 match_aero_minification_shader(const struct tgsi_token *tokens,
                                const struct lp_tgsi_info *info)
 {
    struct tgsi_parse_context parse;
    unsigned coord_mask;
-   boolean has_quarter_imm;
+   bool has_quarter_imm;
    unsigned index, chan;
 
    if ((info->base.opcode_count[TGSI_OPCODE_TEX] != 4 &&
         info->base.opcode_count[TGSI_OPCODE_SAMPLE] != 4) ||
        info->num_texs != 4) {
-      return FALSE;
+      return false;
    }
 
    /*
@@ -113,20 +111,20 @@ match_aero_minification_shader(const struct tgsi_token *tokens,
           tex->coord[0].u.index != tex->coord[1].u.index ||
           (tex->coord[0].swizzle % 2) != 0 ||
           tex->coord[1].swizzle != tex->coord[0].swizzle + 1) {
-         return FALSE;
+         return false;
       }
 
       coord_mask |= 1 << (tex->coord[0].u.index*2 + tex->coord[0].swizzle/2);
    }
    if (coord_mask != 0xf) {
-      return FALSE;
+      return false;
    }
 
    /*
     * Ensure it has the 0.25 immediate.
     */
 
-   has_quarter_imm = FALSE;
+   has_quarter_imm = false;
 
    tgsi_parse_init(&parse, tokens);
 
@@ -147,7 +145,7 @@ match_aero_minification_shader(const struct tgsi_token *tokens,
             assert(size <= 4);
             for (chan = 0; chan < size; ++chan) {
                if (parse.FullToken.FullImmediate.u[chan].Float == 0.25f) {
-                  has_quarter_imm = TRUE;
+                  has_quarter_imm = true;
                   goto finished;
                }
             }
@@ -167,10 +165,60 @@ finished:
    tgsi_parse_free(&parse);
 
    if (!has_quarter_imm) {
-      return FALSE;
+      return false;
    }
 
-   return TRUE;
+   return true;
+}
+
+
+/*
+ * Check if the given nir_src comes directly from a FS input.
+ */
+static bool
+is_fs_input(const nir_src *src)
+{
+   if (!src->is_ssa) {
+      return false;
+   }
+
+   const nir_instr *parent = src->ssa[0].parent_instr;
+   if (!parent) {
+      return false;
+   }
+
+   if (parent->type == nir_instr_type_alu) {
+      const nir_alu_instr *alu = nir_instr_as_alu(parent);
+      if (alu->op == nir_op_vec2 ||
+          alu->op == nir_op_vec3 ||
+          alu->op == nir_op_vec4) {
+         /* Check if any of the components come from an FS input */
+         unsigned num_src = nir_op_infos[alu->op].num_inputs;
+         for (unsigned i = 0; i < num_src; i++) {
+            if (is_fs_input(&alu->src[i].src)) {
+               return true;
+            }
+         }
+      }
+   } else if (parent->type == nir_instr_type_intrinsic) {
+      const nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(parent);
+      /* loading from an FS input? */
+      if (intrin->intrinsic == nir_intrinsic_load_deref) {
+         if (is_fs_input(&intrin->src[0])) {
+            return true;
+         }
+      }
+   } else if (parent->type == nir_instr_type_deref) {
+      const nir_deref_instr *deref = nir_instr_as_deref(parent);
+      /* deref'ing an FS input? */
+      if (deref &&
+          deref->deref_type == nir_deref_type_var &&
+          deref->modes == nir_var_shader_in) {
+         return true;
+      }
+   }
+
+   return false;
 }
 
 
@@ -305,6 +353,11 @@ check_load_const_in_zero_one(const nir_load_const_instr *load)
 
 /*
  * Examine the NIR shader to determine if it's "linear".
+ * For the linear path, we're optimizing the case of rendering a window-
+ * aligned, textured quad.  Basically, FS must get the output color from
+ * a texture lookup and, possibly, a constant color.  If the color comes
+ * from some other sort of computation or from a VS output (FS input), we
+ * can't use the linear path.
  */
 static bool
 llvmpipe_nir_fn_is_linear_compat(const struct nir_shader *shader,
@@ -314,8 +367,15 @@ llvmpipe_nir_fn_is_linear_compat(const struct nir_shader *shader,
    nir_foreach_block(block, impl) {
       nir_foreach_instr_safe(instr, block) {
          switch (instr->type) {
-         case nir_instr_type_deref:
+         case nir_instr_type_deref: {
+            nir_deref_instr *deref = nir_instr_as_deref(instr);
+            if (deref->deref_type != nir_deref_type_var)
+               return false;
+            if (deref->var->data.mode == nir_var_shader_out &&
+                deref->var->data.location_frac != 0)
+               return false;
             break;
+         }
          case nir_instr_type_load_const: {
             nir_load_const_instr *load = nir_instr_as_load_const(instr);
             if (!check_load_const_in_zero_one(load)) {
@@ -335,8 +395,19 @@ llvmpipe_nir_fn_is_linear_compat(const struct nir_shader *shader,
                   return false;
                nir_load_const_instr *load =
                   nir_instr_as_load_const(intrin->src[0].ssa->parent_instr);
-               if (load->value[0].u32 != 0)
+               if (load->value[0].u32 != 0 || load->def.num_components > 1)
                   return false;
+            } else if (intrin->intrinsic == nir_intrinsic_store_deref) {
+               /*
+                * Assume the store destination is the FS output color.
+                * Check if the store src comes directly from a FS input.
+                * If so, we cannot use the linear path since we don't have
+                * code to convert VS outputs / FS inputs to ubyte with the
+                * needed swizzling.
+                */
+               if (is_fs_input(&intrin->src[1])) {
+                  return false;
+               }
             }
             break;
          }
@@ -354,6 +425,9 @@ llvmpipe_nir_fn_is_linear_compat(const struct nir_shader *shader,
                      //debug nir_print_shader((nir_shader *) shader, stdout);
                      return false;
                   }
+               } else if (tex->src[i].src_type == nir_tex_src_texture_handle ||
+                          tex->src[i].src_type == nir_tex_src_sampler_handle) {
+                  return false;
                }
             }
 
@@ -412,6 +486,9 @@ llvmpipe_nir_fn_is_linear_compat(const struct nir_shader *shader,
                      if (!check_load_const_in_zero_one(load)) {
                         return false;
                      }
+                  } else if (is_fs_input(&alu->src[s].src)) {
+                     /* we don't know if the fs inputs are in [0,1] */
+                     return false;
                   }
                }
                break;
@@ -435,12 +512,13 @@ static bool
 llvmpipe_nir_is_linear_compat(struct nir_shader *shader,
                               struct lp_tgsi_info *info)
 {
-   nir_foreach_function(function, shader) {
-      if (function->impl) {
-         if (!llvmpipe_nir_fn_is_linear_compat(shader, function->impl, info))
-            return false;
-      }
+   int num_tex = info->num_texs;
+   info->num_texs = 0;
+   nir_foreach_function_impl(impl, shader) {
+      if (!llvmpipe_nir_fn_is_linear_compat(shader, impl, info))
+         return false;
    }
+   info->num_texs = num_tex;
    return true;
 }
 
@@ -454,6 +532,8 @@ llvmpipe_fs_analyse_nir(struct lp_fragment_shader *shader)
 {
    if (shader->info.base.num_inputs <= LP_MAX_LINEAR_INPUTS &&
        shader->info.base.num_outputs == 1 &&
+       shader->info.base.output_semantic_name[0] == TGSI_SEMANTIC_COLOR &&
+       shader->info.base.output_semantic_index[0] == 0 &&
        !shader->info.indirect_textures &&
        !shader->info.sampler_texture_units_different &&
        shader->info.num_texs <= LP_MAX_LINEAR_TEXTURES &&

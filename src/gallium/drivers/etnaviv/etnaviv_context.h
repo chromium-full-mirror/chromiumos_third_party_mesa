@@ -34,7 +34,7 @@
 #include "etnaviv_tiling.h"
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_shader_tokens.h"
 #include "pipe/p_state.h"
 #include "util/slab.h"
@@ -152,6 +152,7 @@ struct etna_context {
    struct pipe_blend_state *blend;
    unsigned num_fragment_samplers;
    uint32_t active_samplers;
+   uint32_t prev_active_samplers;
    struct pipe_sampler_state *sampler[PIPE_MAX_SAMPLERS];
    struct pipe_rasterizer_state *rasterizer;
    struct pipe_depth_stencil_alpha_state *zsa;
@@ -199,6 +200,11 @@ struct etna_context {
    struct set *flush_resources;
 
    bool is_noop;
+
+   /* conditional rendering */
+   struct pipe_query *cond_query;
+   bool cond_cond; /* inverted rendering condition */
+   uint cond_mode;
 };
 
 static inline struct etna_context *
@@ -215,5 +221,16 @@ etna_transfer(struct pipe_transfer *p)
 
 struct pipe_context *
 etna_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags);
+
+void
+etna_context_add_flush_resource(struct etna_context *ctx,
+                                struct pipe_resource *rsc);
+
+void
+etna_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
+           enum pipe_flush_flags flags, bool internal);
+
+bool
+etna_render_condition_check(struct pipe_context *pctx);
 
 #endif

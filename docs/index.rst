@@ -22,7 +22,7 @@ Linux, FreeBSD, and other operating systems.
 .. _OpenMAX: https://www.khronos.org/openmax/
 .. _VDPAU: https://en.wikipedia.org/wiki/VDPAU
 .. _VA-API: https://en.wikipedia.org/wiki/Video_Acceleration_API
-.. _Vulkan: https://www.khronos.org/vulkan/
+.. _Vulkan: https://www.vulkan.org/
 .. _EGL: https://www.khronos.org/egl/
 .. _Direct Rendering Infrastructure: https://dri.freedesktop.org/
 .. _X.org: https://x.org
@@ -35,13 +35,11 @@ Linux, FreeBSD, and other operating systems.
 
    self
    history
-   developers
    amber
    systems
    license
    faq
    relnotes
-   thanks
 
 .. toctree::
    :maxdepth: 2
@@ -91,6 +89,7 @@ Linux, FreeBSD, and other operating systems.
    drivers/lima
    drivers/llvmpipe
    drivers/panfrost
+   drivers/powervr
    drivers/radv
    drivers/svga3d
    drivers/v3d
@@ -139,10 +138,3 @@ Linux, FreeBSD, and other operating systems.
    OpenGL Website <https://www.opengl.org>
    DRI Website <https://dri.freedesktop.org>
    Developer Blogs <https://planet.freedesktop.org>
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Hosted by:
-   :hidden:
-
-   freedesktop.org <https://www.freedesktop.org>

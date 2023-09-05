@@ -85,9 +85,11 @@ static const struct debug_named_value nir_debug_control[] = {
      "Dump resulting callable shader after each successful lowering/optimization call" },
    { "print_ks", NIR_DEBUG_PRINT_KS,
      "Dump resulting kernel shader after each successful lowering/optimization call" },
-   { "print_consts", NIR_DEBUG_PRINT_CONSTS,
-     "Print const value near each use of const SSA variable" },
-   { NULL }
+   { "print_no_inline_consts", NIR_DEBUG_PRINT_NO_INLINE_CONSTS,
+     "Do not print const value near each use of const SSA variable" },
+   { "print_internal", NIR_DEBUG_PRINT_INTERNAL,
+     "Print shaders even if they are marked as internal" },
+   DEBUG_NAMED_VALUE_END
 };
 
 DEBUG_GET_ONCE_FLAGS_OPTION(nir_debug, "NIR_DEBUG", nir_debug_control, 0)
@@ -223,7 +225,6 @@ reg_create(void *mem_ctx, struct exec_list *list)
 
    list_inithead(&reg->uses);
    list_inithead(&reg->defs);
-   list_inithead(&reg->if_uses);
 
    reg->num_components = 0;
    reg->bit_size = 32;
@@ -323,6 +324,93 @@ nir_local_variable_create(nir_function_impl *impl,
 }
 
 nir_variable *
+nir_state_variable_create(nir_shader *shader,
+                          const struct glsl_type *type,
+                          const char *name,
+                          const gl_state_index16 tokens[STATE_LENGTH])
+{
+   nir_variable *var = nir_variable_create(shader, nir_var_uniform, type, name);
+   var->num_state_slots = 1;
+   var->state_slots = rzalloc_array(var, nir_state_slot, 1);
+   memcpy(var->state_slots[0].tokens, tokens,
+          sizeof(var->state_slots[0].tokens));
+   shader->num_uniforms++;
+   return var;
+}
+
+nir_variable *
+nir_create_variable_with_location(nir_shader *shader, nir_variable_mode mode, int location,
+                                  const struct glsl_type *type)
+{
+   /* Only supporting non-array, or arrayed-io types, because otherwise we don't
+    * know how much to increment num_inputs/outputs
+    */
+   assert(glsl_get_length(type) <= 1);
+
+   const char *name;
+   switch (mode) {
+   case nir_var_shader_in:
+      if (shader->info.stage == MESA_SHADER_VERTEX)
+         name = gl_vert_attrib_name(location);
+      else
+         name = gl_varying_slot_name_for_stage(location, shader->info.stage);
+      break;
+
+   case nir_var_shader_out:
+      if (shader->info.stage == MESA_SHADER_FRAGMENT)
+         name = gl_frag_result_name(location);
+      else
+         name = gl_varying_slot_name_for_stage(location, shader->info.stage);
+      break;
+
+   case nir_var_system_value:
+      name = gl_system_value_name(location);
+      break;
+
+   default:
+      unreachable("Unsupported variable mode");
+   }
+
+   nir_variable *var = nir_variable_create(shader, mode, type, name);
+   var->data.location = location;
+
+   switch (mode) {
+   case nir_var_shader_in:
+      var->data.driver_location = shader->num_inputs++;
+      break;
+
+   case nir_var_shader_out:
+      var->data.driver_location = shader->num_outputs++;
+      break;
+
+   case nir_var_system_value:
+      break;
+
+   default:
+      unreachable("Unsupported variable mode");
+   }
+
+   return var;
+}
+
+nir_variable *
+nir_get_variable_with_location(nir_shader *shader, nir_variable_mode mode, int location,
+                               const struct glsl_type *type)
+{
+   nir_variable *var = nir_find_variable_with_location(shader, mode, location);
+   if (var) {
+      /* If this shader has location_fracs, this builder function is not suitable. */
+      assert(var->data.location_frac == 0);
+
+      /* The variable for the slot should match what we expected. */
+      assert(type == var->type);
+      return var;
+   }
+
+   return nir_create_variable_with_location(shader, mode, location, type);
+}
+
+nir_variable *
 nir_find_variable_with_location(nir_shader *shader,
                                 nir_variable_mode mode,
                                 unsigned location)
@@ -343,6 +431,19 @@ nir_find_variable_with_driver_location(nir_shader *shader,
    assert(util_bitcount(mode) == 1 && mode != nir_var_function_temp);
    nir_foreach_variable_with_modes(var, shader, mode) {
       if (var->data.driver_location == location)
+         return var;
+   }
+   return NULL;
+}
+
+nir_variable *
+nir_find_state_variable(nir_shader *s,
+                        gl_state_index16 tokens[STATE_LENGTH])
+{
+   nir_foreach_variable_with_modes(var, s, nir_var_uniform) {
+      if (var->num_state_slots == 1 &&
+          !memcmp(var->state_slots[0].tokens, tokens,
+                  sizeof(var->state_slots[0].tokens)))
          return var;
    }
    return NULL;
@@ -566,10 +667,7 @@ nir_function_impl_create(nir_function *function)
    assert(function->impl == NULL);
 
    nir_function_impl *impl = nir_function_impl_create_bare(function->shader);
-
-   function->impl = impl;
-   impl->function = function;
-
+   nir_function_set_impl(function, impl);
    return impl;
 }
 
@@ -646,6 +744,8 @@ nir_loop_create(nir_shader *shader)
 
    body->successors[0] = body;
    _mesa_set_add(body->predecessors, body);
+
+   exec_list_make_empty(&loop->continue_list);
 
    return loop;
 }
@@ -884,7 +984,7 @@ nir_phi_instr_add_src(nir_phi_instr *instr, nir_block *pred, nir_src src)
    phi_src = gc_zalloc(gc_get_context(instr), nir_phi_src, 1);
    phi_src->pred = pred;
    phi_src->src = src;
-   phi_src->src.parent_instr = &instr->instr;
+   nir_src_set_parent_instr(&phi_src->src, &instr->instr);
    exec_list_push_tail(&instr->srcs, &phi_src->node);
 
    return phi_src;
@@ -1052,7 +1152,7 @@ add_use_cb(nir_src *src, void *state)
 {
    nir_instr *instr = state;
 
-   src->parent_instr = instr;
+   nir_src_set_parent_instr(src, instr);
    list_addtail(&src->use_link,
                 src->is_ssa ? &src->ssa->uses : &src->reg.reg->uses);
 
@@ -1493,11 +1593,7 @@ nir_foreach_phi_src_leaving_block(nir_block *block,
       if (block->successors[i] == NULL)
          continue;
 
-      nir_foreach_instr(instr, block->successors[i]) {
-         if (instr->type != nir_instr_type_phi)
-            break;
-
-         nir_phi_instr *phi = nir_instr_as_phi(instr);
+      nir_foreach_phi(phi, block->successors[i]) {
          nir_foreach_phi_src(phi_src, phi) {
             if (phi_src->pred == block) {
                if (!cb(&phi_src->src, state))
@@ -1629,19 +1725,16 @@ src_add_all_uses(nir_src *src, nir_instr *parent_instr, nir_if *parent_if)
          continue;
 
       if (parent_instr) {
-         src->parent_instr = parent_instr;
-         if (src->is_ssa)
-            list_addtail(&src->use_link, &src->ssa->uses);
-         else
-            list_addtail(&src->use_link, &src->reg.reg->uses);
+         nir_src_set_parent_instr(src, parent_instr);
       } else {
          assert(parent_if);
-         src->parent_if = parent_if;
-         if (src->is_ssa)
-            list_addtail(&src->use_link, &src->ssa->if_uses);
-         else
-            list_addtail(&src->use_link, &src->reg.reg->if_uses);
+         nir_src_set_parent_if(src, parent_if);
       }
+
+      if (src->is_ssa)
+         list_addtail(&src->use_link, &src->ssa->uses);
+      else
+         list_addtail(&src->use_link, &src->reg.reg->uses);
    }
 }
 
@@ -1673,7 +1766,7 @@ nir_if_rewrite_condition(nir_if *if_stmt, nir_src new_src)
 {
    nir_shader *shader = ralloc_parent(if_stmt);
    nir_src *src = &if_stmt->condition;
-   assert(!src_is_valid(src) || src->parent_if == if_stmt);
+   assert(!src_is_valid(src) || (src->is_if && src->parent_if == if_stmt));
 
    src_remove_all_uses(src);
    src_copy(src, &new_src, shader->gctx);
@@ -1704,7 +1797,6 @@ nir_instr_rewrite_dest(nir_instr *instr, nir_dest *dest, nir_dest new_dest)
       src_add_all_uses(dest->reg.indirect, instr, NULL);
 }
 
-/* note: does *not* take ownership of 'name' */
 void
 nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
                  unsigned num_components,
@@ -1712,7 +1804,6 @@ nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
 {
    def->parent_instr = instr;
    list_inithead(&def->uses);
-   list_inithead(&def->if_uses);
    def->num_components = num_components;
    def->bit_size = bit_size;
    def->divergent = true; /* This is the safer default */
@@ -1729,11 +1820,9 @@ nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
    }
 }
 
-/* note: does *not* take ownership of 'name' */
 void
 nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
-                 unsigned num_components, unsigned bit_size,
-                 const char *name)
+                 unsigned num_components, unsigned bit_size)
 {
    dest->is_ssa = true;
    nir_ssa_def_init(instr, &dest->ssa, num_components, bit_size);
@@ -1743,11 +1832,9 @@ void
 nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_ssa_def *new_ssa)
 {
    assert(def != new_ssa);
-   nir_foreach_use_safe(use_src, def)
-      nir_instr_rewrite_src_ssa(use_src->parent_instr, use_src, new_ssa);
-
-   nir_foreach_if_use_safe(use_src, def)
-      nir_if_rewrite_condition_ssa(use_src->parent_if, use_src, new_ssa);
+   nir_foreach_use_including_if_safe(use_src, def) {
+      nir_src_rewrite_ssa(use_src, new_ssa);
+   }
 }
 
 void
@@ -1756,11 +1843,12 @@ nir_ssa_def_rewrite_uses_src(nir_ssa_def *def, nir_src new_src)
    if (new_src.is_ssa) {
       nir_ssa_def_rewrite_uses(def, new_src.ssa);
    } else {
-      nir_foreach_use_safe(use_src, def)
-         nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
-
-      nir_foreach_if_use_safe(use_src, def)
-         nir_if_rewrite_condition(use_src->parent_if, new_src);
+      nir_foreach_use_including_if_safe(use_src, def) {
+         if (use_src->is_if)
+            nir_if_rewrite_condition(use_src->parent_if, new_src);
+         else
+            nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
+      }
    }
 }
 
@@ -1801,20 +1889,19 @@ nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_ssa_def *new_ssa,
    if (def == new_ssa)
       return;
 
-   nir_foreach_use_safe(use_src, def) {
-      assert(use_src->parent_instr != def->parent_instr);
-      /* Since def already dominates all of its uses, the only way a use can
-       * not be dominated by after_me is if it is between def and after_me in
-       * the instruction list.
-       */
-      if (!is_instr_between(def->parent_instr, after_me, use_src->parent_instr))
-         nir_instr_rewrite_src_ssa(use_src->parent_instr, use_src, new_ssa);
-   }
+   nir_foreach_use_including_if_safe(use_src, def) {
+      if (!use_src->is_if) {
+         assert(use_src->parent_instr != def->parent_instr);
 
-   nir_foreach_if_use_safe(use_src, def) {
-      nir_if_rewrite_condition_ssa(use_src->parent_if,
-                                   &use_src->parent_if->condition,
-                                   new_ssa);
+         /* Since def already dominates all of its uses, the only way a use can
+          * not be dominated by after_me is if it is between def and after_me in
+          * the instruction list.
+          */
+         if (is_instr_between(def->parent_instr, after_me, use_src->parent_instr))
+            continue;
+      }
+
+      nir_src_rewrite_ssa(use_src, new_ssa);
    }
 }
 
@@ -1858,11 +1945,9 @@ nir_ssa_def_components_read(const nir_ssa_def *def)
 {
    nir_component_mask_t read_mask = 0;
 
-   if (!list_is_empty(&def->if_uses))
-      read_mask |= 1;
+   nir_foreach_use_including_if(use, def) {
+      read_mask |= use->is_if ? 1 : nir_src_components_read(use);
 
-   nir_foreach_use(use, def) {
-      read_mask |= nir_src_components_read(use);
       if (read_mask == (1 << def->num_components) - 1)
          return read_mask;
    }
@@ -1915,23 +2000,28 @@ nir_block_cf_tree_next(nir_block *block)
       return nir_cf_node_cf_tree_first(cf_next);
 
    nir_cf_node *parent = block->cf_node.parent;
+   if (parent->type == nir_cf_node_function)
+      return NULL;
+
+   /* Is this the last block of a cf_node? Return the following block */
+   if (block == nir_cf_node_cf_tree_last(parent))
+      return nir_cf_node_as_block(nir_cf_node_next(parent));
 
    switch (parent->type) {
    case nir_cf_node_if: {
-      /* Are we at the end of the if? Go to the beginning of the else */
+      /* We are at the end of the if. Go to the beginning of the else */
       nir_if *if_stmt = nir_cf_node_as_if(parent);
-      if (block == nir_if_last_then_block(if_stmt))
-         return nir_if_first_else_block(if_stmt);
-
-      assert(block == nir_if_last_else_block(if_stmt));
+      assert(block == nir_if_last_then_block(if_stmt));
+      return nir_if_first_else_block(if_stmt);
    }
-   FALLTHROUGH;
 
-   case nir_cf_node_loop:
-      return nir_cf_node_as_block(nir_cf_node_next(parent));
-
-   case nir_cf_node_function:
-      return NULL;
+   case nir_cf_node_loop: {
+      /* We are at the end of the body and there is a continue construct */
+      nir_loop *loop = nir_cf_node_as_loop(parent);
+      assert(block == nir_loop_last_block(loop) &&
+             nir_loop_has_continue_construct(loop));
+      return nir_loop_first_continue_block(loop);
+   }
 
    default:
       unreachable("unknown cf node type");
@@ -1953,23 +2043,27 @@ nir_block_cf_tree_prev(nir_block *block)
       return nir_cf_node_cf_tree_last(cf_prev);
 
    nir_cf_node *parent = block->cf_node.parent;
+   if (parent->type == nir_cf_node_function)
+      return NULL;
+
+   /* Is this the first block of a cf_node? Return the previous block */
+   if (block == nir_cf_node_cf_tree_first(parent))
+      return nir_cf_node_as_block(nir_cf_node_prev(parent));
 
    switch (parent->type) {
    case nir_cf_node_if: {
-      /* Are we at the beginning of the else? Go to the end of the if */
+      /* We are at the beginning of the else. Go to the end of the if */
       nir_if *if_stmt = nir_cf_node_as_if(parent);
-      if (block == nir_if_first_else_block(if_stmt))
-         return nir_if_last_then_block(if_stmt);
-
-      assert(block == nir_if_first_then_block(if_stmt));
+      assert(block == nir_if_first_else_block(if_stmt));
+      return nir_if_last_then_block(if_stmt);
    }
-   FALLTHROUGH;
-
-   case nir_cf_node_loop:
-      return nir_cf_node_as_block(nir_cf_node_prev(parent));
-
-   case nir_cf_node_function:
-      return NULL;
+   case nir_cf_node_loop: {
+      /* We are at the beginning of the continue construct. */
+      nir_loop *loop = nir_cf_node_as_loop(parent);
+      assert(nir_loop_has_continue_construct(loop) &&
+             block == nir_loop_first_continue_block(loop));
+      return nir_loop_last_block(loop);
+   }
 
    default:
       unreachable("unknown cf node type");
@@ -2018,7 +2112,10 @@ nir_block *nir_cf_node_cf_tree_last(nir_cf_node *node)
 
    case nir_cf_node_loop: {
       nir_loop *loop = nir_cf_node_as_loop(node);
-      return nir_loop_last_block(loop);
+      if (nir_loop_has_continue_construct(loop))
+         return nir_loop_last_continue_block(loop);
+      else
+         return nir_loop_last_block(loop);
    }
 
    case nir_cf_node_block: {
@@ -2167,6 +2264,18 @@ nir_index_instrs(nir_function_impl *impl)
    return index;
 }
 
+void
+nir_shader_clear_pass_flags(nir_shader *shader)
+{
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            instr->pass_flags = 0;
+         }
+      }
+   }
+}
+
 unsigned
 nir_shader_index_vars(nir_shader *shader, nir_variable_mode modes)
 {
@@ -2234,8 +2343,7 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
                                      nir_lower_instr_cb lower,
                                      void *cb_data)
 {
-   nir_builder b;
-   nir_builder_init(&b, impl);
+   nir_builder b = nir_builder_create(impl);
 
    nir_metadata preserved = nir_metadata_block_index |
                             nir_metadata_dominance;
@@ -2251,7 +2359,7 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
 
       assert(nir_foreach_dest(instr, dest_is_ssa, NULL));
       nir_ssa_def *old_def = nir_instr_ssa_def(instr);
-      struct list_head old_uses, old_if_uses;
+      struct list_head old_uses;
       if (old_def != NULL) {
          /* We're about to ask the callback to generate a replacement for instr.
           * Save off the uses from instr's SSA def so we know what uses to
@@ -2267,8 +2375,6 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
 
          list_replace(&old_def->uses, &old_uses);
          list_inithead(&old_def->uses);
-         list_replace(&old_def->if_uses, &old_if_uses);
-         list_inithead(&old_def->if_uses);
       }
 
       b.cursor = nir_after_instr(instr);
@@ -2280,11 +2386,12 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
             preserved = nir_metadata_none;
 
          nir_src new_src = nir_src_for_ssa(new_def);
-         list_for_each_entry_safe(nir_src, use_src, &old_uses, use_link)
-            nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
-
-         list_for_each_entry_safe(nir_src, use_src, &old_if_uses, use_link)
-            nir_if_rewrite_condition(use_src->parent_if, new_src);
+         list_for_each_entry_safe(nir_src, use_src, &old_uses, use_link) {
+            if (use_src->is_if)
+               nir_if_rewrite_condition(use_src->parent_if, new_src);
+            else
+               nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
+         }
 
          if (nir_ssa_def_is_unused(old_def)) {
             iter = nir_instr_free_and_dce(instr);
@@ -2294,10 +2401,9 @@ nir_function_impl_lower_instructions(nir_function_impl *impl,
          progress = true;
       } else {
          /* We didn't end up lowering after all.  Put the uses back */
-         if (old_def) {
+         if (old_def)
             list_replace(&old_uses, &old_def->uses);
-            list_replace(&old_if_uses, &old_def->if_uses);
-         }
+
          if (new_def == NIR_LOWER_INSTR_PROGRESS_REPLACE) {
             /* Only instructions without a return value can be removed like this */
             assert(!old_def);
@@ -2328,10 +2434,8 @@ nir_shader_lower_instructions(nir_shader *shader,
 {
    bool progress = false;
 
-   nir_foreach_function(function, shader) {
-      if (function->impl &&
-          nir_function_impl_lower_instructions(function->impl,
-                                               filter, lower, cb_data))
+   nir_foreach_function_impl(impl, shader) {
+      if (nir_function_impl_lower_instructions(impl, filter, lower, cb_data))
          progress = true;
    }
 
@@ -2481,10 +2585,18 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_ray_instance_custom_index;
    case SYSTEM_VALUE_CULL_MASK:
       return nir_intrinsic_load_cull_mask;
+   case SYSTEM_VALUE_RAY_TRIANGLE_VERTEX_POSITIONS:
+      return nir_intrinsic_load_ray_triangle_vertex_positions;
    case SYSTEM_VALUE_MESH_VIEW_COUNT:
       return nir_intrinsic_load_mesh_view_count;
    case SYSTEM_VALUE_FRAG_SHADING_RATE:
       return nir_intrinsic_load_frag_shading_rate;
+   case SYSTEM_VALUE_FULLY_COVERED:
+      return nir_intrinsic_load_fully_covered;
+   case SYSTEM_VALUE_FRAG_SIZE:
+      return nir_intrinsic_load_frag_size;
+   case SYSTEM_VALUE_FRAG_INVOCATION_COUNT:
+      return nir_intrinsic_load_frag_invocation_count;
    default:
       unreachable("system value does not directly correspond to intrinsic");
    }
@@ -2628,10 +2740,18 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_RAY_INSTANCE_CUSTOM_INDEX;
    case nir_intrinsic_load_cull_mask:
       return SYSTEM_VALUE_CULL_MASK;
+   case nir_intrinsic_load_ray_triangle_vertex_positions:
+      return SYSTEM_VALUE_RAY_TRIANGLE_VERTEX_POSITIONS;
    case nir_intrinsic_load_frag_shading_rate:
       return SYSTEM_VALUE_FRAG_SHADING_RATE;
    case nir_intrinsic_load_mesh_view_count:
       return SYSTEM_VALUE_MESH_VIEW_COUNT;
+   case nir_intrinsic_load_fully_covered:
+      return SYSTEM_VALUE_FULLY_COVERED;
+   case nir_intrinsic_load_frag_size:
+      return SYSTEM_VALUE_FRAG_SIZE;
+   case nir_intrinsic_load_frag_invocation_count:
+      return SYSTEM_VALUE_FRAG_INVOCATION_COUNT;
    default:
       unreachable("intrinsic doesn't produce a system value");
    }
@@ -2697,6 +2817,10 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
    if (nir_intrinsic_has_dest_type(intrin))
       data_type = nir_intrinsic_dest_type(intrin);
 
+   nir_atomic_op atomic_op = 0;
+   if (nir_intrinsic_has_atomic_op(intrin))
+      atomic_op = nir_intrinsic_atomic_op(intrin);
+
    switch (intrin->intrinsic) {
 #define CASE(op) \
    case nir_intrinsic_image_deref_##op: \
@@ -2706,32 +2830,19 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
    CASE(load)
    CASE(sparse_load)
    CASE(store)
-   CASE(atomic_add)
-   CASE(atomic_imin)
-   CASE(atomic_umin)
-   CASE(atomic_imax)
-   CASE(atomic_umax)
-   CASE(atomic_and)
-   CASE(atomic_or)
-   CASE(atomic_xor)
-   CASE(atomic_exchange)
-   CASE(atomic_comp_swap)
-   CASE(atomic_fadd)
-   CASE(atomic_fmin)
-   CASE(atomic_fmax)
-   CASE(atomic_inc_wrap)
-   CASE(atomic_dec_wrap)
+   CASE(atomic)
+   CASE(atomic_swap)
    CASE(size)
    CASE(samples)
    CASE(load_raw_intel)
    CASE(store_raw_intel)
+   CASE(fragment_mask_load_amd)
 #undef CASE
    default:
       unreachable("Unhanded image intrinsic");
    }
 
-   nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
-   nir_variable *var = nir_deref_instr_get_variable(deref);
+   nir_variable *var = nir_intrinsic_get_var(intrin, 0);
 
    /* Only update the format if the intrinsic doesn't have one set */
    if (nir_intrinsic_format(intrin) == PIPE_FORMAT_NONE)
@@ -2742,6 +2853,9 @@ nir_rewrite_image_intrinsic(nir_intrinsic_instr *intrin, nir_ssa_def *src,
       nir_intrinsic_set_src_type(intrin, data_type);
    if (nir_intrinsic_has_dest_type(intrin))
       nir_intrinsic_set_dest_type(intrin, data_type);
+
+   if (nir_intrinsic_has_atomic_op(intrin))
+      nir_intrinsic_set_atomic_op(intrin, atomic_op);
 
    nir_instr_rewrite_src(&intrin->instr, &intrin->src[0],
                          nir_src_for_ssa(src));
@@ -2804,17 +2918,18 @@ nir_binding nir_chase_binding(nir_src rsrc)
     * instructions to skip trimming of vec2_index_32bit_offset addresses after
     * lowering ALU to scalar.
     */
+   unsigned num_components = nir_src_num_components(rsrc);
    while (true) {
       nir_alu_instr *alu = nir_src_as_alu_instr(rsrc);
       nir_intrinsic_instr *intrin = nir_src_as_intrinsic(rsrc);
       if (alu && alu->op == nir_op_mov) {
-         for (unsigned i = 0; i < alu->dest.dest.ssa.num_components; i++) {
+         for (unsigned i = 0; i < num_components; i++) {
             if (alu->src[0].swizzle[i] != i)
                return (nir_binding){0};
          }
          rsrc = alu->src[0].src;
       } else if (alu && nir_op_is_vec(alu->op)) {
-         for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+         for (unsigned i = 0; i < num_components; i++) {
             if (alu->src[i].swizzle[0] != i || alu->src[i].src.ssa != alu->src[0].src.ssa)
                return (nir_binding){0};
          }
@@ -2846,6 +2961,22 @@ nir_binding nir_chase_binding(nir_src rsrc)
    nir_intrinsic_instr *intrin = nir_src_as_intrinsic(rsrc);
    if (!intrin)
       return (nir_binding){0};
+
+   /* Intel resource, similar to load_vulkan_descriptor after it has been
+    * lowered.
+    */
+   if (intrin->intrinsic == nir_intrinsic_resource_intel) {
+      res.success = true;
+      res.desc_set = nir_intrinsic_desc_set(intrin);
+      res.binding = nir_intrinsic_binding(intrin);
+      /* nir_intrinsic_resource_intel has 3 sources, but src[2] is included in
+       * src[1], it is kept around for other purposes.
+       */
+      res.num_indices = 2;
+      res.indices[0] = intrin->src[0];
+      res.indices[1] = intrin->src[1];
+      return res;
+   }
 
    /* skip load_vulkan_descriptor */
    if (intrin->intrinsic == nir_intrinsic_load_vulkan_descriptor) {
@@ -3107,14 +3238,8 @@ nir_alu_instr_is_comparison(const nir_alu_instr *instr)
    CASE_ALL_SIZES(nir_op_uge)
    CASE_ALL_SIZES(nir_op_ieq)
    CASE_ALL_SIZES(nir_op_ine)
-   case nir_op_i2b1:
-   case nir_op_i2b8:
-   case nir_op_i2b16:
-   case nir_op_i2b32:
-   case nir_op_f2b1:
-   case nir_op_f2b8:
-   case nir_op_f2b16:
-   case nir_op_f2b32:
+   CASE_ALL_SIZES(nir_op_bitz)
+   CASE_ALL_SIZES(nir_op_bitnz)
    case nir_op_inot:
       return true;
    default:
@@ -3147,6 +3272,73 @@ nir_intrinsic_dest_components(nir_intrinsic_instr *intr)
       return info->dest_components;
    else
       return intr->num_components;
+}
+
+nir_alu_type
+nir_intrinsic_instr_src_type(const nir_intrinsic_instr *intrin, unsigned src)
+{
+   /* We could go nuts here, but we'll just handle a few simple
+    * cases and let everything else be untyped.
+    */
+   switch (intrin->intrinsic) {
+   case nir_intrinsic_store_deref: {
+      nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
+      if (src == 1 && intrin->src[1].is_ssa)
+         return nir_get_nir_type_for_glsl_type(deref->type);
+      break;
+   }
+
+   case nir_intrinsic_store_output:
+      if (src == 0 && intrin->src[0].is_ssa)
+         return nir_intrinsic_src_type(intrin);
+      break;
+
+   default:
+      break;
+   }
+
+   /* For the most part, we leave other intrinsics alone.  Most
+    * of them don't matter in OpenGL ES 2.0 drivers anyway.
+    * However, we should at least check if this is some sort of
+    * IO intrinsic and flag it's offset and index sources.
+    */
+   {
+      int offset_src_idx = nir_get_io_offset_src_number(intrin);
+      if (src == offset_src_idx) {
+         const nir_src *offset_src = offset_src_idx >= 0 ? &intrin->src[offset_src_idx] : NULL;
+         if (offset_src && offset_src->is_ssa)
+            return nir_type_int;
+      }
+   }
+
+   return nir_type_invalid;
+}
+
+nir_alu_type
+nir_intrinsic_instr_dest_type(const nir_intrinsic_instr *intrin)
+{
+   /* We could go nuts here, but we'll just handle a few simple
+    * cases and let everything else be untyped.
+    */
+   switch (intrin->intrinsic) {
+   case nir_intrinsic_load_deref: {
+      nir_deref_instr *deref = nir_src_as_deref(intrin->src[0]);
+      if (intrin->dest.is_ssa)
+         return nir_get_nir_type_for_glsl_type(deref->type);
+      break;
+   }
+
+   case nir_intrinsic_load_input:
+   case nir_intrinsic_load_uniform:
+      if (intrin->dest.is_ssa)
+         return nir_intrinsic_dest_type(intrin);
+      break;
+
+   default:
+      break;
+   }
+
+   return nir_type_invalid;
 }
 
 /**
@@ -3231,10 +3423,14 @@ nir_tex_instr_result_size(const nir_tex_instr *instr)
    case nir_texop_query_levels:
    case nir_texop_samples_identical:
    case nir_texop_fragment_mask_fetch_amd:
+   case nir_texop_lod_bias_agx:
       return 1;
 
    case nir_texop_descriptor_amd:
       return instr->sampler_dim == GLSL_SAMPLER_DIM_BUF ? 4 : 8;
+
+   case nir_texop_sampler_descriptor_amd:
+      return 4;
 
    default:
       if (instr->is_shadow && instr->is_new_style_shadow)
@@ -3253,6 +3449,8 @@ nir_tex_instr_is_query(const nir_tex_instr *instr)
    case nir_texop_texture_samples:
    case nir_texop_query_levels:
    case nir_texop_descriptor_amd:
+   case nir_texop_sampler_descriptor_amd:
+   case nir_texop_lod_bias_agx:
       return true;
    case nir_texop_tex:
    case nir_texop_txb:
@@ -3263,6 +3461,9 @@ nir_tex_instr_is_query(const nir_tex_instr *instr)
    case nir_texop_txf_ms_fb:
    case nir_texop_txf_ms_mcs_intel:
    case nir_texop_tg4:
+   case nir_texop_samples_identical:
+   case nir_texop_fragment_mask_fetch_amd:
+   case nir_texop_fragment_fetch_amd:
       return false;
    default:
       unreachable("Invalid texture opcode");
@@ -3414,28 +3615,47 @@ nir_instr_xfb_write_mask(nir_intrinsic_instr *instr)
  * Whether an output slot is consumed by fixed-function logic.
  */
 bool
-nir_slot_is_sysval_output(gl_varying_slot slot)
+nir_slot_is_sysval_output(gl_varying_slot slot, gl_shader_stage next_shader)
 {
-   return slot == VARYING_SLOT_POS ||
-          slot == VARYING_SLOT_PSIZ ||
-          slot == VARYING_SLOT_EDGE ||
-          slot == VARYING_SLOT_CLIP_VERTEX ||
-          slot == VARYING_SLOT_CLIP_DIST0 ||
-          slot == VARYING_SLOT_CLIP_DIST1 ||
-          slot == VARYING_SLOT_CULL_DIST0 ||
-          slot == VARYING_SLOT_CULL_DIST1 ||
-          slot == VARYING_SLOT_LAYER ||
-          slot == VARYING_SLOT_VIEWPORT ||
-          slot == VARYING_SLOT_TESS_LEVEL_OUTER ||
-          slot == VARYING_SLOT_TESS_LEVEL_INNER ||
-          slot == VARYING_SLOT_BOUNDING_BOX0 ||
-          slot == VARYING_SLOT_BOUNDING_BOX1 ||
-          slot == VARYING_SLOT_VIEW_INDEX ||
-          slot == VARYING_SLOT_VIEWPORT_MASK ||
-          slot == VARYING_SLOT_PRIMITIVE_SHADING_RATE ||
-          slot == VARYING_SLOT_PRIMITIVE_COUNT ||
-          slot == VARYING_SLOT_PRIMITIVE_INDICES ||
-          slot == VARYING_SLOT_TASK_COUNT;
+   switch (next_shader) {
+   case MESA_SHADER_FRAGMENT:
+      return slot == VARYING_SLOT_POS ||
+             slot == VARYING_SLOT_PSIZ ||
+             slot == VARYING_SLOT_EDGE ||
+             slot == VARYING_SLOT_CLIP_VERTEX ||
+             slot == VARYING_SLOT_CLIP_DIST0 ||
+             slot == VARYING_SLOT_CLIP_DIST1 ||
+             slot == VARYING_SLOT_CULL_DIST0 ||
+             slot == VARYING_SLOT_CULL_DIST1 ||
+             slot == VARYING_SLOT_LAYER ||
+             slot == VARYING_SLOT_VIEWPORT ||
+             slot == VARYING_SLOT_VIEW_INDEX ||
+             slot == VARYING_SLOT_VIEWPORT_MASK ||
+             slot == VARYING_SLOT_PRIMITIVE_SHADING_RATE ||
+             /* NV_mesh_shader_only */
+             slot == VARYING_SLOT_PRIMITIVE_COUNT ||
+             slot == VARYING_SLOT_PRIMITIVE_INDICES;
+
+   case MESA_SHADER_TESS_EVAL:
+      return slot == VARYING_SLOT_TESS_LEVEL_OUTER ||
+             slot == VARYING_SLOT_TESS_LEVEL_INNER ||
+             slot == VARYING_SLOT_BOUNDING_BOX0 ||
+             slot == VARYING_SLOT_BOUNDING_BOX1;
+
+   case MESA_SHADER_MESH:
+      /* NV_mesh_shader only */
+      return slot == VARYING_SLOT_TASK_COUNT;
+
+   case MESA_SHADER_NONE:
+      /* NONE means unknown. Check all possibilities. */
+      return nir_slot_is_sysval_output(slot, MESA_SHADER_FRAGMENT) ||
+             nir_slot_is_sysval_output(slot, MESA_SHADER_TESS_EVAL) ||
+             nir_slot_is_sysval_output(slot, MESA_SHADER_MESH);
+
+   default:
+      /* No other shaders have preceding shaders with sysval outputs. */
+      return false;
+   }
 }
 
 /**
@@ -3465,9 +3685,10 @@ nir_slot_is_varying(gl_varying_slot slot)
 }
 
 bool
-nir_slot_is_sysval_output_and_varying(gl_varying_slot slot)
+nir_slot_is_sysval_output_and_varying(gl_varying_slot slot,
+                                      gl_shader_stage next_shader)
 {
-   return nir_slot_is_sysval_output(slot) &&
+   return nir_slot_is_sysval_output(slot, next_shader) &&
           nir_slot_is_varying(slot);
 }
 
@@ -3475,17 +3696,21 @@ nir_slot_is_sysval_output_and_varying(gl_varying_slot slot)
  * This marks the output store instruction as not feeding the next shader
  * stage. If the instruction has no other use, it's removed.
  */
-void nir_remove_varying(nir_intrinsic_instr *intr)
+bool
+nir_remove_varying(nir_intrinsic_instr *intr, gl_shader_stage next_shader)
 {
    nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
 
-   if ((!sem.no_sysval_output && nir_slot_is_sysval_output(sem.location)) ||
+   if ((!sem.no_sysval_output &&
+        nir_slot_is_sysval_output(sem.location, next_shader)) ||
        nir_instr_xfb_write_mask(intr)) {
       /* Demote the store instruction. */
       sem.no_varying = true;
       nir_intrinsic_set_io_semantics(intr, sem);
+      return false;
    } else {
       nir_instr_remove(&intr->instr);
+      return true;
    }
 }
 
@@ -3509,7 +3734,7 @@ void nir_remove_sysval_output(nir_intrinsic_instr *intr)
 
 void nir_remove_non_entrypoints(nir_shader *nir)
 {
-   foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
+   nir_foreach_function_safe(func, nir) {
       if (!func->is_entrypoint)
          exec_node_remove(&func->node);
    }

@@ -620,8 +620,10 @@ FC(send_sel_reg32_desc,       /* 4+ */ 77, 77, /* 12+ */  48,  48, devinfo->ver 
 FC(send_sel_reg32_ex_desc,    /* 4+ */ 61, 61, /* 12+ */  49,  49, devinfo->ver >= 9)
 F8(send_src0_reg_file,        /* 4+ */ 38, 37, /* 8+ */   42,  41, /* 12+ */ 66, 66)
 FC(send_src1_reg_nr,          /* 4+ */ 51, 44, /* 12+ */ 111, 104, devinfo->ver >= 9)
+FC(send_src1_len,             /* 4+ */ -1, -1, /* 12+ */ 103,  99, devinfo->verx10 >= 125)
 FC(send_src1_reg_file,        /* 4+ */ 36, 36, /* 12+ */  98,  98, devinfo->ver >= 9)
 FC(send_dst_reg_file,         /* 4+ */ 35, 35, /* 12+ */  50,  50, devinfo->ver >= 9)
+FC(send_ex_bso,               /* 4+ */ -1, -1, /* 12+ */  39,  39, devinfo->verx10 >= 125)
 /** @} */
 
 /* Message descriptor bits */
@@ -1069,11 +1071,16 @@ brw_inst_imm_ud(const struct intel_device_info *devinfo, const brw_inst *insn)
 }
 
 static inline uint64_t
-brw_inst_imm_uq(ASSERTED const struct intel_device_info *devinfo,
+brw_inst_imm_uq(const struct intel_device_info *devinfo,
                 const brw_inst *insn)
 {
-   assert(devinfo->ver >= 8);
-   return brw_inst_bits(insn, 127, 64);
+   if (devinfo->ver >= 12) {
+      return brw_inst_bits(insn, 95, 64) << 32 |
+             brw_inst_bits(insn, 127, 96);
+   } else {
+      assert(devinfo->ver >= 8);
+      return brw_inst_bits(insn, 127, 64);
+   }
 }
 
 static inline float
@@ -1095,8 +1102,7 @@ brw_inst_imm_df(const struct intel_device_info *devinfo, const brw_inst *insn)
       double d;
       uint64_t u;
    } dt;
-   (void) devinfo;
-   dt.u = brw_inst_bits(insn, 127, 64);
+   dt.u = brw_inst_imm_uq(devinfo, insn);
    return dt.d;
 }
 

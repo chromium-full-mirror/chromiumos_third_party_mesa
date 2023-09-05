@@ -26,8 +26,8 @@
  **************************************************************************/
 
 
-#include "pipe/p_config.h"
-#include "pipe/p_compiler.h"
+#include "util/detect.h"
+#include "util/compiler.h"
 #include "util/macros.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_debug.h"
@@ -42,15 +42,15 @@
 
 #include <llvm/Config/llvm-config.h>
 #include <llvm-c/Analysis.h>
-#include <llvm-c/Transforms/Scalar.h>
-#if LLVM_VERSION_MAJOR >= 7
-#include <llvm-c/Transforms/Utils.h>
-#endif
 #include <llvm-c/BitWriter.h>
 #if GALLIVM_USE_NEW_PASS == 1
 #include <llvm-c/Transforms/PassBuilder.h>
 #elif GALLIVM_HAVE_CORO == 1
-#if LLVM_VERSION_MAJOR <= 8 && (defined(PIPE_ARCH_AARCH64) || defined (PIPE_ARCH_ARM) || defined(PIPE_ARCH_S390) || defined(PIPE_ARCH_MIPS64))
+#include <llvm-c/Transforms/Scalar.h>
+#if LLVM_VERSION_MAJOR >= 7
+#include <llvm-c/Transforms/Utils.h>
+#endif
+#if LLVM_VERSION_MAJOR <= 8 && (DETECT_ARCH_AARCH64 || DETECT_ARCH_ARM || DETECT_ARCH_S390 || DETECT_ARCH_MIPS64)
 #include <llvm-c/Transforms/IPO.h>
 #endif
 #include <llvm-c/Transforms/Coroutines.h>
@@ -67,7 +67,6 @@ static const struct debug_named_value lp_bld_perf_flags[] = {
    DEBUG_NAMED_VALUE_END
 };
 
-#ifdef DEBUG
 unsigned gallivm_debug = 0;
 
 static const struct debug_named_value lp_bld_debug_flags[] = {
@@ -76,15 +75,17 @@ static const struct debug_named_value lp_bld_debug_flags[] = {
    { "asm",    GALLIVM_DEBUG_ASM, NULL },
    { "perf",   GALLIVM_DEBUG_PERF, NULL },
    { "gc",     GALLIVM_DEBUG_GC, NULL },
+/* Don't allow setting DUMP_BC for release builds, since writing the files may be an issue with setuid. */
+#ifdef DEBUG
    { "dumpbc", GALLIVM_DEBUG_DUMP_BC, NULL },
+#endif
    DEBUG_NAMED_VALUE_END
 };
 
 DEBUG_GET_ONCE_FLAGS_OPTION(gallivm_debug, "GALLIVM_DEBUG", lp_bld_debug_flags, 0)
-#endif
 
 
-static boolean gallivm_initialized = FALSE;
+static bool gallivm_initialized = false;
 
 unsigned lp_native_vector_width;
 
@@ -111,7 +112,7 @@ enum LLVM_CodeGenOpt_Level {
  * relevant optimization passes.
  * \return  TRUE for success, FALSE for failure
  */
-static boolean
+static bool
 create_pass_manager(struct gallivm_state *gallivm)
 {
 #if GALLIVM_USE_NEW_PASS == 0
@@ -120,7 +121,7 @@ create_pass_manager(struct gallivm_state *gallivm)
 
    gallivm->passmgr = LLVMCreateFunctionPassManagerForModule(gallivm->module);
    if (!gallivm->passmgr)
-      return FALSE;
+      return false;
 
 #if GALLIVM_HAVE_CORO == 1
    gallivm->cgpassmgr = LLVMCreatePassManager();
@@ -140,7 +141,7 @@ create_pass_manager(struct gallivm_state *gallivm)
    }
 
 #if GALLIVM_HAVE_CORO == 1
-#if LLVM_VERSION_MAJOR <= 8 && (defined(PIPE_ARCH_AARCH64) || defined (PIPE_ARCH_ARM) || defined(PIPE_ARCH_S390) || defined(PIPE_ARCH_MIPS64))
+#if LLVM_VERSION_MAJOR <= 8 && (DETECT_ARCH_AARCH64 || DETECT_ARCH_ARM || DETECT_ARCH_S390 || DETECT_ARCH_MIPS64)
    LLVMAddArgumentPromotionPass(gallivm->cgpassmgr);
    LLVMAddFunctionAttrsPass(gallivm->cgpassmgr);
 #endif
@@ -190,7 +191,7 @@ create_pass_manager(struct gallivm_state *gallivm)
    LLVMAddCoroCleanupPass(gallivm->passmgr);
 #endif
 #endif
-   return TRUE;
+   return true;
 }
 
 /**
@@ -265,7 +266,7 @@ gallivm_free_code(struct gallivm_state *gallivm)
 }
 
 
-static boolean
+static bool
 init_gallivm_engine(struct gallivm_state *gallivm)
 {
    if (1) {
@@ -315,10 +316,10 @@ init_gallivm_engine(struct gallivm_state *gallivm)
        free(engine_data_layout);
    }
 
-   return TRUE;
+   return true;
 
 fail:
-   return FALSE;
+   return false;
 }
 
 
@@ -326,7 +327,7 @@ fail:
  * Allocate gallivm LLVM objects.
  * \return  TRUE for success, FALSE for failure
  */
-static boolean
+static bool
 init_gallivm_state(struct gallivm_state *gallivm, const char *name,
                    LLVMContextRef context, struct lp_cached_code *cache)
 {
@@ -334,7 +335,7 @@ init_gallivm_state(struct gallivm_state *gallivm, const char *name,
    assert(!gallivm->module);
 
    if (!lp_build_init())
-      return FALSE;
+      return false;
 
    gallivm->context = context;
    gallivm->cache = cache;
@@ -355,7 +356,7 @@ init_gallivm_state(struct gallivm_state *gallivm, const char *name,
    if (!gallivm->module)
       goto fail;
 
-#if defined(PIPE_ARCH_X86)
+#if DETECT_ARCH_X86
    lp_set_module_stack_alignment_override(gallivm->module, 4);
 #endif
 
@@ -403,7 +404,7 @@ init_gallivm_state(struct gallivm_state *gallivm, const char *name,
 
       gallivm->target = LLVMCreateTargetData(layout);
       if (!gallivm->target) {
-         return FALSE;
+         return false;
       }
    }
 
@@ -411,20 +412,33 @@ init_gallivm_state(struct gallivm_state *gallivm, const char *name,
       goto fail;
 
    lp_build_coro_declare_malloc_hooks(gallivm);
-   return TRUE;
+   return true;
 
 fail:
    gallivm_free_ir(gallivm);
    gallivm_free_code(gallivm);
-   return FALSE;
+   return false;
 }
 
+unsigned
+lp_build_init_native_width(void)
+{
+   // Default to 256 until we're confident llvmpipe with 512 is as correct and not slower than 256
+   lp_native_vector_width = MIN2(util_get_cpu_caps()->max_vector_bits, 256);
+   assert(lp_native_vector_width);
 
-boolean
+   lp_native_vector_width = debug_get_num_option("LP_NATIVE_VECTOR_WIDTH", lp_native_vector_width);
+   assert(lp_native_vector_width);
+
+   return lp_native_vector_width;
+}
+
+bool
 lp_build_init(void)
 {
+   lp_build_init_native_width();
    if (gallivm_initialized)
-      return TRUE;
+      return true;
 
 
    /* LLVMLinkIn* are no-ops at runtime.  They just ensure the respective
@@ -433,21 +447,13 @@ lp_build_init(void)
     */
    LLVMLinkInMCJIT();
 
-#ifdef DEBUG
    gallivm_debug = debug_get_option_gallivm_debug();
-#endif
 
    gallivm_perf = debug_get_flags_option("GALLIVM_PERF", lp_bld_perf_flags, 0 );
 
    lp_set_target_options();
 
-   // Default to 256 until we're confident llvmpipe with 512 is as correct and not slower than 256
-   lp_native_vector_width = MIN2(util_get_cpu_caps()->max_vector_bits, 256);
-
-   lp_native_vector_width = debug_get_num_option("LP_NATIVE_VECTOR_WIDTH",
-                                                 lp_native_vector_width);
-
-#ifdef PIPE_ARCH_PPC_64
+#if DETECT_ARCH_PPC_64
    /* Set the NJ bit in VSCR to 0 so denormalized values are handled as
     * specified by IEEE standard (PowerISA 2.06 - Section 6.3). This guarantees
     * that some rounding and half-float to float handling does not round
@@ -469,9 +475,9 @@ lp_build_init(void)
    }
 #endif
 
-   gallivm_initialized = TRUE;
+   gallivm_initialized = true;
 
-   return TRUE;
+   return true;
 }
 
 
@@ -624,7 +630,7 @@ gallivm_compile_module(struct gallivm_state *gallivm)
 
    /* Disable frame pointer omission on debug/profile builds */
    /* XXX: And workaround http://llvm.org/PR21435 */
-#if defined(DEBUG) || defined(PROFILE) || defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64)
+#if defined(DEBUG) || defined(PROFILE) || DETECT_ARCH_X86 || DETECT_ARCH_X86_64
       LLVMAddTargetDependentFunctionAttr(func, "no-frame-pointer-elim", "true");
       LLVMAddTargetDependentFunctionAttr(func, "no-frame-pointer-elim-non-leaf", "true");
 #endif

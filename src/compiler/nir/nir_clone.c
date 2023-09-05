@@ -136,6 +136,7 @@ nir_constant_clone(const nir_constant *c, nir_variable *nvar)
    nir_constant *nc = ralloc(nvar, nir_constant);
 
    memcpy(nc->values, c->values, sizeof(nc->values));
+   nc->is_null_constant = c->is_null_constant;
    nc->num_elements = c->num_elements;
    nc->elements = ralloc_array(nvar, nir_constant *, c->num_elements);
    for (unsigned i = 0; i < c->num_elements; i++) {
@@ -214,10 +215,9 @@ clone_register(clone_state *state, const nir_register *reg)
    nreg->num_array_elems = reg->num_array_elems;
    nreg->index = reg->index;
 
-   /* reconstructing uses/defs/if_uses handled by nir_instr_insert() */
+   /* reconstructing uses/defs handled by nir_instr_insert() */
    list_inithead(&nreg->uses);
    list_inithead(&nreg->defs);
-   list_inithead(&nreg->if_uses);
 
    return nreg;
 }
@@ -258,7 +258,7 @@ __clone_dst(clone_state *state, nir_instr *ninstr,
    ndst->is_ssa = dst->is_ssa;
    if (dst->is_ssa) {
       nir_ssa_dest_init(ninstr, ndst, dst->ssa.num_components,
-                        dst->ssa.bit_size, NULL);
+                        dst->ssa.bit_size);
       if (likely(state->remap_table))
          add_remap(state, &ndst->ssa, &dst->ssa);
    } else {
@@ -598,6 +598,10 @@ clone_loop(clone_state *state, struct exec_list *cf_list, const nir_loop *loop)
    nir_cf_node_insert_end(cf_list, &nloop->cf_node);
 
    clone_cf_list(state, &nloop->body, &loop->body);
+   if (nir_loop_has_continue_construct(loop)) {
+      nir_loop_add_continue_construct(nloop);
+      clone_cf_list(state, &nloop->continue_list, &loop->continue_list);
+   }
 
    return nloop;
 }
@@ -765,10 +769,9 @@ nir_shader_clone(void *mem_ctx, const nir_shader *s)
     * reference the functions of other functions and we don't know what order
     * the functions will have in the list.
     */
-   nir_foreach_function(fxn, s) {
+   nir_foreach_function_with_impl(fxn, impl, s) {
       nir_function *nfxn = remap_global(&state, fxn);
-      nfxn->impl = clone_function_impl(&state, fxn->impl);
-      nfxn->impl->function = nfxn;
+      nir_function_set_impl(nfxn, clone_function_impl(&state, impl));
    }
 
    ns->info = s->info;

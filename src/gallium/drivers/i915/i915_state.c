@@ -335,10 +335,10 @@ i915_create_sampler_state(struct pipe_context *pipe,
    }
 
    {
-      ubyte r = float_to_ubyte(sampler->border_color.f[0]);
-      ubyte g = float_to_ubyte(sampler->border_color.f[1]);
-      ubyte b = float_to_ubyte(sampler->border_color.f[2]);
-      ubyte a = float_to_ubyte(sampler->border_color.f[3]);
+      uint8_t r = float_to_ubyte(sampler->border_color.f[0]);
+      uint8_t g = float_to_ubyte(sampler->border_color.f[1]);
+      uint8_t b = float_to_ubyte(sampler->border_color.f[2]);
+      uint8_t a = float_to_ubyte(sampler->border_color.f[3]);
       cso->state[2] = I915PACKCOLOR8888(r, g, b, a);
    }
    return cso;
@@ -488,7 +488,7 @@ i915_create_depth_stencil_state(
 
    if (depth_stencil->alpha_enabled) {
       int test = i915_translate_compare_func(depth_stencil->alpha_func);
-      ubyte refByte = float_to_ubyte(depth_stencil->alpha_ref_value);
+      uint8_t refByte = float_to_ubyte(depth_stencil->alpha_ref_value);
 
       cso->depth_LIS6 |=
          (S6_ALPHA_TEST_ENABLE | (test << S6_ALPHA_TEST_FUNC_SHIFT) |
@@ -815,12 +815,8 @@ i915_set_framebuffer_state(struct pipe_context *pipe,
 {
    struct i915_context *i915 = i915_context(pipe);
 
-   i915->framebuffer.width = fb->width;
-   i915->framebuffer.height = fb->height;
-   i915->framebuffer.nr_cbufs = fb->nr_cbufs;
+   util_copy_framebuffer_state(&i915->framebuffer, fb);
    if (fb->nr_cbufs) {
-      pipe_surface_reference(&i915->framebuffer.cbufs[0], fb->cbufs[0]);
-
       struct i915_surface *surf = i915_surface(i915->framebuffer.cbufs[0]);
       if (i915->current.fixup_swizzle != surf->oc_swizzle) {
          i915->current.fixup_swizzle = surf->oc_swizzle;
@@ -828,10 +824,7 @@ i915_set_framebuffer_state(struct pipe_context *pipe,
                 sizeof(surf->color_swizzle));
          i915->dirty |= I915_NEW_COLOR_SWIZZLE;
       }
-   } else {
-      pipe_surface_reference(&i915->framebuffer.cbufs[0], NULL);
-   }
-   pipe_surface_reference(&i915->framebuffer.zsbuf, fb->zsbuf);
+   } 
    if (fb->zsbuf)
       draw_set_zs_format(i915->draw, fb->zsbuf->format);
 

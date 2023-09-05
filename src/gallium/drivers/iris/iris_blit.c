@@ -245,7 +245,7 @@ iris_blorp_surf_for_resource(struct isl_device *isl_dev,
       .addr = (struct blorp_address) {
          .buffer = res->bo,
          .offset = res->offset,
-         .reloc_flags = is_dest ? EXEC_OBJECT_WRITE : 0,
+         .reloc_flags = is_dest ? IRIS_BLORP_RELOC_FLAGS_EXEC_OBJECT_WRITE : 0,
          .mocs = iris_mocs(res->bo, isl_dev,
                            is_dest ? ISL_SURF_USAGE_RENDER_TARGET_BIT
                                    : ISL_SURF_USAGE_TEXTURE_BIT),
@@ -259,7 +259,7 @@ iris_blorp_surf_for_resource(struct isl_device *isl_dev,
       surf->aux_addr = (struct blorp_address) {
          .buffer = res->aux.bo,
          .offset = res->aux.offset,
-         .reloc_flags = is_dest ? EXEC_OBJECT_WRITE : 0,
+         .reloc_flags = is_dest ? IRIS_BLORP_RELOC_FLAGS_EXEC_OBJECT_WRITE : 0,
          .mocs = iris_mocs(res->bo, isl_dev, 0),
          .local_hint = devinfo->has_flat_ccs ||
                        iris_bo_likely_local(res->aux.bo),
@@ -279,8 +279,7 @@ iris_blorp_surf_for_resource(struct isl_device *isl_dev,
 static bool
 is_astc(enum isl_format format)
 {
-   return format != ISL_FORMAT_UNSUPPORTED &&
-          isl_format_get_layout(format)->txc == ISL_TXC_ASTC;
+   return isl_format_get_layout(format)->txc == ISL_TXC_ASTC;
 }
 
 static void
@@ -288,7 +287,7 @@ tex_cache_flush_hack(struct iris_batch *batch,
                      enum isl_format view_format,
                      enum isl_format surf_format)
 {
-   const struct intel_device_info *devinfo = &batch->screen->devinfo;
+   const struct intel_device_info *devinfo = batch->screen->devinfo;
 
    /* The WaSamplerCacheFlushBetweenRedescribedSurfaceReads workaround says:
     *
@@ -365,7 +364,7 @@ iris_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
 {
    struct iris_context *ice = (void *) ctx;
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
-   const struct intel_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = screen->devinfo;
    struct iris_batch *batch = &ice->batches[IRIS_BATCH_RENDER];
    enum blorp_batch_flags blorp_flags = iris_blorp_flags_for_batch(batch);
 
@@ -573,7 +572,7 @@ get_copy_region_aux_settings(struct iris_context *ice,
                              bool is_dest)
 {
    struct iris_screen *screen = (void *) ice->ctx.screen;
-   struct intel_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = screen->devinfo;
 
    switch (res->aux.usage) {
    case ISL_AUX_USAGE_HIZ:
@@ -600,7 +599,7 @@ get_copy_region_aux_settings(struct iris_context *ice,
       }
       FALLTHROUGH;
    case ISL_AUX_USAGE_CCS_E:
-   case ISL_AUX_USAGE_GFX12_CCS_E: {
+   case ISL_AUX_USAGE_FCV_CCS_E: {
       /* If our source doesn't have any unresolved color, report an aux
        * usage of ISL_AUX_USAGE_NONE.  This way, texturing won't even look
        * at the aux surface and we can save some bandwidth.
@@ -631,6 +630,10 @@ get_copy_region_aux_settings(struct iris_context *ice,
       bool is_zero = clear_color_is_fully_zero(res);
 
       if (batch->name == IRIS_BATCH_BLITTER) {
+
+         /* Compression isn't used for blitter destinations. */
+         assert(!is_dest);
+
          if (devinfo->verx10 >= 125) {
             *out_aux_usage = res->aux.usage;
             *out_clear_supported = is_zero;
@@ -679,6 +682,10 @@ iris_copy_region(struct blorp_context *blorp,
       batch->name == IRIS_BATCH_BLITTER ? IRIS_DOMAIN_OTHER_WRITE
                                         : IRIS_DOMAIN_RENDER_WRITE;
 
+   enum isl_format src_fmt, dst_fmt;
+   blorp_copy_get_formats(&screen->isl_dev, &src_res->surf, &dst_res->surf,
+                          &src_fmt, &dst_fmt);
+
    enum isl_aux_usage src_aux_usage, dst_aux_usage;
    bool src_clear_supported, dst_clear_supported;
    get_copy_region_aux_settings(ice, batch, src_res, src_level,
@@ -687,7 +694,7 @@ iris_copy_region(struct blorp_context *blorp,
                                 &dst_aux_usage, &dst_clear_supported, true);
 
    if (iris_batch_references(batch, src_res->bo))
-      tex_cache_flush_hack(batch, ISL_FORMAT_UNSUPPORTED, src_res->surf.format);
+      tex_cache_flush_hack(batch, src_fmt, src_res->surf.format);
 
    if (dst->target == PIPE_BUFFER)
       util_range_add(&dst_res->base.b, &dst_res->valid_buffer_range, dstx, dstx + src_box->width);
@@ -705,7 +712,7 @@ iris_copy_region(struct blorp_context *blorp,
       };
       struct blorp_address dst_addr = {
          .buffer = dst_res->bo, .offset = dst_res->offset + dstx,
-         .reloc_flags = EXEC_OBJECT_WRITE,
+         .reloc_flags = IRIS_BLORP_RELOC_FLAGS_EXEC_OBJECT_WRITE,
          .mocs = iris_mocs(dst_res->bo, &screen->isl_dev,
                            ISL_SURF_USAGE_RENDER_TARGET_BIT),
          .local_hint = iris_bo_likely_local(dst_res->bo),
@@ -757,7 +764,7 @@ iris_copy_region(struct blorp_context *blorp,
 
    blorp_batch_finish(&blorp_batch);
 
-   tex_cache_flush_hack(batch, ISL_FORMAT_UNSUPPORTED, src_res->surf.format);
+   tex_cache_flush_hack(batch, src_fmt, src_res->surf.format);
 }
 
 /**

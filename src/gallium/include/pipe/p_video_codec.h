@@ -119,6 +119,48 @@ struct pipe_video_codec
     * get encoder feedback
     */
    void (*get_feedback)(struct pipe_video_codec *codec, void *feedback, unsigned *size);
+
+   /**
+    * Get decoder fence.
+    *
+    * Can be used to query the status of the previous decode job denoted by
+    * 'fence' given 'timeout'.
+    *
+    * A pointer to a fence pointer can be passed to the codecs before the
+    * end_frame vfunc and the codec should then be responsible for allocating a
+    * fence on command stream submission.
+    */
+   int (*get_decoder_fence)(struct pipe_video_codec *codec,
+                            struct pipe_fence_handle *fence,
+                            uint64_t timeout);
+
+   /**
+    * Get processor fence.
+    *
+    * Can be used to query the status of the previous process job denoted by
+    * 'fence' given 'timeout'.
+    *
+    * A pointer to a fence pointer can be passed to the codecs before the
+    * end_frame vfunc and the codec should then be responsible for allocating a
+    * fence on command stream submission.
+    */
+   int (*get_processor_fence)(struct pipe_video_codec *codec,
+                              struct pipe_fence_handle *fence,
+                              uint64_t timeout);
+
+   /**
+    * Update target buffer address.
+    *
+    * Due to reallocation, target buffer address has changed, and the
+    * changed buffer will need to update to decoder so that when this buffer
+    * used as a reference frame, decoder can obtain its recorded information.
+    * Failed updating this buffer will miss reference frames and
+    * cause image corruption in the sebsequent output.
+    * If no target buffer change, this call is not necessary.
+    */
+   void (*update_decoder_target)(struct pipe_video_codec *codec,
+                                 struct pipe_video_buffer *old,
+                                 struct pipe_video_buffer *updated);
 };
 
 /**
@@ -138,6 +180,12 @@ struct pipe_video_buffer
     * destroy this video buffer
     */
    void (*destroy)(struct pipe_video_buffer *buffer);
+
+   /**
+    * get an individual resource for each plane,
+    * only returns existing resources by reference
+    */
+   void (*get_resources)(struct pipe_video_buffer *buffer, struct pipe_resource **resources);
 
    /**
     * get an individual sampler view for each plane
@@ -168,6 +216,11 @@ struct pipe_video_buffer
     * destroy the associated data
     */
    void (*destroy_associated_data)(void *associated_data);
+
+   /*
+    * encoded frame statistics for this particular picture
+    */
+   void *statistics_data;
 };
 
 #ifdef __cplusplus

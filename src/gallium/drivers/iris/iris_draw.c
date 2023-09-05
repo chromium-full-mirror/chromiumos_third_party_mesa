@@ -48,10 +48,10 @@ prim_is_points_or_lines(const struct pipe_draw_info *draw)
    /* We don't need to worry about adjacency - it can only be used with
     * geometry shaders, and we don't care about this info when GS is on.
     */
-   return draw->mode == PIPE_PRIM_POINTS ||
-          draw->mode == PIPE_PRIM_LINES ||
-          draw->mode == PIPE_PRIM_LINE_LOOP ||
-          draw->mode == PIPE_PRIM_LINE_STRIP;
+   return draw->mode == MESA_PRIM_POINTS ||
+          draw->mode == MESA_PRIM_LINES ||
+          draw->mode == MESA_PRIM_LINE_LOOP ||
+          draw->mode == MESA_PRIM_LINE_STRIP;
 }
 
 /**
@@ -66,7 +66,7 @@ iris_update_draw_info(struct iris_context *ice,
                       const struct pipe_draw_info *info)
 {
    struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
-   const struct intel_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = screen->devinfo;
    const struct brw_compiler *compiler = screen->compiler;
 
    if (ice->state.prim_mode != info->mode) {
@@ -82,7 +82,7 @@ iris_update_draw_info(struct iris_context *ice,
       }
    }
 
-   if (info->mode == PIPE_PRIM_PATCHES &&
+   if (info->mode == MESA_PRIM_PATCHES &&
        ice->state.vertices_per_patch != ice->state.patch_vertices) {
       ice->state.vertices_per_patch = ice->state.patch_vertices;
       ice->state.dirty |= IRIS_DIRTY_VF_TOPOLOGY;
@@ -270,7 +270,7 @@ iris_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info,
 
    struct iris_context *ice = (struct iris_context *) ctx;
    struct iris_screen *screen = (struct iris_screen*)ice->ctx.screen;
-   const struct intel_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = screen->devinfo;
    struct iris_batch *batch = &ice->batches[IRIS_BATCH_RENDER];
 
    if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
@@ -316,7 +316,7 @@ iris_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info,
 
    iris_handle_always_flush_cache(batch);
 
-   iris_postdraw_update_resolve_tracking(ice, batch);
+   iris_postdraw_update_resolve_tracking(ice);
 
    ice->state.dirty &= ~IRIS_ALL_DIRTY_FOR_RENDER;
    ice->state.stage_dirty &= ~IRIS_ALL_STAGE_DIRTY_FOR_RENDER;
@@ -382,6 +382,8 @@ void
 iris_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *grid)
 {
    struct iris_context *ice = (struct iris_context *) ctx;
+   struct iris_screen *screen = (struct iris_screen *) ctx->screen;
+   const struct intel_device_info *devinfo = screen->devinfo;
    struct iris_batch *batch = &ice->batches[IRIS_BATCH_COMPUTE];
 
    if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
@@ -434,7 +436,6 @@ iris_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *grid)
    ice->state.dirty &= ~IRIS_ALL_DIRTY_FOR_COMPUTE;
    ice->state.stage_dirty &= ~IRIS_ALL_STAGE_DIRTY_FOR_COMPUTE;
 
-   /* Note: since compute shaders can't access the framebuffer, there's
-    * no need to call iris_postdraw_update_resolve_tracking.
-    */
+   if (devinfo->ver >= 12)
+      iris_postdraw_update_image_resolve_tracking(ice, MESA_SHADER_COMPUTE);
 }

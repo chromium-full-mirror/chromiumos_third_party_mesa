@@ -1,5 +1,5 @@
 {
-    "$schema": "https://schema.khronos.org/vulkan/profiles-0.8.1-230.json#",
+    "$schema": "https://schema.khronos.org/vulkan/profiles-0.8.1-251.json",
     "capabilities": {
         "vulkan10requirements": {
             "features": {
@@ -15,7 +15,6 @@
                 "VK_KHR_imageless_framebuffer": 1,
                 "VK_KHR_timeline_semaphore": 1,
                 "VK_EXT_custom_border_color": 1,
-                "VK_EXT_provoking_vertex": 1,
                 "VK_EXT_line_rasterization": 1,
                 "VK_KHR_swapchain_mutable_format": 1,
                 "VK_EXT_border_color_swizzle": 1,
@@ -31,14 +30,11 @@
                 "VkPhysicalDeviceCustomBorderColorFeaturesEXT": {
                     "customBorderColorWithoutFormat": true
                 },
+                "VkPhysicalDeviceBorderColorSwizzleFeaturesEXT": {
+                    "borderColorSwizzleFromImage": true
+                },
                 "VkPhysicalDeviceLineRasterizationFeaturesEXT": {
-                    "rectangularLines": true,
-                    "bresenhamLines": true
-                }
-            },
-            "properties": {
-                "VkPhysicalDeviceProperties": {
-
+                    "rectangularLines": true
                 }
             }
         },
@@ -49,13 +45,38 @@
             "features": {
                 "VkPhysicalDeviceScalarBlockLayoutFeaturesEXT": {
                     "scalarBlockLayout": true
+                },
+                "VkPhysicalDeviceTimelineSemaphoreFeaturesKHR": {
+                    "timelineSemaphore": true
+                },
+                "VkPhysicalDeviceImagelessFramebufferFeaturesKHR": {
+                    "imagelessFramebuffer": true
                 }
             }
         },
         "gl21_baseline_vk12": {
             "features": {
                 "VkPhysicalDeviceVulkan12Features": {
-                    "scalarBlockLayout": true
+                    "scalarBlockLayout": true,
+                    "drawIndirectCount": true,
+                    "imagelessFramebuffer": true,
+                    "timelineSemaphore": true
+                }
+            }
+        },
+        "gl21_baseline_line_bresenham": {
+        	"features": {
+                "VkPhysicalDeviceLineRasterizationFeaturesEXT": {
+                    "bresenhamLines": true
+                }
+            }
+        },
+        "gl21_baseline_line_non_strict": {
+        	"properties": {
+                "VkPhysicalDeviceProperties": {
+                    "limits": {
+                        "strictLines": false
+                    }
                 }
             }
         },
@@ -72,6 +93,21 @@
             "features": {
                 "VkPhysicalDeviceFeatures": {
                     "independentBlend": true
+                },
+                "VkPhysicalDeviceTransformFeedbackFeaturesEXT": {
+                    "transformFeedback": true
+                },
+                "VkPhysicalDeviceConditionalRenderingFeaturesEXT": {
+                    "conditionalRendering": true
+                }
+            },
+            "formats": {
+                "VK_FORMAT_D32_SFLOAT_S8_UINT": {
+                    "VkFormatProperties": {
+                        "optimalTilingFeatures": [
+                            "VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT"
+                        ]
+                    }
                 }
             }
         },
@@ -105,8 +141,10 @@
             },
             "features": {
                 "VkPhysicalDeviceFeatures": {
-                    "occlusionQueryPrecise": true,
                     "dualSrcBlend": true
+                },
+                "VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT": {
+                    "vertexAttributeInstanceRateDivisor": true
                 }
             }
         },
@@ -154,7 +192,11 @@
             "properties": {
                 "VkPhysicalDeviceProperties": {
                     "limits": {
+                        "maxImageDimension1D": 16384,
                         "maxImageDimension2D": 16384,
+                        "maxImageDimension3D": 2048,
+                        "maxImageDimensionCube": 16384,
+                        "maxImageArrayLayers": 2048,
                         "maxViewports": 16
                     }
                 }
@@ -170,6 +212,9 @@
                     "shaderStorageImageWriteWithoutFormat": true,
                     "vertexPipelineStoresAndAtomics": true,
                     "fragmentStoresAndAtomics": true
+                },
+                "VkPhysicalDeviceImage2DViewOf3DFeaturesEXT": {
+                    "image2DViewOf3D": true
                 }
             }
         },
@@ -187,6 +232,33 @@
             "features": {
                 "VkPhysicalDeviceVulkan11Features": {
                     "shaderDrawParameters": true
+                }
+            }
+        },
+        "gl43_baseline_rb2": {
+            "extensions": {
+                "VK_EXT_robustness2": 1
+            },
+            "features": {
+                "VkPhysicalDeviceRobustness2FeaturesEXT": {
+                    "robustImageAccess2": true
+                }
+            }
+        },
+        "gl43_baseline_rb_image_vk13": {
+            "features": {
+                "VkPhysicalDeviceVulkan13Features": {
+                    "robustImageAccess": true
+                }
+            }
+        },
+        "gl43_baseline_rb_image_ext": {
+            "extensions": {
+                "VK_EXT_image_robustness": 1
+            },
+            "features": {
+                "VkPhysicalDeviceImageRobustnessFeaturesEXT": {
+                    "robustImageAccess": true
                 }
             }
         },
@@ -260,9 +332,6 @@
                 },
                 "VK_FORMAT_D32_SFLOAT_S8_UINT": {
                     "VkFormatProperties": {
-                        "linearTilingFeatures": [ 
-                            "VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT"
-                        ],
                         "optimalTilingFeatures": [ 
                             "VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT"
                         ]
@@ -271,9 +340,6 @@
             }
         },
         "gl44_baseline": {
-            "extensions": {
-                "VK_KHR_sampler_mirror_clamp_to_edge": 1
-            },
             "formats": {
                 "VK_FORMAT_B10G11R11_UFLOAT_PACK32": {
                     "VkFormatProperties": {
@@ -281,6 +347,18 @@
                             "VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT"
                         ]
                     }
+                }
+            }
+        },
+        "gl44_baseline_ext": {
+            "extensions": {
+                "VK_KHR_sampler_mirror_clamp_to_edge": 1
+            }
+        },
+        "gl44_baseline_vk12": {
+            "features": {
+                "VkPhysicalDeviceVulkan12Features": {
+                    "samplerMirrorClampToEdge": true
                 }
             }
         },
@@ -298,7 +376,6 @@
             "features": {
                 "VkPhysicalDeviceFeatures": {
                     "samplerAnisotropy": true,
-                    "pipelineStatisticsQuery": true,
                     "depthBiasClamp": true
                 }
             }
@@ -309,13 +386,10 @@
                 "VK_EXT_extended_dynamic_state2": 1,
                 "VK_EXT_extended_dynamic_state3": 1,
                 "VK_EXT_graphics_pipeline_library": 1,
-                "VK_KHR_pipeline_library": 1,
-                "VK_EXT_non_seamless_cube_map": 1
+                "VK_EXT_non_seamless_cube_map": 1,
+                "VK_KHR_pipeline_library": 1
             },
             "features": {
-                "VkPhysicalDeviceFeatures": {
-                    "textureCompressionBC": true
-                },
                 "VkPhysicalDeviceExtendedDynamicStateFeaturesEXT": {
                     "extendedDynamicState": true
                 },
@@ -329,13 +403,20 @@
                     "extendedDynamicState3DepthClampEnable": true,
                     "extendedDynamicState3DepthClipEnable": true,
                     "extendedDynamicState3ProvokingVertexMode": true,
-                    "extendedDynamicState3LineRasterizationMode": true
+                    "extendedDynamicState3LineRasterizationMode": true,
+                    "extendedDynamicState3DepthClipNegativeOneToOne": true
+                },
+                "VkPhysicalDeviceFeatures": {
+                    "textureCompressionBC": true
                 },
                 "VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT": {
                     "graphicsPipelineLibrary": true
                 },
                 "VkPhysicalDeviceNonSeamlessCubeMapFeaturesEXT": {
                     "nonSeamlessCubeMap": true
+                },
+                "VkPhysicalDeviceProvokingVertexFeaturesEXT": {
+                    "provokingVertexLast": true
                 }
             },
             "properties": {
@@ -346,11 +427,16 @@
         },
         "gl46_optimal_ext": {
             "extensions": {
-                "VK_KHR_dynamic_rendering": 1
+                "VK_EXT_provoking_vertex": 1,
+                "VK_KHR_dynamic_rendering": 1,
+                "VK_EXT_dynamic_rendering_unused_attachments": 1
             },
             "features": {
                 "VkPhysicalDeviceDynamicRenderingFeaturesKHR": {
                     "dynamicRendering": true
+                },
+                "VkPhysicalDeviceDynamicRenderingUnusedAttachmentsFeaturesEXT": {
+                    "dynamicRenderingUnusedAttachments": true
                 }
             }
         },
@@ -365,7 +451,8 @@
             "extensions": {
                 "VK_EXT_primitives_generated_query": 1,
                 "VK_EXT_color_write_enable": 1,
-                "VK_EXT_extended_dynamic_state3": 1
+                "VK_EXT_extended_dynamic_state3": 1,
+                "VK_EXT_descriptor_buffer": 1
             },
             "features": {
                 "VkPhysicalDevicePrimitivesGeneratedQueryFeaturesEXT": {
@@ -382,6 +469,9 @@
                     "extendedDynamicState3RasterizationSamples": true,
                     "extendedDynamicState3ColorWriteMask": true,
                     "extendedDynamicState3LogicOpEnable": true
+                },
+                "VkPhysicalDeviceDescriptorBufferFeaturesEXT": {
+                    "descriptorBuffer": true
                 }
             }
         },
@@ -545,49 +635,53 @@
     "profiles": {
         "VP_ZINK_gl21_baseline": {
             "version": 1,
-            "api-version": "1.0.196",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 2.1 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 2.1 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
-                [ "gl21_baseline_vk10", "gl21_baseline_vk12" ]
+                [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ]
             ]
         },
         "VP_ZINK_gl30_baseline": {
             "version": 1,
-            "api-version": "1.0.196",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 3.0 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 3.0 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline"
             ]
         },
         "VP_ZINK_gl31_baseline": {
             "version": 1,
-            "api-version": "1.0.196",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 3.1 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 3.1 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline"
             ]
         },
         "VP_ZINK_gl32_baseline": {
             "version": 1,
-            "api-version": "1.0.196",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 3.2 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 3.2 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline"
@@ -595,13 +689,14 @@
         },
         "VP_ZINK_gl33_baseline": {
             "version": 1,
-            "api-version": "1.0.196",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 3.3 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 3.3 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -610,13 +705,14 @@
         },
         "VP_ZINK_gl40_baseline": {
             "version": 1,
-            "api-version": "1.0.196",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 4.0 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 4.0 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -626,13 +722,14 @@
         },
         "VP_ZINK_gl41_baseline": {
             "version": 1,
-            "api-version": "1.0.211",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 4.1 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 4.1 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -643,13 +740,14 @@
         },
         "VP_ZINK_gl42_baseline": {
             "version": 1,
-            "api-version": "1.0.211",
+            "api-version": "1.2.0",
             "label": "Zink OpenGL 4.2 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 4.2 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -662,13 +760,14 @@
         },
         "VP_ZINK_gl43_baseline": {
             "version": 1,
-            "api-version": "1.0.211",
+            "api-version": "1.3.0",
             "label": "Zink OpenGL 4.3 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 4.3 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -677,18 +776,20 @@
                 "gl41_baseline",
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
-                "gl43_baseline"
+                "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ]
             ]
         },
         "VP_ZINK_gl44_baseline": {
             "version": 1,
-            "api-version": "1.0.211",
+            "api-version": "1.3.0",
             "label": "Zink OpenGL 4.4 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 4.4 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -698,18 +799,21 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
-                "gl44_baseline"
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
+                "gl44_baseline",
+                [ "gl44_baseline_ext", "gl44_baseline_vk12" ]
             ]
         },
         "VP_ZINK_gl45_baseline": {
             "version": 1,
-            "api-version": "1.0.211",
+            "api-version": "1.3.0",
             "label": "Zink OpenGL 4.5 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 4.5 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -719,19 +823,22 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
                 "gl44_baseline",
+                [ "gl44_baseline_ext", "gl44_baseline_vk12" ],
                 "gl45_baseline"
             ]
         },
         "VP_ZINK_gl46_baseline": {
             "version": 1,
-            "api-version": "1.0.211",
+            "api-version": "1.3.0",
             "label": "Zink OpenGL 4.6 Baseline profile",
             "description": "Minimum requirements for Zink OpenGL 4.6 support.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -741,20 +848,23 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
                 "gl44_baseline",
+                [ "gl44_baseline_ext", "gl44_baseline_vk12" ],
                 "gl45_baseline",
                 "gl46_baseline"
             ]
         },
         "VP_ZINK_gl46_optimal": {
             "version": 1,
-            "api-version": "1.0.230",
+            "api-version": "1.3.0",
             "label": "Zink OpenGL 4.6 Optimal profile",
             "description": "Requirements for Zink OpenGL 4.6 support with best performances.",
             "capabilities": [
                 "vulkan10requirements",
                 "gl21_baseline",
                 [ "gl21_baseline_vk10", "gl21_baseline_vk12" ],
+                [ "gl21_baseline_line_bresenham", "gl21_baseline_line_non_strict" ],
                 "gl30_baseline",
                 "gl31_baseline",
                 "gl32_baseline",
@@ -764,7 +874,9 @@
                 "gl42_baseline",
                 [ "gl42_baseline_vk10", "gl42_baseline_vk12" ],
                 "gl43_baseline",
+                [ "gl43_baseline_rb2", "gl43_baseline_rb_image_vk13", "gl43_baseline_rb_image_ext" ],
                 "gl44_baseline",
+                [ "gl44_baseline_ext", "gl44_baseline_vk12" ],
                 "gl45_baseline",
                 "gl46_baseline",
                 "gl46_optimal",
@@ -797,13 +909,13 @@
             "company": "LunarG"
         },
         "Erik Faye-Lund": {
-            "company": "Zink"
+            "company": "Collabora"
         },
         "Soroush Faghihi": {
-            "company": "Zink"
+            "company": "Imagination Technologies"
         },
         "Connor Abbott": {
-            "company": "Zink"  
+            "company": "Valve"
         }
     },
     "history": [

@@ -27,7 +27,7 @@
 
 #include "aco_ir.h"
 
-#include "vulkan/radv_shader_args.h"
+#include "nir.h"
 
 #include <array>
 #include <unordered_map>
@@ -55,13 +55,14 @@ struct shader_io_state {
 
 struct isel_context {
    const struct aco_compiler_options* options;
-   const struct radv_shader_args* args;
+   const struct ac_shader_args* args;
    Program* program;
    nir_shader* shader;
    uint32_t constant_data_offset;
    Block* block;
    uint32_t first_temp_id;
    std::unordered_map<unsigned, std::array<Temp, NIR_MAX_VEC_COMPONENTS>> allocated_vec;
+   std::vector<Temp> unended_linear_vgprs;
    Stage stage;
    struct {
       bool has_branch;
@@ -90,12 +91,6 @@ struct isel_context {
    nir_unsigned_upper_bound_config ub_config;
 
    Temp arg_temps[AC_MAX_ARGS];
-
-   /* FS inputs */
-   Temp persp_centroid, linear_centroid;
-
-   /* GS inputs */
-   Temp gs_wave_id;
 
    /* VS output information */
    bool export_clip_dists;
@@ -128,8 +123,7 @@ isel_context setup_isel_context(Program* program, unsigned shader_count,
                                 struct nir_shader* const* shaders, ac_shader_config* config,
                                 const struct aco_compiler_options* options,
                                 const struct aco_shader_info* info,
-                                const struct radv_shader_args* args,
-                                bool is_gs_copy_shader, bool is_ps_epilog);
+                                const struct ac_shader_args* args, bool is_ps_epilog);
 
 } // namespace aco
 

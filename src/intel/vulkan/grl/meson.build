@@ -72,13 +72,13 @@ has_ply = run_command(
   prog_python, '-c',
   '''
 import ply
-  ''')
+  ''', check : false)
 if has_ply.returncode() != 0
   error('Python (3.x) ply module required to build GRL kernels.')
 endif
 
 r = run_command(prog_python, 'grl_cl_kernel_gen.py',
-                grl_lib_args, '--ls-kernels', grl_grl_files)
+                grl_lib_args, '--ls-kernels', grl_grl_files, check : false)
 assert(r.returncode() == 0, 'Failed to fetch GRL CL kernels')
 grl_kernels = r.stdout().strip().split()
 
@@ -142,6 +142,7 @@ foreach t : [['125', 'gfx125', 'dg2']]
                                    # without modifying grl source code, remove
                                    # if fixed there
       ],
+      env: ['MESA_SHADER_CACHE_DISABLE=true'],
       depends : [prog_intel_clc]
     )
   endforeach
@@ -165,11 +166,11 @@ foreach t : [['125', 'gfx125', 'dg2']]
       inc_intel,
     ],
     c_args : [
-      no_override_init_args, c_sse2_args,
+      no_override_init_args, sse2_args,
       '-DGFX_VERx10=@0@'.format(verX10),
     ],
     cpp_args : [
-      no_override_init_args, c_sse2_args,
+      sse2_args,
       '-DGFX_VERx10=@0@'.format(verX10),
     ],
     dependencies : [
@@ -196,7 +197,6 @@ libgrl = static_library(
   ],
   link_whole : [grl_genX_libs],
   dependencies : [libgrl_deps, idep_anv_headers],
-  install : true,
 )
 idep_grl = declare_dependency(
   link_with : libgrl,

@@ -153,15 +153,12 @@ vn_device_memory_pool_suballocate(struct vn_device *dev,
                                   uint32_t mem_type_index)
 {
    const VkDeviceSize pool_size = 16 * 1024 * 1024;
-   /* TODO fix https://gitlab.freedesktop.org/mesa/mesa/-/issues/9351
-    * Before that, we use 64K default alignment because some GPUs have 64K
-    * pages. It is also required by newer Intel GPUs. Meanwhile, use prior 4K
-    * align on implementations known to fit.
+   /* XXX We don't know the alignment requirement.  Use 64K because some GPUs
+    * have 64K pages.  It is also required by newer Intel GPUs.  But really we
+    * should require kernel 5.12+, where there is no KVM memslot limit, and
+    * remove this whole thing.
     */
-   const VkDeviceSize pool_align =
-      dev->physical_device->renderer_driver_id == VK_DRIVER_ID_ARM_PROPRIETARY
-         ? 4096
-         : 64 * 1024;
+   const VkDeviceSize pool_align = 64 * 1024;
    struct vn_device_memory_pool *pool = &dev->memory_pools[mem_type_index];
 
    assert(mem->size <= pool_size);
@@ -385,6 +382,62 @@ vn_device_memory_alloc_generic(
    return VK_SUCCESS;
 }
 
+struct vn_device_memory_alloc_info {
+   VkMemoryAllocateInfo alloc;
+   VkExportMemoryAllocateInfo export;
+   VkMemoryAllocateFlagsInfo flags;
+   VkMemoryDedicatedAllocateInfo dedicated;
+   VkMemoryOpaqueCaptureAddressAllocateInfo capture;
+};
+
+static const VkMemoryAllocateInfo *
+vn_device_memory_fix_alloc_info(
+   const VkMemoryAllocateInfo *alloc_info,
+   const VkExternalMemoryHandleTypeFlagBits renderer_handle_type,
+   bool has_guest_vram,
+   struct vn_device_memory_alloc_info *local_info)
+{
+   local_info->alloc = *alloc_info;
+   VkBaseOutStructure *cur = (void *)&local_info->alloc;
+
+   vk_foreach_struct_const(src, alloc_info->pNext) {
+      void *next = NULL;
+      switch (src->sType) {
+      case VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO:
+         /* guest vram turns export alloc into import, so drop export info */
+         if (has_guest_vram)
+            break;
+         memcpy(&local_info->export, src, sizeof(local_info->export));
+         local_info->export.handleTypes = renderer_handle_type;
+         next = &local_info->export;
+         break;
+      case VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO:
+         memcpy(&local_info->flags, src, sizeof(local_info->flags));
+         next = &local_info->flags;
+         break;
+      case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO:
+         memcpy(&local_info->dedicated, src, sizeof(local_info->dedicated));
+         next = &local_info->dedicated;
+         break;
+      case VK_STRUCTURE_TYPE_MEMORY_OPAQUE_CAPTURE_ADDRESS_ALLOCATE_INFO:
+         memcpy(&local_info->capture, src, sizeof(local_info->capture));
+         next = &local_info->capture;
+         break;
+      default:
+         break;
+      }
+
+      if (next) {
+         cur->pNext = next;
+         cur = next;
+      }
+   }
+
+   cur->pNext = NULL;
+
+   return &local_info->alloc;
+}
+
 static VkResult
 vn_device_memory_alloc(struct vn_device *dev,
                        struct vn_device_memory *mem,
@@ -393,6 +446,18 @@ vn_device_memory_alloc(struct vn_device *dev,
 {
    const struct vn_instance *instance = dev->physical_device->instance;
    const struct vn_renderer_info *renderer_info = &instance->renderer->info;
+
+   const VkExternalMemoryHandleTypeFlagBits renderer_handle_type =
+      dev->physical_device->external_memory.renderer_handle_type;
+   struct vn_device_memory_alloc_info local_info;
+   if (external_handles && external_handles != renderer_handle_type) {
+      alloc_info = vn_device_memory_fix_alloc_info(
+         alloc_info, renderer_handle_type, renderer_info->has_guest_vram,
+         &local_info);
+
+      /* ensure correct blob flags */
+      external_handles = renderer_handle_type;
+   }
 
    if (renderer_info->has_guest_vram) {
       return vn_device_memory_alloc_guest_vram(dev, mem, alloc_info,
@@ -438,15 +503,6 @@ vn_AllocateMemory(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    const VkAllocationCallbacks *alloc =
       pAllocator ? pAllocator : &dev->base.base.alloc;
-
-   /* see vn_physical_device_init_memory_properties */
-   VkMemoryAllocateInfo local_info;
-   if (pAllocateInfo->memoryTypeIndex ==
-       dev->physical_device->incoherent_cached) {
-      local_info = *pAllocateInfo;
-      local_info.memoryTypeIndex = dev->physical_device->coherent_uncached;
-      pAllocateInfo = &local_info;
-   }
 
    const VkExportMemoryAllocateInfo *export_info = NULL;
    const VkImportAndroidHardwareBufferInfoANDROID *import_ahb_info = NULL;
@@ -590,6 +646,12 @@ vn_MapMemory(VkDevice device,
     * cost unless a bo is really needed. However, that means
     * vn_renderer_bo_map will block until the renderer creates the resource
     * and injects the pages into the guest.
+    *
+    * XXX We also assume that a vn_renderer_bo can be created as long as the
+    * renderer VkDeviceMemory has a mappable memory type.  That is plain
+    * wrong.  It is impossible to fix though until some new extension is
+    * created and supported by the driver, and that the renderer switches to
+    * the extension.
     */
    if (need_bo) {
       result = vn_renderer_bo_create_from_device_memory(

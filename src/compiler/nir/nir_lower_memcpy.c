@@ -50,7 +50,7 @@ memcpy_load_deref_elem(nir_builder *b, nir_deref_instr *parent,
 {
    nir_deref_instr *deref;
 
-   index = nir_i2i(b, index, nir_dest_bit_size(parent->dest));
+   index = nir_i2iN(b, index, nir_dest_bit_size(parent->dest));
    assert(parent->deref_type == nir_deref_type_cast);
    deref = nir_build_deref_ptr_as_array(b, parent, index);
 
@@ -71,7 +71,7 @@ memcpy_store_deref_elem(nir_builder *b, nir_deref_instr *parent,
 {
    nir_deref_instr *deref;
 
-   index = nir_i2i(b, index, nir_dest_bit_size(parent->dest));
+   index = nir_i2iN(b, index, nir_dest_bit_size(parent->dest));
    assert(parent->deref_type == nir_deref_type_cast);
    deref = nir_build_deref_ptr_as_array(b, parent, index);
    nir_store_deref(b, deref, value, ~0);
@@ -88,8 +88,7 @@ memcpy_store_deref_elem_imm(nir_builder *b, nir_deref_instr *parent,
 static bool
 lower_memcpy_impl(nir_function_impl *impl)
 {
-   nir_builder b;
-   nir_builder_init(&b, impl);
+   nir_builder b = nir_builder_create(impl);
 
    bool found_const_memcpy = false, found_non_const_memcpy = false;
 
@@ -189,8 +188,8 @@ nir_lower_memcpy(nir_shader *shader)
 {
    bool progress = false;
 
-   nir_foreach_function(function, shader) {
-      if (function->impl && lower_memcpy_impl(function->impl))
+   nir_foreach_function_impl(impl, shader) {
+      if (lower_memcpy_impl(impl))
          progress = true;
    }
 

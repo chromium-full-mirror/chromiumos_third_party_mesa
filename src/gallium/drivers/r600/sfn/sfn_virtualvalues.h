@@ -70,6 +70,7 @@ class Instr;
 class InlineConstant;
 class LiteralConstant;
 class UniformValue;
+class ValueFactory;
 
 using InstructionSet = std::set<Instr *, std::less<Instr *>, Allocator<Instr *>>;
 
@@ -159,23 +160,22 @@ class Register : public VirtualValue {
 public:
    using Pointer = R600_POINTER_TYPE(Register);
 
+   enum Flags {
+      ssa,
+      pin_start,
+      pin_end,
+      addr_or_idx,
+      flag_count
+   };
+
    Register(int sel, int chan, Pin pin);
    void accept(RegisterVisitor& vistor) override;
    void accept(ConstRegisterVisitor& vistor) const override;
    void print(std::ostream& os) const override;
 
-   int live_start_pinned() const { return m_pin_start; }
-   int live_end_pinned() const { return m_pin_end; }
-
-   void pin_live_range(bool start, bool end = false);
-
    static Pointer from_string(const std::string& s);
 
    Register *as_register() override { return this; }
-
-   void set_is_ssa(bool value);
-
-   bool is_ssa() const { return m_is_ssa; }
 
    void add_parent(Instr *instr);
    void del_parent(Instr *instr);
@@ -197,8 +197,13 @@ public:
    void set_sel(int new_sel)
    {
       set_sel_internal(new_sel);
-      m_is_ssa = false;
+      m_flags.reset(ssa);
    }
+
+   void set_flag(Flags f) { m_flags.set(f); }
+   void reset_flag(Flags f) { m_flags.reset(f); }
+   auto has_flag(Flags f) const { return m_flags.test(f); }
+   auto flags() const { return m_flags; }
 
 private:
    Register(const Register& orig) = delete;
@@ -216,11 +221,26 @@ private:
 
    int m_index{-1};
 
-   bool m_is_ssa{false};
-   bool m_pin_start{false};
-   bool m_pin_end{false};
+   std::bitset<flag_count> m_flags{0};
 };
 using PRegister = Register::Pointer;
+
+class AddressRegister : public Register {
+public:
+   enum Type {
+      addr,
+      idx0 = 1,
+      idx1 = 2
+   };
+   AddressRegister(Type type) :  Register(type, 0, pin_fully) {
+      set_flag(addr_or_idx);
+   }
+
+protected:
+   void do_set_chan(UNUSED int c) { unreachable("Address registers must have chan 0");}
+   void set_sel_internal(UNUSED int sel) {unreachable("Address registers don't support sel override");}
+};
+
 
 inline std::ostream&
 operator<<(std::ostream& os, const Register& val)
@@ -386,10 +406,11 @@ public:
    void print(std::ostream& os) const override;
    int kcache_bank() const { return m_kcache_bank; }
    PVirtualValue buf_addr() const;
+   void set_buf_addr(PVirtualValue addr);
    UniformValue *as_uniform() override { return this; }
 
    bool equal_buf_and_cache(const UniformValue& other) const;
-   static Pointer from_string(const std::string& s);
+   static Pointer from_string(const std::string& s, ValueFactory *factory);
 
 private:
    int m_kcache_bank;
@@ -429,6 +450,10 @@ public:
 
    Values::iterator begin() { return m_values.begin(); }
    Values::iterator end() { return m_values.end(); }
+   Values::const_iterator begin() const { return m_values.begin(); }
+   Values::const_iterator end() const { return m_values.end(); }
+
+   uint32_t base_sel() const { return m_base_sel;}
 
 private:
    uint32_t m_base_sel;
@@ -459,6 +484,7 @@ public:
    bool ready(int block, int index) const override;
 
    VirtualValue *addr() const override;
+   void set_addr(PRegister addr); 
    const LocalArray& array() const;
 
 private:
@@ -493,6 +519,11 @@ sfn_value_equal(const T *lhs, const T *rhs)
    }
    return true;
 }
+
+bool
+value_is_const_uint(const VirtualValue& val, uint32_t value);
+bool
+value_is_const_float(const VirtualValue& val, float value);
 
 class RegisterVisitor {
 public:

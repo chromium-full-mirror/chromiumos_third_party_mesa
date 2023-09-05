@@ -22,7 +22,7 @@ struct nvc0_transform_feedback_state {
 struct nvc0_program {
    struct pipe_shader_state pipe;
 
-   ubyte type;
+   uint8_t type;
    bool translated;
    bool need_tls;
    uint8_t num_gprs;
@@ -60,7 +60,6 @@ struct nvc0_program {
       uint32_t tess_mode; /* ~0 if defined by the other stage */
    } tp;
    struct {
-      uint32_t lmem_size; /* local memory (TGSI PRIVATE resource) size */
       uint32_t smem_size; /* shared memory (TGSI LOCAL resource) size */
    } cp;
    uint8_t num_barriers;

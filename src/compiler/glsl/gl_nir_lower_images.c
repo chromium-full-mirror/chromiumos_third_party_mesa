@@ -64,19 +64,8 @@ lower_instr(nir_builder *b, nir_instr *instr, void *cb_data)
    nir_variable *var;
 
    switch (intrinsic->intrinsic) {
-   case nir_intrinsic_image_deref_atomic_add:
-   case nir_intrinsic_image_deref_atomic_imin:
-   case nir_intrinsic_image_deref_atomic_umin:
-   case nir_intrinsic_image_deref_atomic_imax:
-   case nir_intrinsic_image_deref_atomic_umax:
-   case nir_intrinsic_image_deref_atomic_and:
-   case nir_intrinsic_image_deref_atomic_or:
-   case nir_intrinsic_image_deref_atomic_xor:
-   case nir_intrinsic_image_deref_atomic_exchange:
-   case nir_intrinsic_image_deref_atomic_comp_swap:
-   case nir_intrinsic_image_deref_atomic_fadd:
-   case nir_intrinsic_image_deref_atomic_inc_wrap:
-   case nir_intrinsic_image_deref_atomic_dec_wrap:
+   case nir_intrinsic_image_deref_atomic:
+   case nir_intrinsic_image_deref_atomic_swap:
    case nir_intrinsic_image_deref_load:
    case nir_intrinsic_image_deref_samples:
    case nir_intrinsic_image_deref_size:
@@ -98,14 +87,20 @@ lower_instr(nir_builder *b, nir_instr *instr, void *cb_data)
    b->cursor = nir_before_instr(instr);
 
    nir_ssa_def *src;
+   int range_base = 0;
    if (bindless) {
       src = nir_load_deref(b, deref);
+   } else if (b->shader->options->lower_image_offset_to_range_base) {
+      src = nir_build_deref_offset(b, deref, type_size_align_1);
+      range_base = var->data.driver_location;
    } else {
       src = nir_iadd_imm(b,
                          nir_build_deref_offset(b, deref, type_size_align_1),
                          var->data.driver_location);
    }
    nir_rewrite_image_intrinsic(intrinsic, src, bindless);
+   if (!bindless)
+      nir_intrinsic_set_range_base(intrinsic, range_base);
 
    return true;
 }

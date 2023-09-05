@@ -523,7 +523,7 @@ NVC0LegalizePostRA::insertTextureBarriers(Function *fn)
    }
 
    // gather the first uses for each TEX
-   for (int i = 0; i < insns.getSize(); ++i) {
+   for (unsigned int i = 0; i < insns.getSize(); ++i) {
       Instruction *tex = reinterpret_cast<Instruction *>(insns.get(i));
       if (isTextureOp(tex->op)) {
          texes.push_back(tex);
@@ -2930,7 +2930,7 @@ NVC0LoweringPass::readTessCoord(LValue *dst, int c)
       y = dst;
    } else {
       assert(c == 2);
-      if (prog->driver_out->prop.tp.domain != PIPE_PRIM_TRIANGLES) {
+      if (prog->driver_out->prop.tp.domain != MESA_PRIM_TRIANGLES) {
          bld.mkMov(dst, bld.loadImm(NULL, 0));
          return;
       }

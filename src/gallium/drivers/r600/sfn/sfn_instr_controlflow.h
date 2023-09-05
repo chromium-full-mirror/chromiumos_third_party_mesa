@@ -80,13 +80,14 @@ public:
    void set_predicate(AluInstr *new_predicate);
 
    AluInstr *predicate() const { return m_predicate; }
+   AluInstr *predicate() { return m_predicate; }
 
    void accept(ConstInstrVisitor& visitor) const override;
    void accept(InstrVisitor& visitor) override;
 
    bool replace_source(PRegister old_src, PVirtualValue new_src) override;
 
-   static Instr::Pointer from_string(std::istream& is, ValueFactory& value_factory);
+   static Instr::Pointer from_string(std::istream& is, ValueFactory& value_factory, bool is_cayman);
 
    bool end_block() const override { return true; }
    int nesting_offset() const override { return 1; }

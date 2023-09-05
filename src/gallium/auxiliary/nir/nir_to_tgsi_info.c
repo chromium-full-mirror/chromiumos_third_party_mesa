@@ -49,12 +49,6 @@ static nir_variable* tex_get_texture_var(const nir_tex_instr *instr)
    return NULL;
 }
 
-static nir_variable* intrinsic_get_var(const nir_intrinsic_instr *instr)
-{
-   return nir_deref_instr_get_variable(nir_src_as_deref(instr->src[0]));
-}
-
-
 static void gather_usage_helper(const nir_deref_instr **deref_ptr,
                                 unsigned location,
                                 uint8_t mask,
@@ -172,6 +166,9 @@ static void scan_instruction(const struct nir_shader *nir,
                              struct tgsi_shader_info *info,
                              const nir_instr *instr)
 {
+   info->num_tokens = 2; /* indicate that the shader is non-empty */
+   info->num_instructions = 2;
+
    if (instr->type == nir_instr_type_alu) {
       const nir_alu_instr *alu = nir_instr_as_alu(instr);
 
@@ -196,6 +193,8 @@ static void scan_instruction(const struct nir_shader *nir,
 
       switch (tex->op) {
       case nir_texop_tex:
+         info->opcode_count[TGSI_OPCODE_TEX]++;
+         FALLTHROUGH;
       case nir_texop_txb:
       case nir_texop_lod:
          info->uses_derivatives = true;
@@ -285,16 +284,8 @@ static void scan_instruction(const struct nir_shader *nir,
       case nir_intrinsic_image_store:
          info->writes_memory = true;
          break;
-      case nir_intrinsic_bindless_image_atomic_add:
-      case nir_intrinsic_bindless_image_atomic_imin:
-      case nir_intrinsic_bindless_image_atomic_imax:
-      case nir_intrinsic_bindless_image_atomic_umin:
-      case nir_intrinsic_bindless_image_atomic_umax:
-      case nir_intrinsic_bindless_image_atomic_and:
-      case nir_intrinsic_bindless_image_atomic_or:
-      case nir_intrinsic_bindless_image_atomic_xor:
-      case nir_intrinsic_bindless_image_atomic_exchange:
-      case nir_intrinsic_bindless_image_atomic_comp_swap:
+      case nir_intrinsic_bindless_image_atomic:
+      case nir_intrinsic_bindless_image_atomic_swap:
          info->uses_bindless_images = true;
 
          if (nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_BUF)
@@ -304,43 +295,19 @@ static void scan_instruction(const struct nir_shader *nir,
 
          info->writes_memory = true;
          break;
-      case nir_intrinsic_image_deref_atomic_add:
-      case nir_intrinsic_image_deref_atomic_imin:
-      case nir_intrinsic_image_deref_atomic_imax:
-      case nir_intrinsic_image_deref_atomic_umin:
-      case nir_intrinsic_image_deref_atomic_umax:
-      case nir_intrinsic_image_deref_atomic_and:
-      case nir_intrinsic_image_deref_atomic_or:
-      case nir_intrinsic_image_deref_atomic_xor:
-      case nir_intrinsic_image_deref_atomic_exchange:
-      case nir_intrinsic_image_deref_atomic_comp_swap:
-      case nir_intrinsic_image_atomic_add:
-      case nir_intrinsic_image_atomic_imin:
-      case nir_intrinsic_image_atomic_imax:
-      case nir_intrinsic_image_atomic_umin:
-      case nir_intrinsic_image_atomic_umax:
-      case nir_intrinsic_image_atomic_and:
-      case nir_intrinsic_image_atomic_or:
-      case nir_intrinsic_image_atomic_xor:
-      case nir_intrinsic_image_atomic_exchange:
-      case nir_intrinsic_image_atomic_comp_swap:
+      case nir_intrinsic_image_deref_atomic:
+      case nir_intrinsic_image_deref_atomic_swap:
+      case nir_intrinsic_image_atomic:
+      case nir_intrinsic_image_atomic_swap:
          info->writes_memory = true;
          break;
       case nir_intrinsic_store_ssbo:
-      case nir_intrinsic_ssbo_atomic_add:
-      case nir_intrinsic_ssbo_atomic_imin:
-      case nir_intrinsic_ssbo_atomic_umin:
-      case nir_intrinsic_ssbo_atomic_imax:
-      case nir_intrinsic_ssbo_atomic_umax:
-      case nir_intrinsic_ssbo_atomic_and:
-      case nir_intrinsic_ssbo_atomic_or:
-      case nir_intrinsic_ssbo_atomic_xor:
-      case nir_intrinsic_ssbo_atomic_exchange:
-      case nir_intrinsic_ssbo_atomic_comp_swap:
+      case nir_intrinsic_ssbo_atomic:
+      case nir_intrinsic_ssbo_atomic_swap:
          info->writes_memory = true;
          break;
       case nir_intrinsic_load_deref: {
-         const nir_variable *var = intrinsic_get_var(intr);
+         const nir_variable *var = nir_intrinsic_get_var(intr, 0);
          const nir_variable_mode mode = var->data.mode;
          nir_deref_instr *const deref = nir_src_as_deref(intr->src[0]);
          enum glsl_base_type base_type =
@@ -356,6 +323,8 @@ static void scan_instruction(const struct nir_shader *nir,
             switch (var->data.interpolation) {
             case INTERP_MODE_NONE:
                if (glsl_base_type_is_integer(base_type))
+                  break;
+               if (var->data.per_primitive)
                   break;
 
                FALLTHROUGH;
@@ -383,7 +352,7 @@ static void scan_instruction(const struct nir_shader *nir,
       case nir_intrinsic_interp_deref_at_centroid:
       case nir_intrinsic_interp_deref_at_sample:
       case nir_intrinsic_interp_deref_at_offset: {
-         enum glsl_interp_mode interp = intrinsic_get_var(intr)->data.interpolation;
+         enum glsl_interp_mode interp = nir_intrinsic_get_var(intr, 0)->data.interpolation;
          switch (interp) {
          case INTERP_MODE_SMOOTH:
          case INTERP_MODE_NONE:
@@ -422,8 +391,8 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
    unsigned i;
 
    info->processor = pipe_shader_type_from_mesa(nir->info.stage);
-   info->num_tokens = 2; /* indicate that the shader is non-empty */
-   info->num_instructions = 2;
+   info->num_tokens = 1; /* Presume empty */
+   info->num_instructions = 1;
 
    info->properties[TGSI_PROPERTY_NEXT_SHADER] =
       pipe_shader_type_from_mesa(nir->info.next_stage);
@@ -490,7 +459,8 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
       }
    }
 
-   if (gl_shader_stage_is_compute(nir->info.stage)) {
+   if (gl_shader_stage_is_compute(nir->info.stage) ||
+       gl_shader_stage_is_mesh(nir->info.stage)) {
       info->properties[TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH] = nir->info.workgroup_size[0];
       info->properties[TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT] = nir->info.workgroup_size[1];
       info->properties[TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH] = nir->info.workgroup_size[2];
@@ -507,7 +477,7 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
          type = glsl_get_array_element(type);
       }
 
-      unsigned attrib_count = variable->data.compact ? DIV_ROUND_UP(glsl_get_length(type), 4) :
+      unsigned attrib_count = variable->data.compact ? DIV_ROUND_UP(variable->data.location_frac + glsl_get_length(type), 4) :
          glsl_count_attribute_slots(type, nir->info.stage == MESA_SHADER_VERTEX);
 
       i = variable->data.driver_location;
@@ -546,7 +516,7 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
 
          switch (variable->data.interpolation) {
          case INTERP_MODE_NONE:
-            if (glsl_base_type_is_integer(base_type)) {
+            if (glsl_base_type_is_integer(base_type) || variable->data.per_primitive) {
                info->input_interpolate[i] = TGSI_INTERPOLATE_CONSTANT;
                break;
             }
@@ -607,7 +577,7 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
          type = glsl_get_array_element(type);
       }
 
-      unsigned attrib_count = variable->data.compact ? DIV_ROUND_UP(glsl_get_length(type), 4) :
+      unsigned attrib_count = variable->data.compact ? DIV_ROUND_UP(variable->data.location_frac + glsl_get_length(type), 4) :
          glsl_count_attribute_slots(type, false);
       for (unsigned k = 0; k < attrib_count; k++, i++) {
 
@@ -639,7 +609,7 @@ void nir_tgsi_scan_shader(const struct nir_shader *nir,
             }
          }
 
-         ubyte usagemask = 0;
+         uint8_t usagemask = 0;
          for (unsigned j = component; j < num_components + component; j++) {
             switch (j) {
             case 0:

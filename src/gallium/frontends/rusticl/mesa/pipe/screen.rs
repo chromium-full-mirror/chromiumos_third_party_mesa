@@ -5,10 +5,14 @@ use crate::pipe::resource::*;
 use crate::util::disk_cache::*;
 
 use mesa_rust_gen::*;
+use mesa_rust_util::has_required_feature;
 use mesa_rust_util::string::*;
 
 use std::convert::TryInto;
+use std::ffi::CStr;
 use std::mem::size_of;
+use std::os::raw::c_schar;
+use std::os::raw::c_uchar;
 use std::os::raw::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -18,6 +22,9 @@ pub struct PipeScreen {
     ldev: PipeLoaderDevice,
     screen: *mut pipe_screen,
 }
+
+const UUID_SIZE: usize = PIPE_UUID_SIZE as usize;
+const LUID_SIZE: usize = PIPE_LUID_SIZE as usize;
 
 // until we have a better solution
 pub trait ComputeParam<T> {
@@ -30,6 +37,9 @@ macro_rules! compute_param_impl {
             fn compute_param(&self, cap: pipe_compute_cap) -> $ty {
                 let size = self.compute_param_wrapped(cap, ptr::null_mut());
                 let mut d = [0; size_of::<$ty>()];
+                if size == 0 {
+                    return Default::default();
+                }
                 assert_eq!(size as usize, d.len());
                 self.compute_param_wrapped(cap, d.as_mut_ptr().cast());
                 <$ty>::from_ne_bytes(d)
@@ -93,7 +103,7 @@ impl PipeScreen {
                 (*self.screen).context_create.unwrap()(
                     self.screen,
                     ptr::null_mut(),
-                    PIPE_CONTEXT_COMPUTE_ONLY,
+                    0, //PIPE_CONTEXT_COMPUTE_ONLY,
                 )
             },
             self,
@@ -227,6 +237,28 @@ impl PipeScreen {
         }
     }
 
+    pub fn device_node_mask(&self) -> Option<u32> {
+        unsafe { Some((*self.screen).get_device_node_mask?(self.screen)) }
+    }
+
+    pub fn device_uuid(&self) -> Option<[c_uchar; UUID_SIZE]> {
+        let mut uuid = [0; UUID_SIZE];
+        let ptr = uuid.as_mut_ptr();
+        unsafe {
+            (*self.screen).get_device_uuid?(self.screen, ptr.cast());
+        }
+
+        Some(uuid)
+    }
+
+    pub fn device_luid(&self) -> Option<[c_uchar; LUID_SIZE]> {
+        let mut luid = [0; LUID_SIZE];
+        let ptr = luid.as_mut_ptr();
+        unsafe { (*self.screen).get_device_luid?(self.screen, ptr.cast()) }
+
+        Some(luid)
+    }
+
     pub fn device_vendor(&self) -> String {
         unsafe {
             let s = *self.screen;
@@ -238,6 +270,34 @@ impl PipeScreen {
         unsafe { *self.ldev.ldev }.type_
     }
 
+    pub fn driver_uuid(&self) -> Option<[c_schar; UUID_SIZE]> {
+        let mut uuid = [0; UUID_SIZE];
+        let ptr = uuid.as_mut_ptr();
+        unsafe {
+            (*self.screen).get_driver_uuid?(self.screen, ptr.cast());
+        }
+
+        Some(uuid)
+    }
+
+    pub fn cl_cts_version(&self) -> &CStr {
+        unsafe {
+            let s = *self.screen;
+
+            let ptr = s
+                .get_cl_cts_version
+                .map_or(ptr::null(), |get_cl_cts_version| {
+                    get_cl_cts_version(self.screen)
+                });
+            if ptr.is_null() {
+                // this string is good enough to pass the CTS
+                CStr::from_bytes_with_nul(b"v0000-01-01-00\0").unwrap()
+            } else {
+                CStr::from_ptr(ptr)
+            }
+        }
+    }
+
     pub fn is_format_supported(
         &self,
         format: pipe_format,
@@ -246,6 +306,15 @@ impl PipeScreen {
     ) -> bool {
         let s = &mut unsafe { *self.screen };
         unsafe { s.is_format_supported.unwrap()(self.screen, format, target, 0, 0, bindings) }
+    }
+
+    pub fn get_timestamp(&self) -> u64 {
+        // We have get_timestamp in has_required_cbs, so it will exist
+        unsafe {
+            (*self.screen)
+                .get_timestamp
+                .expect("get_timestamp should be required")(self.screen)
+        }
     }
 
     pub fn nir_shader_compiler_options(
@@ -293,7 +362,7 @@ impl PipeScreen {
     pub(super) fn fence_finish(&self, fence: *mut pipe_fence_handle) {
         unsafe {
             let s = &mut *self.screen;
-            s.fence_finish.unwrap()(s, ptr::null_mut(), fence, PIPE_TIMEOUT_INFINITE as u64);
+            s.fence_finish.unwrap()(s, ptr::null_mut(), fence, OS_TIMEOUT_INFINITE as u64);
         }
     }
 }
@@ -307,16 +376,19 @@ impl Drop for PipeScreen {
 }
 
 fn has_required_cbs(screen: *mut pipe_screen) -> bool {
-    let s = unsafe { *screen };
-    s.context_create.is_some()
-        && s.destroy.is_some()
-        && s.fence_finish.is_some()
-        && s.fence_reference.is_some()
-        && s.get_compiler_options.is_some()
-        && s.get_compute_param.is_some()
-        && s.get_name.is_some()
-        && s.get_param.is_some()
-        && s.get_shader_param.is_some()
-        && s.is_format_supported.is_some()
-        && s.resource_create.is_some()
+    let screen = unsafe { *screen };
+    // Use '&' to evaluate all features and to not stop
+    // on first missing one to list all missing features.
+    has_required_feature!(screen, context_create)
+        & has_required_feature!(screen, destroy)
+        & has_required_feature!(screen, fence_finish)
+        & has_required_feature!(screen, fence_reference)
+        & has_required_feature!(screen, get_compiler_options)
+        & has_required_feature!(screen, get_compute_param)
+        & has_required_feature!(screen, get_name)
+        & has_required_feature!(screen, get_param)
+        & has_required_feature!(screen, get_shader_param)
+        & has_required_feature!(screen, get_timestamp)
+        & has_required_feature!(screen, is_format_supported)
+        & has_required_feature!(screen, resource_create)
 }

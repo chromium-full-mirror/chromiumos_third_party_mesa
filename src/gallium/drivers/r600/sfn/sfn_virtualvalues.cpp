@@ -31,6 +31,7 @@
 #include "sfn_instr.h"
 #include "sfn_valuefactory.h"
 #include "util/macros.h"
+#include "util/u_math.h"
 
 #include <iomanip>
 #include <iostream>
@@ -136,7 +137,7 @@ VirtualValue::from_string(const std::string& s)
    case 'L':
       return LiteralConstant::from_string(s);
    case 'K':
-      return UniformValue::from_string(s);
+      return UniformValue::from_string(s, nullptr);
    case 'P':
       return InlineConstant::param_from_string(s);
    case 'I':
@@ -197,7 +198,6 @@ void
 Register::add_parent(Instr *instr)
 {
    m_parents.insert(instr);
-   instr->add_use();
    add_parent_to_array(instr);
 }
 
@@ -211,7 +211,6 @@ void
 Register::del_parent(Instr *instr)
 {
    m_parents.erase(instr);
-   instr->dec_use();
    del_parent_from_array(instr);
 }
 
@@ -224,14 +223,7 @@ Register::del_parent_from_array(Instr *instr)
 void
 Register::add_use(Instr *instr)
 {
-   const auto& [itr, inserted] = m_uses.insert(instr);
-   {
-   }
-
-   if (inserted) {
-      for (auto& p : m_parents)
-         p->add_use();
-   }
+   m_uses.insert(instr);
 }
 
 void
@@ -240,9 +232,6 @@ Register::del_use(Instr *instr)
    sfn_log << SfnLog::opt << "Del use of " << *this << " in " << *instr << "\n";
    if (m_uses.find(instr) != m_uses.end()) {
       m_uses.erase(instr);
-      if (is_ssa())
-         for (auto& p : m_parents)
-            p->dec_use();
    }
 }
 
@@ -272,25 +261,33 @@ Register::accept(ConstRegisterVisitor& visitor) const
 }
 
 void
-Register::pin_live_range(bool start, bool end)
-{
-   m_pin_start = start;
-   m_pin_end = end;
-}
-
-void
-Register::set_is_ssa(bool value)
-{
-   m_is_ssa = value;
-}
-
-void
 Register::print(std::ostream& os) const
 {
-   os << (m_is_ssa ? "S" : "R") << sel() << "." << chanchar[chan()];
+   if (m_flags.test(addr_or_idx)) {
+      switch (sel()) {
+      case AddressRegister::addr: os << "AR"; break;
+      case AddressRegister::idx0: os << "IDX0"; break;
+      case AddressRegister::idx1: os << "IDX1"; break;
+      default:
+         unreachable("Wrong address ID");
+      }
+      return;
+   }
+
+   os << (m_flags.test(ssa) ? "S" : "R") << sel() << "." << chanchar[chan()];
 
    if (pin() != pin_none)
       os << "@" << pin();
+   if (m_flags.any()) {
+      os << "{";
+      if (m_flags.test(ssa))
+         os << "s";
+      if (m_flags.test(pin_start))
+         os << "b";
+      if (m_flags.test(pin_end))
+         os << "e";
+      os << "}";
+   }
 }
 
 Register::Pointer
@@ -299,6 +296,14 @@ Register::from_string(const std::string& s)
    std::string numstr;
    char chan = 0;
    std::string pinstr;
+
+   if (s == "AR") {
+      return new AddressRegister(AddressRegister::addr);
+   } else if (s == "IDX0") {
+      return new AddressRegister(AddressRegister::idx0);
+   } else if (s == "IDX1") {
+      return new AddressRegister(AddressRegister::idx1);
+   }
 
    assert(s[0] == 'R' || s[0] == '_' || s[0] == 'S');
 
@@ -374,9 +379,10 @@ Register::from_string(const std::string& s)
    }
 
    auto reg = new Register(sel, chan, p);
-   reg->set_is_ssa(s[0] == 'S');
+   if (s[0] == 'S')
+      reg->set_flag(ssa);
    if (p == pin_fully || p == pin_array)
-      reg->pin_live_range(true);
+      reg->set_flag(pin_start);
    return reg;
 }
 
@@ -393,7 +399,8 @@ RegisterVec4::RegisterVec4(int sel, bool is_ssa, const Swizzle& swz, Pin pin):
 {
    for (int i = 0; i < 4; ++i) {
       m_values[i] = new Element(*this, new Register(m_sel, swz[i], pin));
-      m_values[i]->value()->set_is_ssa(is_ssa);
+      if (is_ssa)
+         m_values[i]->value()->set_flag(Register::ssa);
    }
 }
 
@@ -504,7 +511,7 @@ RegisterVec4::ready(int block_id, int index) const
 void
 RegisterVec4::print(std::ostream& os) const
 {
-   os << (m_values[0]->value()->is_ssa() ? 'S' : 'R') << sel() << ".";
+   os << (m_values[0]->value()->has_flag(Register::ssa) ? 'S' : 'R') << sel() << ".";
    for (int i = 0; i < 4; ++i)
       os << VirtualValue::chanchar[m_values[i]->value()->chan()];
 }
@@ -656,7 +663,7 @@ InlineConstant::from_string(const std::string& s)
       use_chan = entry->second.second;
    }
 
-   ASSERT_OR_THROW(value != ALU_SRC_UNKNOWN, "Unknwon inline constant was given");
+   ASSERT_OR_THROW(value != ALU_SRC_UNKNOWN, "Unknown inline constant was given");
 
    if (use_chan) {
       ASSERT_OR_THROW(s[i + 1] == '.', "inline const channel not started with '.'");
@@ -683,7 +690,7 @@ InlineConstant::from_string(const std::string& s)
          chan = 7;
          break;
       default:
-         ASSERT_OR_THROW(0, "invalied inline const channel ");
+         ASSERT_OR_THROW(0, "invalid inline const channel ");
       }
    }
    return new InlineConstant(value, chan);
@@ -756,6 +763,11 @@ UniformValue::buf_addr() const
    return m_buf_addr;
 }
 
+void UniformValue::set_buf_addr(PVirtualValue addr)
+{
+   m_buf_addr = addr; 
+}
+
 void
 UniformValue::print(std::ostream& os) const
 {
@@ -781,10 +793,12 @@ UniformValue::equal_buf_and_cache(const UniformValue& other) const
 }
 
 UniformValue::Pointer
-UniformValue::from_string(const std::string& s)
+UniformValue::from_string(const std::string& s, ValueFactory *factory)
 {
    assert(s[1] == 'C');
    std::istringstream is(s.substr(2));
+
+   VirtualValue *bufid = nullptr;
    int bank;
    char c;
    is >> bank;
@@ -792,10 +806,31 @@ UniformValue::from_string(const std::string& s)
 
    assert(c == '[');
 
+   std::stringstream index0_ss;
+
    int index;
-   is >> index;
 
    is >> c;
+   while (c != ']' && is.good()) {
+      index0_ss << c;
+      is >> c;
+   }
+
+   auto index0_str = index0_ss.str();
+   if (isdigit(index0_str[0])) {
+      std::istringstream is_digit(index0_str);
+      is_digit >> index;
+   } else {
+      bufid = factory ?
+                 factory->src_from_string(index0_str) :
+                 Register::from_string(index0_str);
+      assert(c == ']');
+      is >> c;
+      assert(c == '[');
+      is >> index;
+      is >> c;
+   }
+
    assert(c == ']');
    is >> c;
    assert(c == '.');
@@ -816,9 +851,12 @@ UniformValue::from_string(const std::string& s)
       chan = 3;
       break;
    default:
-      unreachable("Unknown channle when reading uniform");
+      unreachable("Unknown channel when reading uniform");
    }
-   return new UniformValue(index + 512, chan, bank);
+   if (bufid)
+      return new UniformValue(index + 512, chan, bufid, bank);
+   else
+      return new UniformValue(index + 512, chan, bank);
 }
 
 LocalArray::LocalArray(int base_sel, int nchannels, int size, int frac):
@@ -839,13 +877,6 @@ LocalArray::LocalArray(int base_sel, int nchannels, int size, int frac):
       for (unsigned i = 0; i < m_size; ++i) {
          PRegister reg = new Register(base_sel + i, c + frac, pin_array);
          m_values[m_size * c + i] = new LocalArrayValue(reg, *this);
-
-         /* Pin the array register on the start, because currently we don't
-          * don't track the first write to an array element as write to all
-          * array elements, and it seems that the one can not just use
-          * registers that are not written to in an array for other purpouses
-          */
-         m_values[m_size * c + i]->pin_live_range(true);
       }
    }
 }
@@ -996,6 +1027,12 @@ LocalArrayValue::addr() const
    return m_addr;
 }
 
+void LocalArrayValue::set_addr(PRegister addr)
+{
+   m_addr = addr;
+}
+
+
 const LocalArray&
 LocalArrayValue::array() const
 {
@@ -1143,7 +1180,10 @@ void
 ValueComparer::visit(const Register& other)
 {
    (void)other;
-   m_result = !!m_register;
+   if (m_register) {
+      m_result = other.flags() == m_register->flags();
+   } else
+      m_result = false;
 };
 
 void
@@ -1204,5 +1244,63 @@ ValueComparer::visit(const InlineConstant& other)
    (void)other;
    m_result = !!m_inline_constant;
 };
+
+class CheckConstValue : public ConstRegisterVisitor {
+public:
+   CheckConstValue(uint32_t _test_value):
+       test_value(_test_value)
+   {
+   }
+   CheckConstValue(float _test_value):
+       test_value(fui(_test_value))
+   {
+   }
+
+   void visit(const Register& value) override { (void)value; }
+   void visit(const LocalArray& value) override { (void)value; }
+   void visit(const LocalArrayValue& value) override { (void)value; }
+   void visit(const UniformValue& value) override { (void)value; }
+
+   void visit(const LiteralConstant& value) override
+   {
+      result = value.value() == test_value;
+   }
+   void visit(const InlineConstant& value) override
+   {
+      switch (test_value) {
+      case 0:
+         result = value.sel() == ALU_SRC_0;
+         break;
+      case 1:
+         result = value.sel() == ALU_SRC_1_INT;
+         break;
+      case 0x3f800000 /* 1.0f */:
+         result = value.sel() == ALU_SRC_1;
+         break;
+      case 0x3f000000 /* 0.5f */:
+         result = value.sel() == ALU_SRC_0_5;
+         break;
+      }
+   }
+
+   uint32_t test_value;
+   bool result{false};
+};
+
+bool
+value_is_const_uint(const VirtualValue& val, uint32_t value)
+{
+   CheckConstValue test(value);
+   val.accept(test);
+   return test.result;
+}
+
+bool
+value_is_const_float(const VirtualValue& val, float value)
+{
+   CheckConstValue test(value);
+   val.accept(test);
+   return test.result;
+}
 
 } // namespace r600

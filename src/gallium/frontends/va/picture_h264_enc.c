@@ -51,9 +51,12 @@ vlVaHandleVAEncPictureParameterBufferTypeH264(vlVaDriver *drv, vlVaContext *cont
    context->desc.h264enc.p_remain = context->desc.h264enc.gop_size - context->desc.h264enc.gop_cnt - context->desc.h264enc.i_remain;
 
    coded_buf = handle_table_get(drv->htab, h264->coded_buf);
+   if (!coded_buf)
+      return VA_STATUS_ERROR_INVALID_BUFFER;
+
    if (!coded_buf->derived_surface.resource)
       coded_buf->derived_surface.resource = pipe_buffer_create(drv->pipe->screen, PIPE_BIND_VERTEX_BUFFER,
-                                            PIPE_USAGE_STREAM, coded_buf->size);
+                                            PIPE_USAGE_STAGING, coded_buf->size);
    context->coded_buf = coded_buf;
 
    if (context->desc.h264enc.is_ltr)
@@ -186,10 +189,13 @@ vlVaHandleVAEncSequenceParameterBufferTypeH264(vlVaDriver *drv, vlVaContext *con
       getEncParamPresetH264(context);
    }
 
-   context->gop_coeff = ((1024 + h264->intra_idr_period - 1) / h264->intra_idr_period + 1) / 2 * 2;
+   context->desc.h264enc.intra_idr_period =
+      h264->intra_idr_period != 0 ? h264->intra_idr_period : PIPE_DEFAULT_INTRA_IDR_PERIOD;
+   context->gop_coeff = ((1024 + context->desc.h264enc.intra_idr_period - 1) /
+                        context->desc.h264enc.intra_idr_period + 1) / 2 * 2;
    if (context->gop_coeff > VL_VA_ENC_GOP_COEFF)
       context->gop_coeff = VL_VA_ENC_GOP_COEFF;
-   context->desc.h264enc.gop_size = h264->intra_idr_period * context->gop_coeff;
+   context->desc.h264enc.gop_size = context->desc.h264enc.intra_idr_period * context->gop_coeff;
    context->desc.h264enc.seq.pic_order_cnt_type = h264->seq_fields.bits.pic_order_cnt_type;
    context->desc.h264enc.seq.vui_parameters_present_flag = h264->vui_parameters_present_flag;
    if (h264->vui_parameters_present_flag) {
@@ -250,17 +256,31 @@ vlVaHandleVAEncMiscParameterTypeRateControlH264(vlVaContext *context, VAEncMiscP
       return VA_STATUS_ERROR_INVALID_PARAMETER;
 
    context->desc.h264enc.rate_ctrl[temporal_id].fill_data_enable = !(rc->rc_flags.bits.disable_bit_stuffing);
-   context->desc.h264enc.rate_ctrl[temporal_id].skip_frame_enable = !(rc->rc_flags.bits.disable_frame_skip);
+   /* context->desc.h264enc.rate_ctrl[temporal_id].skip_frame_enable = !(rc->rc_flags.bits.disable_frame_skip); */
+   context->desc.h264enc.rate_ctrl[temporal_id].skip_frame_enable = 0;
    context->desc.h264enc.rate_ctrl[temporal_id].peak_bitrate = rc->bits_per_second;
-   if (context->desc.h264enc.rate_ctrl[temporal_id].target_bitrate < 2000000)
-       context->desc.h264enc.rate_ctrl[temporal_id].vbv_buffer_size =
+
+   if ((context->desc.h264enc.rate_ctrl[0].rate_ctrl_method == PIPE_H2645_ENC_RATE_CONTROL_METHOD_CONSTANT) ||
+       (context->desc.h264enc.rate_ctrl[0].rate_ctrl_method == PIPE_H2645_ENC_RATE_CONTROL_METHOD_CONSTANT_SKIP))
+      context->desc.h264enc.rate_ctrl[temporal_id].vbv_buffer_size =
+         context->desc.h264enc.rate_ctrl[temporal_id].target_bitrate;
+   else if (context->desc.h264enc.rate_ctrl[temporal_id].target_bitrate < 2000000)
+      context->desc.h264enc.rate_ctrl[temporal_id].vbv_buffer_size =
          MIN2((context->desc.h264enc.rate_ctrl[0].target_bitrate * 2.75), 2000000);
    else
       context->desc.h264enc.rate_ctrl[temporal_id].vbv_buffer_size =
-         context->desc.h264enc.rate_ctrl[0].target_bitrate;
+         context->desc.h264enc.rate_ctrl[temporal_id].target_bitrate;
 
    context->desc.h264enc.rate_ctrl[temporal_id].max_qp = rc->max_qp;
    context->desc.h264enc.rate_ctrl[temporal_id].min_qp = rc->min_qp;
+   /* Distinguishes from the default params set for these values in other
+      functions and app specific params passed down */
+   context->desc.h264enc.rate_ctrl[temporal_id].app_requested_qp_range = ((rc->max_qp > 0) || (rc->min_qp > 0));
+
+   if (context->desc.h264enc.rate_ctrl[0].rate_ctrl_method ==
+       PIPE_H2645_ENC_RATE_CONTROL_METHOD_QUALITY_VARIABLE)
+      context->desc.h264enc.rate_ctrl[temporal_id].vbr_quality_factor =
+         rc->quality_factor;
 
    return VA_STATUS_SUCCESS;
 }
@@ -327,6 +347,10 @@ vlVaHandleVAEncMiscParameterTypeHRDH264(vlVaContext *context, VAEncMiscParameter
    if (ms->buffer_size) {
       context->desc.h264enc.rate_ctrl[0].vbv_buffer_size = ms->buffer_size;
       context->desc.h264enc.rate_ctrl[0].vbv_buf_lv = (ms->initial_buffer_fullness << 6 ) / ms->buffer_size;
+      context->desc.h264enc.rate_ctrl[0].vbv_buf_initial_size = ms->initial_buffer_fullness;
+      /* Distinguishes from the default params set for these values in other
+      functions and app specific params passed down via HRD buffer */
+      context->desc.h264enc.rate_ctrl[0].app_requested_hrd_buffer = true;
    }
 
    return VA_STATUS_SUCCESS;

@@ -510,9 +510,10 @@ void init_compiler(
 	unsigned is_r400)
 {
 	struct rc_regalloc_state *rs = malloc(sizeof(struct rc_regalloc_state));
-	rc_init_regalloc_state(rs);
+	rc_init_regalloc_state(rs, program_type);
 	rc_init(c, rs);
 
+	c->type = program_type;
 	c->is_r500 = is_r500;
 	c->max_temp_regs = is_r500 ? 128 : (is_r400 ? 64 : 32);
 	c->max_constants = is_r500 ? 256 : 32;

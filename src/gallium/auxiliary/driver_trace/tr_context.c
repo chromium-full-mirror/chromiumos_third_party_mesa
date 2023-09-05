@@ -30,7 +30,7 @@
 #include "util/u_memory.h"
 #include "util/u_framebuffer.h"
 
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 #include "pipe/p_screen.h"
 
 #include "tr_dump.h"
@@ -138,6 +138,25 @@ trace_context_draw_vbo(struct pipe_context *_pipe,
    trace_dump_trace_flush();
 
    pipe->draw_vbo(pipe, info, drawid_offset, indirect, draws, num_draws);
+
+   trace_dump_call_end();
+}
+
+static void
+trace_context_draw_mesh_tasks(struct pipe_context *_pipe,
+                              const struct pipe_grid_info *info)
+{
+   struct trace_context *tr_ctx = trace_context(_pipe);
+   struct pipe_context *pipe = tr_ctx->pipe;
+
+   trace_dump_call_begin("pipe_context", "draw_mesh_tasks");
+
+   trace_dump_arg(ptr,  pipe);
+   trace_dump_arg(grid_info, info);
+
+   trace_dump_trace_flush();
+
+   pipe->draw_mesh_tasks(pipe, info);
 
    trace_dump_call_end();
 }
@@ -728,6 +747,8 @@ TRACE_SHADER_STATE(vs)
 TRACE_SHADER_STATE(gs)
 TRACE_SHADER_STATE(tcs)
 TRACE_SHADER_STATE(tes)
+TRACE_SHADER_STATE(ms)
+TRACE_SHADER_STATE(ts)
 
 #undef TRACE_SHADER_STATE
 
@@ -1797,7 +1818,7 @@ trace_context_transfer_unmap(struct pipe_context *_context,
       unsigned usage = transfer->usage;
       const struct pipe_box *box = &transfer->box;
       unsigned stride = transfer->stride;
-      unsigned layer_stride = transfer->layer_stride;
+      uintptr_t layer_stride = transfer->layer_stride;
 
       if (resource->target == PIPE_BUFFER) {
          unsigned offset = box->x;
@@ -1896,7 +1917,7 @@ trace_context_texture_subdata(struct pipe_context *_context,
                               const struct pipe_box *box,
                               const void *data,
                               unsigned stride,
-                              unsigned layer_stride)
+                              uintptr_t layer_stride)
 {
    struct trace_context *tr_context = trace_context(_context);
    struct pipe_context *context = tr_context->pipe;
@@ -2181,9 +2202,7 @@ static uint64_t trace_context_create_texture_handle(struct pipe_context *_pipe,
    trace_dump_call_begin("pipe_context", "create_texture_handle");
    trace_dump_arg(ptr, pipe);
    trace_dump_arg(ptr, view);
-   trace_dump_arg_begin("state");
    trace_dump_arg(sampler_state, state);
-   trace_dump_arg_end();
 
    handle = pipe->create_texture_handle(pipe, view, state);
 
@@ -2300,6 +2319,28 @@ static void trace_context_set_global_binding(struct pipe_context *_pipe,
    trace_dump_call_end();
 }
 
+static void
+trace_context_set_hw_atomic_buffers(struct pipe_context *_pipe,
+                                    unsigned start_slot, unsigned count,
+                                    const struct pipe_shader_buffer *buffers)
+{
+   struct trace_context *tr_ctx = trace_context(_pipe);
+   struct pipe_context *pipe = tr_ctx->pipe;
+
+   trace_dump_call_begin("pipe_context", "set_hw_atomic_buffers");
+   trace_dump_arg(ptr, pipe);
+   trace_dump_arg(uint, start_slot);
+   trace_dump_arg(uint, count);
+
+   trace_dump_arg_begin("buffers");
+   trace_dump_struct_array(shader_buffer, buffers, count);
+   trace_dump_arg_end();
+
+   pipe->set_hw_atomic_buffers(pipe, start_slot, count, buffers);
+
+   trace_dump_call_end();
+}
+
 struct pipe_context *
 trace_context_create(struct trace_screen *tr_scr,
                      struct pipe_context *pipe)
@@ -2331,6 +2372,7 @@ trace_context_create(struct trace_screen *tr_scr,
    tr_ctx->base . _member = pipe -> _member ? trace_context_ ## _member : NULL
 
    TR_CTX_INIT(draw_vbo);
+   TR_CTX_INIT(draw_mesh_tasks);
    TR_CTX_INIT(draw_vertex_state);
    TR_CTX_INIT(render_condition);
    TR_CTX_INIT(render_condition_mem);
@@ -2368,6 +2410,12 @@ trace_context_create(struct trace_screen *tr_scr,
    TR_CTX_INIT(create_tes_state);
    TR_CTX_INIT(bind_tes_state);
    TR_CTX_INIT(delete_tes_state);
+   TR_CTX_INIT(create_ts_state);
+   TR_CTX_INIT(bind_ts_state);
+   TR_CTX_INIT(delete_ts_state);
+   TR_CTX_INIT(create_ms_state);
+   TR_CTX_INIT(bind_ms_state);
+   TR_CTX_INIT(delete_ms_state);
    TR_CTX_INIT(create_compute_state);
    TR_CTX_INIT(bind_compute_state);
    TR_CTX_INIT(delete_compute_state);
@@ -2434,6 +2482,8 @@ trace_context_create(struct trace_screen *tr_scr,
    TR_CTX_INIT(set_context_param);
    TR_CTX_INIT(set_debug_callback);
    TR_CTX_INIT(set_global_binding);
+   TR_CTX_INIT(set_hw_atomic_buffers);
+
 
 #undef TR_CTX_INIT
 

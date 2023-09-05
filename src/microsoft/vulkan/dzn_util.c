@@ -73,7 +73,8 @@ static const DXGI_FORMAT formats[PIPE_FORMAT_COUNT] = {
    [PIPE_FORMAT_B8G8R8X8_UNORM] = DXGI_FORMAT_B8G8R8X8_UNORM,
    [PIPE_FORMAT_B8G8R8A8_UNORM] = DXGI_FORMAT_B8G8R8A8_UNORM,
    [PIPE_FORMAT_B4G4R4A4_UNORM] = DXGI_FORMAT_B4G4R4A4_UNORM,
-   [PIPE_FORMAT_A4R4G4B4_UNORM] = DXGI_FORMAT_B4G4R4A4_UNORM,
+   [PIPE_FORMAT_A4R4G4B4_UNORM] = DXGI_FORMAT_A4B4G4R4_UNORM,
+   [PIPE_FORMAT_A4B4G4R4_UNORM] = DXGI_FORMAT_A4B4G4R4_UNORM,
    [PIPE_FORMAT_B5G6R5_UNORM] = DXGI_FORMAT_B5G6R5_UNORM,
    [PIPE_FORMAT_B5G5R5A1_UNORM] = DXGI_FORMAT_B5G5R5A1_UNORM,
 
@@ -208,54 +209,49 @@ dzn_get_typeless_dxgi_format(DXGI_FORMAT in)
    return in;
 }
 
-struct dzn_sampler_filter_info {
-   VkFilter min, mag;
-   VkSamplerMipmapMode mipmap;
-};
-
-#define FILTER(__min, __mag, __mipmap) \
-{ \
-   .min = VK_FILTER_ ## __min, \
-   .mag = VK_FILTER_ ## __mag, \
-   .mipmap = VK_SAMPLER_MIPMAP_MODE_ ## __mipmap, \
+static D3D12_FILTER_TYPE
+translate_filter_type(VkFilter type)
+{
+   switch (type) {
+   case VK_FILTER_NEAREST: return D3D12_FILTER_TYPE_POINT;
+   case VK_FILTER_LINEAR: return D3D12_FILTER_TYPE_LINEAR;
+   default:
+      assert(!"Unsupported filter mode");
+      return D3D12_FILTER_TYPE_POINT;
+   }
 }
 
-static const struct dzn_sampler_filter_info filter_table[] = {
-   [D3D12_FILTER_MIN_MAG_MIP_POINT] = FILTER(NEAREST, NEAREST, NEAREST),
-   [D3D12_FILTER_MIN_MAG_POINT_MIP_LINEAR] = FILTER(NEAREST, NEAREST, LINEAR),
-   [D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT] = FILTER(NEAREST, LINEAR, NEAREST),
-   [D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR] = FILTER(NEAREST, LINEAR, LINEAR),
-   [D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT] = FILTER(LINEAR, NEAREST, NEAREST),
-   [D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR] = FILTER(LINEAR, NEAREST, LINEAR),
-   [D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT] = FILTER(LINEAR, LINEAR, NEAREST),
-   [D3D12_FILTER_MIN_MAG_MIP_LINEAR] = FILTER(LINEAR, LINEAR, LINEAR),
-};
+static D3D12_FILTER_TYPE
+translate_mip_filter_type(VkSamplerMipmapMode type)
+{
+   switch (type) {
+   case VK_SAMPLER_MIPMAP_MODE_NEAREST: return D3D12_FILTER_TYPE_POINT;
+   case VK_SAMPLER_MIPMAP_MODE_LINEAR: return D3D12_FILTER_TYPE_LINEAR;
+   default:
+      assert(!"Unsupported filter mode");
+      return D3D12_FILTER_TYPE_POINT;
+   }
+}
 
 D3D12_FILTER
-dzn_translate_sampler_filter(const VkSamplerCreateInfo *create_info)
+dzn_translate_sampler_filter(const struct dzn_physical_device *pdev,
+                             const VkSamplerCreateInfo *create_info)
 {
-   D3D12_FILTER filter = (D3D12_FILTER)0;
+   D3D12_FILTER_REDUCTION_TYPE reduction = create_info->compareEnable ?
+      D3D12_FILTER_REDUCTION_TYPE_COMPARISON : D3D12_FILTER_REDUCTION_TYPE_STANDARD;
 
-   if (!create_info->anisotropyEnable) {
-      unsigned i;
-      for (i = 0; i < ARRAY_SIZE(filter_table); i++) {
-         if (create_info->minFilter == filter_table[i].min &&
-             create_info->magFilter == filter_table[i].mag &&
-             create_info->mipmapMode == filter_table[i].mipmap) {
-            filter = (D3D12_FILTER)i;
-            break;
-         }
-      }
-
-      assert(i < ARRAY_SIZE(filter_table));
-   } else {
-      filter = D3D12_FILTER_ANISOTROPIC;
+   if (create_info->anisotropyEnable) {
+      if (create_info->mipmapMode == VK_SAMPLER_MIPMAP_MODE_NEAREST &&
+          pdev->options19.AnisoFilterWithPointMipSupported)
+         return D3D12_ENCODE_MIN_MAG_ANISOTROPIC_MIP_POINT_FILTER(reduction);
+      return D3D12_ENCODE_ANISOTROPIC_FILTER(reduction);
    }
 
-   if (create_info->compareEnable)
-      filter = (D3D12_FILTER)(filter + D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT);
-
-   return filter;
+   return D3D12_ENCODE_BASIC_FILTER(
+      translate_filter_type(create_info->minFilter),
+      translate_filter_type(create_info->magFilter),
+      translate_mip_filter_type(create_info->mipmapMode),
+      reduction);
 }
 
 D3D12_COMPARISON_FUNC
@@ -350,7 +346,7 @@ d3d12_enable_gpu_validation(struct util_dl_library *d3d12_mod, ID3D12DeviceFacto
    }
 }
 
-ID3D12Device2 *
+ID3D12Device4 *
 d3d12_create_device(struct util_dl_library *d3d12_mod, IUnknown *adapter, ID3D12DeviceFactory *factory, bool experimental_features)
 {
 #ifdef _WIN32
@@ -373,12 +369,12 @@ d3d12_create_device(struct util_dl_library *d3d12_mod, IUnknown *adapter, ID3D12
       }
    }
 
-   ID3D12Device2 *dev;
+   ID3D12Device4 *dev;
    if (factory) {
       ID3D12DeviceFactory_SetFlags(factory, D3D12_DEVICE_FACTORY_FLAG_ALLOW_RETURNING_EXISTING_DEVICE |
                                             D3D12_DEVICE_FACTORY_FLAG_ALLOW_RETURNING_INCOMPATIBLE_EXISTING_DEVICE);
       if (FAILED(ID3D12DeviceFactory_CreateDevice(factory, adapter, D3D_FEATURE_LEVEL_11_0,
-                                                  &IID_ID3D12Device2,
+                                                  &IID_ID3D12Device4,
                                                   (void **)&dev))) {
          mesa_loge("ID3D12DeviceFactory::CreateDevice failed\n");
          return NULL;
@@ -394,7 +390,7 @@ d3d12_create_device(struct util_dl_library *d3d12_mod, IUnknown *adapter, ID3D12
       }
 
       if (FAILED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0,
-                                   &IID_ID3D12Device2,
+                                   &IID_ID3D12Device4,
                                    (void **)&dev))) {
          mesa_loge("D3D12CreateDevice failed\n");
          return NULL;

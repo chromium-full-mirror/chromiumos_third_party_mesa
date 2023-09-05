@@ -1,25 +1,7 @@
 /*
  * Copyright 2012 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "si_build_pm4.h"
@@ -108,10 +90,17 @@ static void si_emit_cull_state(struct si_context *sctx)
    /* This will end up in SGPR6 as (value << 8), shifted by the hw. */
    radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, sctx->small_prim_cull_info_buf,
                              RADEON_USAGE_READ | RADEON_PRIO_CONST_BUFFER);
-   radeon_begin(&sctx->gfx_cs);
-   radeon_set_sh_reg(R_00B230_SPI_SHADER_USER_DATA_GS_0 + GFX9_SGPR_SMALL_PRIM_CULL_INFO * 4,
-                     sctx->small_prim_cull_info_address);
-   radeon_end();
+
+   if (sctx->screen->info.has_set_pairs_packets) {
+      radeon_push_gfx_sh_reg(R_00B230_SPI_SHADER_USER_DATA_GS_0 +
+                             GFX9_SGPR_SMALL_PRIM_CULL_INFO * 4,
+                             sctx->small_prim_cull_info_address);
+   } else {
+      radeon_begin(&sctx->gfx_cs);
+      radeon_set_sh_reg(R_00B230_SPI_SHADER_USER_DATA_GS_0 + GFX9_SGPR_SMALL_PRIM_CULL_INFO * 4,
+                        sctx->small_prim_cull_info_address);
+      radeon_end();
+   }
 
    /* Better subpixel precision increases the efficiency of small
     * primitive culling. (more precision means a tighter bounding box
@@ -362,7 +351,7 @@ static void si_emit_guardband(struct si_context *ctx)
        * conservative about when to discard them entirely. */
       float pixels;
 
-      if (ctx->current_rast_prim == PIPE_PRIM_POINTS)
+      if (ctx->current_rast_prim == MESA_PRIM_POINTS)
          pixels = rs->max_point_size;
       else
          pixels = rs->line_width;
@@ -382,17 +371,17 @@ static void si_emit_guardband(struct si_context *ctx)
     * R_028BF0_PA_CL_GB_HORZ_CLIP_ADJ, R_028BF4_PA_CL_GB_HORZ_DISC_ADJ
     */
    radeon_begin(&ctx->gfx_cs);
-   radeon_opt_set_context_reg4(ctx, R_028BE8_PA_CL_GB_VERT_CLIP_ADJ,
-                               SI_TRACKED_PA_CL_GB_VERT_CLIP_ADJ, fui(guardband_y), fui(discard_y),
+   radeon_opt_set_context_reg5(ctx, R_028BE4_PA_SU_VTX_CNTL, SI_TRACKED_PA_SU_VTX_CNTL,
+                               S_028BE4_PIX_CENTER(rs->half_pixel_center) |
+                               S_028BE4_ROUND_MODE(V_028BE4_X_ROUND_TO_EVEN) |
+                               S_028BE4_QUANT_MODE(V_028BE4_X_16_8_FIXED_POINT_1_256TH +
+                                                   vp_as_scissor.quant_mode),
+                               fui(guardband_y), fui(discard_y),
                                fui(guardband_x), fui(discard_x));
    radeon_opt_set_context_reg(ctx, R_028234_PA_SU_HARDWARE_SCREEN_OFFSET,
                               SI_TRACKED_PA_SU_HARDWARE_SCREEN_OFFSET,
                               S_028234_HW_SCREEN_OFFSET_X(hw_screen_offset_x >> 4) |
-                                 S_028234_HW_SCREEN_OFFSET_Y(hw_screen_offset_y >> 4));
-   radeon_opt_set_context_reg(
-      ctx, R_028BE4_PA_SU_VTX_CNTL, SI_TRACKED_PA_SU_VTX_CNTL,
-      S_028BE4_PIX_CENTER(rs->half_pixel_center) | S_028BE4_ROUND_MODE(V_028BE4_X_ROUND_TO_EVEN) |
-         S_028BE4_QUANT_MODE(V_028BE4_X_16_8_FIXED_POINT_1_256TH + vp_as_scissor.quant_mode));
+                              S_028234_HW_SCREEN_OFFSET_Y(hw_screen_offset_y >> 4));
    radeon_end_update_context_roll(ctx);
 }
 
@@ -641,7 +630,7 @@ static void si_emit_window_rectangles(struct si_context *sctx)
    static const unsigned outside[4] = {
       /* outside rectangle 0 */
       V_02820C_OUT | V_02820C_IN_1 | V_02820C_IN_2 | V_02820C_IN_21 | V_02820C_IN_3 |
-         V_02820C_IN_31 | V_02820C_IN_32 | V_02820C_IN_321,
+      V_02820C_IN_31 | V_02820C_IN_32 | V_02820C_IN_321,
       /* outside rectangles 0, 1 */
       V_02820C_OUT | V_02820C_IN_2 | V_02820C_IN_3 | V_02820C_IN_32,
       /* outside rectangles 0, 1, 2 */

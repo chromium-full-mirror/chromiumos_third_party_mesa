@@ -29,6 +29,7 @@
 #include "tgsi/tgsi_parse.h"
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_serialize.h"
+#include "nir/tgsi_to_nir.h"
 
 #include "nvc0/nvc0_stateobj.h"
 #include "nvc0/nvc0_context.h"
@@ -610,7 +611,8 @@ nvc0_sp_state_create(struct pipe_context *pipe,
 
    switch(cso->type) {
    case PIPE_SHADER_IR_TGSI:
-      prog->pipe.tokens = tgsi_dup_tokens(cso->tokens);
+      prog->pipe.type = PIPE_SHADER_IR_NIR;
+      prog->pipe.ir.nir = tgsi_to_nir(cso->tokens, pipe->screen, false);
       break;
    case PIPE_SHADER_IR_NIR:
       prog->pipe.ir.nir = cso->ir.nir;
@@ -741,14 +743,16 @@ nvc0_cp_state_create(struct pipe_context *pipe,
    prog->type = PIPE_SHADER_COMPUTE;
    prog->pipe.type = cso->ir_type;
 
-   prog->cp.smem_size = cso->req_local_mem;
-   prog->cp.lmem_size = cso->req_private_mem;
+   prog->cp.smem_size = cso->static_shared_mem;
    prog->parm_size = cso->req_input_mem;
 
    switch(cso->ir_type) {
-   case PIPE_SHADER_IR_TGSI:
-      prog->pipe.tokens = tgsi_dup_tokens((const struct tgsi_token *)cso->prog);
+   case PIPE_SHADER_IR_TGSI: {
+      const struct tgsi_token *tokens = cso->prog;
+      prog->pipe.type = PIPE_SHADER_IR_NIR;
+      prog->pipe.ir.nir = tgsi_to_nir(tokens, pipe->screen, false);
       break;
+   }
    case PIPE_SHADER_IR_NIR:
       prog->pipe.ir.nir = (nir_shader *)cso->prog;
       break;
@@ -782,6 +786,32 @@ nvc0_cp_state_bind(struct pipe_context *pipe, void *hwcso)
 
     nvc0->compprog = hwcso;
     nvc0->dirty_cp |= NVC0_NEW_CP_PROGRAM;
+}
+
+static void
+nvc0_get_compute_state_info(struct pipe_context *pipe, void *hwcso,
+                            struct pipe_compute_state_object_info *info)
+{
+   struct nvc0_context *nvc0 = nvc0_context(pipe);
+   struct nvc0_program *prog = (struct nvc0_program *)hwcso;
+   uint16_t obj_class = nvc0->screen->compute->oclass;
+   uint32_t chipset = nvc0->screen->base.device->chipset;
+   uint32_t smregs;
+
+   // fermi and a handful of tegra devices have less gprs per SM
+   if (obj_class < NVE4_COMPUTE_CLASS || chipset == 0xea || chipset == 0x12b || chipset == 0x13b)
+      smregs = 32768;
+   else
+      smregs = 65536;
+
+   // TODO: not 100% sure about 8 for volta, but earlier reverse engineering indicates it
+   uint32_t gpr_alloc_size = obj_class >= GV100_COMPUTE_CLASS ? 8 : 4;
+   uint32_t threads = smregs / align(prog->num_gprs, gpr_alloc_size);
+
+   info->max_threads = MIN2(ROUND_DOWN_TO(threads, 32), 1024);
+   info->private_memory = prog->hdr[1] & 0xfffff0;
+   info->preferred_simd_size = 32;
+   info->simd_sizes = 32;
 }
 
 static void
@@ -1495,6 +1525,7 @@ nvc0_init_state_functions(struct nvc0_context *nvc0)
 
    pipe->create_compute_state = nvc0_cp_state_create;
    pipe->bind_compute_state = nvc0_cp_state_bind;
+   pipe->get_compute_state_info = nvc0_get_compute_state_info;
    pipe->delete_compute_state = nvc0_sp_state_delete;
 
    pipe->set_blend_color = nvc0_set_blend_color;

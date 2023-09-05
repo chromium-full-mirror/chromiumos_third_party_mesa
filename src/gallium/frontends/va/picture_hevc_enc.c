@@ -53,10 +53,12 @@ vlVaHandleVAEncPictureParameterBufferTypeHEVC(vlVaDriver *drv, vlVaContext *cont
 
    context->desc.h265enc.pic_order_cnt = h265->decoded_curr_pic.pic_order_cnt;
    coded_buf = handle_table_get(drv->htab, h265->coded_buf);
+   if (!coded_buf)
+      return VA_STATUS_ERROR_INVALID_BUFFER;
 
    if (!coded_buf->derived_surface.resource)
       coded_buf->derived_surface.resource = pipe_buffer_create(drv->pipe->screen, PIPE_BIND_VERTEX_BUFFER,
-                                            PIPE_USAGE_STREAM, coded_buf->size);
+                                            PIPE_USAGE_STAGING, coded_buf->size);
 
    context->coded_buf = coded_buf;
    context->desc.h265enc.pic.log2_parallel_merge_level_minus2 = h265->log2_parallel_merge_level_minus2;
@@ -235,9 +237,18 @@ vlVaHandleVAEncMiscParameterTypeRateControlHEVC(vlVaContext *context, VAEncMiscP
       context->desc.h265enc.rc.vbv_buffer_size = context->desc.h265enc.rc.target_bitrate;
 
    context->desc.h265enc.rc.fill_data_enable = !(rc->rc_flags.bits.disable_bit_stuffing);
-   context->desc.h265enc.rc.skip_frame_enable = !(rc->rc_flags.bits.disable_frame_skip);
+   /* context->desc.h265enc.rc.skip_frame_enable = !(rc->rc_flags.bits.disable_frame_skip); */
+   context->desc.h265enc.rc.skip_frame_enable = 0;
    context->desc.h265enc.rc.max_qp = rc->max_qp;
    context->desc.h265enc.rc.min_qp = rc->min_qp;
+   /* Distinguishes from the default params set for these values in other
+      functions and app specific params passed down */
+   context->desc.h265enc.rc.app_requested_qp_range = ((rc->max_qp > 0) || (rc->min_qp > 0));
+
+   if (context->desc.h265enc.rc.rate_ctrl_method ==
+       PIPE_H2645_ENC_RATE_CONTROL_METHOD_QUALITY_VARIABLE)
+      context->desc.h265enc.rc.vbr_quality_factor =
+         rc->quality_factor;
 
    return VA_STATUS_SUCCESS;
 }
@@ -406,6 +417,10 @@ vlVaHandleVAEncMiscParameterTypeHRDHEVC(vlVaContext *context, VAEncMiscParameter
    if (ms->buffer_size) {
       context->desc.h265enc.rc.vbv_buffer_size = ms->buffer_size;
       context->desc.h265enc.rc.vbv_buf_lv = (ms->initial_buffer_fullness << 6 ) / ms->buffer_size;
+      context->desc.h265enc.rc.vbv_buf_initial_size = ms->initial_buffer_fullness;
+      /* Distinguishes from the default params set for these values in other
+         functions and app specific params passed down via HRD buffer */
+      context->desc.h265enc.rc.app_requested_hrd_buffer = true;
    }
 
    return VA_STATUS_SUCCESS;

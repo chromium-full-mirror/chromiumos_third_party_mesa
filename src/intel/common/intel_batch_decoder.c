@@ -24,9 +24,18 @@
 #include "common/intel_decoder.h"
 #include "intel_disasm.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_math.h" /* Needed for ROUND_DOWN_TO */
 
 #include <string.h>
+
+static const struct debug_control debug_control[] = {
+   { "color",    INTEL_BATCH_DECODE_IN_COLOR },
+   { "full",     INTEL_BATCH_DECODE_FULL },
+   { "offsets",  INTEL_BATCH_DECODE_OFFSETS },
+   { "floats",   INTEL_BATCH_DECODE_FLOATS },
+   { NULL,    0 }
+};
 
 void
 intel_batch_decode_ctx_init(struct intel_batch_decode_ctx *ctx,
@@ -49,7 +58,7 @@ intel_batch_decode_ctx_init(struct intel_batch_decode_ctx *ctx,
    ctx->get_state_size = get_state_size;
    ctx->user_data = user_data;
    ctx->fp = fp;
-   ctx->flags = flags;
+   ctx->flags = parse_enable_string(getenv("INTEL_DECODE"), flags, debug_control);
    ctx->max_vbo_decoded_lines = -1; /* No limit! */
    ctx->engine = INTEL_ENGINE_CLASS_RENDER;
 
@@ -131,15 +140,24 @@ update_count(struct intel_batch_decode_ctx *ctx,
 
 static void
 ctx_disassemble_program(struct intel_batch_decode_ctx *ctx,
-                        uint32_t ksp, const char *type)
+                        uint32_t ksp,
+                        const char *short_name,
+                        const char *name)
 {
    uint64_t addr = ctx->instruction_base + ksp;
    struct intel_batch_decode_bo bo = ctx_get_bo(ctx, true, addr);
    if (!bo.map)
       return;
 
-   fprintf(ctx->fp, "\nReferenced %s:\n", type);
+   fprintf(ctx->fp, "\nReferenced %s:\n", name);
    intel_disassemble(ctx->isa, bo.map, 0, ctx->fp);
+
+   if (ctx->shader_binary) {
+      int size = intel_disassemble_find_end(ctx->isa, bo.map, 0);
+
+      ctx->shader_binary(ctx->user_data, short_name, addr,
+                         bo.map, size);
+   }
 }
 
 /* Heuristic to determine whether a uint32_t is probably actually a float
@@ -305,7 +323,7 @@ dump_binding_table(struct intel_batch_decode_ctx *ctx,
 
    if (count < 0) {
       count = update_count(ctx, bt_pool_base + offset,
-                           bt_pool_base, 1, 8);
+                           bt_pool_base, 1, 32);
    }
 
    if (offset % btp_alignment != 0 || offset >= (1u << btp_pointer_bits)) {
@@ -323,8 +341,9 @@ dump_binding_table(struct intel_batch_decode_ctx *ctx,
 
    const uint32_t *pointers = bind_bo.map;
    for (int i = 0; i < count; i++) {
-      if (pointers[i] == 0)
-         continue;
+      if (((uintptr_t)&pointers[i] >= ((uintptr_t)bind_bo.map + bind_bo.size)) ||
+          pointers[i] == 0)
+         break;
 
       uint64_t addr = ctx->surface_base + pointers[i];
       struct intel_batch_decode_bo bo = ctx_get_bo(ctx, true, addr);
@@ -402,7 +421,7 @@ handle_interface_descriptor_data(struct intel_batch_decode_ctx *ctx,
       }
    }
 
-   ctx_disassemble_program(ctx, ksp, "compute shader");
+   ctx_disassemble_program(ctx, ksp, "CS", "compute shader");
    fprintf(ctx->fp, "\n");
 
    if (sampler_count)
@@ -466,6 +485,34 @@ handle_compute_walker(struct intel_batch_decode_ctx *ctx,
          handle_interface_descriptor_data(ctx, iter.struct_desc,
                                           &iter.p[iter.start_bit / 32]);
       }
+   }
+}
+
+static void
+handle_media_curbe_load(struct intel_batch_decode_ctx *ctx,
+                        const uint32_t *p)
+{
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+
+   uint32_t dynamic_state_offset = 0;
+   uint32_t dynamic_state_length = 0;
+
+   while (intel_field_iterator_next(&iter)) {
+      if (strcmp(iter.name, "CURBE Data Start Address") == 0) {
+         dynamic_state_offset = iter.raw_value;
+      } else if (strcmp(iter.name, "CURBE Total Data Length") == 0) {
+         dynamic_state_length = iter.raw_value;
+      }
+   }
+
+   if (dynamic_state_length > 0) {
+      struct intel_batch_decode_bo buffer =
+         ctx_get_bo(ctx, true, ctx->dynamic_base + dynamic_state_offset);
+      if (buffer.map != NULL)
+         ctx_print_buffer(ctx, buffer, dynamic_state_length, 0, -1);
    }
 }
 
@@ -618,9 +665,19 @@ decode_single_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
       strcmp(inst->name, "3DSTATE_VS") == 0 ? (is_simd8 ? "SIMD8 vertex shader" : "vec4 vertex shader") :
       strcmp(inst->name, "3DSTATE_GS") == 0 ? (is_simd8 ? "SIMD8 geometry shader" : "vec4 geometry shader") :
       NULL;
+   const char *short_name =
+      strcmp(inst->name,   "VS_STATE") == 0 ? "VS" :
+      strcmp(inst->name,   "GS_STATE") == 0 ? "GS" :
+      strcmp(inst->name,   "SF_STATE") == 0 ? "SF" :
+      strcmp(inst->name, "CLIP_STATE") == 0 ? "CL" :
+      strcmp(inst->name, "3DSTATE_DS") == 0 ? "DS" :
+      strcmp(inst->name, "3DSTATE_HS") == 0 ? "HS" :
+      strcmp(inst->name, "3DSTATE_VS") == 0 ? "VS" :
+      strcmp(inst->name, "3DSTATE_GS") == 0 ? "GS" :
+      NULL;
 
    if (is_enabled) {
-      ctx_disassemble_program(ctx, ksp, type);
+      ctx_disassemble_program(ctx, ksp, short_name, type);
       fprintf(ctx->fp, "\n");
    }
 }
@@ -650,9 +707,13 @@ decode_mesh_task_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
       strcmp(inst->name,   "3DSTATE_MESH_SHADER") == 0 ? "mesh shader" :
       strcmp(inst->name,   "3DSTATE_TASK_SHADER") == 0 ? "task shader" :
       NULL;
+   const char *short_name =
+      strcmp(inst->name,   "3DSTATE_MESH_SHADER") == 0 ? "MS" :
+      strcmp(inst->name,   "3DSTATE_TASK_SHADER") == 0 ? "TS" :
+      NULL;
 
    if (threads && local_x_maximum) {
-      ctx_disassemble_program(ctx, ksp, type);
+      ctx_disassemble_program(ctx, ksp, short_name, type);
       fprintf(ctx->fp, "\n");
    }
 }
@@ -700,11 +761,11 @@ decode_ps_kern(struct intel_batch_decode_ctx *ctx,
    }
 
    if (enabled[0])
-      ctx_disassemble_program(ctx, ksp[0], "SIMD8 fragment shader");
+      ctx_disassemble_program(ctx, ksp[0], "FS8", "SIMD8 fragment shader");
    if (enabled[1])
-      ctx_disassemble_program(ctx, ksp[1], "SIMD16 fragment shader");
+      ctx_disassemble_program(ctx, ksp[1], "FS16", "SIMD16 fragment shader");
    if (enabled[2])
-      ctx_disassemble_program(ctx, ksp[2], "SIMD32 fragment shader");
+      ctx_disassemble_program(ctx, ksp[2], "FS32", "SIMD32 fragment shader");
 
    if (enabled[0] || enabled[1] || enabled[2])
       fprintf(ctx->fp, "\n");
@@ -1127,6 +1188,31 @@ decode_load_register_imm(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 }
 
 static void
+disasm_program_from_group(struct intel_batch_decode_ctx *ctx,
+                          struct intel_group *strct, const void *map,
+                          const char *short_name, const char *type)
+{
+   uint64_t ksp = 0;
+   bool is_enabled = true;
+   struct intel_field_iterator iter;
+
+   intel_field_iterator_init(&iter, strct, map, 0, false);
+
+   while (intel_field_iterator_next(&iter)) {
+      if (strcmp(iter.name, "Kernel Start Pointer") == 0) {
+         ksp = iter.raw_value;
+      } else if (strcmp(iter.name, "Enable") == 0) {
+         is_enabled = iter.raw_value;
+      }
+   }
+
+   if (is_enabled) {
+      ctx_disassemble_program(ctx, ksp, short_name, type);
+      fprintf(ctx->fp, "\n");
+   }
+}
+
+static void
 decode_vs_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
 {
    struct intel_group *strct =
@@ -1145,22 +1231,7 @@ decode_vs_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
    }
 
    ctx_print_group(ctx, strct, offset, bind_bo.map);
-
-   uint64_t ksp = 0;
-   bool is_enabled = true;
-   struct intel_field_iterator iter;
-   intel_field_iterator_init(&iter, strct, bind_bo.map, 0, false);
-   while (intel_field_iterator_next(&iter)) {
-      if (strcmp(iter.name, "Kernel Start Pointer") == 0) {
-         ksp = iter.raw_value;
-      } else if (strcmp(iter.name, "Enable") == 0) {
-	is_enabled = iter.raw_value;
-      }
-   }
-   if (is_enabled) {
-      ctx_disassemble_program(ctx, ksp, "vertex shader");
-      fprintf(ctx->fp, "\n");
-   }
+   disasm_program_from_group(ctx, strct, bind_bo.map, "VS", "vertex shader");
 }
 
 static void
@@ -1182,6 +1253,7 @@ decode_gs_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
    }
 
    ctx_print_group(ctx, strct, offset, bind_bo.map);
+   disasm_program_from_group(ctx, strct, bind_bo.map, "GS", "geometry shader");
 }
 
 static void
@@ -1203,6 +1275,7 @@ decode_clip_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
    }
 
    ctx_print_group(ctx, strct, offset, bind_bo.map);
+   disasm_program_from_group(ctx, strct, bind_bo.map, "CL", "clip shader");
 
    struct intel_group *vp_strct =
       intel_spec_find_struct(ctx->spec, "CLIP_VIEWPORT");
@@ -1239,6 +1312,7 @@ decode_sf_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
    }
 
    ctx_print_group(ctx, strct, offset, bind_bo.map);
+   disasm_program_from_group(ctx, strct, bind_bo.map, "SF", "strips and fans shader");
 
    struct intel_group *vp_strct =
       intel_spec_find_struct(ctx->spec, "SF_VIEWPORT");
@@ -1348,6 +1422,7 @@ struct custom_decoder {
    { "3DSTATE_BINDING_TABLE_POOL_ALLOC", handle_binding_table_pool_alloc },
    { "MEDIA_INTERFACE_DESCRIPTOR_LOAD", handle_media_interface_descriptor_load },
    { "COMPUTE_WALKER", handle_compute_walker },
+   { "MEDIA_CURBE_LOAD", handle_media_curbe_load },
    { "3DSTATE_VERTEX_BUFFERS", handle_3dstate_vertex_buffers },
    { "3DSTATE_INDEX_BUFFER", handle_3dstate_index_buffer },
    { "3DSTATE_VS", decode_single_ksp },

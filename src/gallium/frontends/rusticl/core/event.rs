@@ -5,10 +5,10 @@ use crate::core::queue::*;
 use crate::impl_cl_type_trait;
 
 use mesa_rust::pipe::context::*;
-use mesa_rust::pipe::fence::*;
 use mesa_rust_util::static_assert;
 use rusticl_opencl_gen::*;
 
+use std::collections::HashSet;
 use std::os::raw::c_void;
 use std::slice;
 use std::sync::Arc;
@@ -28,17 +28,15 @@ pub type EventSig = Box<dyn Fn(&Arc<Queue>, &PipeContext) -> CLResult<()>>;
 struct EventMutState {
     status: cl_int,
     cbs: [Vec<(EventCB, *mut c_void)>; 3],
-    fence: Option<PipeFence>,
+    work: Option<EventSig>,
 }
 
-#[repr(C)]
 pub struct Event {
     pub base: CLObjectBase<CL_INVALID_EVENT>,
     pub context: Arc<Context>,
     pub queue: Option<Arc<Queue>>,
     pub cmd_type: cl_command_type,
     pub deps: Vec<Arc<Event>>,
-    work: Option<EventSig>,
     state: Mutex<EventMutState>,
     cv: Condvar,
 }
@@ -65,9 +63,8 @@ impl Event {
             state: Mutex::new(EventMutState {
                 status: CL_QUEUED as cl_int,
                 cbs: [Vec::new(), Vec::new(), Vec::new()],
-                fence: None,
+                work: Some(work),
             }),
-            work: Some(work),
             cv: Condvar::new(),
         })
     }
@@ -82,9 +79,8 @@ impl Event {
             state: Mutex::new(EventMutState {
                 status: CL_SUBMITTED as cl_int,
                 cbs: [Vec::new(), Vec::new(), Vec::new()],
-                fence: None,
+                work: None,
             }),
-            work: None,
             cv: Condvar::new(),
         })
     }
@@ -104,7 +100,12 @@ impl Event {
 
     fn set_status(&self, lock: &mut MutexGuard<EventMutState>, new: cl_int) {
         lock.status = new;
-        self.cv.notify_all();
+
+        // signal on completion or an error
+        if new <= CL_COMPLETE as cl_int {
+            self.cv.notify_all();
+        }
+
         if [CL_COMPLETE, CL_RUNNING, CL_SUBMITTED].contains(&(new as u32)) {
             if let Some(cbs) = lock.cbs.get(new as usize) {
                 cbs.iter()
@@ -122,6 +123,10 @@ impl Event {
         self.status() < 0
     }
 
+    pub fn is_user(&self) -> bool {
+        self.cmd_type == CL_COMMAND_USER
+    }
+
     pub fn add_cb(&self, state: cl_int, cb: EventCB, data: *mut c_void) {
         let mut lock = self.state();
         let status = lock.status;
@@ -135,21 +140,21 @@ impl Event {
         }
     }
 
+    pub(super) fn signal(&self) {
+        let mut lock = self.state();
+
+        self.set_status(&mut lock, CL_RUNNING as cl_int);
+        self.set_status(&mut lock, CL_COMPLETE as cl_int);
+    }
+
     pub fn wait(&self) -> cl_int {
         let mut lock = self.state();
-        while lock.status >= CL_SUBMITTED as cl_int {
-            if lock.fence.is_some() {
-                lock.fence.as_ref().unwrap().wait();
-                // so we trigger all cbs
-                self.set_status(&mut lock, CL_RUNNING as cl_int);
-                self.set_status(&mut lock, CL_COMPLETE as cl_int);
-            } else {
-                lock = self
-                    .cv
-                    .wait_timeout(lock, Duration::from_millis(50))
-                    .unwrap()
-                    .0;
-            }
+        while lock.status >= CL_RUNNING as cl_int {
+            lock = self
+                .cv
+                .wait_timeout(lock, Duration::from_secs(1))
+                .unwrap()
+                .0;
         }
         lock.status
     }
@@ -157,11 +162,12 @@ impl Event {
     // We always assume that work here simply submits stuff to the hardware even if it's just doing
     // sw emulation or nothing at all.
     // If anything requets waiting, we will update the status through fencing later.
-    pub fn call(&self, ctx: &PipeContext) -> cl_int {
+    pub fn call(&self, ctx: &PipeContext) {
         let mut lock = self.state();
         let status = lock.status;
         if status == CL_QUEUED as cl_int {
-            let new = self.work.as_ref().map_or(
+            let work = lock.work.take();
+            let new = work.as_ref().map_or(
                 // if there is no work
                 CL_SUBMITTED as cl_int,
                 |w| {
@@ -170,15 +176,48 @@ impl Event {
                         CL_SUBMITTED as cl_int,
                         |e| e,
                     );
-                    lock.fence = Some(ctx.flush());
                     res
                 },
             );
+            // we have to make sure that the work object is dropped before we notify about the
+            // status change. It's probably fine to move the value above, but we have to be
+            // absolutely sure it happens before the status update.
+            drop(work);
             self.set_status(&mut lock, new);
-            new
-        } else {
-            status
         }
+    }
+
+    fn deep_unflushed_deps_impl<'a>(&'a self, result: &mut HashSet<&'a Event>) {
+        if self.status() <= CL_SUBMITTED as i32 {
+            return;
+        }
+
+        // only scan dependencies if it's a new one
+        if result.insert(self) {
+            for e in &self.deps {
+                e.deep_unflushed_deps_impl(result);
+            }
+        }
+    }
+
+    /// does a deep search and returns a list of all dependencies including `events` which haven't
+    /// been flushed out yet
+    pub fn deep_unflushed_deps(events: &[Arc<Event>]) -> HashSet<&Event> {
+        let mut result = HashSet::new();
+
+        for e in events {
+            e.deep_unflushed_deps_impl(&mut result);
+        }
+
+        result
+    }
+
+    /// does a deep search and returns a list of all queues which haven't been flushed yet
+    pub fn deep_unflushed_queues(events: &[Arc<Event>]) -> HashSet<Arc<Queue>> {
+        Event::deep_unflushed_deps(events)
+            .iter()
+            .filter_map(|e| e.queue.clone())
+            .collect()
     }
 }
 

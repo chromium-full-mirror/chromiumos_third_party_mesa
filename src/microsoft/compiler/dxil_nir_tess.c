@@ -27,6 +27,19 @@
 
 #include "dxil_nir.h"
 
+static bool
+is_memory_barrier_tcs_patch(const nir_intrinsic_instr *intr)
+{
+   if (intr->intrinsic == nir_intrinsic_scoped_barrier &&
+       nir_intrinsic_memory_modes(intr) & nir_var_shader_out) {
+      assert(nir_intrinsic_memory_modes(intr) == nir_var_shader_out);
+      assert(nir_intrinsic_memory_scope(intr) == SCOPE_WORKGROUP);
+      return true;
+   } else {
+      return false;
+   }
+}
+
 static void
 remove_hs_intrinsics(nir_function_impl *impl)
 {
@@ -36,8 +49,7 @@ remove_hs_intrinsics(nir_function_impl *impl)
             continue;
          nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
          if (intr->intrinsic != nir_intrinsic_store_output &&
-             intr->intrinsic != nir_intrinsic_memory_barrier_tcs_patch &&
-             intr->intrinsic != nir_intrinsic_control_barrier)
+             !is_memory_barrier_tcs_patch(intr))
             continue;
          nir_instr_remove(instr);
       }
@@ -85,7 +97,7 @@ prune_patch_function_to_intrinsic_and_srcs(nir_function_impl *impl)
          if (instr->type == nir_instr_type_intrinsic) {
             nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
             if (intr->intrinsic != nir_intrinsic_store_output &&
-                intr->intrinsic != nir_intrinsic_memory_barrier_tcs_patch)
+                !is_memory_barrier_tcs_patch(intr))
                continue;
          } else if (instr->type != nir_instr_type_jump)
             continue;
@@ -132,7 +144,7 @@ start_tcs_loop(nir_builder *b, struct tcs_patch_loop_state *state, nir_deref_ins
    nir_store_deref(b, loop_var_deref, nir_imm_int(b, 0), 1);
    state->loop = nir_push_loop(b);
    state->count = nir_load_deref(b, loop_var_deref);
-   nir_push_if(b, nir_ige(b, state->count, nir_imm_int(b, b->impl->function->shader->info.tess.tcs_vertices_out)));
+   nir_push_if(b, nir_ige_imm(b, state->count, b->impl->function->shader->info.tess.tcs_vertices_out));
    nir_jump(b, nir_jump_break);
    nir_pop_if(b, NULL);
    state->insert_cursor = b->cursor;
@@ -182,8 +194,7 @@ dxil_nir_split_tess_ctrl(nir_shader *nir, nir_function **patch_const_func)
 
    *patch_const_func = nir_function_create(nir, "PatchConstantFunc");
    nir_function_impl *patch_const_func_impl = nir_function_impl_clone(nir, entrypoint);
-   (*patch_const_func)->impl = patch_const_func_impl;
-   patch_const_func_impl->function = *patch_const_func;
+   nir_function_set_impl(*patch_const_func, patch_const_func_impl);
 
    remove_hs_intrinsics(entrypoint);
    prune_patch_function_to_intrinsic_and_srcs(patch_const_func_impl);
@@ -207,24 +218,19 @@ dxil_nir_split_tess_ctrl(nir_shader *nir, nir_function **patch_const_func)
     * First, sink load_invocation_id so that it's present on both sides of barriers.
     * Each use gets a unique load of the invocation ID.
     */
-   nir_builder b;
-   nir_builder_init(&b, patch_const_func_impl);
+   nir_builder b = nir_builder_create(patch_const_func_impl);
    nir_foreach_block(block, patch_const_func_impl) {
       nir_foreach_instr_safe(instr, block) {
          if (instr->type != nir_instr_type_intrinsic)
             continue;
          nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
          if (intr->intrinsic != nir_intrinsic_load_invocation_id ||
-             list_length(&intr->dest.ssa.uses) +
-             list_length(&intr->dest.ssa.if_uses) <= 1)
+             list_is_empty(&intr->dest.ssa.uses) ||
+             list_is_singular(&intr->dest.ssa.uses))
             continue;
-         nir_foreach_use_safe(src, &intr->dest.ssa) {
-            b.cursor = nir_before_src(src, false);
-            nir_instr_rewrite_src_ssa(src->parent_instr, src, nir_load_invocation_id(&b));
-         }
-         nir_foreach_if_use_safe(src, &intr->dest.ssa) {
-            b.cursor = nir_before_src(src, true);
-            nir_if_rewrite_condition_ssa(src->parent_if, src, nir_load_invocation_id(&b));
+         nir_foreach_use_including_if_safe(src, &intr->dest.ssa) {
+            b.cursor = nir_before_src(src);
+            nir_src_rewrite_ssa(src, nir_load_invocation_id(&b));
          }
          nir_instr_remove(instr);
       }
@@ -253,7 +259,10 @@ dxil_nir_split_tess_ctrl(nir_shader *nir, nir_function **patch_const_func)
             nir_ssa_def_rewrite_uses(&intr->dest.ssa, state.count);
             break;
          }
-         case nir_intrinsic_memory_barrier_tcs_patch:
+         case nir_intrinsic_scoped_barrier:
+            if (!is_memory_barrier_tcs_patch(intr))
+               break;
+
             /* The GL tessellation spec says:
              * The barrier() function may only be called inside the main entry point of the tessellation control shader
              * and may not be called in potentially divergent flow control.  In particular, barrier() may not be called

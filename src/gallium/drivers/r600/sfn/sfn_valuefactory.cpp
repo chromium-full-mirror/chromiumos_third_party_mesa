@@ -118,6 +118,8 @@ ValueFactory::allocate_registers(const exec_list *registers)
       length = a.length;
    }
 
+   m_required_array_registers = m_next_register_index ? m_next_register_index : 0;
+
    foreach_list_typed(nir_register, reg, node, registers)
    {
       if (!reg->num_array_elems) {
@@ -136,6 +138,11 @@ ValueFactory::allocate_registers(const exec_list *registers)
    return has_arrays;
 }
 
+int ValueFactory::new_register_index()
+{
+   return m_next_register_index++;
+}
+
 PRegister
 ValueFactory::allocate_pinned_register(int sel, int chan)
 {
@@ -143,6 +150,8 @@ ValueFactory::allocate_pinned_register(int sel, int chan)
       m_next_register_index = sel + 1;
 
    auto reg = new Register(sel, chan, pin_fully);
+   reg->set_flag(Register::pin_start);
+   reg->set_flag(Register::ssa);
    m_pinned_registers.push_back(reg);
    return reg;
 }
@@ -154,8 +163,11 @@ ValueFactory::allocate_pinned_vec4(int sel, bool is_ssa)
       m_next_register_index = sel + 1;
 
    RegisterVec4 retval(sel, is_ssa, {0, 1, 2, 3}, pin_fully);
-   for (int i = 0; i < 4; ++i)
+   for (int i = 0; i < 4; ++i) {
+      retval[i]->set_flag(Register::pin_start);
+      retval[i]->set_flag(Register::ssa);
       m_pinned_registers.push_back(retval[i]);
+   }
    return retval;
 }
 
@@ -278,7 +290,9 @@ ValueFactory::temp_register(int pinned_channel, bool is_ssa)
    auto reg = new Register(sel, chan, pinned_channel >= 0 ? pin_chan : pin_free);
    m_channel_counts.inc_count(chan);
 
-   reg->set_is_ssa(is_ssa);
+   if (is_ssa)
+      reg->set_flag(Register::ssa);
+
    m_registers[RegisterKey(sel, chan, vp_temp)] = reg;
    return reg;
 }
@@ -295,7 +309,7 @@ ValueFactory::temp_vec4(Pin pin, const RegisterVec4::Swizzle& swizzle)
 
    for (int i = 0; i < 4; ++i) {
       vec4[i] = new Register(sel, swizzle[i], pin);
-      vec4[i]->set_is_ssa(true);
+      vec4[i]->set_flag(Register::ssa);
       m_registers[RegisterKey(sel, swizzle[i], vp_temp)] = vec4[i];
    }
    return RegisterVec4(vec4[0], vec4[1], vec4[2], vec4[3], pin);
@@ -331,6 +345,29 @@ ValueFactory::dest_vec4(const nir_dest& dst, Pin pin)
    }
    unreachable("unsupported");
 }
+
+PRegister ValueFactory::addr()
+{
+    if (!m_ar)
+        m_ar = new AddressRegister(AddressRegister::addr);
+    return m_ar;
+}
+
+PRegister ValueFactory::idx_reg(unsigned idx)
+{
+
+    if (idx == 0) {
+        if (!m_idx0)
+            m_idx0 = new AddressRegister(AddressRegister::idx0);
+        return m_idx0;
+    } else {
+        assert(idx == 1);
+        if (!m_idx1)
+            m_idx1 = new AddressRegister(AddressRegister::idx1);
+        return m_idx1;
+    }
+}
+
 
 PVirtualValue
 ValueFactory::src(const nir_alu_src& alu_src, int chan)
@@ -401,7 +438,7 @@ ValueFactory::dest(const nir_ssa_def& ssa, int chan, Pin pin_channel, uint8_t ch
 
    auto vreg = new Register(sel, chan, pin_channel);
    m_channel_counts.inc_count(chan);
-   vreg->set_is_ssa(true);
+   vreg->set_flag(Register::ssa);
    m_registers[key] = vreg;
    sfn_log << SfnLog::reg << "allocate Ssa " << key << ":" << *vreg << "\n";
    return vreg;
@@ -430,7 +467,7 @@ ValueFactory::undef(int index, int chan)
 {
    RegisterKey key(index, chan, vp_ssa);
    PRegister reg = new Register(m_next_register_index++, 0, pin_free);
-   reg->set_is_ssa(true);
+   reg->set_flag(Register::ssa);
    m_registers[key] = reg;
    return reg;
 }
@@ -454,13 +491,13 @@ ValueFactory::ssa_src(const nir_ssa_def& ssa, int chan)
 }
 
 PRegister
-ValueFactory::local_register(const nir_reg_dest& dst, int chan)
+ValueFactory::local_register(const nir_register_dest& dst, int chan)
 {
    return resolve_array(dst.reg, dst.indirect, dst.base_offset, chan);
 }
 
 PRegister
-ValueFactory::local_register(const nir_reg_src& src, int chan)
+ValueFactory::local_register(const nir_register_src& src, int chan)
 {
    return resolve_array(src.reg, src.indirect, src.base_offset, chan);
 }
@@ -505,7 +542,7 @@ ValueFactory::dest_vec(const nir_dest& dst, int num_components)
    std::vector<PRegister, Allocator<PRegister>> retval;
    retval.reserve(num_components);
    for (int i = 0; i < num_components; ++i)
-      retval.push_back(dest(dst, i, num_components > 1 ? pin_chan : pin_free));
+      retval.push_back(dest(dst, i, num_components > 1 ? pin_none : pin_free));
    return retval;
 }
 
@@ -634,21 +671,35 @@ split_register_string(const string& s,
 PRegister
 ValueFactory::dest_from_string(const std::string& s)
 {
-   assert(s.length() >= 4);
-
-   assert(strchr("ARS_", s[0]));
+   if (s == "AR") {
+      if (!m_ar)
+         m_ar = new AddressRegister(AddressRegister::addr);
+      return m_ar;
+   } else if (s == "IDX0") {
+      if (!m_idx0)
+         m_idx0 = new AddressRegister(AddressRegister::idx0);
+      return m_idx0;
+   } else if (s == "IDX1") {
+      if (!m_idx1)
+         m_idx1 = new AddressRegister(AddressRegister::idx1);
+      return m_idx1;
+   }
 
    string index_str;
    string size_str;
    string swizzle_str;
    string pin_str;
 
+   assert(s.length() >= 4);
+
+   assert(strchr("ARS_", s[0]));
+
    split_register_string(s, index_str, size_str, swizzle_str, pin_str);
 
    int sel = 0;
    if (s[0] == '_') {
       /* Since these instructions still may use or switch to a different
-       * channel we have to create a new instance for each occurance */
+       * channel we have to create a new instance for each occurrence */
       sel = std::numeric_limits<int>::max() - m_nowrite_idx++;
    } else {
       std::istringstream n(index_str);
@@ -685,9 +736,10 @@ ValueFactory::dest_from_string(const std::string& s)
    auto ireg = m_registers.find(key);
    if (ireg == m_registers.end()) {
       auto reg = new Register(sel, chan, p);
-      reg->set_is_ssa(is_ssa);
+      if (s[0] == 'S')
+         reg->set_flag(Register::ssa);
       if (p == pin_fully)
-         reg->pin_live_range(true);
+         reg->set_flag(Register::pin_start);
       m_registers[key] = reg;
       return reg;
    } else if (pool == vp_ignore) {
@@ -700,7 +752,8 @@ ValueFactory::dest_from_string(const std::string& s)
          auto array = static_cast<LocalArray *>(ireg->second);
          PVirtualValue addr = nullptr;
          int offset = 0;
-         if (size_str[0] == 'S' || size_str[0] == 'R') {
+         if (size_str[0] == 'S' || size_str[0] == 'R' ||
+             size_str == "AR" || size_str.substr(0,3) == "IDX") {
             addr = src_from_string(size_str);
          } else {
             istringstream num_str(size_str);
@@ -716,6 +769,17 @@ ValueFactory::dest_from_string(const std::string& s)
 PVirtualValue
 ValueFactory::src_from_string(const std::string& s)
 {
+   if (s == "AR") {
+      assert(m_ar);
+      return m_ar;
+   } else if (s == "IDX0") {
+      assert(m_idx0);
+      return m_idx0;
+   } else if (s == "IDX1") {
+      assert(m_idx1);
+      return m_idx1;
+   }
+
    switch (s[0]) {
    case 'A':
    case 'S':
@@ -724,7 +788,7 @@ ValueFactory::src_from_string(const std::string& s)
    case 'L':
       return LiteralConstant::from_string(s);
    case 'K':
-      return UniformValue::from_string(s);
+      return UniformValue::from_string(s, this);
    case 'P':
       return InlineConstant::param_from_string(s);
    case 'I':
@@ -781,7 +845,8 @@ ValueFactory::src_from_string(const std::string& s)
          auto array = static_cast<LocalArray *>(ireg->second);
          PVirtualValue addr = nullptr;
          int offset = 0;
-         if (size_str[0] == 'S' || size_str[0] == 'R') {
+         if (size_str[0] == 'S' || size_str[0] == 'R' ||
+             size_str == "AR" || size_str.substr(0,3) == "IDX") {
             addr = src_from_string(size_str);
          } else {
             istringstream num_str(size_str);
@@ -825,7 +890,8 @@ ValueFactory::dest_vec4_from_string(const std::string& s,
          assert(!is_ssa || pool == vp_ignore);
       } else {
          v[i] = new Register(sel, i, pin);
-         v[i]->set_is_ssa(is_ssa);
+         if (is_ssa)
+            v[i]->set_flag(Register::ssa);
          m_registers[key] = v[i];
       }
    }
@@ -861,7 +927,8 @@ ValueFactory::src_vec4_from_string(const std::string& s)
    for (int i = 0; i < 4; ++i) {
       if (!v[i]) {
          v[i] = new Register(sel, swz[i], pin);
-         v[i]->set_is_ssa(is_ssa);
+         if (is_ssa)
+            v[i]->set_flag(Register::ssa);
       } else {
          if (v[i]->pin() == pin_none)
             v[i]->set_pin(pin_group);
@@ -1036,7 +1103,8 @@ ValueFactory::get_shader_info(r600_shader *sh_info)
    if (!arrays.empty()) {
 
       sh_info->num_arrays = arrays.size();
-      sh_info->arrays = new r600_shader_array[arrays.size()];
+      sh_info->arrays =
+         (r600_shader_array *)malloc(sizeof(struct r600_shader_array) * arrays.size());
 
       for (auto& arr : arrays) {
          sh_info->arrays->gpr_start = arr->sel();

@@ -19,10 +19,6 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
- *
- * Authors:
- *    Jason Ekstrand (jason@jlekstrand.net)
- *
  */
 
 #include "nir.h"
@@ -33,6 +29,9 @@ struct locals_to_regs_state {
 
    /* A hash table mapping derefs to registers */
    struct hash_table *regs_table;
+
+   /* Bit size to use for boolean registers */
+   uint8_t bool_bitsize;
 
    bool progress;
 };
@@ -122,6 +121,9 @@ get_reg_for_deref(nir_deref_instr *deref, struct locals_to_regs_state *state)
    reg->num_array_elems = array_size > 1 ? array_size : 0;
    reg->bit_size = glsl_get_bit_size(deref->type);
 
+   if (reg->bit_size == 1)
+      reg->bit_size = state->bool_bitsize;
+
    _mesa_hash_table_insert_pre_hashed(state->regs_table, hash, deref, reg);
 
    return reg;
@@ -166,7 +168,7 @@ get_deref_reg_src(nir_deref_instr *deref, struct locals_to_regs_state *state)
          }
 
          assert(src.reg.indirect->is_ssa);
-         nir_ssa_def *index = nir_i2i(b, nir_ssa_for_src(b, d->arr.index, 1), 32);
+         nir_ssa_def *index = nir_i2iN(b, nir_ssa_for_src(b, d->arr.index, 1), 32);
          src.reg.indirect->ssa =
             nir_iadd(b, src.reg.indirect->ssa,
                         nir_imul_imm(b, index, inner_array_size));
@@ -214,7 +216,7 @@ lower_locals_to_regs_block(nir_block *block,
          if (intrin->dest.is_ssa) {
             nir_ssa_dest_init(&mov->instr, &mov->dest.dest,
                               intrin->num_components,
-                              intrin->dest.ssa.bit_size, NULL);
+                              intrin->dest.ssa.bit_size);
             nir_ssa_def_rewrite_uses(&intrin->dest.ssa,
                                      &mov->dest.dest.ssa);
          } else {
@@ -292,13 +294,14 @@ lower_locals_to_regs_block(nir_block *block,
 }
 
 static bool
-nir_lower_locals_to_regs_impl(nir_function_impl *impl)
+nir_lower_locals_to_regs_impl(nir_function_impl *impl, uint8_t bool_bitsize)
 {
    struct locals_to_regs_state state;
 
-   nir_builder_init(&state.builder, impl);
+   state.builder = nir_builder_create(impl);
    state.progress = false;
    state.regs_table = _mesa_hash_table_create(NULL, hash_deref, derefs_equal);
+   state.bool_bitsize = bool_bitsize;
 
    nir_metadata_require(impl, nir_metadata_dominance);
 
@@ -315,13 +318,12 @@ nir_lower_locals_to_regs_impl(nir_function_impl *impl)
 }
 
 bool
-nir_lower_locals_to_regs(nir_shader *shader)
+nir_lower_locals_to_regs(nir_shader *shader, uint8_t bool_bitsize)
 {
    bool progress = false;
 
-   nir_foreach_function(function, shader) {
-      if (function->impl)
-         progress = nir_lower_locals_to_regs_impl(function->impl) || progress;
+   nir_foreach_function_impl(impl, shader) {
+      progress = nir_lower_locals_to_regs_impl(impl, bool_bitsize) || progress;
    }
 
    return progress;

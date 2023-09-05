@@ -25,6 +25,7 @@
 #ifndef H_ETNA_DEBUG
 #define H_ETNA_DEBUG
 
+#include "util/u_debug.h"
 #include "util/log.h"
 
 #include <stdint.h>
@@ -39,6 +40,7 @@
 #define ETNA_DBG_LINKER_MSGS     0x10
 #define ETNA_DBG_DUMP_SHADERS    0x20
 #define ETNA_DRM_MSGS            0x40 /* Debug messages from DRM */
+#define ETNA_DBG_PERF            0x80
 
 /* Bypasses */
 #define ETNA_DBG_NO_TS           0x1000   /* Disable TS */
@@ -54,8 +56,9 @@
 #define ETNA_DBG_NO_SINGLEBUF    0x400000 /* disable single buffer feature */
 #define ETNA_DBG_DEQP            0x800000 /* Hacks to run dEQP GLES3 tests */
 #define ETNA_DBG_NOCACHE         0x1000000 /* Disable shader cache */
-#define ETNA_DBG_NO_LINEAR_PE    0x2000000 /* Disable linear PE */
+#define ETNA_DBG_LINEAR_PE       0x2000000 /* Enable linear PE */
 #define ETNA_DBG_MSAA            0x4000000 /* Enable MSAA */
+#define ETNA_DBG_SHARED_TS       0x8000000 /* Enable TS sharing */
 
 extern int etna_mesa_debug; /* set in etnaviv_screen.c from ETNA_MESA_DEBUG */
 
@@ -63,22 +66,39 @@ extern int etna_mesa_debug; /* set in etnaviv_screen.c from ETNA_MESA_DEBUG */
 
 #define DBG_F(flag, fmt, ...)                             \
    do {                                                   \
-      if (etna_mesa_debug & (flag))                       \
-         mesa_logd("%s:%d: " fmt, __FUNCTION__, __LINE__, \
+      if (DBG_ENABLED(flag))                              \
+         mesa_logd("%s:%d: " fmt, __func__, __LINE__,     \
                    ##__VA_ARGS__);                        \
    } while (0)
 
 #define DBG(fmt, ...)                                     \
    do {                                                   \
-      if (etna_mesa_debug & ETNA_DBG_MSGS)                \
-         mesa_logd("%s:%d: " fmt, __FUNCTION__, __LINE__, \
+      if (DBG_ENABLED(ETNA_DBG_MSGS))                     \
+         mesa_logd("%s:%d: " fmt, __func__, __LINE__,     \
                    ##__VA_ARGS__);                        \
    } while (0)
 
 /* A serious bug, show this even in non-debug mode */
 #define BUG(fmt, ...)                                                  \
    do {                                                                \
-      mesa_loge("%s:%d: " fmt, __FUNCTION__, __LINE__, ##__VA_ARGS__); \
+      mesa_loge("%s:%d: " fmt, __func__, __LINE__, ##__VA_ARGS__);     \
    } while (0)
+
+#define perf_debug_message(debug, type, ...)                           \
+   do {                                                                \
+      if (DBG_ENABLED(ETNA_DBG_PERF))                                  \
+         mesa_logw(__VA_ARGS__);                                       \
+      struct util_debug_callback *__d = (debug);                       \
+      if (__d)                                                         \
+         util_debug_message(__d, type, __VA_ARGS__);                   \
+   } while (0)
+
+#define perf_debug_ctx(ctx, ...)                                                 \
+   do {                                                                          \
+      struct etna_context *__c = (ctx);                                          \
+      perf_debug_message(__c ? &__c->base.debug : NULL, PERF_INFO, __VA_ARGS__); \
+   } while (0)
+
+#define perf_debug(...) perf_debug_ctx(NULL, PERF_INFO, __VA_ARGS__)
 
 #endif

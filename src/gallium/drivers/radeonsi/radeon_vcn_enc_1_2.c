@@ -1,27 +1,8 @@
 /**************************************************************************
  *
  * Copyright 2017 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR
- * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  *
  **************************************************************************/
 
@@ -53,6 +34,7 @@
 #define RENCODE_IB_PARAM_VIDEO_BITSTREAM_BUFFER    0x0000000e
 #define RENCODE_IB_PARAM_FEEDBACK_BUFFER           0x00000010
 #define RENCODE_IB_PARAM_DIRECT_OUTPUT_NALU        0x00000020
+#define RENCODE_IB_PARAM_ENCODE_STATISTICS         0x00000024
 
 #define RENCODE_HEVC_IB_PARAM_SLICE_CONTROL        0x00100001
 #define RENCODE_HEVC_IB_PARAM_SPEC_MISC            0x00100002
@@ -241,7 +223,8 @@ static void radeon_enc_quality_params(struct radeon_encoder *enc)
    enc->enc_pic.quality_params.vbaq_mode = enc->enc_pic.quality_modes.vbaq_mode;
    enc->enc_pic.quality_params.scene_change_sensitivity = 0;
    enc->enc_pic.quality_params.scene_change_min_idr_interval = 0;
-   enc->enc_pic.quality_params.two_pass_search_center_map_mode = 0;
+   enc->enc_pic.quality_params.two_pass_search_center_map_mode =
+                    (enc->enc_pic.quality_modes.pre_encode_mode) ? 1 : 0;
 
    RADEON_ENC_BEGIN(enc->cmd.quality_params);
    RADEON_ENC_CS(enc->enc_pic.quality_params.vbaq_mode);
@@ -398,9 +381,9 @@ static void radeon_enc_nalu_sps_hevc(struct radeon_encoder *enc)
    } else if (pic->session_init.padding_width  != 0 ||
               pic->session_init.padding_height != 0) {
       radeon_enc_code_fixed_bits(enc, 0x1, 1);
+      radeon_enc_code_ue(enc, 0);
       radeon_enc_code_ue(enc, pic->session_init.padding_width / 2);
-      radeon_enc_code_ue(enc, pic->session_init.padding_width / 2);
-      radeon_enc_code_ue(enc, pic->session_init.padding_height / 2);
+      radeon_enc_code_ue(enc, 0);
       radeon_enc_code_ue(enc, pic->session_init.padding_height / 2);
    } else
       radeon_enc_code_fixed_bits(enc, 0x0, 1);
@@ -1243,6 +1226,18 @@ static void radeon_enc_encode_params_h264(struct radeon_encoder *enc)
    RADEON_ENC_END();
 }
 
+static void radeon_enc_encode_statistics(struct radeon_encoder *enc)
+{
+   if (!enc->stats) return;
+
+   enc->enc_pic.enc_statistics.encode_stats_type = RENCODE_STATISTICS_TYPE_0;
+
+   RADEON_ENC_BEGIN(enc->cmd.enc_statistics);
+   RADEON_ENC_CS(enc->enc_pic.enc_statistics.encode_stats_type);
+   RADEON_ENC_WRITE(enc->stats, RADEON_DOMAIN_GTT, 0);
+   RADEON_ENC_END();
+}
+
 static void radeon_enc_op_init(struct radeon_encoder *enc)
 {
    RADEON_ENC_BEGIN(RENCODE_IB_OP_INITIALIZE);
@@ -1403,7 +1398,7 @@ static int get_picture_storage(struct radeon_encoder *enc)
             if (enc->dpb_info[i].in_use &&
 		enc->dpb_info[i].is_ltr &&
 		enc->enc_pic.ltr_idx == enc->dpb_info[i].pic_num) {
-               enc->dpb_info[i].in_use = FALSE;
+               enc->dpb_info[i].in_use = false;
                return i;
             }
          }
@@ -1428,7 +1423,7 @@ static int get_picture_storage(struct radeon_encoder *enc)
       }
 
    if (oldest_idx >= 0)
-      enc->dpb_info[oldest_idx].in_use = FALSE;
+      enc->dpb_info[oldest_idx].in_use = false;
 
    return oldest_idx;
 }
@@ -1449,14 +1444,14 @@ static void manage_dpb_before_encode(struct radeon_encoder *enc)
    int ref0_idx = find_ref_idx(enc, enc->enc_pic.ref_idx_l0, enc->enc_pic.ref_idx_l0_is_ltr);
 
    if (!enc->enc_pic.not_referenced)
-      enc->dpb_info[current_pic_idx].in_use = TRUE;
+      enc->dpb_info[current_pic_idx].in_use = true;
 
    if (enc->enc_pic.is_ltr) {
       enc->dpb_info[current_pic_idx].pic_num = enc->enc_pic.ltr_idx;
-      enc->dpb_info[current_pic_idx].is_ltr = TRUE;
+      enc->dpb_info[current_pic_idx].is_ltr = true;
    } else {
       enc->dpb_info[current_pic_idx].pic_num = enc->enc_pic.frame_num;
-      enc->dpb_info[current_pic_idx].is_ltr = FALSE;
+      enc->dpb_info[current_pic_idx].is_ltr = false;
    }
 
    if (enc->enc_pic.picture_type == PIPE_H2645_ENC_PICTURE_TYPE_IDR)
@@ -1491,8 +1486,8 @@ void radeon_enc_1_2_init(struct radeon_encoder *enc)
    enc->op_init_rc = radeon_enc_op_init_rc;
    enc->op_init_rc_vbv = radeon_enc_op_init_rc_vbv;
    enc->op_preset = radeon_enc_op_preset;
-   enc->encode_params = radeon_enc_encode_params;
    enc->session_init = radeon_enc_session_init;
+   enc->encode_statistics = radeon_enc_encode_statistics;
    enc->nalu_aud = radeon_enc_nalu_aud;
 
    if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_MPEG4_AVC) {
@@ -1540,6 +1535,7 @@ void radeon_enc_1_2_init(struct radeon_encoder *enc)
    enc->cmd.spec_misc_h264 = RENCODE_H264_IB_PARAM_SPEC_MISC;
    enc->cmd.enc_params_h264 = RENCODE_H264_IB_PARAM_ENCODE_PARAMS;
    enc->cmd.deblocking_filter_h264 = RENCODE_H264_IB_PARAM_DEBLOCKING_FILTER;
+   enc->cmd.enc_statistics = RENCODE_IB_PARAM_ENCODE_STATISTICS;
 
    enc->enc_pic.session_info.interface_version =
       ((RENCODE_FW_INTERFACE_MAJOR_VERSION << RENCODE_IF_MAJOR_VERSION_SHIFT) |

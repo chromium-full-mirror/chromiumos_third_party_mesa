@@ -26,7 +26,7 @@
  **************************************************************************/
 
 
-#include "pipe/p_config.h"
+#include "util/detect.h"
 
 #include "util/u_math.h"
 #include "util/u_cpu_detect.h"
@@ -41,14 +41,14 @@
 #include "lp_linear_priv.h"
 
 
-#if defined(PIPE_ARCH_SSE)
+#if DETECT_ARCH_SSE
 
 #define FIXED15_ONE 0x7fff
 
 
 /* Translate floating point value to 1.15 unsigned fixed-point.
  */
-static inline ushort
+static inline uint16_t
 float_to_ufixed_1_15(float f)
 {
    return CLAMP((unsigned)(f * (float)FIXED15_ONE), 0, FIXED15_ONE);
@@ -120,11 +120,11 @@ lp_linear_init_noop_interp(struct lp_linear_interp *interp)
 }
 
 
-boolean
+bool
 lp_linear_init_interp(struct lp_linear_interp *interp,
                       int x, int y, int width, int height,
                       unsigned usage_mask,
-                      boolean perspective,
+                      bool perspective,
                       float oow,
                       const float *a0,
                       const float *dadx,
@@ -225,22 +225,22 @@ lp_linear_init_interp(struct lp_linear_interp *interp,
       interp->base.fetch = interp_0_8;
    }
 
-   return TRUE;
+   return true;
 }
 
-#else //PIPE_ARCH_SSE
+#else //DETECT_ARCH_SSE
 
-boolean
+bool
 lp_linear_init_interp(struct lp_linear_interp *interp,
                       int x, int y, int width, int height,
                       unsigned usage_mask,
-                      boolean perspective,
+                      bool perspective,
                       float oow,
                       const float *a0,
                       const float *dadx,
                       const float *dady)
 {
-   return FALSE;
+   return false;
 }
 
-#endif //PIPE_ARCH_SSE
+#endif //DETECT_ARCH_SSE

@@ -112,6 +112,17 @@ create_driver_param(struct ir3_context *ctx, enum ir3_driver_param dp)
    return create_uniform(ctx->block, r);
 }
 
+static struct ir3_instruction *
+create_driver_param_indirect(struct ir3_context *ctx, enum ir3_driver_param dp,
+                             struct ir3_instruction *address)
+{
+   /* first four vec4 sysval's reserved for UBOs: */
+   /* NOTE: dp is in scalar, but there can be >4 dp components: */
+   struct ir3_const_state *const_state = ir3_const_state(ctx->so);
+   unsigned n = const_state->offsets.driver_param;
+   return create_uniform_indirect(ctx->block, n * 4 + dp, TYPE_U32, address);
+}
+
 /*
  * Adreno's comparisons produce a 1 for true and 0 for false, in either 16 or
  * 32-bit registers.  We use NIR's 1-bit integers to represent bools, and
@@ -468,22 +479,6 @@ emit_alu(struct ir3_context *ctx, nir_alu_instr *alu)
    case nir_op_fquantize2f16:
       dst[0] = create_cov(ctx, create_cov(ctx, src[0], 32, nir_op_f2f16_rtne),
                           16, nir_op_f2f32);
-      break;
-   case nir_op_f2b1:
-      dst[0] = ir3_CMPS_F(
-         b, src[0], 0,
-         create_immed_typed(b, 0, type_float_size(bs[0])), 0);
-      dst[0]->cat2.condition = IR3_COND_NE;
-      break;
-
-   case nir_op_i2b1:
-      /* i2b1 will appear when translating from nir_load_ubo or
-       * nir_intrinsic_load_ssbo, where any non-zero value is true.
-       */
-      dst[0] = ir3_CMPS_S(
-         b, src[0], 0,
-         create_immed_typed(b, 0, type_uint_size(bs[0])), 0);
-      dst[0]->cat2.condition = IR3_COND_NE;
       break;
 
    case nir_op_b2b1:
@@ -897,7 +892,7 @@ emit_intrinsic_load_ubo_ldc(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    ldc->dsts[0]->wrmask = MASK(ncomp);
    ldc->cat6.iim_val = ncomp;
    ldc->cat6.d = nir_intrinsic_component(intr);
-   ldc->cat6.type = TYPE_U32;
+   ldc->cat6.type = utype_dst(intr->dest);
 
    ir3_handle_bindless_cat6(ldc, intr->src[0]);
    if (ldc->flags & IR3_INSTR_B)
@@ -1197,7 +1192,7 @@ emit_intrinsic_store_shared_ir3(struct ir3_context *ctx,
  * 0: The offset into the shared variable storage region that the atomic
  *    operation will operate on.
  * 1: The data parameter to the atomic function (i.e. the value to add
- *    in shared_atomic_add, etc).
+ *    in, etc).
  * 2: For CompSwap only: the second data parameter.
  */
 static struct ir3_instruction *
@@ -1210,37 +1205,37 @@ emit_intrinsic_atomic_shared(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    src0 = ir3_get_src(ctx, &intr->src[0])[0]; /* offset */
    src1 = ir3_get_src(ctx, &intr->src[1])[0]; /* value */
 
-   switch (intr->intrinsic) {
-   case nir_intrinsic_shared_atomic_add:
+   switch (nir_intrinsic_atomic_op(intr)) {
+   case nir_atomic_op_iadd:
       atomic = ir3_ATOMIC_ADD(b, src0, 0, src1, 0);
       break;
-   case nir_intrinsic_shared_atomic_imin:
+   case nir_atomic_op_imin:
       atomic = ir3_ATOMIC_MIN(b, src0, 0, src1, 0);
       type = TYPE_S32;
       break;
-   case nir_intrinsic_shared_atomic_umin:
+   case nir_atomic_op_umin:
       atomic = ir3_ATOMIC_MIN(b, src0, 0, src1, 0);
       break;
-   case nir_intrinsic_shared_atomic_imax:
+   case nir_atomic_op_imax:
       atomic = ir3_ATOMIC_MAX(b, src0, 0, src1, 0);
       type = TYPE_S32;
       break;
-   case nir_intrinsic_shared_atomic_umax:
+   case nir_atomic_op_umax:
       atomic = ir3_ATOMIC_MAX(b, src0, 0, src1, 0);
       break;
-   case nir_intrinsic_shared_atomic_and:
+   case nir_atomic_op_iand:
       atomic = ir3_ATOMIC_AND(b, src0, 0, src1, 0);
       break;
-   case nir_intrinsic_shared_atomic_or:
+   case nir_atomic_op_ior:
       atomic = ir3_ATOMIC_OR(b, src0, 0, src1, 0);
       break;
-   case nir_intrinsic_shared_atomic_xor:
+   case nir_atomic_op_ixor:
       atomic = ir3_ATOMIC_XOR(b, src0, 0, src1, 0);
       break;
-   case nir_intrinsic_shared_atomic_exchange:
+   case nir_atomic_op_xchg:
       atomic = ir3_ATOMIC_XCHG(b, src0, 0, src1, 0);
       break;
-   case nir_intrinsic_shared_atomic_comp_swap:
+   case nir_atomic_op_cmpxchg:
       /* for cmpxchg, src1 is [ui]vec2(data, compare): */
       src1 = ir3_collect(b, ir3_get_src(ctx, &intr->src[2])[0], src1);
       atomic = ir3_ATOMIC_CMPXCHG(b, src0, 0, src1, 0);
@@ -1347,7 +1342,7 @@ struct tex_src_info {
  * to handle with the image_mapping table..
  */
 static struct tex_src_info
-get_image_ssbo_samp_tex_src(struct ir3_context *ctx, nir_src *src)
+get_image_ssbo_samp_tex_src(struct ir3_context *ctx, nir_src *src, bool image)
 {
    struct ir3_block *b = ctx->block;
    struct tex_src_info info = {0};
@@ -1392,8 +1387,12 @@ get_image_ssbo_samp_tex_src(struct ir3_context *ctx, nir_src *src)
    } else {
       info.flags |= IR3_INSTR_S2EN;
       unsigned slot = nir_src_as_uint(*src);
-      unsigned tex_idx = ir3_image_to_tex(&ctx->so->image_mapping, slot);
+      unsigned tex_idx = image ?
+            ir3_image_to_tex(&ctx->so->image_mapping, slot) :
+            ir3_ssbo_to_tex(&ctx->so->image_mapping, slot);
       struct ir3_instruction *texture, *sampler;
+
+      ctx->so->num_samp = MAX2(ctx->so->num_samp, tex_idx + 1);
 
       texture = create_immed_typed(ctx->block, tex_idx, TYPE_U16);
       sampler = create_immed_typed(ctx->block, tex_idx, TYPE_U16);
@@ -1450,7 +1449,7 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
    }
 
    struct ir3_block *b = ctx->block;
-   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0], true);
    struct ir3_instruction *sam;
    struct ir3_instruction *const *src0 = ir3_get_src(ctx, &intr->src[1]);
    struct ir3_instruction *coords[4];
@@ -1492,7 +1491,7 @@ emit_intrinsic_image_size_tex(struct ir3_context *ctx,
                               struct ir3_instruction **dst)
 {
    struct ir3_block *b = ctx->block;
-   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0], true);
    struct ir3_instruction *sam, *lod;
    unsigned flags, ncoords = ir3_get_image_coords(intr, &flags);
    type_t dst_type = nir_dest_bit_size(intr->dest) == 16 ? TYPE_U16 : TYPE_U32;
@@ -1536,7 +1535,6 @@ emit_intrinsic_load_ssbo(struct ir3_context *ctx,
 {
    /* Note: isam currently can't handle vectorized loads/stores */
    if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER) ||
-       !ir3_bindless_resource(intr->src[0]) ||
        intr->dest.ssa.num_components > 1) {
       ctx->funcs->emit_intrinsic_load_ssbo(ctx, intr, dst);
       return;
@@ -1545,7 +1543,7 @@ emit_intrinsic_load_ssbo(struct ir3_context *ctx,
    struct ir3_block *b = ctx->block;
    struct ir3_instruction *offset = ir3_get_src(ctx, &intr->src[2])[0];
    struct ir3_instruction *coords = ir3_collect(b, offset, create_immed(b, 0));
-   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0]);
+   struct tex_src_info info = get_image_ssbo_samp_tex_src(ctx, &intr->src[0], false);
 
    unsigned num_components = intr->dest.ssa.num_components;
    struct ir3_instruction *sam =
@@ -1593,134 +1591,77 @@ emit_intrinsic_barrier(struct ir3_context *ctx, nir_intrinsic_instr *intr)
     * between a5xx and a6xx,
     */
 
-   switch (intr->intrinsic) {
-   case nir_intrinsic_control_barrier:
-      emit_control_barrier(ctx);
-      return;
-   case nir_intrinsic_scoped_barrier: {
-      nir_scope exec_scope = nir_intrinsic_execution_scope(intr);
-      nir_variable_mode modes = nir_intrinsic_memory_modes(intr);
-      /* loads/stores are always cache-coherent so we can filter out
-       * available/visible.
+   mesa_scope exec_scope = nir_intrinsic_execution_scope(intr);
+   nir_variable_mode modes = nir_intrinsic_memory_modes(intr);
+   /* loads/stores are always cache-coherent so we can filter out
+    * available/visible.
+    */
+   nir_memory_semantics semantics =
+      nir_intrinsic_memory_semantics(intr) & (NIR_MEMORY_ACQUIRE |
+                                              NIR_MEMORY_RELEASE);
+
+   if (ctx->so->type == MESA_SHADER_TESS_CTRL) {
+      /* Remove mode corresponding to TCS patch barriers because hull shaders
+       * dispatch 32 wide so an entire patch will always fit in a single warp
+       * and execute in lock-step.
+       *
+       * TODO: memory barrier also tells us not to reorder stores, this
+       * information is lost here (backend doesn't reorder stores so we
+       * are safe for now).
        */
-      nir_memory_semantics semantics =
-         nir_intrinsic_memory_semantics(intr) & (NIR_MEMORY_ACQUIRE |
-                                                 NIR_MEMORY_RELEASE);
-
-      if (ctx->so->type == MESA_SHADER_TESS_CTRL) {
-         /* Remove mode corresponding to nir_intrinsic_memory_barrier_tcs_patch,
-          * because hull shaders dispatch 32 wide so an entire patch will
-          * always fit in a single warp and execute in lock-step.
-          *
-          * TODO: memory barrier also tells us not to reorder stores, this
-          * information is lost here (backend doesn't reorder stores so we
-          * are safe for now).
-          */
-         modes &= ~nir_var_shader_out;
-      }
-
-      assert(!(modes & nir_var_shader_out));
-
-      if ((modes &
-           (nir_var_mem_shared | nir_var_mem_ssbo | nir_var_mem_global |
-            nir_var_image)) && semantics) {
-         barrier = ir3_FENCE(b);
-         barrier->cat7.r = true;
-         barrier->cat7.w = true;
-
-         if (modes & (nir_var_mem_ssbo | nir_var_image | nir_var_mem_global)) {
-            barrier->cat7.g = true;
-         }
-
-         if (ctx->compiler->gen >= 6) {
-            if (modes & (nir_var_mem_ssbo | nir_var_image)) {
-               barrier->cat7.l = true;
-            }
-         } else {
-            if (modes & (nir_var_mem_shared | nir_var_mem_ssbo | nir_var_image)) {
-               barrier->cat7.l = true;
-            }
-         }
-
-         barrier->barrier_class = 0;
-         barrier->barrier_conflict = 0;
-
-         if (modes & nir_var_mem_shared) {
-            barrier->barrier_class |= IR3_BARRIER_SHARED_W;
-            barrier->barrier_conflict |=
-               IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W;
-         }
-
-         if (modes & (nir_var_mem_ssbo | nir_var_mem_global)) {
-            barrier->barrier_class |= IR3_BARRIER_BUFFER_W;
-            barrier->barrier_conflict |=
-               IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
-         }
-
-         if (modes & nir_var_image) {
-            barrier->barrier_class |= IR3_BARRIER_IMAGE_W;
-            barrier->barrier_conflict |=
-               IR3_BARRIER_IMAGE_W | IR3_BARRIER_IMAGE_R;
-         }
-         array_insert(b, b->keeps, barrier);
-      }
-
-      if (exec_scope >= NIR_SCOPE_WORKGROUP) {
-         emit_control_barrier(ctx);
-      }
-
-      return;
-   }
-   case nir_intrinsic_memory_barrier_tcs_patch:
-      /* Not applicable, see explanation for scoped_barrier + shader_out */
-      return;
-   case nir_intrinsic_memory_barrier_buffer:
-      barrier = ir3_FENCE(b);
-      barrier->cat7.g = true;
-      if (ctx->compiler->gen >= 6)
-         barrier->cat7.l = true;
-      barrier->cat7.r = true;
-      barrier->cat7.w = true;
-      barrier->barrier_class = IR3_BARRIER_BUFFER_W;
-      barrier->barrier_conflict = IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
-      break;
-   case nir_intrinsic_memory_barrier_image:
-      barrier = ir3_FENCE(b);
-      barrier->cat7.g = true;
-      barrier->cat7.l = true;
-      barrier->cat7.r = true;
-      barrier->cat7.w = true;
-      barrier->barrier_class = IR3_BARRIER_IMAGE_W;
-      barrier->barrier_conflict = IR3_BARRIER_IMAGE_R | IR3_BARRIER_IMAGE_W;
-      break;
-   case nir_intrinsic_memory_barrier_shared:
-      barrier = ir3_FENCE(b);
-      if (ctx->compiler->gen < 6)
-         barrier->cat7.l = true;
-      barrier->cat7.r = true;
-      barrier->cat7.w = true;
-      barrier->barrier_class = IR3_BARRIER_SHARED_W;
-      barrier->barrier_conflict = IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W;
-      break;
-   case nir_intrinsic_memory_barrier:
-   case nir_intrinsic_group_memory_barrier:
-      barrier = ir3_FENCE(b);
-      barrier->cat7.g = true;
-      barrier->cat7.l = true;
-      barrier->cat7.r = true;
-      barrier->cat7.w = true;
-      barrier->barrier_class =
-         IR3_BARRIER_SHARED_W | IR3_BARRIER_IMAGE_W | IR3_BARRIER_BUFFER_W;
-      barrier->barrier_conflict = IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W |
-                                  IR3_BARRIER_IMAGE_R | IR3_BARRIER_IMAGE_W |
-                                  IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
-      break;
-   default:
-      unreachable("boo");
+      modes &= ~nir_var_shader_out;
    }
 
-   /* make sure barrier doesn't get DCE'd */
-   array_insert(b, b->keeps, barrier);
+   assert(!(modes & nir_var_shader_out));
+
+   if ((modes & (nir_var_mem_shared | nir_var_mem_ssbo | nir_var_mem_global |
+                 nir_var_image)) && semantics) {
+      barrier = ir3_FENCE(b);
+      barrier->cat7.r = true;
+      barrier->cat7.w = true;
+
+      if (modes & (nir_var_mem_ssbo | nir_var_image | nir_var_mem_global)) {
+         barrier->cat7.g = true;
+      }
+
+      if (ctx->compiler->gen >= 6) {
+         if (modes & (nir_var_mem_ssbo | nir_var_image)) {
+            barrier->cat7.l = true;
+         }
+      } else {
+         if (modes & (nir_var_mem_shared | nir_var_mem_ssbo | nir_var_image)) {
+            barrier->cat7.l = true;
+         }
+      }
+
+      barrier->barrier_class = 0;
+      barrier->barrier_conflict = 0;
+
+      if (modes & nir_var_mem_shared) {
+         barrier->barrier_class |= IR3_BARRIER_SHARED_W;
+         barrier->barrier_conflict |=
+            IR3_BARRIER_SHARED_R | IR3_BARRIER_SHARED_W;
+      }
+
+      if (modes & (nir_var_mem_ssbo | nir_var_mem_global)) {
+         barrier->barrier_class |= IR3_BARRIER_BUFFER_W;
+         barrier->barrier_conflict |=
+            IR3_BARRIER_BUFFER_R | IR3_BARRIER_BUFFER_W;
+      }
+
+      if (modes & nir_var_image) {
+         barrier->barrier_class |= IR3_BARRIER_IMAGE_W;
+         barrier->barrier_conflict |=
+            IR3_BARRIER_IMAGE_W | IR3_BARRIER_IMAGE_R;
+      }
+
+      /* make sure barrier doesn't get DCE'd */
+      array_insert(b, b->keeps, barrier);
+   }
+
+   if (exec_scope >= SCOPE_WORKGROUP) {
+      emit_control_barrier(ctx);
+   }
 }
 
 static void
@@ -2162,6 +2103,7 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       emit_intrinsic_copy_ubo_to_uniform(ctx, intr);
       break;
    case nir_intrinsic_load_frag_coord:
+   case nir_intrinsic_load_frag_coord_unscaled_ir3:
       ir3_split_dest(b, dst, get_frag_coord(ctx, intr), 0, 4);
       break;
    case nir_intrinsic_load_sample_pos_from_id: {
@@ -2209,16 +2151,8 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_get_ssbo_size:
       emit_intrinsic_ssbo_size(ctx, intr, dst);
       break;
-   case nir_intrinsic_ssbo_atomic_add_ir3:
-   case nir_intrinsic_ssbo_atomic_imin_ir3:
-   case nir_intrinsic_ssbo_atomic_umin_ir3:
-   case nir_intrinsic_ssbo_atomic_imax_ir3:
-   case nir_intrinsic_ssbo_atomic_umax_ir3:
-   case nir_intrinsic_ssbo_atomic_and_ir3:
-   case nir_intrinsic_ssbo_atomic_or_ir3:
-   case nir_intrinsic_ssbo_atomic_xor_ir3:
-   case nir_intrinsic_ssbo_atomic_exchange_ir3:
-   case nir_intrinsic_ssbo_atomic_comp_swap_ir3:
+   case nir_intrinsic_ssbo_atomic_ir3:
+   case nir_intrinsic_ssbo_atomic_swap_ir3:
       dst[0] = ctx->funcs->emit_intrinsic_atomic_ssbo(ctx, intr);
       break;
    case nir_intrinsic_load_shared:
@@ -2227,16 +2161,8 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_store_shared:
       emit_intrinsic_store_shared(ctx, intr);
       break;
-   case nir_intrinsic_shared_atomic_add:
-   case nir_intrinsic_shared_atomic_imin:
-   case nir_intrinsic_shared_atomic_umin:
-   case nir_intrinsic_shared_atomic_imax:
-   case nir_intrinsic_shared_atomic_umax:
-   case nir_intrinsic_shared_atomic_and:
-   case nir_intrinsic_shared_atomic_or:
-   case nir_intrinsic_shared_atomic_xor:
-   case nir_intrinsic_shared_atomic_exchange:
-   case nir_intrinsic_shared_atomic_comp_swap:
+   case nir_intrinsic_shared_atomic:
+   case nir_intrinsic_shared_atomic_swap:
       dst[0] = emit_intrinsic_atomic_shared(ctx, intr);
       break;
    case nir_intrinsic_load_scratch:
@@ -2257,36 +2183,13 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_bindless_image_size:
       ctx->funcs->emit_intrinsic_image_size(ctx, intr, dst);
       break;
-   case nir_intrinsic_image_atomic_add:
-   case nir_intrinsic_bindless_image_atomic_add:
-   case nir_intrinsic_image_atomic_imin:
-   case nir_intrinsic_bindless_image_atomic_imin:
-   case nir_intrinsic_image_atomic_umin:
-   case nir_intrinsic_bindless_image_atomic_umin:
-   case nir_intrinsic_image_atomic_imax:
-   case nir_intrinsic_bindless_image_atomic_imax:
-   case nir_intrinsic_image_atomic_umax:
-   case nir_intrinsic_bindless_image_atomic_umax:
-   case nir_intrinsic_image_atomic_and:
-   case nir_intrinsic_bindless_image_atomic_and:
-   case nir_intrinsic_image_atomic_or:
-   case nir_intrinsic_bindless_image_atomic_or:
-   case nir_intrinsic_image_atomic_xor:
-   case nir_intrinsic_bindless_image_atomic_xor:
-   case nir_intrinsic_image_atomic_exchange:
-   case nir_intrinsic_bindless_image_atomic_exchange:
-   case nir_intrinsic_image_atomic_comp_swap:
-   case nir_intrinsic_bindless_image_atomic_comp_swap:
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_bindless_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+   case nir_intrinsic_bindless_image_atomic_swap:
       dst[0] = ctx->funcs->emit_intrinsic_atomic_image(ctx, intr);
       break;
    case nir_intrinsic_scoped_barrier:
-   case nir_intrinsic_control_barrier:
-   case nir_intrinsic_memory_barrier:
-   case nir_intrinsic_group_memory_barrier:
-   case nir_intrinsic_memory_barrier_buffer:
-   case nir_intrinsic_memory_barrier_image:
-   case nir_intrinsic_memory_barrier_shared:
-   case nir_intrinsic_memory_barrier_tcs_patch:
       emit_intrinsic_barrier(ctx, intr);
       /* note that blk ptr no longer valid, make that obvious: */
       b = NULL;
@@ -2300,6 +2203,12 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
          ctx->basevertex = create_driver_param(ctx, IR3_DP_VTXID_BASE);
       }
       dst[0] = ctx->basevertex;
+      break;
+   case nir_intrinsic_load_is_indexed_draw:
+      if (!ctx->is_indexed_draw) {
+         ctx->is_indexed_draw = create_driver_param(ctx, IR3_DP_IS_INDEXED_DRAW);
+      }
+      dst[0] = ctx->is_indexed_draw;
       break;
    case nir_intrinsic_load_draw_id:
       if (!ctx->draw_id) {
@@ -2443,6 +2352,32 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
          dst[i] = create_driver_param(ctx, IR3_DP_HS_DEFAULT_INNER_LEVEL_X + i);
       }
       break;
+   case nir_intrinsic_load_frag_invocation_count:
+      dst[0] = create_driver_param(ctx, IR3_DP_FS_FRAG_INVOCATION_COUNT);
+      break;
+   case nir_intrinsic_load_frag_size_ir3:
+   case nir_intrinsic_load_frag_offset_ir3: {
+      enum ir3_driver_param param =
+         intr->intrinsic == nir_intrinsic_load_frag_size_ir3 ?
+         IR3_DP_FS_FRAG_SIZE : IR3_DP_FS_FRAG_OFFSET;
+      if (nir_src_is_const(intr->src[0])) {
+         uint32_t view = nir_src_as_uint(intr->src[0]);
+         for (int i = 0; i < dest_components; i++) {
+            dst[i] = create_driver_param(ctx, param + 4 * view + i);
+         }
+      } else {
+         struct ir3_instruction *view = ir3_get_src(ctx, &intr->src[0])[0];
+         for (int i = 0; i < dest_components; i++) {
+            dst[i] = create_driver_param_indirect(ctx, param + i,
+                                                  ir3_get_addr0(ctx, view, 4));
+         }
+         ctx->so->constlen =
+            MAX2(ctx->so->constlen,
+                 const_state->offsets.driver_param + param / 4 +
+                 nir_intrinsic_range(intr));
+      }
+      break;
+   }
    case nir_intrinsic_discard_if:
    case nir_intrinsic_discard:
    case nir_intrinsic_demote:
@@ -2630,16 +2565,8 @@ emit_intrinsic(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_bindless_resource_ir3:
       dst[0] = ir3_get_src(ctx, &intr->src[0])[0];
       break;
-   case nir_intrinsic_global_atomic_add_ir3:
-   case nir_intrinsic_global_atomic_imin_ir3:
-   case nir_intrinsic_global_atomic_umin_ir3:
-   case nir_intrinsic_global_atomic_imax_ir3:
-   case nir_intrinsic_global_atomic_umax_ir3:
-   case nir_intrinsic_global_atomic_and_ir3:
-   case nir_intrinsic_global_atomic_or_ir3:
-   case nir_intrinsic_global_atomic_xor_ir3:
-   case nir_intrinsic_global_atomic_exchange_ir3:
-   case nir_intrinsic_global_atomic_comp_swap_ir3: {
+   case nir_intrinsic_global_atomic_ir3:
+   case nir_intrinsic_global_atomic_swap_ir3: {
       dst[0] = ctx->funcs->emit_intrinsic_atomic_global(ctx, intr);
       break;
    }
@@ -3163,15 +3090,45 @@ emit_tex(struct ir3_context *ctx, nir_tex_instr *tex)
       type = TYPE_S32;
 
    if (tex->op == nir_texop_txf_ms_fb) {
-      /* only expect a single txf_ms_fb per shader: */
-      compile_assert(ctx, !ctx->so->fb_read);
       compile_assert(ctx, ctx->so->type == MESA_SHADER_FRAGMENT);
 
       ctx->so->fb_read = true;
-      info.samp_tex = ir3_collect(
-         b, create_immed_typed(ctx->block, ctx->so->num_samp, TYPE_U16),
-         create_immed_typed(ctx->block, ctx->so->num_samp, TYPE_U16));
-      info.flags = IR3_INSTR_S2EN;
+      if (ctx->compiler->options.bindless_fb_read_descriptor >= 0) {
+         ctx->so->bindless_tex = true;
+         info.flags = IR3_INSTR_B;
+         info.base = ctx->compiler->options.bindless_fb_read_descriptor;
+         struct ir3_instruction *texture, *sampler;
+
+         int base_index =
+            nir_tex_instr_src_index(tex, nir_tex_src_texture_handle);
+         nir_src tex_src = tex->src[base_index].src;
+
+         if (nir_src_is_const(tex_src)) {
+            texture = create_immed_typed(b,
+               nir_src_as_uint(tex_src) + ctx->compiler->options.bindless_fb_read_slot,
+               TYPE_U32);
+         } else {
+            texture = create_immed_typed(
+               ctx->block, ctx->compiler->options.bindless_fb_read_slot, TYPE_U32);
+            struct ir3_instruction *base =
+               ir3_get_src(ctx, &tex->src[base_index].src)[0];
+            texture = ir3_ADD_U(b, texture, 0, base, 0);
+         }
+         sampler = create_immed_typed(ctx->block, 0, TYPE_U32);
+         info.samp_tex = ir3_collect(b, texture, sampler);
+         info.flags |= IR3_INSTR_S2EN;
+         if (tex->texture_non_uniform) {
+            info.flags |= IR3_INSTR_NONUNIF;
+         }
+      } else {
+         /* Otherwise append a sampler to be patched into the texture
+          * state:
+          */
+         info.samp_tex = ir3_collect(
+               b, create_immed_typed(ctx->block, ctx->so->num_samp, TYPE_U16),
+               create_immed_typed(ctx->block, ctx->so->num_samp, TYPE_U16));
+         info.flags = IR3_INSTR_S2EN;
+      }
 
       ctx->so->num_samp++;
    } else {
@@ -3670,6 +3627,7 @@ emit_if(struct ir3_context *ctx, nir_if *nif)
 static void
 emit_loop(struct ir3_context *ctx, nir_loop *nloop)
 {
+   assert(!nir_loop_has_continue_construct(nloop));
    unsigned old_loop_id = ctx->loop_id;
    ctx->loop_id = ctx->so->loops + 1;
    ctx->loop_depth++;
@@ -4108,6 +4066,8 @@ pack_inlocs(struct ir3_context *ctx)
             unsigned j = inloc % 4;
 
             instr->srcs[0]->iim_val = so->inputs[i].inloc + j;
+            if (instr->opc == OPC_FLAT_B)
+               instr->srcs[1]->iim_val = instr->srcs[0]->iim_val;
          } else if (instr->opc == OPC_META_TEX_PREFETCH) {
             unsigned i = instr->prefetch.input_offset / 4;
             unsigned j = instr->prefetch.input_offset % 4;
@@ -4182,6 +4142,9 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       case VARYING_SLOT_PSIZ:
          so->writes_psize = true;
          break;
+      case VARYING_SLOT_VIEWPORT:
+         so->writes_viewport = true;
+         break;
       case VARYING_SLOT_PRIMITIVE_ID:
       case VARYING_SLOT_GS_VERTEX_FLAGS_IR3:
          assert(ctx->so->type == MESA_SHADER_GEOMETRY);
@@ -4195,7 +4158,6 @@ setup_output(struct ir3_context *ctx, nir_intrinsic_instr *intr)
       case VARYING_SLOT_CLIP_DIST1:
       case VARYING_SLOT_CLIP_VERTEX:
       case VARYING_SLOT_LAYER:
-      case VARYING_SLOT_VIEWPORT:
          break;
       default:
          if (slot >= VARYING_SLOT_VAR0)
@@ -4274,6 +4236,8 @@ uses_store_output(struct ir3_shader_variant *so)
 static void
 emit_instructions(struct ir3_context *ctx)
 {
+   MESA_TRACE_FUNC();
+
    nir_function_impl *fxn = nir_shader_get_entrypoint(ctx->s);
 
    /* some varying setup which can't be done in setup_input(): */
@@ -4575,18 +4539,18 @@ collect_tex_prefetches(struct ir3_context *ctx, struct ir3 *ir)
                &ctx->so->sampler_prefetch[idx];
             idx++;
 
-            if (instr->flags & IR3_INSTR_B) {
-               fetch->cmd = IR3_SAMPLER_BINDLESS_PREFETCH_CMD;
+            fetch->bindless = instr->flags & IR3_INSTR_B;
+            if (fetch->bindless) {
                /* In bindless mode, the index is actually the base */
                fetch->tex_id = instr->prefetch.tex_base;
                fetch->samp_id = instr->prefetch.samp_base;
                fetch->tex_bindless_id = instr->prefetch.tex;
                fetch->samp_bindless_id = instr->prefetch.samp;
             } else {
-               fetch->cmd = IR3_SAMPLER_PREFETCH_CMD;
                fetch->tex_id = instr->prefetch.tex;
                fetch->samp_id = instr->prefetch.samp;
             }
+            fetch->tex_opc = OPC_SAM;
             fetch->wrmask = instr->dsts[0]->wrmask;
             fetch->dst = instr->dsts[0]->num;
             fetch->src = instr->prefetch.input_offset;
@@ -4619,6 +4583,8 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
    struct ir3 *ir;
    int ret = 0, max_bary;
    bool progress;
+
+   MESA_TRACE_FUNC();
 
    assert(!so->ir);
 
@@ -4997,12 +4963,18 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
    collect_tex_prefetches(ctx, ir);
 
    if (so->type == MESA_SHADER_FRAGMENT &&
-       ctx->s->info.fs.needs_quad_helper_invocations)
+       ctx->s->info.fs.needs_quad_helper_invocations) {
       so->need_pixlod = true;
+      so->need_full_quad = true;
+   }
 
    if ((ctx->so->type == MESA_SHADER_FRAGMENT) &&
        !ctx->s->info.fs.early_fragment_tests)
       ctx->so->no_earlyz |= ctx->s->info.writes_memory;
+
+   if ((ctx->so->type == MESA_SHADER_FRAGMENT) &&
+       ctx->s->info.fs.post_depth_coverage)
+      so->post_depth_coverage = true;
 
 out:
    if (ret) {

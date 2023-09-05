@@ -35,6 +35,7 @@
 #include "list.h"
 #include "ir_visitor.h"
 #include "ir_hierarchical_visitor.h"
+#include "util/glheader.h"
 
 #ifdef __cplusplus
 
@@ -230,8 +231,6 @@ public:
    virtual ir_constant *constant_expression_value(void *mem_ctx,
                                                   struct hash_table *variable_context = NULL);
 
-   ir_rvalue *as_rvalue_to_saturate();
-
    virtual bool is_lvalue(const struct _mesa_glsl_parse_state * = NULL) const
    {
       return false;
@@ -396,7 +395,6 @@ depth_layout_string(ir_depth_layout layout);
  */
 struct ir_state_slot {
    gl_state_index16 tokens[STATE_LENGTH];
-   int swizzle;
 };
 
 
@@ -700,13 +698,6 @@ public:
        * non-ast_to_hir.cpp (GLSL parsing) paths.
        */
       unsigned assigned:1;
-
-      /**
-       * When separate shader programs are enabled, only input/outputs between
-       * the stages of a multi-stage separate program can be safely removed
-       * from the shader interface. Other input/outputs must remains active.
-       */
-      unsigned always_active_io:1;
 
       /**
        * Enum indicating how the variable was declared.  See
@@ -1072,12 +1063,6 @@ public:
  */
 typedef bool (*builtin_available_predicate)(const _mesa_glsl_parse_state *);
 
-#define MAKE_INTRINSIC_FOR_TYPE(op, t) \
-   ir_intrinsic_generic_ ## op - ir_intrinsic_generic_load + ir_intrinsic_ ## t ## _ ## load
-
-#define MAP_INTRINSIC_TO_TYPE(i, t) \
-   ir_intrinsic_id(int(i) - int(ir_intrinsic_generic_load) + int(ir_intrinsic_ ## t ## _ ## load))
-
 enum ir_intrinsic_id {
    ir_intrinsic_invalid = 0,
 
@@ -1128,17 +1113,6 @@ enum ir_intrinsic_id {
    ir_intrinsic_image_atomic_dec_wrap,
    ir_intrinsic_image_sparse_load,
 
-   ir_intrinsic_ssbo_load,
-   ir_intrinsic_ssbo_store = MAKE_INTRINSIC_FOR_TYPE(store, ssbo),
-   ir_intrinsic_ssbo_atomic_add = MAKE_INTRINSIC_FOR_TYPE(atomic_add, ssbo),
-   ir_intrinsic_ssbo_atomic_and = MAKE_INTRINSIC_FOR_TYPE(atomic_and, ssbo),
-   ir_intrinsic_ssbo_atomic_or = MAKE_INTRINSIC_FOR_TYPE(atomic_or, ssbo),
-   ir_intrinsic_ssbo_atomic_xor = MAKE_INTRINSIC_FOR_TYPE(atomic_xor, ssbo),
-   ir_intrinsic_ssbo_atomic_min = MAKE_INTRINSIC_FOR_TYPE(atomic_min, ssbo),
-   ir_intrinsic_ssbo_atomic_max = MAKE_INTRINSIC_FOR_TYPE(atomic_max, ssbo),
-   ir_intrinsic_ssbo_atomic_exchange = MAKE_INTRINSIC_FOR_TYPE(atomic_exchange, ssbo),
-   ir_intrinsic_ssbo_atomic_comp_swap = MAKE_INTRINSIC_FOR_TYPE(atomic_comp_swap, ssbo),
-
    ir_intrinsic_memory_barrier,
    ir_intrinsic_shader_clock,
    ir_intrinsic_group_memory_barrier,
@@ -1157,17 +1131,6 @@ enum ir_intrinsic_id {
    ir_intrinsic_read_first_invocation,
 
    ir_intrinsic_helper_invocation,
-
-   ir_intrinsic_shared_load,
-   ir_intrinsic_shared_store = MAKE_INTRINSIC_FOR_TYPE(store, shared),
-   ir_intrinsic_shared_atomic_add = MAKE_INTRINSIC_FOR_TYPE(atomic_add, shared),
-   ir_intrinsic_shared_atomic_and = MAKE_INTRINSIC_FOR_TYPE(atomic_and, shared),
-   ir_intrinsic_shared_atomic_or = MAKE_INTRINSIC_FOR_TYPE(atomic_or, shared),
-   ir_intrinsic_shared_atomic_xor = MAKE_INTRINSIC_FOR_TYPE(atomic_xor, shared),
-   ir_intrinsic_shared_atomic_min = MAKE_INTRINSIC_FOR_TYPE(atomic_min, shared),
-   ir_intrinsic_shared_atomic_max = MAKE_INTRINSIC_FOR_TYPE(atomic_max, shared),
-   ir_intrinsic_shared_atomic_exchange = MAKE_INTRINSIC_FOR_TYPE(atomic_exchange, shared),
-   ir_intrinsic_shared_atomic_comp_swap = MAKE_INTRINSIC_FOR_TYPE(atomic_comp_swap, shared),
 
    ir_intrinsic_is_sparse_texels_resident,
 };

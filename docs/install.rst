@@ -35,8 +35,8 @@ you're willing to maintain support for other compiler get in touch.
 Third party/extra tools.
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
--  `Python <https://www.python.org/>`__ - Python 3.5 or newer is required.
--  `Python Mako module <http://www.makotemplates.org/>`__ - Python Mako
+-  `Python <https://www.python.org/>`__ - Python 3.6 or newer is required.
+-  `Python Mako module <https://www.makotemplates.org/>`__ - Python Mako
    module is required. Version 0.8.0 or later should work.
 -  Lex / Yacc - for building the Mesa IR and GLSL compiler.
 
@@ -49,7 +49,7 @@ Third party/extra tools.
       mingw-get install msys-flex msys-bison
 
    For MSVC on Windows, install `Win
-   flex-bison <http://winflexbison.sourceforge.net/>`__.
+   flex-bison <https://sourceforge.net/projects/winflexbison/>`__.
 
 .. note::
 
@@ -86,15 +86,15 @@ The general approach is:
 
 .. code-block:: console
 
-     meson builddir/
-     ninja -C builddir/
-     sudo ninja -C builddir/ install
+     meson setup builddir/
+     meson compile -C builddir/
+     sudo meson install -C builddir/
 
 On Windows you can also use the Visual Studio backend
 
 .. code-block:: console
 
-     meson builddir --backend=vs
+     meson setup builddir --backend=vs
      cd builddir
      msbuild mesa.sln /m
 
@@ -115,8 +115,8 @@ First, configure Mesa and install in the temporary location:
 
 .. code-block:: console
 
-   meson builddir/ -Dprefix="$MESA_INSTALLDIR" OTHER_OPTIONS
-   ninja -C builddir/ install
+   meson setup builddir/ -Dprefix="$MESA_INSTALLDIR" OTHER_OPTIONS
+   meson install -C builddir/
 
 where ``OTHER_OPTIONS`` is replaced by any meson configuration options you may
 want.  For instance, if you want to build the LLVMpipe drivers, it would look
@@ -124,9 +124,9 @@ like this:
 
 .. code-block:: console
 
-   meson builddir/ -Dprefix="$MESA_INSTALLDIR" \
+   meson setup builddir/ -Dprefix="$MESA_INSTALLDIR" \
       -Dgallium-drivers=swrast -Dvulkan-drivers=swrast
-   ninja -C builddir/ install
+   meson install -C builddir/
 
 Once Mesa has built and installed to ``$MESA_INSTALLDIR``, you can run any app
 against your temporary install by setting the right environment variables.
@@ -226,7 +226,7 @@ Gallium-based versions of libGL and device drivers.
 6. Building OpenGL programs with pkg-config
 -------------------------------------------
 
-Running ``ninja install`` will install package configuration files for
+Running ``meson install`` will install package configuration files for
 the pkg-config utility.
 
 When compiling your OpenGL application you can use pkg-config to
