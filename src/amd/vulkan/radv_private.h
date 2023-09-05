@@ -66,6 +66,7 @@
 #include "vk_physical_device.h"
 #include "vk_queue.h"
 #include "vk_shader_module.h"
+#include "vk_texcompress_etc2.h"
 #include "vk_util.h"
 #include "vk_video.h"
 #include "vk_ycbcr_conversion.h"
@@ -762,11 +763,7 @@ struct radv_meta_state {
       } null;
    } accel_struct_build;
 
-   struct {
-      VkDescriptorSetLayout ds_layout;
-      VkPipelineLayout p_layout;
-      VkPipeline pipeline;
-   } etc_decode;
+   struct vk_texcompress_etc2_state etc_decode;
 
    struct {
       VkDescriptorSetLayout ds_layout;
