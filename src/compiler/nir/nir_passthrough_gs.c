@@ -175,7 +175,7 @@ nir_create_passthrough_gs(const nir_shader_compiler_options *options,
    nir->info.has_transform_feedback_varyings = prev_stage->info.has_transform_feedback_varyings;
    memcpy(nir->info.xfb_stride, prev_stage->info.xfb_stride, sizeof(prev_stage->info.xfb_stride));
    if (prev_stage->xfb_info) {
-      nir->xfb_info = mem_dup(prev_stage->xfb_info, sizeof(nir_xfb_info));
+      nir->xfb_info = mem_dup(prev_stage->xfb_info, nir_xfb_info_size(prev_stage->xfb_info->output_count));
    }
 
    bool handle_flat = nir->info.gs.output_primitive == SHADER_PRIM_LINE_STRIP &&
@@ -202,7 +202,7 @@ nir_create_passthrough_gs(const nir_shader_compiler_options *options,
       nir_variable *in = nir_variable_clone(var, nir);
       ralloc_free(in->name);
       in->name = ralloc_strdup(in, name);
-      in->type = glsl_array_type(var->type, 4, false);
+      in->type = glsl_array_type(var->type, 6, false);
       in->data.mode = nir_var_shader_in;
       nir_shader_add_variable(nir, in);
 
