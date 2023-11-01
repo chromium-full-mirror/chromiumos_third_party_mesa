@@ -441,6 +441,7 @@ struct radv_instance {
    bool flush_before_timestamp_write;
    bool force_rt_wave64;
    bool dual_color_blend_by_location;
+   bool clear_lds;
    char *app_layer;
 };
 
@@ -2143,6 +2144,7 @@ struct radv_event {
 #define RADV_HASH_SHADER_PS_WAVE32       (1 << 2)
 #define RADV_HASH_SHADER_GE_WAVE32       (1 << 3)
 #define RADV_HASH_SHADER_LLVM            (1 << 4)
+#define RADV_HASH_SHADER_CLEAR_LDS       (1 << 5)
 #define RADV_HASH_SHADER_KEEP_STATISTICS (1 << 8)
 #define RADV_HASH_SHADER_USE_NGG_CULLING (1 << 13)
 #define RADV_HASH_SHADER_EMULATE_RT      (1 << 16)
