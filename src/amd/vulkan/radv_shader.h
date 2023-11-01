@@ -560,6 +560,8 @@ void radv_postprocess_nir(struct radv_device *device,
                           const struct radv_pipeline_key *pipeline_key, unsigned last_vgt_api_stage,
                           struct radv_pipeline_stage *stage);
 
+bool radv_shader_should_clear_lds(const struct radv_device *device, const nir_shader *shader);
+
 struct radv_pipeline_stage;
 
 nir_shader *radv_shader_spirv_to_nir(struct radv_device *device,
