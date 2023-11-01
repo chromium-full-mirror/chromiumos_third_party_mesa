@@ -371,6 +371,7 @@ struct radv_instance {
    bool flush_before_query_copy;
    bool enable_unified_heap_on_apu;
    bool tex_non_uniform;
+   bool clear_lds;
    char *app_layer;
 };
 
@@ -1896,6 +1897,7 @@ struct radv_event {
 #define RADV_HASH_SHADER_PS_WAVE32         (1 << 2)
 #define RADV_HASH_SHADER_GE_WAVE32         (1 << 3)
 #define RADV_HASH_SHADER_LLVM              (1 << 4)
+#define RADV_HASH_SHADER_CLEAR_LDS         (1 << 5)
 #define RADV_HASH_SHADER_KEEP_STATISTICS   (1 << 8)
 #define RADV_HASH_SHADER_USE_NGG_CULLING   (1 << 13)
 #define RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS (1 << 14)
