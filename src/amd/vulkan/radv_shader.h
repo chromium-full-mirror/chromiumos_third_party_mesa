@@ -536,6 +536,8 @@ void radv_nir_apply_pipeline_layout(nir_shader *shader, struct radv_device *devi
                                     const struct radv_shader_info *info,
                                     const struct radv_shader_args *args);
 
+bool radv_shader_should_clear_lds(const struct radv_device *device, const nir_shader *shader);
+
 struct radv_pipeline_stage;
 
 nir_shader *radv_shader_spirv_to_nir(struct radv_device *device,

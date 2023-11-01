@@ -591,6 +591,9 @@
    DRI_CONF_OPT_B(radv_enable_unified_heap_on_apu, def, \
                   "Enable an unified heap with DEVICE_LOCAL on integrated GPUs")
 
+#define DRI_CONF_RADV_CLEAR_LDS(def) \
+   DRI_CONF_OPT_B(radv_clear_lds, def, "Clear LDS at the end of shaders. Might decrease performance.")
+
 /**
  * \brief ANV specific configuration options
  */

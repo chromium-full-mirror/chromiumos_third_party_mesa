@@ -269,6 +269,8 @@ radv_get_hash_flags(const struct radv_device *device, bool stats)
       hash_flags |= RADV_HASH_SHADER_ROBUST_BUFFER_ACCESS2;
    if (device->instance->debug_flags & RADV_DEBUG_SPLIT_FMA)
       hash_flags |= RADV_HASH_SHADER_SPLIT_FMA;
+   if (device->instance->clear_lds)
+      hash_flags |= RADV_HASH_SHADER_CLEAR_LDS;
    return hash_flags;
 }
 
@@ -4868,6 +4870,12 @@ radv_create_shaders(struct radv_pipeline *pipeline, struct radv_pipeline_layout 
          if (lowered_ngg)
             radv_lower_ngg(device, &stages[i], pipeline_key);
 
+         if (radv_shader_should_clear_lds(device, stages[i].nir)) {
+            const unsigned chunk_size = 16; /* max single store size */
+            const unsigned shared_size = ALIGN(stages[i].nir->info.shared_size, chunk_size);
+            NIR_PASS(_, stages[i].nir, nir_clear_shared_memory, shared_size, chunk_size);
+         }
+
          NIR_PASS(_, stages[i].nir, ac_nir_lower_global_access);
          NIR_PASS_V(stages[i].nir, radv_nir_lower_abi, device->physical_device->rad_info.gfx_level,
                     &stages[i].info, &stages[i].args, pipeline_key,
@@ -7329,6 +7337,14 @@ radv_CreateComputePipelines(VkDevice _device, VkPipelineCache pipelineCache, uin
       pPipelines[i] = VK_NULL_HANDLE;
 
    return result;
+}
+
+bool
+radv_shader_should_clear_lds(const struct radv_device *device, const nir_shader *shader)
+{
+   return (shader->info.stage == MESA_SHADER_COMPUTE || shader->info.stage == MESA_SHADER_MESH ||
+           shader->info.stage == MESA_SHADER_TASK) &&
+          shader->info.shared_size > 0 && device->instance->clear_lds;
 }
 
 static uint32_t
