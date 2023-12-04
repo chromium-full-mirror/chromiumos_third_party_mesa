@@ -1789,6 +1789,11 @@ static void si_assign_param_offsets(nir_shader *nir, struct si_shader *shader)
    si_nir_assign_param_offsets(nir, shader, slot_remap);
 }
 
+bool si_should_clear_lds(struct si_screen *sscreen, const struct nir_shader *shader)
+{
+   return shader->info.stage == MESA_SHADER_COMPUTE && shader->info.shared_size > 0 && sscreen->options.clear_lds;
+}
+
 struct nir_shader *si_get_nir_shader(struct si_shader *shader, struct si_shader_args *args,
                                      bool *free_nir, uint64_t tcs_vgpr_only_inputs)
 {
@@ -1931,6 +1936,12 @@ struct nir_shader *si_get_nir_shader(struct si_shader *shader, struct si_shader_
    }
 
    NIR_PASS(progress2, nir, si_nir_lower_abi, shader, args);
+
+   if (si_should_clear_lds(sel->screen, nir)) {
+      const unsigned chunk_size = 16; /* max single store size */
+      const unsigned shared_size = ALIGN(nir->info.shared_size, chunk_size);
+      NIR_PASS_V(nir, nir_clear_shared_memory, shared_size, chunk_size);
+   }
 
    if (progress2 || opt_offsets)
       si_nir_opts(sel->screen, nir, false);
