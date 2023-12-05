@@ -1,3 +1,10 @@
+mesa (23.2.1-1~cros12+1) UNRELEASED; urgency=medium
+
+  * Rebuild for cros-packages.
+  * Build with llvm-15 and without d3d12.
+
+ -- easy <easy@google.com>  Tue, 16 Jan 2024 02:50:25 +1100
+
 mesa (23.2.1-1) unstable; urgency=medium
 
   * New upstream release.
