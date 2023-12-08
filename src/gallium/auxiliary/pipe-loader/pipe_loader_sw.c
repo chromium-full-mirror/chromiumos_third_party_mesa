@@ -345,7 +345,7 @@ pipe_loader_sw_probe(struct pipe_loader_device **devs, int ndev)
    return i;
 }
 
-boolean
+bool
 pipe_loader_sw_probe_wrapped(struct pipe_loader_device **dev,
                              struct pipe_screen *screen)
 {
@@ -382,6 +382,7 @@ pipe_loader_sw_release(struct pipe_loader_device **dev)
    UNUSED struct pipe_loader_sw_device *sdev =
       pipe_loader_sw_device(*dev);
 
+   sdev->ws->destroy(sdev->ws);
 #ifndef GALLIUM_STATIC_TARGETS
    if (sdev->lib)
       util_dl_close(sdev->lib);
@@ -423,8 +424,6 @@ pipe_loader_sw_create_screen(struct pipe_loader_device *dev,
    struct pipe_screen *screen;
 
    screen = sdev->dd->create_screen(sdev->ws, config, sw_vk);
-   if (!screen)
-      sdev->ws->destroy(sdev->ws);
 
    return screen ? debug_screen_wrap(screen) : NULL;
 }

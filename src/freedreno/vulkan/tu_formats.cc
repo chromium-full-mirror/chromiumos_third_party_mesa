@@ -8,6 +8,7 @@
 
 #include "fdl/fd6_format_table.h"
 
+#include "vk_enum_defines.h"
 #include "vk_util.h"
 #include "drm-uapi/drm_fourcc.h"
 
@@ -257,6 +258,17 @@ tu_physical_device_get_format_properties(
          if (physical_device->vk.supported_extensions.EXT_filter_cubic)
             optimal |= VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_CUBIC_BIT_EXT;
       }
+
+      /* We sample on the CPU so we can technically support anything as long
+       * as it's floating point, but this restricts it to "reasonable" formats
+       * to use, which means two channels and not something weird like
+       * luminance-alpha.
+       */
+      if (util_format_is_float(format) &&
+          desc->nr_channels == 2 && desc->swizzle[0] == PIPE_SWIZZLE_X &&
+          desc->swizzle[1] == PIPE_SWIZZLE_Y) {
+         optimal |= VK_FORMAT_FEATURE_FRAGMENT_DENSITY_MAP_BIT_EXT;
+      }
    }
 
    if (supported_color) {
@@ -318,7 +330,7 @@ tu_physical_device_get_format_properties(
       buffer = 0;
    }
 
-   /* We don't support writing into VK__FORMAT_*_PACK16 images/buffers  */
+   /* We don't support writing into VK_FORMAT_*_PACK16 images/buffers  */
    if (desc->nr_channels > 2 && desc->block.bits == 16) {
       buffer &= VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT;
       linear &= ~(VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
@@ -373,9 +385,12 @@ tu_GetPhysicalDeviceFormatProperties2(
       physical_device, format, props3);
 
    pFormatProperties->formatProperties = (VkFormatProperties) {
-      .linearTilingFeatures = props3->linearTilingFeatures,
-      .optimalTilingFeatures = props3->optimalTilingFeatures,
-      .bufferFeatures = props3->bufferFeatures,
+      .linearTilingFeatures =
+         vk_format_features2_to_features(props3->linearTilingFeatures),
+      .optimalTilingFeatures =
+         vk_format_features2_to_features(props3->optimalTilingFeatures),
+      .bufferFeatures =
+         vk_format_features2_to_features(props3->bufferFeatures),
    };
 
    VkDrmFormatModifierPropertiesListEXT *list =
@@ -449,6 +464,12 @@ tu_get_image_format_properties(
    case VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT: {
       const VkPhysicalDeviceImageDrmFormatModifierInfoEXT *drm_info =
          vk_find_struct_const(info->pNext, PHYSICAL_DEVICE_IMAGE_DRM_FORMAT_MODIFIER_INFO_EXT);
+
+      /* Subsampled format isn't stable yet, so don't allow
+       * importing/exporting with modifiers yet.
+       */
+      if (info->flags & VK_IMAGE_CREATE_SUBSAMPLED_BIT_EXT)
+         return VK_ERROR_FORMAT_NOT_SUPPORTED;
 
       switch (drm_info->drmFormatModifier) {
       case DRM_FORMAT_MOD_QCOM_COMPRESSED:

@@ -6,15 +6,24 @@
 
 #include "agx_device.h"
 #include <inttypes.h>
+#include "util/timespec.h"
 #include "agx_bo.h"
+#include "agx_compile.h"
 #include "decode.h"
+#include "glsl_types.h"
+#include "libagx_shaders.h"
 
 #include <fcntl.h>
 #include <xf86drm.h>
 #include "drm-uapi/dma-buf.h"
+#include "util/blob.h"
 #include "util/log.h"
+#include "util/os_file.h"
 #include "util/os_mman.h"
+#include "util/os_time.h"
 #include "util/simple_mtx.h"
+#include "git_sha1.h"
+#include "nir_serialize.h"
 
 /* TODO: Linux UAPI. Dummy defines to get some things to compile. */
 #define ASAHI_BIND_READ  0
@@ -30,14 +39,17 @@ agx_bo_free(struct agx_device *dev, struct agx_bo *bo)
 
    if (bo->ptr.gpu) {
       struct util_vma_heap *heap;
+      uint64_t bo_addr = bo->ptr.gpu;
 
-      if (bo->flags & AGX_BO_LOW_VA)
+      if (bo->flags & AGX_BO_LOW_VA) {
          heap = &dev->usc_heap;
-      else
+         bo_addr += dev->shader_base;
+      } else {
          heap = &dev->main_heap;
+      }
 
       simple_mtx_lock(&dev->vma_lock);
-      util_vma_heap_free(heap, bo->ptr.gpu, bo->size + dev->guard_size);
+      util_vma_heap_free(heap, bo_addr, bo->size + dev->guard_size);
       simple_mtx_unlock(&dev->vma_lock);
 
       /* No need to unmap the BO, as the kernel will take care of that when we
@@ -148,7 +160,11 @@ agx_bo_import(struct agx_device *dev, int fd)
    pthread_mutex_lock(&dev->bo_map_lock);
 
    ret = drmPrimeFDToHandle(dev->fd, fd, &gem_handle);
-   assert(!ret);
+   if (ret) {
+      fprintf(stderr, "import failed: Could not map fd %d to handle\n", fd);
+      pthread_mutex_unlock(&dev->bo_map_lock);
+      return NULL;
+   }
 
    bo = agx_lookup_bo(dev, gem_handle);
    dev->max_handle = MAX2(dev->max_handle, gem_handle);
@@ -170,12 +186,12 @@ agx_bo_import(struct agx_device *dev, int fd)
             stderr,
             "import failed: BO is not a multiple of the page size (0x%llx bytes)\n",
             (long long)bo->size);
-         pthread_mutex_unlock(&dev->bo_map_lock);
-         return NULL;
+         goto error;
       }
+
       bo->flags = AGX_BO_SHARED | AGX_BO_SHAREABLE;
       bo->handle = gem_handle;
-      bo->prime_fd = dup(fd);
+      bo->prime_fd = os_dupfd_cloexec(fd);
       bo->label = "Imported BO";
       assert(bo->prime_fd >= 0);
 
@@ -186,10 +202,21 @@ agx_bo_import(struct agx_device *dev, int fd)
          &dev->main_heap, bo->size + dev->guard_size, dev->params.vm_page_size);
       simple_mtx_unlock(&dev->vma_lock);
 
+      if (!bo->ptr.gpu) {
+         fprintf(
+            stderr,
+            "import failed: Could not allocate from VMA heap (0x%llx bytes)\n",
+            (long long)bo->size);
+         abort();
+      }
+
       ret =
          agx_bo_bind(dev, bo, bo->ptr.gpu, ASAHI_BIND_READ | ASAHI_BIND_WRITE);
-      assert(!ret);
-
+      if (ret) {
+         fprintf(stderr, "import failed: Could not bind BO at 0x%llx\n",
+                 (long long)bo->ptr.gpu);
+         abort();
+      }
    } else {
       /* bo->refcnt == 0 can happen if the BO
        * was being released but agx_bo_import() acquired the
@@ -209,6 +236,11 @@ agx_bo_import(struct agx_device *dev, int fd)
    pthread_mutex_unlock(&dev->bo_map_lock);
 
    return bo;
+
+error:
+   memset(bo, 0, sizeof(*bo));
+   pthread_mutex_unlock(&dev->bo_map_lock);
+   return NULL;
 }
 
 int
@@ -224,15 +256,16 @@ agx_bo_export(struct agx_bo *bo)
    if (!(bo->flags & AGX_BO_SHARED)) {
       bo->flags |= AGX_BO_SHARED;
       assert(bo->prime_fd == -1);
-      bo->prime_fd = dup(fd);
+      bo->prime_fd = os_dupfd_cloexec(fd);
 
       /* If there is a pending writer to this BO, import it into the buffer
        * for implicit sync.
        */
-      if (bo->writer_syncobj) {
+      uint32_t writer_syncobj = p_atomic_read_relaxed(&bo->writer_syncobj);
+      if (writer_syncobj) {
          int out_sync_fd = -1;
-         int ret = drmSyncobjExportSyncFile(bo->dev->fd, bo->writer_syncobj,
-                                            &out_sync_fd);
+         int ret =
+            drmSyncobjExportSyncFile(bo->dev->fd, writer_syncobj, &out_sync_fd);
          assert(ret >= 0);
          assert(out_sync_fd >= 0);
 
@@ -308,6 +341,12 @@ agx_open_device(void *memctx, struct agx_device *dev)
 
    dev->queue_id = agx_create_command_queue(dev, 0 /* TODO: CAPS */);
    agx_get_global_ids(dev);
+
+   glsl_type_singleton_init_or_ref();
+   struct blob_reader blob;
+   blob_reader_init(&blob, (void *)libagx_shaders_nir,
+                    sizeof(libagx_shaders_nir));
+   dev->libagx = nir_deserialize(memctx, &agx_nir_options, &blob);
 
    return true;
 }
@@ -385,10 +424,14 @@ agx_debug_fault(struct agx_device *dev, uint64_t addr)
 
    for (uint32_t handle = 0; handle < dev->max_handle; handle++) {
       struct agx_bo *bo = agx_lookup_bo(dev, handle);
-      if (!bo->dev || bo->ptr.gpu > addr)
+      uint64_t bo_addr = bo->ptr.gpu;
+      if (bo->flags & AGX_BO_LOW_VA)
+         bo_addr += dev->shader_base;
+
+      if (!bo->dev || bo_addr > addr)
          continue;
 
-      if (!best || bo->ptr.gpu > best->ptr.gpu)
+      if (!best || bo_addr > best->ptr.gpu)
          best = bo;
    }
 
@@ -414,4 +457,21 @@ agx_debug_fault(struct agx_device *dev, uint64_t addr)
    }
 
    pthread_mutex_unlock(&dev->bo_map_lock);
+}
+
+uint64_t
+agx_get_gpu_timestamp(struct agx_device *dev)
+{
+#if DETECT_ARCH_ARCH64
+   uint64_t ret;
+   __asm__ volatile("mrs \t%0, cntvct_el0" : "=r"(ret));
+   return ret;
+#elif DETECT_ARCH_X86 || DETECT_ARCH_X86_64
+   /* Maps to the above when run under FEX without thunking */
+   uint32_t high, low;
+   __asm__ volatile("rdtsc" : "=a"(low), "=d"(high));
+   return (uint64_t)low | ((uint64_t)high << 32);
+#else
+   unreachable("Kernel support for fetching timestamps pending");
+#endif
 }

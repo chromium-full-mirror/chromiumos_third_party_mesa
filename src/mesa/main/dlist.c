@@ -495,7 +495,7 @@ typedef enum
    OPCODE_TEXPARAMETER_I,
    OPCODE_TEXPARAMETER_UI,
 
-   /* GL_ARB_instanced_arrays */
+   /* GL_EXT/ARB_instanced_arrays */
    OPCODE_VERTEX_ATTRIB_DIVISOR,
 
    /* GL_NV_texture_barrier */
@@ -1345,12 +1345,15 @@ save_Bitmap(GLsizei width, GLsizei height,
    GET_CURRENT_CONTEXT(ctx);
    Node *n;
    ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   struct pipe_resource *tex =
-      st_make_bitmap_texture(ctx, width, height, &ctx->Unpack, pixels);
+   struct pipe_resource *tex = NULL;
 
-   if (!tex) {
-      _mesa_error(ctx, GL_OUT_OF_MEMORY, "glNewList -> glBitmap");
-      return;
+   if (width > 0 && height > 0) {
+      tex = st_make_bitmap_texture(ctx, width, height, &ctx->Unpack, pixels);
+
+      if (!tex) {
+         _mesa_error(ctx, GL_OUT_OF_MEMORY, "glNewList -> glBitmap");
+         return;
+      }
    }
 
    n = alloc_instruction(ctx, OPCODE_BITMAP, 6 + POINTER_DWORDS);
@@ -8654,7 +8657,7 @@ save_TexParameterIuiv(GLenum target, GLenum pname, const GLuint *params)
    }
 }
 
-/* GL_ARB_instanced_arrays */
+/* GL_EXT/ARB_instanced_arrays */
 void GLAPIENTRY
 save_VertexAttribDivisor(GLuint index, GLuint divisor)
 {
@@ -12462,7 +12465,7 @@ execute_list(struct gl_context *ctx, GLuint list)
             break;
 
          case OPCODE_VERTEX_ATTRIB_DIVISOR:
-            /* GL_ARB_instanced_arrays */
+            /* GL_EXT/ARB_instanced_arrays */
             CALL_VertexAttribDivisor(ctx->Dispatch.Exec, (n[1].ui, n[2].ui));
             break;
 

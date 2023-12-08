@@ -28,6 +28,7 @@
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_debug.h"
+#include "util/u_resource.h"
 #include "util/u_transfer.h"
 #include "util/u_surface.h"
 #include "util/u_transfer_helper.h"
@@ -447,7 +448,8 @@ lima_resource_get_param(struct pipe_screen *pscreen,
                         enum pipe_resource_param param,
                         unsigned usage, uint64_t *value)
 {
-   struct lima_resource *res = lima_resource(pres);
+   struct lima_resource *res =
+          (struct lima_resource *)util_resource_at_index(pres, plane);
 
    switch (param) {
    case PIPE_RESOURCE_PARAM_STRIDE:
@@ -461,7 +463,9 @@ lima_resource_get_param(struct pipe_screen *pscreen,
          *value = DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED;
       else
          *value = DRM_FORMAT_MOD_LINEAR;
-
+      return true;
+   case PIPE_RESOURCE_PARAM_NPLANES:
+      *value = util_resource_num(pres);
       return true;
    default:
       return false;
@@ -652,7 +656,7 @@ lima_transfer_map(struct pipe_context *pctx,
 
       unsigned op = usage & PIPE_MAP_WRITE ?
          LIMA_GEM_WAIT_WRITE : LIMA_GEM_WAIT_READ;
-      lima_bo_wait(bo, op, PIPE_TIMEOUT_INFINITE);
+      lima_bo_wait(bo, op, OS_TIMEOUT_INFINITE);
    }
 
    if (!lima_bo_map(bo))
@@ -891,7 +895,7 @@ lima_texture_subdata(struct pipe_context *pctx,
                      const struct pipe_box *box,
                      const void *data,
                      unsigned stride,
-                     unsigned layer_stride)
+                     uintptr_t layer_stride)
 {
    struct lima_context *ctx = lima_context(pctx);
    struct lima_resource *res = lima_resource(prsc);
@@ -917,7 +921,7 @@ lima_texture_subdata(struct pipe_context *pctx,
    };
 
    lima_flush_job_accessing_bo(ctx, res->bo, true);
-   lima_bo_wait(res->bo, LIMA_GEM_WAIT_WRITE, PIPE_TIMEOUT_INFINITE);
+   lima_bo_wait(res->bo, LIMA_GEM_WAIT_WRITE, OS_TIMEOUT_INFINITE);
    if (!lima_bo_map(res->bo))
       return;
 

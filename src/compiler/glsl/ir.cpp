@@ -574,7 +574,7 @@ ir_expression::ir_expression(int op, ir_rvalue *op0, ir_rvalue *op1)
          base = GLSL_TYPE_UINT64;
          break;
       default:
-         unreachable(!"Invalid base type.");
+         unreachable("Invalid base type.");
       }
 
       this->type = glsl_type::get_instance(base, op0->type->vector_elements, 1);
@@ -2043,7 +2043,6 @@ ir_variable::ir_variable(const struct glsl_type *type, const char *name,
    this->data.depth_layout = ir_depth_layout_none;
    this->data.used = false;
    this->data.assigned = false;
-   this->data.always_active_io = false;
    this->data.read_only = false;
    this->data.centroid = false;
    this->data.sample = false;
@@ -2083,21 +2082,6 @@ ir_variable::ir_variable(const struct glsl_type *type, const char *name,
       else if (type->without_array()->is_interface())
          this->init_interface_type(type->without_array());
    }
-}
-
-
-const char *
-interpolation_string(unsigned interpolation)
-{
-   switch (interpolation) {
-   case INTERP_MODE_NONE:          return "no";
-   case INTERP_MODE_SMOOTH:        return "smooth";
-   case INTERP_MODE_FLAT:          return "flat";
-   case INTERP_MODE_NOPERSPECTIVE: return "noperspective";
-   }
-
-   assert(!"Should not get here.");
-   return "";
 }
 
 const char *const ir_variable::warn_extension_table[] = {
@@ -2291,24 +2275,18 @@ reparent_ir(exec_list *list, void *mem_ctx)
    }
 }
 
-unsigned
-vertices_per_prim(GLenum prim)
+enum mesa_prim
+gl_to_mesa_prim(GLenum prim)
 {
-   switch (prim) {
-   case GL_POINTS:
-      return 1;
-   case GL_LINES:
-      return 2;
-   case GL_TRIANGLES:
-      return 3;
-   case GL_LINES_ADJACENCY:
-      return 4;
-   case GL_TRIANGLES_ADJACENCY:
-      return 6;
-   default:
-      assert(!"Bad primitive");
-      return 3;
-   }
+   STATIC_ASSERT(GL_POINTS                == MESA_PRIM_POINTS);
+   STATIC_ASSERT(GL_LINES                 == MESA_PRIM_LINES);
+   STATIC_ASSERT(GL_LINES_ADJACENCY       == MESA_PRIM_LINES_ADJACENCY);
+   STATIC_ASSERT(GL_LINE_STRIP            == MESA_PRIM_LINE_STRIP);
+   STATIC_ASSERT(GL_TRIANGLES             == MESA_PRIM_TRIANGLES);
+   STATIC_ASSERT(GL_TRIANGLES_ADJACENCY   == MESA_PRIM_TRIANGLES_ADJACENCY);
+   STATIC_ASSERT(GL_TRIANGLE_STRIP        == MESA_PRIM_TRIANGLE_STRIP);
+
+   return (enum mesa_prim)prim;
 }
 
 /**

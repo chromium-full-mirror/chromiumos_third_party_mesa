@@ -1,15 +1,15 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # shellcheck disable=SC2086 # we want word splitting
 
 set -ex
 
-EPHEMERAL="\
-         autoconf \
-         rdfind \
-         unzip \
-         "
+EPHEMERAL=(
+    autoconf
+    rdfind
+    unzip
+)
 
-apt-get install -y --no-remove $EPHEMERAL
+apt-get install -y --no-remove "${EPHEMERAL[@]}"
 
 # Fetch the NDK and extract just the toolchain we want.
 ndk=$ANDROID_NDK
@@ -27,12 +27,12 @@ sh .gitlab-ci/container/create-android-ndk-pc.sh /$ndk zlib.pc "" "-lz" "1.2.3" 
 
 sh .gitlab-ci/container/create-android-cross-file.sh /$ndk x86_64-linux-android x86_64 x86_64 $ANDROID_SDK_VERSION
 sh .gitlab-ci/container/create-android-cross-file.sh /$ndk i686-linux-android x86 x86 $ANDROID_SDK_VERSION
-sh .gitlab-ci/container/create-android-cross-file.sh /$ndk aarch64-linux-android arm armv8 $ANDROID_SDK_VERSION
+sh .gitlab-ci/container/create-android-cross-file.sh /$ndk aarch64-linux-android aarch64 armv8 $ANDROID_SDK_VERSION
 sh .gitlab-ci/container/create-android-cross-file.sh /$ndk arm-linux-androideabi arm armv7hl $ANDROID_SDK_VERSION armv7a-linux-androideabi
 
 # Not using build-libdrm.sh because we don't want its cleanup after building
 # each arch.  Fetch and extract now.
-export LIBDRM_VERSION=libdrm-2.4.110
+export LIBDRM_VERSION=libdrm-2.4.114
 curl -L --retry 4 -f --retry-all-errors --retry-delay 60 \
   -O https://dri.freedesktop.org/libdrm/$LIBDRM_VERSION.tar.xz
 tar -xf $LIBDRM_VERSION.tar.xz && rm $LIBDRM_VERSION.tar.xz
@@ -45,18 +45,17 @@ for arch in \
 
     cd $LIBDRM_VERSION
     rm -rf build-$arch
-    meson build-$arch \
+    meson setup build-$arch \
           --cross-file=/cross_file-$arch.txt \
           --libdir=lib/$arch \
-          -Dlibkms=false \
-          -Dnouveau=false \
-          -Dvc4=false \
-          -Detnaviv=false \
-          -Dfreedreno=false \
-          -Dintel=false \
-          -Dcairo-tests=false \
-          -Dvalgrind=false
-    ninja -C build-$arch install
+          -Dnouveau=disabled \
+          -Dvc4=disabled \
+          -Detnaviv=disabled \
+          -Dfreedreno=disabled \
+          -Dintel=disabled \
+          -Dcairo-tests=disabled \
+          -Dvalgrind=disabled
+    meson install -C build-$arch
     cd ..
 done
 
@@ -107,4 +106,4 @@ done
 cd ..
 rm -rf $LIBELF_VERSION
 
-apt-get purge -y $EPHEMERAL
+apt-get purge -y "${EPHEMERAL[@]}"

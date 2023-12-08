@@ -1,0 +1,363 @@
+<?xml version='1.0' encoding='utf-8'?>
+<genxml name="XE2" gen="20">
+  <import name="gen125.xml" />
+  <enum name="PREF_SLM_ALLOCATION_SIZE">
+    <value name="SLM_ENCODES_0K" value="0" />
+    <value name="SLM_ENCODES_16K" value="1" />
+    <value name="SLM_ENCODES_32K" value="2" />
+    <value name="SLM_ENCODES_64K" value="3" />
+    <value name="SLM_ENCODES_96K" value="4" />
+    <value name="SLM_ENCODES_128K" value="5" />
+    <value name="SLM_ENCODES_160K" value="6" />
+    <value name="SLM_ENCODES_192K" value="7" />
+    <value name="SLM_ENCODES_224K" value="8" />
+    <value name="SLM_ENCODES_256K" value="9" />
+    <value name="SLM_ENCODES_384K" value="10" />
+  </enum>
+  <struct name="INTERFACE_DESCRIPTOR_DATA" length="8">
+    <field name="Kernel Start Pointer" start="6" end="31" type="offset" />
+    <field name="Software Exception Enable" start="71" end="71" type="bool" />
+    <field name="Illegal Opcode Exception Enable" start="77" end="77" type="bool" />
+    <field name="Floating Point Mode" start="80" end="80" type="uint">
+      <value name="IEEE-754" value="0" />
+      <value name="Alternate" value="1" />
+    </field>
+    <field name="Single Program Flow" start="82" end="82" type="uint">
+      <value name="Multiple" value="0" />
+      <value name="Single" value="1" />
+    </field>
+    <field name="Denorm Mode" start="83" end="83" type="uint">
+      <value name="Ftz" value="0" />
+      <value name="SetByKernel" value="1" />
+    </field>
+    <field name="Thread Preemption" start="84" end="84" type="bool" />
+    <field name="Sampler Count" start="98" end="100" type="uint">
+      <value name="No samplers used" value="0" />
+      <value name="Between 1 and 4 samplers used" value="1" />
+      <value name="Between 5 and 8 samplers used" value="2" />
+      <value name="Between 9 and 12 samplers used" value="3" />
+      <value name="Between 13 and 16 samplers used" value="4" />
+    </field>
+    <field name="Sampler State Pointer" start="101" end="127" type="offset" />
+    <field name="Binding Table Entry Count" start="128" end="132" type="uint">
+      <value name="Prefetch disabled" value="0" />
+    </field>
+    <field name="Binding Table Pointer" start="133" end="148" type="offset" />
+    <field name="Number of Threads in GPGPU Thread Group" start="160" end="169" type="uint" />
+    <field name="Thread group forward progress guarantee" start="173" end="173" type="bool" />
+    <field name="Shared Local Memory Size" start="176" end="180" type="uint" />
+    <field name="Rounding Mode" start="182" end="183" type="uint">
+      <value name="RTNE" value="0" />
+      <value name="RU" value="1" />
+      <value name="RD" value="2" />
+      <value name="RTZ" value="3" />
+    </field>
+    <field name="Thread Group Dispatch Size" start="186" end="187" type="uint">
+      <value name="TG size 8" value="0" />
+      <value name="TG size 4" value="1" />
+      <value name="TG size 2" value="2" />
+      <value name="TG size 1" value="3" />
+    </field>
+    <field name="Number Of Barriers" start="188" end="190" type="uint" />
+    <field name="BTD Mode" start="191" end="191" type="uint" />
+    <field name="Preferred SLM Allocation Size" start="224" end="227" type="PREF_SLM_ALLOCATION_SIZE" />
+  </struct>
+  <struct name="COMPUTE_WALKER_BODY" length="39">
+    <field name="Indirect Data Length" start="32" end="48" type="uint" />
+    <field name="L3 prefetch disable" start="49" end="49" type="bool" />
+    <field name="Partition Dispatch Parameter" start="50" end="61" type="uint" />
+    <field name="Partition Type" start="62" end="63" type="uint">
+      <value name="PartitionX" value="1" />
+      <value name="PartitionY" value="2" />
+      <value name="PartitionZ" value="3" />
+    </field>
+    <field name="Indirect Data Start Address" start="70" end="95" type="offset" />
+    <field name="Compute Dispatch All walker Enable" start="96" end="96" type="uint">
+      <value name="Disabled" value="0" />
+      <value name="Enabled" value="1" />
+    </field>
+    <field name="Dispatch Walk Order" start="101" end="102" type="uint">
+      <value name="Linear Walk" value="0" />
+      <value name="Y order walk" value="1" />
+      <value name="Morton Walk" value="2" />
+    </field>
+    <field name="Message SIMD" start="113" end="114" type="uint">
+      <value name="SIMT16" value="1" />
+      <value name="SIMT32" value="2" />
+    </field>
+    <field name="Tile Layout" start="115" end="117" type="uint">
+      <value name="Linear" value="0" />
+      <value name="TileY 32bpe" value="1" />
+      <value name="TileY 64bpe" value="2" />
+      <value name="TileY 128bpe" value="3" />
+    </field>
+    <field name="Walk Order" start="118" end="120" type="uint">
+      <value name="Walk 012" value="0" />
+      <value name="Walk 021" value="1" />
+      <value name="Walk 102" value="2" />
+      <value name="Walk 120" value="3" />
+      <value name="Walk 201" value="4" />
+      <value name="Walk 210" value="5" />
+    </field>
+    <field name="Emit Inline Parameter" start="121" end="121" type="bool" />
+    <field name="Emit Local" start="122" end="124" type="uint">
+      <value name="Emit None" value="0" />
+      <value name="Emit X" value="1" />
+      <value name="Emit XY" value="3" />
+      <value name="Emit XYZ" value="7" />
+    </field>
+    <field name="Generate Local ID" start="125" end="125" type="bool" />
+    <field name="SIMD Size" start="126" end="127" type="uint">
+      <value name="SIMT16" value="1" />
+      <value name="SIMT32" value="2" />
+    </field>
+    <field name="Execution Mask" start="128" end="159" type="uint" />
+    <field name="Local X Maximum" start="160" end="169" type="uint" />
+    <field name="Local Y Maximum" start="170" end="179" type="uint" />
+    <field name="Local Z Maximum" start="180" end="189" type="uint" />
+    <field name="Thread Group ID X Dimension" start="192" end="223" type="uint" />
+    <field name="Thread Group ID Y Dimension" start="224" end="255" type="uint" />
+    <field name="Thread Group ID Z Dimension" start="256" end="287" type="uint" />
+    <field name="Thread Group ID Starting X" start="288" end="319" type="uint" />
+    <field name="Thread Group ID Starting Y" start="320" end="351" type="uint" />
+    <field name="Thread Group ID Starting Z" start="352" end="383" type="uint" />
+    <field name="Partition ID" start="384" end="415" type="uint" />
+    <field name="Partition Size" start="416" end="447" type="uint" />
+    <field name="Preempt X" start="448" end="479" type="uint" />
+    <field name="Preempt Y" start="480" end="511" type="uint" />
+    <field name="Preempt Z" start="512" end="543" type="uint" />
+    <field name="Walker ID" start="544" end="547" type="uint" />
+    <field name="Over dispatch TG count" start="552" end="567" type="uint" />
+    <field name="Interface Descriptor" start="576" end="831" type="INTERFACE_DESCRIPTOR_DATA" />
+    <field name="Post Sync" start="832" end="991" type="POSTSYNC_DATA" />
+    <group count="8" start="992" size="32">
+      <field name="Inline Data" start="0" end="31" type="uint" />
+    </group>
+  </struct>
+  <instruction name="3DSTATE_TE" bias="2" length="5" engine="render">
+    <field name="DWord Length" start="0" end="7" type="uint" default="3" />
+    <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="28" />
+    <field name="3D Command Opcode" start="24" end="26" type="uint" default="0" />
+    <field name="Command SubType" start="27" end="28" type="uint" default="3" />
+    <field name="Command Type" start="29" end="31" type="uint" default="3" />
+    <field name="TE Enable" start="32" end="32" type="bool" />
+    <field name="TE Mode" start="33" end="34" type="uint">
+      <value name="HW_TESS" value="0" />
+      <value name="FORCE_MIN" value="3" />
+    </field>
+    <field name="TE Domain" start="36" end="37" type="uint">
+      <value name="QUAD" value="0" />
+      <value name="TRI" value="1" />
+      <value name="ISOLINE" value="2" />
+    </field>
+    <field name="Output Topology" start="40" end="41" type="uint" prefix="OUTPUT">
+      <value name="POINT" value="0" />
+      <value name="LINE" value="1" />
+      <value name="TRI_CW" value="2" />
+      <value name="TRI_CCW" value="3" />
+    </field>
+    <field name="Partitioning" start="44" end="45" type="uint">
+      <value name="INTEGER" value="0" />
+      <value name="ODD_FRACTIONAL" value="1" />
+      <value name="EVEN_FRACTIONAL" value="2" />
+      <value name="POW2" value="3" />
+    </field>
+    <field name="Tessellation Distribution Mode" start="46" end="47" type="uint">
+      <value name="TEDMODE_OFF" value="0" />
+      <value name="TEDMODE_RR_STRICT" value="1" />
+      <value name="TEDMODE_RR_FREE" value="2" />
+    </field>
+    <field name="Tessellation Distribution Level" start="49" end="50" type="uint">
+      <value name="TEDLEVEL_PATCH" value="0" />
+      <value name="TEDLEVEL_REGION" value="1" />
+    </field>
+    <field name="Tessellation Scale Factor Enable" start="51" end="51" type="bool" />
+    <field name="Tessellation Factor Format" start="52" end="52" type="uint">
+      <value name="FLOAT32" value="0" />
+      <value name="FLOAT16" value="1" />
+    </field>
+    <field name="Patch Header Layout" start="54" end="55" type="uint">
+      <value name="LEGACY" value="0" />
+      <value name="REVERSED" value="2" />
+      <value name="REVERSED_TRI_INSIDE_SEPARATE" value="3" />
+    </field>
+    <field name="Small Patch Threshold" start="56" end="57" type="uint" prefix="SPT">
+      <value name="8_TRIANGLES" value="0" />
+      <value name="16_TRIANGLES" value="1" />
+      <value name="32_TRIANGLES" value="2" />
+      <value name="64_TRIANGLES" value="3" />
+    </field>
+    <field name="Target Block Size" start="58" end="61" type="uint">
+      <value name="64_TRIANGLES" value="0" />
+      <value name="96_TRIANGLES" value="1" />
+      <value name="128_TRIANGLES" value="2" />
+      <value name="192_TRIANGLES" value="3" />
+      <value name="256_TRIANGLES" value="4" />
+      <value name="384_TRIANGLES" value="5" />
+      <value name="512_TRIANGLES" value="6" />
+      <value name="768_TRIANGLES" value="7" />
+      <value name="1K_TRIANGLES" value="8" />
+      <value name="1.5K_TRIANGLES" value="9" />
+      <value name="2K_TRIANGLES" value="10" />
+      <value name="3K_TRIANGLES" value="11" />
+      <value name="4K_TRIANGLES" value="12" />
+      <value name="6K_TRIANGLES" value="13" />
+      <value name="8K_TRIANGLES" value="14" />
+      <value name="12K_TRIANGLES" value="15" />
+    </field>
+    <field name="Local BOP Accumulator Threshold" start="62" end="63" type="uint">
+      <value name="MULTIPLIER_0" value="0" />
+      <value name="MULTIPLIER_1" value="1" />
+      <value name="MULTIPLIER_2" value="2" />
+      <value name="MULTIPLIER_4" value="3" />
+    </field>
+    <field name="Maximum Tessellation Factor Odd" start="64" end="95" type="float" />
+    <field name="Maximum Tessellation Factor Not Odd" start="96" end="127" type="float" />
+    <field name="Tessellation Scale Factor" start="128" end="159" type="float" />
+  </instruction>
+  <instruction name="COMPUTE_WALKER" bias="2" length="40">
+    <field name="DWord Length" start="0" end="7" type="uint" default="38" />
+    <field name="Predicate Enable" start="8" end="8" type="bool" />
+    <field name="Workload Partition Enable" start="9" end="9" type="bool" />
+    <field name="Indirect Parameter Enable" start="10" end="10" type="bool" />
+    <field name="Systolic Mode Enable" start="14" end="14" type="bool" />
+    <field name="CFE SubOpcode Variant" start="16" end="17" type="uint" default="0" />
+    <field name="CFE SubOpcode" start="18" end="23" type="uint" default="2" />
+    <field name="Compute Command Opcode" start="24" end="26" type="uint" default="2" />
+    <field name="Pipeline" start="27" end="28" type="uint" default="2" />
+    <field name="Command Type" start="29" end="31" type="uint" default="3" />
+    <field name="Indirect Data Length" start="64" end="80" type="uint" />
+    <field name="L3 prefetch disable" start="81" end="81" type="bool" />
+    <field name="Partition Type" start="94" end="95" type="uint">
+      <value name="WALKER_PARTITION_X" value="1" />
+      <value name="WALKER_PARTITION_Y" value="2" />
+      <value name="WALKER_PARTITION_Z" value="3" />
+    </field>
+    <field name="Indirect Data Start Address" start="102" end="127" type="offset" />
+    <field name="Message SIMD" start="145" end="146" type="uint">
+      <value name="SIMT16" value="1" />
+      <value name="SIMT32" value="2" />
+    </field>
+    <field name="Tile Layout" start="147" end="149" type="uint">
+      <value name="Linear" value="0" />
+      <value name="TileY 32bpe" value="1" />
+      <value name="TileY 64bpe" value="2" />
+      <value name="TileY 128bpe" value="3" />
+    </field>
+    <field name="Walk Order" start="150" end="152" type="uint">
+      <value name="Walk 012" value="0" />
+      <value name="Walk 021" value="1" />
+      <value name="Walk 102" value="2" />
+      <value name="Walk 120" value="3" />
+      <value name="Walk 201" value="4" />
+      <value name="Walk 210" value="5" />
+    </field>
+    <field name="Emit Inline Parameter" start="153" end="153" type="bool" />
+    <field name="Emit Local" start="154" end="156" type="uint">
+      <value name="Emit None" value="0" />
+      <value name="Emit X" value="1" />
+      <value name="Emit XY" value="3" />
+      <value name="Emit XYZ" value="7" />
+    </field>
+    <field name="Generate Local ID" start="157" end="157" type="bool" />
+    <field name="SIMD Size" start="158" end="159" type="uint">
+      <value name="SIMT16" value="1" />
+      <value name="SIMT32" value="2" />
+    </field>
+    <field name="Execution Mask" start="160" end="191" type="uint" />
+    <field name="Local X Maximum" start="192" end="201" type="uint" />
+    <field name="Local Y Maximum" start="202" end="211" type="uint" />
+    <field name="Local Z Maximum" start="212" end="221" type="uint" />
+    <field name="Thread Group ID X Dimension" start="224" end="255" type="uint" />
+    <field name="Thread Group ID Y Dimension" start="256" end="287" type="uint" />
+    <field name="Thread Group ID Z Dimension" start="288" end="319" type="uint" />
+    <field name="Thread Group ID Starting X" start="320" end="351" type="uint" />
+    <field name="Thread Group ID Starting Y" start="352" end="383" type="uint" />
+    <field name="Thread Group ID Starting Z" start="384" end="415" type="uint" />
+    <field name="Partition ID" start="416" end="447" type="uint" />
+    <field name="Partition Size" start="448" end="479" type="uint" />
+    <field name="Preempt X" start="480" end="511" type="uint" />
+    <field name="Preempt Y" start="512" end="543" type="uint" />
+    <field name="Preempt Z" start="544" end="575" type="uint" />
+    <field name="Interface Descriptor" start="608" end="863" type="INTERFACE_DESCRIPTOR_DATA" />
+    <field name="Post Sync" start="864" end="1023" type="POSTSYNC_DATA" />
+    <group count="8" start="1024" size="32">
+      <field name="Inline Data" start="0" end="31" type="uint" />
+    </group>
+  </instruction>
+  <instruction name="EXECUTE_INDIRECT_DISPATCH" bias="2" length="45">
+    <field name="DWord Length" start="0" end="7" type="uint" default="43" />
+    <field name="Predicate Enable" start="8" end="8" type="bool" />
+    <field name="MOCS" start="12" end="15" type="uint" nonzero="true" />
+    <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="1" />
+    <field name="3D Command Opcode" start="24" end="26" type="uint" default="4" />
+    <field name="Command SubType" start="27" end="28" type="uint" default="3" />
+    <field name="Command Type" start="29" end="31" type="uint" default="3" />
+    <field name="Max Count" start="32" end="63" type="uint" />
+    <field name="Count Buffer Indirect Enable" start="64" end="64" type="bool" />
+    <field name="Count Buffer Address" start="66" end="127" type="address" />
+    <field name="Argument Buffer Start Address" start="130" end="191" type="address" />
+    <field name="COMPUTE_WALKER_BODY" start="192" end="1439" type="COMPUTE_WALKER_BODY" />
+  </instruction>
+  <instruction name="PIPELINE_SELECT" bias="1" length="1" engine="render">
+    <field name="Pipeline Selection" start="0" end="1" type="uint">
+      <value name="3D" value="0" />
+      <value name="Media" value="1" />
+      <value name="GPGPU" value="2" />
+    </field>
+    <field name="Mask Bits" start="8" end="15" type="uint" />
+    <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="4" />
+    <field name="3D Command Opcode" start="24" end="26" type="uint" default="1" />
+    <field name="Command SubType" start="27" end="28" type="uint" default="1" />
+    <field name="Command Type" start="29" end="31" type="uint" default="3" />
+  </instruction>
+  <instruction name="PIPE_CONTROL" bias="2" length="6" engine="render">
+    <field name="DWord Length" start="0" end="7" type="uint" default="4" />
+    <field name="HDC Pipeline Flush Enable" start="9" end="9" type="bool" />
+    <field name="L3 Read Only Cache Invalidation Enable" start="10" end="10" type="bool" />
+    <field name="Untyped Data Port Cache Flush Enable" start="11" end="11" type="bool" />
+    <field name="CCS Flush Enable" start="13" end="13" type="bool" />
+    <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="0" />
+    <field name="3D Command Opcode" start="24" end="26" type="uint" default="2" />
+    <field name="Command SubType" start="27" end="28" type="uint" default="3" />
+    <field name="Command Type" start="29" end="31" type="uint" default="3" />
+    <field name="Depth Cache Flush Enable" start="32" end="32" type="bool" />
+    <field name="Stall At Pixel Scoreboard" start="33" end="33" type="bool" />
+    <field name="State Cache Invalidation Enable" start="34" end="34" type="bool" />
+    <field name="Constant Cache Invalidation Enable" start="35" end="35" type="bool" />
+    <field name="VF Cache Invalidation Enable" start="36" end="36" type="bool" />
+    <field name="DC Flush Enable" start="37" end="37" type="bool" />
+    <field name="Pipe Control Flush Enable" start="39" end="39" type="bool" />
+    <field name="Notify Enable" start="40" end="40" type="bool" />
+    <field name="Indirect State Pointers Disable" start="41" end="41" type="bool" />
+    <field name="Texture Cache Invalidation Enable" start="42" end="42" type="bool" />
+    <field name="Instruction Cache Invalidate Enable" start="43" end="43" type="bool" />
+    <field name="Render Target Cache Flush Enable" start="44" end="44" type="bool" />
+    <field name="Depth Stall Enable" start="45" end="45" type="bool" />
+    <field name="Post Sync Operation" start="46" end="47" type="uint">
+      <value name="No Write" value="0" />
+      <value name="Write Immediate Data" value="1" />
+      <value name="Write PS Depth Count" value="2" />
+      <value name="Write Timestamp" value="3" />
+    </field>
+    <field name="PSS Stall Sync Enable" start="49" end="49" type="bool" />
+    <field name="TLB Invalidate" start="50" end="50" type="bool" />
+    <field name="Depth Stall Sync Enable" start="51" end="51" type="bool" />
+    <field name="Command Streamer Stall Enable" start="52" end="52" type="bool" />
+    <field name="Store Data Index" start="53" end="53" type="uint" />
+    <field name="Protected Memory Enable" start="54" end="54" type="bool" />
+    <field name="LRI Post Sync Operation" start="55" end="55" type="uint">
+      <value name="No LRI Operation" value="0" />
+      <value name="MMIO Write Immediate Data" value="1" />
+    </field>
+    <field name="Destination Address Type" start="56" end="56" type="uint" prefix="DAT">
+      <value name="PPGTT" value="0" />
+      <value name="GGTT" value="1" />
+    </field>
+    <field name="Flush LLC" start="58" end="58" type="bool" />
+    <field name="Protected Memory Disable" start="59" end="59" type="bool" />
+    <field name="Command Cache Invalidate Enable" start="61" end="61" type="bool" />
+    <field name="Address" start="66" end="111" type="address" />
+    <field name="Immediate Data" start="128" end="191" type="uint" />
+  </instruction>
+</genxml>

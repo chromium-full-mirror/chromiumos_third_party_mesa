@@ -309,12 +309,12 @@ virgl_resource_transfer_prepare(struct virgl_context *vctx,
 static unsigned
 virgl_transfer_map_size(struct virgl_transfer *vtransfer,
                         unsigned *out_stride,
-                        unsigned *out_layer_stride)
+                        uintptr_t *out_layer_stride)
 {
    struct pipe_resource *pres = vtransfer->base.resource;
    struct pipe_box *box = &vtransfer->base.box;
    unsigned stride;
-   unsigned layer_stride;
+   uintptr_t layer_stride;
    unsigned size;
 
    assert(out_stride);
@@ -349,7 +349,7 @@ virgl_staging_map(struct virgl_context *vctx,
    unsigned size;
    unsigned align_offset;
    unsigned stride;
-   unsigned layer_stride;
+   uintptr_t layer_stride;
    void *map_addr;
    bool alloc_succeeded;
 
@@ -762,7 +762,8 @@ static struct pipe_resource *virgl_resource_from_handle(struct pipe_screen *scre
 
    /* assign blob resource a type in case it was created untyped */
    if (res->blob_mem && plane == 0 &&
-       (vs->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_UNTYPED_RESOURCE)) {
+       (vs->caps.caps.v2.host_feature_check_version >= 18 ||
+	(vs->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_UNTYPED_RESOURCE))) {
       uint32_t plane_strides[VIRGL_MAX_PLANE_COUNT];
       uint32_t plane_offsets[VIRGL_MAX_PLANE_COUNT];
       uint32_t plane_count = 0;
@@ -808,6 +809,28 @@ static struct pipe_resource *virgl_resource_from_handle(struct pipe_screen *scre
    return &res->b;
 }
 
+static bool
+virgl_resource_get_param(struct pipe_screen *screen,
+                         struct pipe_context *context,
+                         struct pipe_resource *resource,
+                         unsigned plane,
+                         unsigned layer,
+                         unsigned level,
+                         enum pipe_resource_param param,
+                         unsigned handle_usage,
+                         uint64_t *value)
+{
+   struct virgl_resource *res = virgl_resource(resource);
+
+   switch(param) {
+   case PIPE_RESOURCE_PARAM_MODIFIER:
+      *value = res->metadata.modifier;
+      return true;
+   default:
+      return false;
+   }
+}
+
 void virgl_init_screen_resource_functions(struct pipe_screen *screen)
 {
     screen->resource_create_front = virgl_resource_create_front;
@@ -815,6 +838,7 @@ void virgl_init_screen_resource_functions(struct pipe_screen *screen)
     screen->resource_from_handle = virgl_resource_from_handle;
     screen->resource_get_handle = virgl_resource_get_handle;
     screen->resource_destroy = virgl_resource_destroy;
+    screen->resource_get_param = virgl_resource_get_param;
 }
 
 static void virgl_buffer_subdata(struct pipe_context *pipe,

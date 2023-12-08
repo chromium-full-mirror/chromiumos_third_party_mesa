@@ -157,7 +157,7 @@ bo_can_reclaim(struct zink_screen *screen, struct pb_buffer *pbuf)
 {
    struct zink_bo *bo = zink_bo(pbuf);
 
-   return zink_screen_usage_check_completion(screen, bo->reads) && zink_screen_usage_check_completion(screen, bo->writes);
+   return zink_screen_usage_check_completion(screen, bo->reads.u) && zink_screen_usage_check_completion(screen, bo->writes.u);
 }
 
 static bool
@@ -193,16 +193,18 @@ bo_slab_destroy(struct zink_screen *screen, struct pb_buffer *pbuf)
       pb_slab_free(get_slabs(screen, bo->base.size, 0), &bo->u.slab.entry);
 }
 
-static void
+static bool
 clean_up_buffer_managers(struct zink_screen *screen)
 {
+   unsigned num_reclaims = 0;
    for (unsigned i = 0; i < NUM_SLAB_ALLOCATORS; i++) {
-      pb_slabs_reclaim(&screen->pb.bo_slabs[i]);
+      num_reclaims += pb_slabs_reclaim(&screen->pb.bo_slabs[i]);
       //if (screen->info.has_tmz_support)
          //pb_slabs_reclaim(&screen->bo_slabs_encrypted[i]);
    }
 
-   pb_cache_release_all_buffers(&screen->pb.bo_cache);
+   num_reclaims += pb_cache_release_all_buffers(&screen->pb.bo_cache);
+   return !!num_reclaims;
 }
 
 static unsigned
@@ -227,8 +229,8 @@ bo_destroy_or_cache(struct zink_screen *screen, struct pb_buffer *pbuf)
    struct zink_bo *bo = zink_bo(pbuf);
 
    assert(bo->mem); /* slab buffers have a separate vtbl */
-   bo->reads = NULL;
-   bo->writes = NULL;
+   bo->reads.u = NULL;
+   bo->writes.u = NULL;
 
    if (bo->u.real.use_reusable_pool)
       pb_cache_add_buffer(bo->cache_entry);
@@ -254,10 +256,6 @@ bo_create_internal(struct zink_screen *screen,
    struct zink_bo *bo = NULL;
    bool init_pb_cache;
 
-   /* too big for vk alloc */
-   if (size > UINT32_MAX)
-      return NULL;
-
    alignment = get_optimal_alignment(screen, size, alignment);
 
    VkMemoryAllocateFlagsInfo ai;
@@ -265,13 +263,20 @@ bo_create_internal(struct zink_screen *screen,
    ai.pNext = pNext;
    ai.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT_KHR;
    ai.deviceMask = 0;
+   if (screen->info.have_KHR_buffer_device_address)
+      pNext = &ai;
+
+   VkMemoryPriorityAllocateInfoEXT prio = {
+      VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT,
+      pNext,
+      (flags & ZINK_ALLOC_NO_SUBALLOC) ? 1.0 : 0.5,
+   };
+   if (screen->info.have_EXT_memory_priority)
+      pNext = &prio;
 
    VkMemoryAllocateInfo mai;
    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-   if (screen->info.have_KHR_buffer_device_address)
-      mai.pNext = &ai;
-   else
-      mai.pNext = pNext;
+   mai.pNext = pNext;
    mai.allocationSize = size;
    mai.memoryTypeIndex = mem_type_idx;
    if (screen->info.mem_props.memoryTypes[mai.memoryTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
@@ -296,6 +301,11 @@ bo_create_internal(struct zink_screen *screen,
    VkResult ret = VKSCR(AllocateMemory)(screen->dev, &mai, NULL, &bo->mem);
    if (!zink_screen_handle_vkresult(screen, ret)) {
       mesa_loge("zink: couldn't allocate memory: heap=%u size=%" PRIu64, heap, size);
+      if (zink_debug & ZINK_DEBUG_MEM) {
+         zink_debug_mem_print_stats(screen);
+         /* abort with mem debug to allow debugging */
+         abort();
+      }
       goto fail;
    }
 
@@ -617,9 +627,8 @@ zink_bo_create(struct zink_screen *screen, uint64_t size, unsigned alignment, en
       entry = pb_slab_alloc_reclaimed(slabs, alloc_size, mem_type_idx, reclaim_all);
       if (!entry) {
          /* Clean up buffer managers and try again. */
-         clean_up_buffer_managers(screen);
-
-         entry = pb_slab_alloc_reclaimed(slabs, alloc_size, mem_type_idx, true);
+         if (clean_up_buffer_managers(screen))
+            entry = pb_slab_alloc_reclaimed(slabs, alloc_size, mem_type_idx, true);
       }
       if (!entry)
          return NULL;
@@ -664,9 +673,8 @@ no_slab:
    bo = bo_create_internal(screen, size, alignment, heap, mem_type_idx, flags, pNext);
    if (!bo) {
       /* Clean up buffer managers and try again. */
-      clean_up_buffer_managers(screen);
-
-      bo = bo_create_internal(screen, size, alignment, heap, mem_type_idx, flags, pNext);
+      if (clean_up_buffer_managers(screen))
+         bo = bo_create_internal(screen, size, alignment, heap, mem_type_idx, flags, pNext);
       if (!bo)
          return NULL;
    }
@@ -732,6 +740,14 @@ zink_bo_unmap(struct zink_screen *screen, struct zink_bo *bo)
    }
 }
 
+/* see comment in zink_batch_reference_resource_move for how references on sparse backing buffers are organized */
+static void
+track_freed_sparse_bo(struct zink_context *ctx, struct zink_sparse_backing *backing)
+{
+   pipe_reference(NULL, &backing->bo->base.reference);
+   util_dynarray_append(&ctx->batch.state->freed_sparse_backing_bos, struct zink_bo*, backing->bo);
+}
+
 static VkSemaphore
 buffer_commit_single(struct zink_screen *screen, struct zink_resource *res, struct zink_bo *bo, uint32_t bo_offset, uint32_t offset, uint32_t size, bool commit, VkSemaphore wait)
 {
@@ -768,9 +784,10 @@ buffer_commit_single(struct zink_screen *screen, struct zink_resource *res, stru
 }
 
 static bool
-buffer_bo_commit(struct zink_screen *screen, struct zink_resource *res, uint32_t offset, uint32_t size, bool commit, VkSemaphore *sem)
+buffer_bo_commit(struct zink_context *ctx, struct zink_resource *res, uint32_t offset, uint32_t size, bool commit, VkSemaphore *sem)
 {
    bool ok = true;
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
    struct zink_bo *bo = res->obj->bo;
    assert(offset % ZINK_SPARSE_BUFFER_PAGE_SIZE == 0);
    assert(offset <= bo->base.size);
@@ -869,6 +886,7 @@ buffer_bo_commit(struct zink_screen *screen, struct zink_resource *res, uint32_t
             span_pages++;
          }
 
+         track_freed_sparse_bo(ctx, backing);
          if (!sparse_backing_free(screen, bo, backing, backing_start, span_pages)) {
             /* Couldn't allocate tracking data structures, so we have to leak */
             fprintf(stderr, "zink: leaking sparse backing memory\n");
@@ -939,9 +957,10 @@ texture_commit_miptail(struct zink_screen *screen, struct zink_resource *res, st
 }
 
 bool
-zink_bo_commit(struct zink_screen *screen, struct zink_resource *res, unsigned level, struct pipe_box *box, bool commit, VkSemaphore *sem)
+zink_bo_commit(struct zink_context *ctx, struct zink_resource *res, unsigned level, struct pipe_box *box, bool commit, VkSemaphore *sem)
 {
    bool ok = true;
+   struct zink_screen *screen = zink_screen(ctx->base.screen);
    struct zink_bo *bo = res->obj->bo;
    VkSemaphore cur_sem = VK_NULL_HANDLE;
 
@@ -951,7 +970,7 @@ zink_bo_commit(struct zink_screen *screen, struct zink_resource *res, unsigned l
    simple_mtx_lock(&screen->queue_lock);
    simple_mtx_lock(&bo->lock);
    if (res->base.b.target == PIPE_BUFFER) {
-      ok = buffer_bo_commit(screen, res, box->x, box->width, commit, sem);
+      ok = buffer_bo_commit(ctx, res, box->x, box->width, commit, &cur_sem);
       goto out;
    }
 
@@ -1120,8 +1139,8 @@ zink_bo_commit(struct zink_screen *screen, struct zink_resource *res, unsigned l
                fprintf(stderr, "zink: leaking sparse backing memory\n");
             }
          }
+         ok = false;
       }
-      ok = false;
    }
 out:
 

@@ -30,7 +30,12 @@
 #include "compiler/glsl/list.h"
 
 #define MAX_SAMPLER_MESSAGE_SIZE 11
-#define MAX_VGRF_SIZE 16
+
+/* The sampler can return a vec5 when sampling with sparse residency. In
+ * SIMD32, each component takes up 4 GRFs, so we need to allow up to size-20
+ * VGRFs to hold the result.
+ */
+#define MAX_VGRF_SIZE(devinfo) ((devinfo)->ver >= 20 ? 40 : 20)
 
 #ifdef __cplusplus
 struct backend_reg : private brw_reg
@@ -91,8 +96,9 @@ struct bblock_t;
 
 struct backend_instruction : public exec_node {
    bool is_3src(const struct brw_compiler *compiler) const;
-   bool is_tex() const;
    bool is_math() const;
+   bool is_control_flow_begin() const;
+   bool is_control_flow_end() const;
    bool is_control_flow() const;
    bool is_commutative() const;
    bool can_do_source_mods() const;
@@ -110,7 +116,6 @@ struct backend_instruction : public exec_node {
    void remove(bblock_t *block, bool defer_later_block_ip_updates = false);
    void insert_after(bblock_t *block, backend_instruction *inst);
    void insert_before(bblock_t *block, backend_instruction *inst);
-   void insert_before(bblock_t *block, exec_list *list);
 
    /**
     * True if the instruction has side effects other than writing to
@@ -178,6 +183,9 @@ struct backend_instruction {
                                  *   the scratch surface offset to build
                                  *   extended descriptor
                                  */
+   bool send_ex_bso:1; /**< Only for SHADER_OPCODE_SEND, use extended bindless
+                        *   surface offset (26bits instead of 20bits)
+                        */
    bool predicate_trivial:1; /**< The predication mask applied to this
                               *   instruction is guaranteed to be uniform and
                               *   a superset of the execution mask of the

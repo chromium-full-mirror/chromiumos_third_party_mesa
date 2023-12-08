@@ -28,28 +28,31 @@
 #include "dev/intel_device_info.h"
 
 #include "util/macros.h" /* Needed for MAX3 and MAX2 for format_rgb9e5 */
-#include "util/format_srgb.h"
-#include "util/format_rgb9e5.h"
-#include "util/format_r11g11b10f.h"
 
-/* Header-only format conversion include */
-#include "main/format_utils.h"
+#include "util/format/format_utils.h"
+#include "util/format_r11g11b10f.h"
+#include "util/format_rgb9e5.h"
+#include "util/format_srgb.h"
+#include "util/half_float.h"
+#include "util/rounding.h"
+#include "util/u_math.h"
 
 struct surface_format_info {
    bool exists;
-   uint8_t sampling;
-   uint8_t filtering;
-   uint8_t shadow_compare;
-   uint8_t chroma_key;
-   uint8_t render_target;
-   uint8_t alpha_blend;
-   uint8_t input_vb;
-   uint8_t streamed_output_vb;
-   uint8_t color_processing;
-   uint8_t typed_write;
-   uint8_t typed_read;
-   uint8_t typed_atomics;
-   uint8_t ccs_e;
+   /* These fields must fit the largest verx10 value. */
+   uint16_t sampling;
+   uint16_t filtering;
+   uint16_t shadow_compare;
+   uint16_t chroma_key;
+   uint16_t render_target;
+   uint16_t alpha_blend;
+   uint16_t input_vb;
+   uint16_t streamed_output_vb;
+   uint16_t color_processing;
+   uint16_t typed_write;
+   uint16_t typed_read;
+   uint16_t typed_atomics;
+   uint16_t ccs_e;
 };
 
 /* This macro allows us to write the table almost as it appears in the PRM,
@@ -59,7 +62,7 @@ struct surface_format_info {
    [ISL_FORMAT_##sf] = { true, sampl, filt, shad, ck, rt, ab, vb, so, color, tw, tr, ta, ccs_e},
 
 #define Y 0
-#define x 255
+#define x 0xFFFF
 /**
  * This is the table of support for surface (texture, renderbuffer, and vertex
  * buffer, but not depthbuffer) formats across the various hardware generations.
@@ -147,12 +150,12 @@ static const struct surface_format_info format_info[] = {
    SF(  x,   x,   x,   x,   x,   x,   Y,   x,   x,   x,   x,   x,    x,  R32G32_USCALED)
    SF(  x,   x,   x,   x,   x,   x,  75,   x,   x,   x,   x,   x,    x,  R32G32_SFIXED)
    SF(  x,   x,   x,   x,   x,   x,  80,   x,   x,   x,   x,   x,   90,  R64_PASSTHRU)
-   SF(  Y,   Y,   x,   Y,   Y,   Y,   Y,   x,  60,  70,   x,  90,    x,  B8G8R8A8_UNORM)
+   SF(  Y,   Y,   x,   Y,   Y,   Y,   Y,   x,  60,  70, 125,  90,    x,  B8G8R8A8_UNORM)
    SF(  Y,   Y,   x,   x,   Y,   Y,   x,   x,   x,   x,   x, 110,    x,  B8G8R8A8_UNORM_SRGB)
 /*    smpl filt  shad  CK   RT   AB   VB   SO color TW   TR  ccs_e  TA */
-   SF(  Y,   Y,   x,   x,   Y,   Y,   Y,   x,  60,  70,   x, 110,    x,  R10G10B10A2_UNORM)
+   SF(  Y,   Y,   x,   x,   Y,   Y,   Y,   x,  60,  70, 125, 110,    x,  R10G10B10A2_UNORM)
    SF(  Y,   Y,   x,   x,   x,   x,   x,   x,  60,   x,   x, 120,    x,  R10G10B10A2_UNORM_SRGB)
-   SF(  Y,   x,   x,   x,   Y,   x,   Y,   x,   x,  70,   x, 110,    x,  R10G10B10A2_UINT)
+   SF(  Y,   x,   x,   x,   Y,   x,   Y,   x,   x,  70, 125, 110,    x,  R10G10B10A2_UINT)
    SF(  Y,   Y,   x,   x,   x,   x,   Y,   x,   x,   x,   x,   x,    x,  R10G10B10_SNORM_A2_UNORM)
    SF(  Y,   Y,   x,   x,   Y,   Y,   Y,   x,  60,  70, 110,  90,    x,  R8G8B8A8_UNORM)
    SF(  Y,   Y,   x,   x,   Y,   Y,   x,   x,  60,   x,   x, 110,    x,  R8G8B8A8_UNORM_SRGB)
@@ -164,10 +167,10 @@ static const struct surface_format_info format_info[] = {
    SF(  Y,   x,   x,   x,   Y,   x,   Y,   x,   x,  70,  90,  90,    x,  R16G16_SINT)
    SF(  Y,   x,   x,   x,   Y,   x,   Y,   x,   x,  70,  75,  90,    x,  R16G16_UINT)
    SF(  Y,   Y,   x,   x,   Y,   Y,   Y,   x,   x,  70,  90,  90,    x,  R16G16_FLOAT)
-   SF(  Y,   Y,   x,   x,   Y,   Y,  75,   x,  60,  70,   x, 110,    x,  B10G10R10A2_UNORM)
+   SF(  Y,   Y,   x,   x,   Y,   Y,  75,   x,  60,  70, 125, 110,    x,  B10G10R10A2_UNORM)
    SF(  Y,   Y,   x,   x,   Y,   Y,   x,   x,  60,   x,   x, 110,    x,  B10G10R10A2_UNORM_SRGB)
-   SF(  Y,   Y,   x,   x,   Y,   Y,   Y,   x,   x,  70,   x, 110,    x,  R11G11B10_FLOAT)
-   SF(120, 120,   x,   x, 120, 120,   x,   x,   x,   x,   x, 120,    x,  R10G10B10_FLOAT_A2_UNORM)
+   SF(  Y,   Y,   x,   x,   Y,   Y,   Y,   x,   x,  70, 125, 110,    x,  R11G11B10_FLOAT)
+   SF(120, 120,   x,   x, 120, 120,   x,   x,   x, 125, 125, 120,    x,  R10G10B10_FLOAT_A2_UNORM)
    SF(  Y,   x,   x,   x,   Y,   x,   Y,   Y,   x,  70,  70,  90,   70,  R32_SINT)
    SF(  Y,   x,   x,   x,   Y,   x,   Y,   Y,   x,  70,  70,  90,   70,  R32_UINT)
    SF(  Y,  50,   Y,   x,   Y,   Y,   Y,   Y,   x,  70,  70,  90,  110,  R32_FLOAT)
@@ -703,6 +706,9 @@ isl_format_supports_rendering(const struct intel_device_info *devinfo,
    if (!format_info_exists(format))
       return false;
 
+   /* If this fails, then we need to update struct surface_format_info */
+   assert(devinfo->verx10 <
+          (1ul << (8 * sizeof(format_info[format].render_target))));
    return devinfo->verx10 >= format_info[format].render_target;
 }
 
@@ -876,12 +882,8 @@ bool
 isl_format_supports_ccs_e(const struct intel_device_info *devinfo,
                           enum isl_format format)
 {
-   /* Wa_14017353530: Disable compression on MTL until B0 */
-   if (intel_device_info_is_mtl(devinfo) && devinfo->revision < 4)
-      return false;
-
-   /* Wa_22011186057: Disable compression on ADL-P A0 */
-   if (devinfo->platform == INTEL_PLATFORM_ADL && devinfo->gt == 2 && devinfo->revision == 0)
+   /* Disable compression on MTL until B0 */
+   if (intel_needs_workaround(devinfo, 14017240301))
       return false;
 
    if (!format_info_exists(format))
@@ -971,7 +973,10 @@ isl_formats_have_same_bits_per_channel(enum isl_format format1,
    return fmtl1->channels.r.bits == fmtl2->channels.r.bits &&
           fmtl1->channels.g.bits == fmtl2->channels.g.bits &&
           fmtl1->channels.b.bits == fmtl2->channels.b.bits &&
-          fmtl1->channels.a.bits == fmtl2->channels.a.bits;
+          fmtl1->channels.a.bits == fmtl2->channels.a.bits &&
+          fmtl1->channels.l.bits == fmtl2->channels.l.bits &&
+          fmtl1->channels.i.bits == fmtl2->channels.i.bits &&
+          fmtl1->channels.p.bits == fmtl2->channels.p.bits;
 }
 
 /**

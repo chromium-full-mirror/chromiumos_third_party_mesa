@@ -35,6 +35,7 @@
 
 #include "ir.h"
 #include "ir_hierarchical_visitor.h"
+#include "linker_util.h"
 #include "util/u_debug.h"
 #include "util/hash_table.h"
 #include "util/macros.h"
@@ -150,13 +151,13 @@ ir_validate::visit_enter(class ir_dereference_array *ir)
 
    if (!ir->array_index->type->is_scalar()) {
       printf("ir_dereference_array @ %p does not have scalar index: %s\n",
-             (void *) ir, ir->array_index->type->name);
+             (void *) ir, glsl_get_type_name(ir->array_index->type));
       abort();
    }
 
    if (!ir->array_index->type->is_integer_16_32()) {
       printf("ir_dereference_array @ %p does not have integer index: %s\n",
-             (void *) ir, ir->array_index->type->name);
+             (void *) ir, glsl_get_type_name(ir->array_index->type));
       abort();
    }
 
@@ -190,7 +191,7 @@ ir_validate::visit_enter(ir_discard *ir)
 {
    if (ir->condition && ir->condition->type != glsl_type::bool_type) {
       printf("ir_discard condition %s type instead of bool.\n",
-	     ir->condition->type->name);
+	     glsl_get_type_name(ir->condition->type));
       ir->print();
       printf("\n");
       abort();
@@ -204,7 +205,7 @@ ir_validate::visit_enter(ir_if *ir)
 {
    if (ir->condition->type != glsl_type::bool_type) {
       printf("ir_if condition %s type instead of bool.\n",
-	     ir->condition->type->name);
+	     glsl_get_type_name(ir->condition->type));
       ir->print();
       printf("\n");
       abort();
@@ -696,7 +697,6 @@ ir_validate::visit_leave(ir_expression *ir)
 
    case ir_unop_frexp_sig:
       assert(ir->operands[0]->type->is_float_32_64());
-      assert(ir->type->is_double());
       break;
    case ir_unop_frexp_exp:
       assert(ir->operands[0]->type->is_float_32_64());
@@ -845,12 +845,6 @@ ir_validate::visit_leave(ir_expression *ir)
       assert(ir->operands[0]->type->is_float_16_32_64());
       assert(ir->operands[0]->type->is_vector());
       assert(ir->operands[0]->type == ir->operands[1]->type);
-      break;
-
-   case ir_binop_ubo_load:
-      assert(ir->operands[0]->type == glsl_type::uint_type);
-
-      assert(ir->operands[1]->type == glsl_type::uint_type);
       break;
 
    case ir_binop_ldexp:
@@ -1130,7 +1124,7 @@ ir_validate::visit_enter(ir_call *ir)
    if (ir->return_deref) {
       if (ir->return_deref->type != callee->return_type) {
 	 printf("callee type %s does not match return storage type %s\n",
-	        callee->return_type->name, ir->return_deref->type->name);
+	        glsl_get_type_name(callee->return_type), glsl_get_type_name(ir->return_deref->type));
 	 abort();
       }
    } else if (callee->return_type != glsl_type::void_type) {

@@ -112,7 +112,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL
 wsi_GetPhysicalDeviceWin32PresentationSupportKHR(VkPhysicalDevice physicalDevice,
                                                  uint32_t queueFamilyIndex)
 {
-   return TRUE;
+   return true;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -209,13 +209,11 @@ wsi_win32_surface_get_capabilities(VkIcdSurfaceBase *surf,
       VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR |
       VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
 
-   caps->supportedUsageFlags =
-      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-      VK_IMAGE_USAGE_SAMPLED_BIT |
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-      VK_IMAGE_USAGE_STORAGE_BIT |
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+   caps->supportedUsageFlags = wsi_caps_get_image_usage();
+
+   VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
+   if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
+      caps->supportedUsageFlags |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
 
    return VK_SUCCESS;
 }
@@ -266,6 +264,10 @@ wsi_win32_surface_get_capabilities2(VkIcdSurfaceBase *surface,
                compat->presentModeCount = 1;
             }
          } else {
+            if (!present_mode)
+               wsi_common_vk_warn_once("Use of VkSurfacePresentModeCompatibilityEXT "
+                                       "without a VkSurfacePresentModeEXT set. This is an "
+                                       "application bug.\n");
             compat->presentModeCount = 1;
          }
          break;
@@ -644,6 +646,10 @@ wsi_win32_acquire_next_image(struct wsi_swapchain *drv_chain,
 
    assert(chain->dxgi);
    uint32_t index = chain->dxgi->GetCurrentBackBufferIndex();
+   if (chain->images[index].state == WSI_IMAGE_DRAWING) {
+      index = (index + 1) % chain->base.image_count;
+      assert(chain->images[index].state == WSI_IMAGE_QUEUED);
+   }
    if (chain->wsi->wsi->WaitForFences(chain->base.device, 1,
                                       &chain->base.fences[index],
                                       false, info->timeout) != VK_SUCCESS)
@@ -755,7 +761,7 @@ wsi_win32_surface_create_swapchain_dxgi(
       DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
       DXGI_ALPHA_MODE_UNSPECIFIED,
       chain->base.present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ?
-         DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0
+         DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u
    };
 
    if (create_info->imageUsage &

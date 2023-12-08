@@ -15,6 +15,7 @@
 #include "agx_fence.h"
 #include "agx_state.h"
 
+#include "util/libsync.h"
 #include "util/os_time.h"
 #include "util/u_inlines.h"
 
@@ -82,20 +83,20 @@ agx_fence_from_fd(struct agx_context *ctx, int fd, enum pipe_fd_type type)
    if (type == PIPE_FD_TYPE_NATIVE_SYNC) {
       ret = drmSyncobjCreate(dev->fd, 0, &f->syncobj);
       if (ret) {
-         fprintf(stderr, "create syncobj failed\n");
+         agx_msg("create syncobj failed\n");
          goto err_free_fence;
       }
 
       ret = drmSyncobjImportSyncFile(dev->fd, f->syncobj, fd);
       if (ret) {
-         fprintf(stderr, "import syncfile failed\n");
+         agx_msg("import syncfile failed\n");
          goto err_destroy_syncobj;
       }
    } else {
       assert(type == PIPE_FD_TYPE_SYNCOBJ);
       ret = drmSyncobjFDToHandle(dev->fd, fd, &f->syncobj);
       if (ret) {
-         fprintf(stderr, "import syncobj FD failed\n");
+         agx_msg("import syncobj FD failed\n");
          goto err_free_fence;
       }
    }
@@ -125,7 +126,7 @@ agx_fence_create(struct agx_context *ctx)
    ret = drmSyncobjExportSyncFile(dev->fd, ctx->syncobj, &fd);
    assert(ret >= 0 && fd != -1 && "export failed");
    if (ret || fd == -1) {
-      fprintf(stderr, "export failed\n");
+      agx_msg("export failed\n");
       return NULL;
    }
 
@@ -135,4 +136,26 @@ agx_fence_create(struct agx_context *ctx)
    close(fd);
 
    return f;
+}
+
+void
+agx_create_fence_fd(struct pipe_context *pctx,
+                    struct pipe_fence_handle **pfence, int fd,
+                    enum pipe_fd_type type)
+{
+   *pfence = agx_fence_from_fd(agx_context(pctx), fd, type);
+}
+
+void
+agx_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *f)
+{
+   struct agx_device *dev = agx_device(pctx->screen);
+   struct agx_context *ctx = agx_context(pctx);
+   int fd = -1, ret;
+
+   ret = drmSyncobjExportSyncFile(dev->fd, f->syncobj, &fd);
+   assert(!ret);
+
+   sync_accumulate("asahi", &ctx->in_sync_fd, fd);
+   close(fd);
 }

@@ -1,27 +1,8 @@
 /**************************************************************************
  *
  * Copyright 2017 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR
- * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  *
  **************************************************************************/
 
@@ -81,6 +62,24 @@ static void radeon_enc_op_preset(struct radeon_encoder *enc)
       preset_mode = RENCODE_IB_OP_SET_SPEED_ENCODING_MODE;
 
    RADEON_ENC_BEGIN(preset_mode);
+   RADEON_ENC_END();
+}
+
+static void radeon_enc_quality_params(struct radeon_encoder *enc)
+{
+   enc->enc_pic.quality_params.vbaq_mode = enc->enc_pic.quality_modes.vbaq_mode;
+   enc->enc_pic.quality_params.scene_change_sensitivity = 0;
+   enc->enc_pic.quality_params.scene_change_min_idr_interval = 0;
+   enc->enc_pic.quality_params.two_pass_search_center_map_mode =
+                    (enc->enc_pic.quality_modes.pre_encode_mode) ? 1 : 0;
+   enc->enc_pic.quality_params.vbaq_strength = 0;
+
+   RADEON_ENC_BEGIN(enc->cmd.quality_params);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.vbaq_mode);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.scene_change_sensitivity);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.scene_change_min_idr_interval);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.two_pass_search_center_map_mode);
+   RADEON_ENC_CS(enc->enc_pic.quality_params.vbaq_strength);
    RADEON_ENC_END();
 }
 
@@ -285,12 +284,12 @@ static void radeon_enc_nalu_sps_hevc(struct radeon_encoder *enc)
    } else if (pic->session_init.padding_width  != 0 ||
               pic->session_init.padding_height != 0) {
       radeon_enc_code_fixed_bits(enc, 0x1, 1);
+      radeon_enc_code_ue(enc, 0);
       radeon_enc_code_ue(enc, pic->session_init.padding_width / 2);
-      radeon_enc_code_ue(enc, pic->session_init.padding_width / 2);
-      radeon_enc_code_ue(enc, pic->session_init.padding_height / 2);
+      radeon_enc_code_ue(enc, 0);
       radeon_enc_code_ue(enc, pic->session_init.padding_height / 2);
    } else
-   radeon_enc_code_fixed_bits(enc, 0x0, 1);
+      radeon_enc_code_fixed_bits(enc, 0x0, 1);
 
    radeon_enc_code_ue(enc, pic->bit_depth_luma_minus8);
    radeon_enc_code_ue(enc, pic->bit_depth_chroma_minus8);
@@ -337,8 +336,24 @@ static void radeon_enc_nalu_sps_hevc(struct radeon_encoder *enc)
          }
       }
       radeon_enc_code_fixed_bits(enc, 0x0, 1);  /* overscan info present flag */
-      radeon_enc_code_fixed_bits(enc, 0x0, 1);  /* video signal type present flag */
-      radeon_enc_code_fixed_bits(enc, 0x0, 1);  /* chroma loc info present flag */
+      /* video signal type present flag  */
+      radeon_enc_code_fixed_bits(enc, pic->vui_info.flags.video_signal_type_present_flag, 1);
+      if (pic->vui_info.flags.video_signal_type_present_flag) {
+         radeon_enc_code_fixed_bits(enc, pic->vui_info.video_format, 3);
+         radeon_enc_code_fixed_bits(enc, pic->vui_info.video_full_range_flag, 1);
+         radeon_enc_code_fixed_bits(enc, pic->vui_info.flags.colour_description_present_flag, 1);
+         if (pic->vui_info.flags.colour_description_present_flag) {
+            radeon_enc_code_fixed_bits(enc, pic->vui_info.colour_primaries, 8);
+            radeon_enc_code_fixed_bits(enc, pic->vui_info.transfer_characteristics, 8);
+            radeon_enc_code_fixed_bits(enc, pic->vui_info.matrix_coefficients, 8);
+         }
+      }
+      /* chroma loc info present flag */
+      radeon_enc_code_fixed_bits(enc, pic->vui_info.flags.chroma_loc_info_present_flag, 1);
+      if (pic->vui_info.flags.chroma_loc_info_present_flag) {
+         radeon_enc_code_ue(enc, pic->vui_info.chroma_sample_loc_type_top_field);
+         radeon_enc_code_ue(enc, pic->vui_info.chroma_sample_loc_type_bottom_field);
+      }
       radeon_enc_code_fixed_bits(enc, 0x0, 1);  /* neutral chroma indication flag */
       radeon_enc_code_fixed_bits(enc, 0x0, 1);  /* field seq flag */
       radeon_enc_code_fixed_bits(enc, 0x0, 1);  /* frame field info present flag */
@@ -443,9 +458,18 @@ static void radeon_enc_output_format(struct radeon_encoder *enc)
    RADEON_ENC_END();
 }
 
+static uint32_t radeon_enc_ref_swizzle_mode(struct radeon_encoder *enc)
+{
+   /* return RENCODE_REC_SWIZZLE_MODE_LINEAR; for debugging purpose */
+   if (enc->enc_pic.bit_depth_luma_minus8 != 0)
+      return RENCODE_REC_SWIZZLE_MODE_8x8_1D_THIN_12_24BPP;
+   else
+      return RENCODE_REC_SWIZZLE_MODE_256B_S;
+}
+
 static void radeon_enc_ctx(struct radeon_encoder *enc)
 {
-   enc->enc_pic.ctx_buf.swizzle_mode = 0;
+   enc->enc_pic.ctx_buf.swizzle_mode = radeon_enc_ref_swizzle_mode(enc);
    enc->enc_pic.ctx_buf.two_pass_search_center_map_offset = 0;
 
    RADEON_ENC_BEGIN(enc->cmd.ctx);
@@ -506,6 +530,7 @@ void radeon_enc_2_0_init(struct radeon_encoder *enc)
    enc->output_format = radeon_enc_output_format;
    enc->ctx = radeon_enc_ctx;
    enc->op_preset = radeon_enc_op_preset;
+   enc->quality_params = radeon_enc_quality_params;
 
    if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_HEVC) {
       enc->deblocking_filter = radeon_enc_loop_filter_hevc;

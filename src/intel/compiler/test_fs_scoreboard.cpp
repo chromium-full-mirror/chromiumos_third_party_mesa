@@ -24,42 +24,50 @@
 #include <gtest/gtest.h>
 #include "brw_fs.h"
 #include "brw_cfg.h"
-#include "program/program.h"
 
 using namespace brw;
 
 class scoreboard_test : public ::testing::Test {
-   virtual void SetUp();
-   virtual void TearDown();
+protected:
+   scoreboard_test();
+   ~scoreboard_test() override;
 
-public:
    struct brw_compiler *compiler;
+   struct brw_compile_params params;
    struct intel_device_info *devinfo;
    void *ctx;
    struct brw_wm_prog_data *prog_data;
    struct gl_shader_program *shader_prog;
    fs_visitor *v;
+   fs_builder bld;
 };
 
-void scoreboard_test::SetUp()
+scoreboard_test::scoreboard_test()
+   : bld(NULL, 0)
 {
    ctx = ralloc_context(NULL);
    compiler = rzalloc(ctx, struct brw_compiler);
    devinfo = rzalloc(ctx, struct intel_device_info);
+   devinfo->ver = 12;
+   devinfo->verx10 = devinfo->ver * 10;
+
    compiler->devinfo = devinfo;
+   brw_init_isa_info(&compiler->isa, devinfo);
+
+   params = {};
+   params.mem_ctx = ctx;
 
    prog_data = ralloc(ctx, struct brw_wm_prog_data);
    nir_shader *shader =
       nir_shader_create(ctx, MESA_SHADER_FRAGMENT, NULL, NULL);
 
-   v = new fs_visitor(compiler, NULL, ctx, NULL, &prog_data->base, shader, 8,
+   v = new fs_visitor(compiler, &params, NULL, &prog_data->base, shader, 8,
                       false, false);
 
-   devinfo->ver = 12;
-   devinfo->verx10 = devinfo->ver * 10;
+   bld = fs_builder(v, v->dispatch_width).at_end();
 }
 
-void scoreboard_test::TearDown()
+scoreboard_test::~scoreboard_test()
 {
    delete v;
    v = NULL;
@@ -139,7 +147,6 @@ std::ostream &operator<<(std::ostream &os, const tgl_swsb &swsb) {
 
 TEST_F(scoreboard_test, RAW_inorder_inorder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -166,7 +173,6 @@ TEST_F(scoreboard_test, RAW_inorder_inorder)
 
 TEST_F(scoreboard_test, RAW_inorder_outoforder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -192,7 +198,6 @@ TEST_F(scoreboard_test, RAW_inorder_outoforder)
 
 TEST_F(scoreboard_test, RAW_outoforder_inorder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -219,7 +224,6 @@ TEST_F(scoreboard_test, RAW_outoforder_inorder)
 
 TEST_F(scoreboard_test, RAW_outoforder_outoforder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -252,7 +256,6 @@ TEST_F(scoreboard_test, RAW_outoforder_outoforder)
 
 TEST_F(scoreboard_test, WAR_inorder_inorder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -278,7 +281,6 @@ TEST_F(scoreboard_test, WAR_inorder_inorder)
 
 TEST_F(scoreboard_test, WAR_inorder_outoforder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -304,7 +306,6 @@ TEST_F(scoreboard_test, WAR_inorder_outoforder)
 
 TEST_F(scoreboard_test, WAR_outoforder_inorder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -330,7 +331,6 @@ TEST_F(scoreboard_test, WAR_outoforder_inorder)
 
 TEST_F(scoreboard_test, WAR_outoforder_outoforder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -359,7 +359,6 @@ TEST_F(scoreboard_test, WAR_outoforder_outoforder)
 
 TEST_F(scoreboard_test, WAW_inorder_inorder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -390,7 +389,6 @@ TEST_F(scoreboard_test, WAW_inorder_inorder)
 
 TEST_F(scoreboard_test, WAW_inorder_outoforder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -416,7 +414,6 @@ TEST_F(scoreboard_test, WAW_inorder_outoforder)
 
 TEST_F(scoreboard_test, WAW_outoforder_inorder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -442,7 +439,6 @@ TEST_F(scoreboard_test, WAW_outoforder_inorder)
 
 TEST_F(scoreboard_test, WAW_outoforder_outoforder)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -472,7 +468,6 @@ TEST_F(scoreboard_test, WAW_outoforder_outoforder)
 
 TEST_F(scoreboard_test, loop1)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -503,7 +498,6 @@ TEST_F(scoreboard_test, loop1)
 
 TEST_F(scoreboard_test, loop2)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -539,7 +533,6 @@ TEST_F(scoreboard_test, loop2)
 
 TEST_F(scoreboard_test, loop3)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -577,7 +570,6 @@ TEST_F(scoreboard_test, loop3)
 
 TEST_F(scoreboard_test, conditional1)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -607,7 +599,6 @@ TEST_F(scoreboard_test, conditional1)
 
 TEST_F(scoreboard_test, conditional2)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -640,7 +631,6 @@ TEST_F(scoreboard_test, conditional2)
 
 TEST_F(scoreboard_test, conditional3)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -673,7 +663,6 @@ TEST_F(scoreboard_test, conditional3)
 
 TEST_F(scoreboard_test, conditional4)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -706,7 +695,6 @@ TEST_F(scoreboard_test, conditional4)
 
 TEST_F(scoreboard_test, conditional5)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -744,7 +732,6 @@ TEST_F(scoreboard_test, conditional5)
 
 TEST_F(scoreboard_test, conditional6)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -789,7 +776,6 @@ TEST_F(scoreboard_test, conditional6)
 
 TEST_F(scoreboard_test, conditional7)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -834,7 +820,6 @@ TEST_F(scoreboard_test, conditional7)
 
 TEST_F(scoreboard_test, conditional8)
 {
-   const fs_builder &bld = v->bld;
    fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
       g[i] = v->vgrf(glsl_type::int_type);
@@ -881,8 +866,7 @@ TEST_F(scoreboard_test, conditional8)
 TEST_F(scoreboard_test, gfx125_RaR_over_different_pipes)
 {
    devinfo->verx10 = 125;
-
-   const fs_builder &bld = v->bld;
+   brw_init_isa_info(&compiler->isa, devinfo);
 
    fs_reg a = v->vgrf(glsl_type::int_type);
    fs_reg b = v->vgrf(glsl_type::int_type);

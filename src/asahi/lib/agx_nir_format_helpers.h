@@ -10,8 +10,8 @@
 #include "nir_builder.h"
 #include "nir_format_convert.h"
 
-static inline nir_ssa_def *
-nir_sign_extend_if_sint(nir_builder *b, nir_ssa_def *x, enum pipe_format format)
+static inline nir_def *
+nir_sign_extend_if_sint(nir_builder *b, nir_def *x, enum pipe_format format)
 {
    if (!util_format_is_pure_sint(format))
       return x;
@@ -20,7 +20,8 @@ nir_sign_extend_if_sint(nir_builder *b, nir_ssa_def *x, enum pipe_format format)
    unsigned bits[4] = {0};
 
    for (unsigned i = 0; i < desc->nr_channels; ++i) {
-      assert(desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED);
+      assert(desc->channel[i].type == UTIL_FORMAT_TYPE_SIGNED ||
+             desc->channel[i].type == UTIL_FORMAT_TYPE_VOID);
 
       bits[i] = desc->channel[i].size;
    }

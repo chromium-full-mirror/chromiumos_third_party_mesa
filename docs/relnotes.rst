@@ -3,6 +3,22 @@ Release Notes
 
 The release notes summarize what's new or changed in each Mesa release.
 
+-  :doc:`23.3.0 release notes <relnotes/23.3.0>`
+-  :doc:`23.2.1 release notes <relnotes/23.2.1>`
+-  :doc:`23.1.9 release notes <relnotes/23.1.9>`
+-  :doc:`23.1.8 release notes <relnotes/23.1.8>`
+-  :doc:`23.1.7 release notes <relnotes/23.1.7>`
+-  :doc:`23.1.6 release notes <relnotes/23.1.6>`
+-  :doc:`23.1.5 release notes <relnotes/23.1.5>`
+-  :doc:`23.1.4 release notes <relnotes/23.1.4>`
+-  :doc:`23.1.3 release notes <relnotes/23.1.3>`
+-  :doc:`23.1.2 release notes <relnotes/23.1.2>`
+-  :doc:`23.0.4 release notes <relnotes/23.0.4>`
+-  :doc:`23.1.1 release notes <relnotes/23.1.1>`
+-  :doc:`23.1.0 release notes <relnotes/23.1.0>`
+-  :doc:`23.0.3 release notes <relnotes/23.0.3>`
+-  :doc:`23.0.2 release notes <relnotes/23.0.2>`
+-  :doc:`23.0.1 release notes <relnotes/23.0.1>`
 -  :doc:`23.0.0 release notes <relnotes/23.0.0>`
 -  :doc:`22.3.7 release notes <relnotes/22.3.7>`
 -  :doc:`22.3.6 release notes <relnotes/22.3.6>`
@@ -353,39 +369,57 @@ The release notes summarize what's new or changed in each Mesa release.
 -  :doc:`6.4.1 release notes <relnotes/6.4.1>`
 -  :doc:`6.4 release notes <relnotes/6.4>`
 
-Versions of Mesa prior to 6.4 are summarized in the following
-release notes, or in the `old docs`_.
+.. only:: builder_html
 
--  `6.3.2 release notes <relnotes/6.3.2>`__
--  `6.3.1 release notes <relnotes/6.3.1>`__
--  `6.3 release notes <relnotes/6.3>`__
--  `6.2.1 release notes <relnotes/6.2.1>`__
--  `6.2 release notes <relnotes/6.2>`__
--  `6.1 release notes <relnotes/6.1>`__
--  `6.0.1 release notes <relnotes/6.0.1>`__
--  `6.0 release notes <relnotes/6.0>`__
--  `5.1 release notes <relnotes/5.1>`__
--  `5.0.2 release notes <relnotes/5.0.2>`__
--  `5.0.1 release notes <relnotes/5.0.1>`__
--  `5.0 release notes <relnotes/5.0>`__
--  `4.1 release notes <relnotes/4.1>`__
--  `4.0.3 release notes <relnotes/4.0.3>`__
--  `4.0.2 release notes <relnotes/4.0.2>`__
--  `4.0.1 release notes <relnotes/4.0.1>`__
--  `4.0 release notes <relnotes/4.0>`__
--  `3.5 release notes <relnotes/3.5>`__
--  `3.4.2 release notes <relnotes/3.4.2>`__
--  `3.4.1 release notes <relnotes/3.4.1>`__
--  `3.4 release notes <relnotes/3.4>`__
--  `3.3 release notes <relnotes/3.3>`__
--  `3.2.1 release notes <relnotes/3.2.1>`__
--  `3.2 release notes <relnotes/3.2>`__
--  `3.1 release notes <relnotes/3.1>`__
+   Versions of Mesa prior to 6.4 are summarized in the following
+   release notes, or in the `old docs`_.
+
+   -  `6.3.2 release notes <relnotes/6.3.2>`__
+   -  `6.3.1 release notes <relnotes/6.3.1>`__
+   -  `6.3 release notes <relnotes/6.3>`__
+   -  `6.2.1 release notes <relnotes/6.2.1>`__
+   -  `6.2 release notes <relnotes/6.2>`__
+   -  `6.1 release notes <relnotes/6.1>`__
+   -  `6.0.1 release notes <relnotes/6.0.1>`__
+   -  `6.0 release notes <relnotes/6.0>`__
+   -  `5.1 release notes <relnotes/5.1>`__
+   -  `5.0.2 release notes <relnotes/5.0.2>`__
+   -  `5.0.1 release notes <relnotes/5.0.1>`__
+   -  `5.0 release notes <relnotes/5.0>`__
+   -  `4.1 release notes <relnotes/4.1>`__
+   -  `4.0.3 release notes <relnotes/4.0.3>`__
+   -  `4.0.2 release notes <relnotes/4.0.2>`__
+   -  `4.0.1 release notes <relnotes/4.0.1>`__
+   -  `4.0 release notes <relnotes/4.0>`__
+   -  `3.5 release notes <relnotes/3.5>`__
+   -  `3.4.2 release notes <relnotes/3.4.2>`__
+   -  `3.4.1 release notes <relnotes/3.4.1>`__
+   -  `3.4 release notes <relnotes/3.4>`__
+   -  `3.3 release notes <relnotes/3.3>`__
+   -  `3.2.1 release notes <relnotes/3.2.1>`__
+   -  `3.2 release notes <relnotes/3.2>`__
+   -  `3.1 release notes <relnotes/3.1>`__
 
 .. toctree::
    :maxdepth: 1
    :hidden:
 
+   23.3.0 <relnotes/23.3.0>
+   23.2.1 <relnotes/23.2.1>
+   23.1.9 <relnotes/23.1.9>
+   23.1.8 <relnotes/23.1.8>
+   23.1.7 <relnotes/23.1.7>
+   23.1.6 <relnotes/23.1.6>
+   23.1.5 <relnotes/23.1.5>
+   23.1.4 <relnotes/23.1.4>
+   23.1.3 <relnotes/23.1.3>
+   23.1.2 <relnotes/23.1.2>
+   23.0.4  <relnotes/23.0.4>
+   23.1.1 <relnotes/23.1.1>
+   23.1.0 <relnotes/23.1.0>
+   23.0.3 <relnotes/23.0.3>
+   23.0.2 <relnotes/23.0.2>
+   23.0.1 <relnotes/23.0.1>
    23.0.0 <relnotes/23.0.0>
    22.3.7 <relnotes/22.3.7>
    22.3.6 <relnotes/22.3.6>

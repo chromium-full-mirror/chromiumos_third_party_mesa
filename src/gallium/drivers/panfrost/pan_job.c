@@ -26,15 +26,12 @@
 
 #include <assert.h>
 
-#include "drm-uapi/panfrost_drm.h"
-
 #include "util/format/u_format.h"
 #include "util/hash_table.h"
 #include "util/ralloc.h"
 #include "util/rounding.h"
 #include "util/u_framebuffer.h"
 #include "util/u_pack_color.h"
-#include "decode.h"
 #include "pan_bo.h"
 #include "pan_context.h"
 #include "pan_util.h"
@@ -68,6 +65,7 @@ panfrost_batch_add_surface(struct panfrost_batch *batch,
 {
    if (surf) {
       struct panfrost_resource *rsrc = pan_resource(surf->texture);
+      pan_legalize_afbc_format(batch->ctx, rsrc, surf->format, true);
       panfrost_batch_write_rsrc(batch, rsrc, PIPE_SHADER_FRAGMENT);
    }
 }
@@ -228,7 +226,7 @@ panfrost_get_fresh_batch_for_fbo(struct panfrost_context *ctx,
    /* We only need to submit and get a fresh batch if there is no
     * draw/clear queued. Otherwise we may reuse the batch. */
 
-   if (batch->scoreboard.first_job) {
+   if (batch->draw_count + batch->compute_count > 0) {
       perf_debug_ctx(ctx, "Flushing the current FBO due to: %s", reason);
       panfrost_batch_submit(ctx, batch);
       batch = panfrost_get_batch(ctx, &ctx->pipe_framebuffer);
@@ -348,6 +346,14 @@ panfrost_batch_add_bo(struct panfrost_batch *batch, struct panfrost_bo *bo,
 {
    panfrost_batch_add_bo_old(
       batch, bo, PAN_BO_ACCESS_READ | panfrost_access_for_stage(stage));
+}
+
+void
+panfrost_batch_write_bo(struct panfrost_batch *batch, struct panfrost_bo *bo,
+                        enum pipe_shader_type stage)
+{
+   panfrost_batch_add_bo_old(
+      batch, bo, PAN_BO_ACCESS_WRITE | panfrost_access_for_stage(stage));
 }
 
 void
@@ -489,7 +495,7 @@ panfrost_batch_to_fb_info(const struct panfrost_batch *batch,
       rts[i].last_level = rts[i].first_level = surf->u.tex.level;
       rts[i].first_layer = surf->u.tex.first_layer;
       rts[i].last_layer = surf->u.tex.last_layer;
-      rts[i].image = &prsrc->image;
+      panfrost_set_image_view_planes(&rts[i], surf->texture);
       rts[i].nr_samples =
          surf->nr_samples ?: MAX2(surf->texture->nr_samples, 1);
       memcpy(rts[i].swizzle, id_swz, sizeof(rts[i].swizzle));
@@ -518,7 +524,7 @@ panfrost_batch_to_fb_info(const struct panfrost_batch *batch,
       zs->last_level = zs->first_level = surf->u.tex.level;
       zs->first_layer = surf->u.tex.first_layer;
       zs->last_layer = surf->u.tex.last_layer;
-      zs->image = &z_rsrc->image;
+      zs->planes[0] = &z_rsrc->image;
       zs->nr_samples = surf->nr_samples ?: MAX2(surf->texture->nr_samples, 1);
       memcpy(zs->swizzle, id_swz, sizeof(zs->swizzle));
       fb->zs.view.zs = zs;
@@ -535,7 +541,7 @@ panfrost_batch_to_fb_info(const struct panfrost_batch *batch,
          s->last_level = s->first_level = surf->u.tex.level;
          s->first_layer = surf->u.tex.first_layer;
          s->last_layer = surf->u.tex.last_layer;
-         s->image = &s_rsrc->image;
+         s->planes[0] = &s_rsrc->image;
          s->nr_samples = surf->nr_samples ?: MAX2(surf->texture->nr_samples, 1);
          memcpy(s->swizzle, id_swz, sizeof(s->swizzle));
          fb->zs.view.s = s;
@@ -581,176 +587,6 @@ panfrost_batch_to_fb_info(const struct panfrost_batch *batch,
    }
 }
 
-static int
-panfrost_batch_submit_ioctl(struct panfrost_batch *batch,
-                            mali_ptr first_job_desc, uint32_t reqs,
-                            uint32_t in_sync, uint32_t out_sync)
-{
-   struct panfrost_context *ctx = batch->ctx;
-   struct pipe_context *gallium = (struct pipe_context *)ctx;
-   struct panfrost_device *dev = pan_device(gallium->screen);
-   struct drm_panfrost_submit submit = {
-      0,
-   };
-   uint32_t in_syncs[2];
-   uint32_t *bo_handles;
-   int ret;
-
-   /* If we trace, we always need a syncobj, so make one of our own if we
-    * weren't given one to use. Remember that we did so, so we can free it
-    * after we're done but preventing double-frees if we were given a
-    * syncobj */
-
-   if (!out_sync && dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
-      out_sync = ctx->syncobj;
-
-   submit.out_sync = out_sync;
-   submit.jc = first_job_desc;
-   submit.requirements = reqs;
-
-   if (in_sync)
-      in_syncs[submit.in_sync_count++] = in_sync;
-
-   if (ctx->in_sync_fd >= 0) {
-      ret =
-         drmSyncobjImportSyncFile(dev->fd, ctx->in_sync_obj, ctx->in_sync_fd);
-      assert(!ret);
-
-      in_syncs[submit.in_sync_count++] = ctx->in_sync_obj;
-      close(ctx->in_sync_fd);
-      ctx->in_sync_fd = -1;
-   }
-
-   if (submit.in_sync_count)
-      submit.in_syncs = (uintptr_t)in_syncs;
-
-   bo_handles = calloc(panfrost_pool_num_bos(&batch->pool) +
-                          panfrost_pool_num_bos(&batch->invisible_pool) +
-                          batch->num_bos + 2,
-                       sizeof(*bo_handles));
-   assert(bo_handles);
-
-   pan_bo_access *flags = util_dynarray_begin(&batch->bos);
-   unsigned end_bo = util_dynarray_num_elements(&batch->bos, pan_bo_access);
-
-   for (int i = 0; i < end_bo; ++i) {
-      if (!flags[i])
-         continue;
-
-      assert(submit.bo_handle_count < batch->num_bos);
-      bo_handles[submit.bo_handle_count++] = i;
-
-      /* Update the BO access flags so that panfrost_bo_wait() knows
-       * about all pending accesses.
-       * We only keep the READ/WRITE info since this is all the BO
-       * wait logic cares about.
-       * We also preserve existing flags as this batch might not
-       * be the first one to access the BO.
-       */
-      struct panfrost_bo *bo = pan_lookup_bo(dev, i);
-
-      bo->gpu_access |= flags[i] & (PAN_BO_ACCESS_RW);
-   }
-
-   panfrost_pool_get_bo_handles(&batch->pool,
-                                bo_handles + submit.bo_handle_count);
-   submit.bo_handle_count += panfrost_pool_num_bos(&batch->pool);
-   panfrost_pool_get_bo_handles(&batch->invisible_pool,
-                                bo_handles + submit.bo_handle_count);
-   submit.bo_handle_count += panfrost_pool_num_bos(&batch->invisible_pool);
-
-   /* Add the tiler heap to the list of accessed BOs if the batch has at
-    * least one tiler job. Tiler heap is written by tiler jobs and read
-    * by fragment jobs (the polygon list is coming from this heap).
-    */
-   if (batch->scoreboard.first_tiler)
-      bo_handles[submit.bo_handle_count++] = dev->tiler_heap->gem_handle;
-
-   /* Always used on Bifrost, occassionally used on Midgard */
-   bo_handles[submit.bo_handle_count++] = dev->sample_positions->gem_handle;
-
-   submit.bo_handles = (u64)(uintptr_t)bo_handles;
-   if (ctx->is_noop)
-      ret = 0;
-   else
-      ret = drmIoctl(dev->fd, DRM_IOCTL_PANFROST_SUBMIT, &submit);
-   free(bo_handles);
-
-   if (ret)
-      return errno;
-
-   /* Trace the job if we're doing that */
-   if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
-      /* Wait so we can get errors reported back */
-      drmSyncobjWait(dev->fd, &out_sync, 1, INT64_MAX, 0, NULL);
-
-      if (dev->debug & PAN_DBG_TRACE)
-         pandecode_jc(submit.jc, dev->gpu_id);
-
-      if (dev->debug & PAN_DBG_DUMP)
-         pandecode_dump_mappings();
-
-      /* Jobs won't be complete if blackhole rendering, that's ok */
-      if (!ctx->is_noop && dev->debug & PAN_DBG_SYNC)
-         pandecode_abort_on_fault(submit.jc, dev->gpu_id);
-   }
-
-   return 0;
-}
-
-static bool
-panfrost_has_fragment_job(struct panfrost_batch *batch)
-{
-   return batch->scoreboard.first_tiler || batch->clear;
-}
-
-/* Submit both vertex/tiler and fragment jobs for a batch, possibly with an
- * outsync corresponding to the later of the two (since there will be an
- * implicit dep between them) */
-
-static int
-panfrost_batch_submit_jobs(struct panfrost_batch *batch,
-                           const struct pan_fb_info *fb, uint32_t in_sync,
-                           uint32_t out_sync)
-{
-   struct pipe_screen *pscreen = batch->ctx->base.screen;
-   struct panfrost_screen *screen = pan_screen(pscreen);
-   struct panfrost_device *dev = pan_device(pscreen);
-   bool has_draws = batch->scoreboard.first_job;
-   bool has_tiler = batch->scoreboard.first_tiler;
-   bool has_frag = panfrost_has_fragment_job(batch);
-   int ret = 0;
-
-   /* Take the submit lock to make sure no tiler jobs from other context
-    * are inserted between our tiler and fragment jobs, failing to do that
-    * might result in tiler heap corruption.
-    */
-   if (has_tiler)
-      pthread_mutex_lock(&dev->submit_lock);
-
-   if (has_draws) {
-      ret = panfrost_batch_submit_ioctl(batch, batch->scoreboard.first_job, 0,
-                                        in_sync, has_frag ? 0 : out_sync);
-
-      if (ret)
-         goto done;
-   }
-
-   if (has_frag) {
-      mali_ptr fragjob = screen->vtbl.emit_fragment_job(batch, fb);
-      ret = panfrost_batch_submit_ioctl(batch, fragjob, PANFROST_JD_REQ_FS, 0,
-                                        out_sync);
-      if (ret)
-         goto done;
-   }
-
-done:
-   if (has_tiler)
-      pthread_mutex_unlock(&dev->submit_lock);
-
-   return ret;
-}
-
 static void
 panfrost_emit_tile_map(struct panfrost_batch *batch, struct pan_fb_info *fb)
 {
@@ -774,13 +610,14 @@ panfrost_batch_submit(struct panfrost_context *ctx,
 {
    struct pipe_screen *pscreen = ctx->base.screen;
    struct panfrost_screen *screen = pan_screen(pscreen);
+   bool has_frag = panfrost_has_fragment_job(batch);
    int ret;
 
    /* Nothing to do! */
-   if (!batch->scoreboard.first_job && !batch->clear)
+   if (!has_frag && batch->compute_count == 0)
       goto out;
 
-   if (batch->key.zsbuf && panfrost_has_fragment_job(batch)) {
+   if (batch->key.zsbuf && has_frag) {
       struct pipe_surface *surf = batch->key.zsbuf;
       struct panfrost_resource *z_rsrc = pan_resource(surf->texture);
 
@@ -804,21 +641,9 @@ panfrost_batch_submit(struct panfrost_context *ctx,
    struct pan_image_view rts[8], zs, s;
 
    panfrost_batch_to_fb_info(batch, &fb, rts, &zs, &s, false);
-
-   screen->vtbl.preload(batch, &fb);
-   screen->vtbl.init_polygon_list(batch);
-
-   /* Now that all draws are in, we can finally prepare the
-    * FBD for the batch (if there is one). */
-
-   screen->vtbl.emit_tls(batch);
    panfrost_emit_tile_map(batch, &fb);
 
-   if (batch->scoreboard.first_tiler || batch->clear)
-      screen->vtbl.emit_fbd(batch, &fb);
-
-   ret = panfrost_batch_submit_jobs(batch, &fb, 0, ctx->syncobj);
-
+   ret = screen->vtbl.submit_batch(batch, &fb);
    if (ret)
       fprintf(stderr, "panfrost_batch_submit failed: %d\n", ret);
 
@@ -932,6 +757,7 @@ panfrost_batch_clear(struct panfrost_batch *batch, unsigned buffers,
                      unsigned stencil)
 {
    struct panfrost_context *ctx = batch->ctx;
+   struct panfrost_device *dev = pan_device(ctx->base.screen);
 
    if (buffers & PIPE_CLEAR_COLOR) {
       for (unsigned i = 0; i < ctx->pipe_framebuffer.nr_cbufs; ++i) {
@@ -939,7 +765,8 @@ panfrost_batch_clear(struct panfrost_batch *batch, unsigned buffers,
             continue;
 
          enum pipe_format format = ctx->pipe_framebuffer.cbufs[i]->format;
-         pan_pack_color(batch->clear_color[i], color, format, false);
+         pan_pack_color(dev->blendable_formats, batch->clear_color[i], color,
+                        format, false);
       }
    }
 

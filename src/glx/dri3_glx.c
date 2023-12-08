@@ -219,8 +219,10 @@ dri3_create_context_attribs(struct glx_screen *base,
       goto error_exit;
 
    /* Check the renderType value */
-   if (!validate_renderType_against_config(config_base, dca.render_type))
-       goto error_exit;
+   if (!validate_renderType_against_config(config_base, dca.render_type)) {
+      *error = BadValue;
+      goto error_exit;
+   }
 
    if (shareList) {
       /* We can't share with an indirect context */
@@ -234,7 +236,7 @@ dri3_create_context_attribs(struct glx_screen *base,
        *    GLX_CONTEXT_OPENGL_NO_ERROR_ARB for the context being created.
        */
       if (!!shareList->noError != !!dca.no_error) {
-         *error = __DRI_CTX_ERROR_BAD_FLAG;
+         *error = BadMatch;
          return NULL;
       }
 
@@ -243,7 +245,7 @@ dri3_create_context_attribs(struct glx_screen *base,
 
    pcp = calloc(1, sizeof *pcp);
    if (pcp == NULL) {
-      *error = __DRI_CTX_ERROR_NO_MEMORY;
+      *error = BadAlloc;
       goto error_exit;
    }
 
@@ -292,6 +294,8 @@ dri3_create_context_attribs(struct glx_screen *base,
                                               ctx_attribs,
                                               error,
                                               pcp);
+
+   *error = dri_context_error_to_glx_error(*error);
 
    if (pcp->driContext == NULL)
       goto error_exit;
@@ -751,6 +755,9 @@ dri3_bind_extensions(struct dri3_screen *psc, struct glx_display * priv,
 
    if (psc->rendererQuery)
       __glXEnableDirectExtension(&psc->base, "GLX_MESA_query_renderer");
+
+   if (psc->interop)
+      __glXEnableDirectExtension(&psc->base, "GLX_MESA_gl_interop");
 }
 
 static char *
@@ -1050,17 +1057,10 @@ dri3_destroy_display(__GLXDRIdisplay * dpy)
 #define DRI3_SUPPORTED_MINOR 0
 #endif
 
-/** dri3_create_display
- *
- * Allocate, initialize and return a __DRIdisplayPrivate object.
- * This is called from __glXInitialize() when we are given a new
- * display pointer. This is public to that function, but hidden from
- * outside of libGL.
- */
-_X_HIDDEN __GLXDRIdisplay *
-dri3_create_display(Display * dpy)
+
+bool
+dri3_check_multibuffer(Display * dpy, bool *err)
 {
-   struct dri3_display                  *pdp;
    xcb_connection_t                     *c = XGetXCBConnection(dpy);
    xcb_dri3_query_version_cookie_t      dri3_cookie;
    xcb_dri3_query_version_reply_t       *dri3_reply;
@@ -1074,11 +1074,11 @@ dri3_create_display(Display * dpy)
 
    extension = xcb_get_extension_data(c, &xcb_dri3_id);
    if (!(extension && extension->present))
-      return NULL;
+      goto error;
 
    extension = xcb_get_extension_data(c, &xcb_present_id);
    if (!(extension && extension->present))
-      return NULL;
+      goto error;
 
    dri3_cookie = xcb_dri3_query_version(c,
                                         DRI3_SUPPORTED_MAJOR,
@@ -1087,14 +1087,10 @@ dri3_create_display(Display * dpy)
                                               PRESENT_SUPPORTED_MAJOR,
                                               PRESENT_SUPPORTED_MINOR);
 
-   pdp = calloc(1, sizeof *pdp);
-   if (pdp == NULL)
-      return NULL;
-
    dri3_reply = xcb_dri3_query_version_reply(c, dri3_cookie, &error);
    if (!dri3_reply) {
       free(error);
-      goto no_extension;
+      goto error;
    }
 
    int dri3Major = dri3_reply->major_version;
@@ -1104,7 +1100,7 @@ dri3_create_display(Display * dpy)
    present_reply = xcb_present_query_version_reply(c, present_cookie, &error);
    if (!present_reply) {
       free(error);
-      goto no_extension;
+      goto error;
    }
    int presentMajor = present_reply->major_version;
    int presentMinor = present_reply->minor_version;
@@ -1113,8 +1109,34 @@ dri3_create_display(Display * dpy)
 #ifdef HAVE_DRI3_MODIFIERS
    if ((dri3Major > 1 || (dri3Major == 1 && dri3Minor >= 2)) &&
        (presentMajor > 1 || (presentMajor == 1 && presentMinor >= 2)))
-      pdp->has_multibuffer = true;
+      return true;
 #endif
+   return false;
+error:
+   *err = true;
+   return false;
+}
+
+/** dri3_create_display
+ *
+ * Allocate, initialize and return a __DRIdisplayPrivate object.
+ * This is called from __glXInitialize() when we are given a new
+ * display pointer. This is public to that function, but hidden from
+ * outside of libGL.
+ */
+_X_HIDDEN __GLXDRIdisplay *
+dri3_create_display(Display * dpy)
+{
+   struct dri3_display                  *pdp;
+   bool err = false;
+   bool has_multibuffer = dri3_check_multibuffer(dpy, &err);
+   if (err)
+      return NULL;
+
+   pdp = calloc(1, sizeof *pdp);
+   if (pdp == NULL)
+      return NULL;
+   pdp->has_multibuffer = has_multibuffer;
 
    pdp->base.destroyDisplay = dri3_destroy_display;
    pdp->base.createScreen = dri3_create_screen;
@@ -1122,9 +1144,6 @@ dri3_create_display(Display * dpy)
    pdp->loader_extensions = loader_extensions;
 
    return &pdp->base;
-no_extension:
-   free(pdp);
-   return NULL;
 }
 
 #endif /* GLX_DIRECT_RENDERING */

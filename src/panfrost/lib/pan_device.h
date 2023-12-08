@@ -130,6 +130,9 @@ struct panfrost_device {
 
    int fd;
 
+   /* For pandecode */
+   struct pandecode_context *decode_ctx;
+
    /* Properties of the GPU in use */
    unsigned arch;
    unsigned gpu_id;
@@ -153,6 +156,7 @@ struct panfrost_device {
 
    /* Table of formats, indexed by a PIPE format */
    const struct panfrost_format *formats;
+   const struct pan_blendable_format *blendable_formats;
 
    /* Bitmask of supported compressed texture formats */
    uint32_t compressed_formats;
@@ -222,8 +226,6 @@ void panfrost_upload_sample_positions(struct panfrost_device *dev);
 
 mali_ptr panfrost_sample_positions(const struct panfrost_device *dev,
                                    enum mali_sample_pattern pattern);
-void panfrost_query_sample_position(enum mali_sample_pattern pattern,
-                                    unsigned sample_idx, float *out);
 
 unsigned panfrost_query_l2_slices(const struct panfrost_device *dev);
 

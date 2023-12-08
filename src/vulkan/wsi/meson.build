@@ -31,10 +31,9 @@ endif
 
 if with_platform_wayland
   files_vulkan_wsi += files('wsi_common_wayland.c')
-  files_vulkan_wsi += [
-    linux_dmabuf_unstable_v1_client_protocol_h,
-    linux_dmabuf_unstable_v1_protocol_c,
-  ]
+  files_vulkan_wsi += wp_files['linux-dmabuf-unstable-v1']
+  files_vulkan_wsi += wp_files['presentation-time']
+  files_vulkan_wsi += wp_files['tearing-control-v1']
 endif
 
 if with_platform_windows
@@ -55,6 +54,7 @@ wsi_entrypoints = custom_target(
   command : [
     prog_python, '@INPUT0@', '--xml', '@INPUT1@', '--proto', '--weak',
     '--out-h', '@OUTPUT0@', '--out-c', '@OUTPUT1@', '--prefix', 'wsi',
+    '--beta', with_vulkan_beta.to_string()
   ],
   depend_files : vk_entrypoints_gen_depend_files,
 )
@@ -62,7 +62,7 @@ wsi_entrypoints = custom_target(
 libvulkan_wsi = static_library(
   'vulkan_wsi',
   [files_vulkan_wsi, wsi_entrypoints],
-  include_directories : [inc_include, inc_src, inc_gallium],
+  include_directories : [inc_include, inc_src],
   dependencies : [
     vulkan_wsi_deps, dep_libdrm, dep_libudev, idep_vulkan_util_headers,
     idep_vulkan_runtime_headers, idep_xmlconfig, idep_mesautil, platform_deps

@@ -28,7 +28,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <xf86drm.h>
+#include "util/libdrm.h"
 
 #include "intel_device_info.h"
 #include "intel_wa.h"
@@ -961,7 +961,13 @@ static const struct intel_device_info intel_device_info_ehl_2x4 = {
    .has_integer_dword_mul = false,                              \
    .gt = _gt, .num_slices = _slices, .l3_banks = _l3,           \
    .simulator_id = 22,                                          \
-   .max_eus_per_subslice = 16
+   .max_eus_per_subslice = 16,                                  \
+   .pat = {                                                     \
+         .cached_coherent = PAT_ENTRY(0, WB, 2WAY),             \
+         .scanout = PAT_ENTRY(1, WC, NONE),                     \
+         .writeback_incoherent = PAT_ENTRY(0, WB, 2WAY),        \
+         .writecombining = PAT_ENTRY(1, WC, NONE),              \
+   }
 
 #define dual_subslices(args...) { args, }
 
@@ -1009,6 +1015,7 @@ static const struct intel_device_info intel_device_info_adl_n = {
    GFX12_GT_FEATURES(1),
    .platform = INTEL_PLATFORM_ADL,
    .display_ver = 13,
+   .is_adl_n = true,
 };
 
 static const struct intel_device_info intel_device_info_adl_gt2 = {
@@ -1030,13 +1037,20 @@ static const struct intel_device_info intel_device_info_rpl_p = {
    .display_ver = 13,
 };
 
-#define GFX12_DG1_SG1_FEATURES                  \
-   GFX12_GT_FEATURES(2),                        \
-   .platform = INTEL_PLATFORM_DG1,              \
-   .has_llc = false,                            \
-   .has_local_mem = true,                       \
-   .urb.size = 768,                             \
-   .simulator_id = 30
+#define GFX12_DG1_SG1_FEATURES                           \
+   GFX12_GT_FEATURES(2),                                 \
+   .platform = INTEL_PLATFORM_DG1,                       \
+   .has_llc = false,                                     \
+   .has_local_mem = true,                                \
+   .urb.size = 768,                                      \
+   .simulator_id = 30,                                   \
+   /* There is no PAT table for DG1, using TGL one */    \
+   .pat = {                                              \
+         .cached_coherent = PAT_ENTRY(0, WB, 2WAY),      \
+         .scanout = PAT_ENTRY(1, WC, NONE),              \
+         .writeback_incoherent = PAT_ENTRY(0, WB, 2WAY), \
+         .writecombining = PAT_ENTRY(1, WC, NONE),       \
+   }
 
 static const struct intel_device_info intel_device_info_dg1 = {
    GFX12_DG1_SG1_FEATURES,
@@ -1064,6 +1078,7 @@ static const struct intel_device_info intel_device_info_sg1 = {
    .has_64bit_int = false,                                      \
    .has_integer_dword_mul = false,                              \
    .gt = _gt, .num_slices = _slices, .l3_banks = _l3,           \
+   .num_subslices = dual_subslices(1), /* updated by topology */\
    .ver = 12,                                                   \
    .has_pln = false,                                            \
    .has_sample_with_hiz = false,                                \
@@ -1091,12 +1106,18 @@ static const struct intel_device_info intel_device_info_sg1 = {
    XEHP_FEATURES(0, 1, 0),                                      \
    .display_ver = 13,                                           \
    .revision = 4, /* For offline compiler */                    \
-   .num_subslices = dual_subslices(1),                          \
    .apply_hwconfig = true,                                      \
    .has_coarse_pixel_primitive_and_cb = true,                   \
    .has_mesh_shading = true,                                    \
    .has_ray_tracing = true,                                     \
-   .has_flat_ccs = true
+   .has_flat_ccs = true,                                        \
+   /* There is no PAT table for DG2, using TGL ones */          \
+   .pat = {                                                     \
+         .cached_coherent = PAT_ENTRY(0, WB, 1WAY),             \
+         .scanout = PAT_ENTRY(1, WC, NONE),                     \
+         .writeback_incoherent = PAT_ENTRY(0, WB, 2WAY),        \
+         .writecombining = PAT_ENTRY(1, WC, NONE),              \
+   }
 
 static const struct intel_device_info intel_device_info_dg2_g10 = {
    DG2_FEATURES,
@@ -1113,10 +1134,19 @@ static const struct intel_device_info intel_device_info_dg2_g12 = {
    .platform = INTEL_PLATFORM_DG2_G12,
 };
 
+static const struct intel_device_info intel_device_info_atsm_g10 = {
+   DG2_FEATURES,
+   .platform = INTEL_PLATFORM_ATSM_G10,
+};
+
+static const struct intel_device_info intel_device_info_atsm_g11 = {
+   DG2_FEATURES,
+   .platform = INTEL_PLATFORM_ATSM_G11,
+};
+
 #define MTL_FEATURES                                            \
    /* (Sub)slice info comes from the kernel topology info */    \
    XEHP_FEATURES(0, 1, 0),                                      \
-   .num_subslices = dual_subslices(1),                          \
    .has_local_mem = false,                                      \
    .has_aux_map = true,                                         \
    .apply_hwconfig = true,                                      \
@@ -1125,16 +1155,22 @@ static const struct intel_device_info intel_device_info_dg2_g12 = {
    .has_integer_dword_mul = false,                              \
    .has_coarse_pixel_primitive_and_cb = true,                   \
    .has_mesh_shading = true,                                    \
-   .has_ray_tracing = true
+   .has_ray_tracing = true,                                     \
+   .pat = {                                                     \
+         .cached_coherent = PAT_ENTRY(3, WB, 1WAY),             \
+         .scanout = PAT_ENTRY(1, WC, NONE),                     \
+         .writeback_incoherent = PAT_ENTRY(0, WB, NONE),        \
+         .writecombining = PAT_ENTRY(1, WC, NONE),              \
+   }
 
-static const struct intel_device_info intel_device_info_mtl_m = {
+static const struct intel_device_info intel_device_info_mtl_u = {
    MTL_FEATURES,
-   .platform = INTEL_PLATFORM_MTL_M,
+   .platform = INTEL_PLATFORM_MTL_U,
 };
 
-static const struct intel_device_info intel_device_info_mtl_p = {
+static const struct intel_device_info intel_device_info_mtl_h = {
    MTL_FEATURES,
-   .platform = INTEL_PLATFORM_MTL_P,
+   .platform = INTEL_PLATFORM_MTL_H,
 };
 
 void
@@ -1268,9 +1304,9 @@ intel_device_info_update_cs_workgroup_threads(struct intel_device_info *devinfo)
                                MIN2(devinfo->max_cs_threads, 64);
 }
 
-bool
-intel_get_device_info_from_pci_id(int pci_id,
-                                  struct intel_device_info *devinfo)
+static bool
+intel_device_info_init_common(int pci_id,
+                              struct intel_device_info *devinfo)
 {
    switch (pci_id) {
 #undef CHIPSET
@@ -1330,6 +1366,7 @@ intel_get_device_info_from_pci_id(int pci_id,
       break;
    case 11:
    case 12:
+   case 20:
       devinfo->max_wm_threads = 128 /* threads-per-PSD */
                               * devinfo->num_slices
                               * 8; /* subslices per slice */
@@ -1356,13 +1393,36 @@ intel_get_device_info_from_pci_id(int pci_id,
    }
 
    intel_device_info_update_cs_workgroup_threads(devinfo);
-   intel_device_info_init_was(devinfo);
 
-   if (intel_needs_workaround(devinfo, 22012575642))
+   return true;
+}
+
+static void
+intel_device_info_apply_workarounds(struct intel_device_info *devinfo)
+{
+   if (intel_needs_workaround(devinfo, 18012660806))
       devinfo->urb.max_entries[MESA_SHADER_GEOMETRY] = 1536;
+
+   /* Fixes issues with:
+    * dEQP-GLES31.functional.geometry_shading.layered.render_with_default_layer_cubemap
+    * when running on GFX12 platforms with small EU count.
+    */
+   const uint32_t eu_total = intel_device_info_eu_total(devinfo);
+   if (devinfo->verx10 == 120 && eu_total <= 32)
+      devinfo->urb.max_entries[MESA_SHADER_GEOMETRY] = 1024;
+}
+
+bool
+intel_get_device_info_from_pci_id(int pci_id,
+                                  struct intel_device_info *devinfo)
+{
+   intel_device_info_init_common(pci_id, devinfo);
 
    /* This is a placeholder until a proper value is set. */
    devinfo->kmd_type = INTEL_KMD_TYPE_I915;
+
+   intel_device_info_init_was(devinfo);
+   intel_device_info_apply_workarounds(devinfo);
 
    return true;
 }
@@ -1385,22 +1445,6 @@ intel_device_info_compute_system_memory(struct intel_device_info *devinfo, bool 
    devinfo->mem.sram.mappable.free = available;
 
    return true;
-}
-
-static void
-fixup_adl_device_info(struct intel_device_info *devinfo)
-{
-   assert(devinfo->platform == INTEL_PLATFORM_ADL);
-   const uint32_t eu_total = intel_device_info_eu_total(devinfo);
-
-   if (eu_total >= 32)
-      return;
-
-   /* Fixes issues with:
-    * dEQP-GLES31.functional.geometry_shading.layered.render_with_default_layer_cubemap
-    * when running on ADL-N platform.
-    */
-   devinfo->urb.max_entries[MESA_SHADER_GEOMETRY] = 1024;
 }
 
 static void
@@ -1511,8 +1555,16 @@ static unsigned
 intel_device_info_calc_engine_prefetch(const struct intel_device_info *devinfo,
                                        enum intel_engine_class engine_class)
 {
-   if (devinfo->verx10 < 125)
-      return 512;
+   if (devinfo->verx10 >= 200) {
+      switch (engine_class) {
+      case INTEL_ENGINE_CLASS_RENDER:
+         return 4096;
+      case INTEL_ENGINE_CLASS_COMPUTE:
+         return 1024;
+      default:
+         return 512;
+      }
+   }
 
    if (intel_device_info_is_mtl(devinfo)) {
       switch (engine_class) {
@@ -1525,7 +1577,12 @@ intel_device_info_calc_engine_prefetch(const struct intel_device_info *devinfo,
       }
    }
 
-   return 1024;
+   /* DG2 */
+   if (devinfo->verx10 == 125)
+      return 1024;
+
+   /* Older than DG2/MTL */
+   return 512;
 }
 
 bool
@@ -1545,8 +1602,8 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
       mesa_loge("Failed to query drm device.");
       return false;
    }
-   if (!intel_get_device_info_from_pci_id
-       (drmdev->deviceinfo.pci->device_id, devinfo)) {
+   if (!intel_device_info_init_common(
+          drmdev->deviceinfo.pci->device_id, devinfo)) {
       drmFreeDevice(&drmdev);
       return false;
    }
@@ -1596,9 +1653,6 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
       return false;
    }
 
-   if (devinfo->platform == INTEL_PLATFORM_ADL)
-      fixup_adl_device_info(devinfo);
-
    /* region info is required for lmem support */
    if (devinfo->has_local_mem && !devinfo->mem.use_class_instance) {
       mesa_logw("Could not query local memory size.");
@@ -1615,6 +1669,9 @@ intel_get_device_info_from_fd(int fd, struct intel_device_info *devinfo)
         engine < ARRAY_SIZE(devinfo->engine_class_prefetch); engine++)
       devinfo->engine_class_prefetch[engine] =
             intel_device_info_calc_engine_prefetch(devinfo, engine);
+
+   intel_device_info_init_was(devinfo);
+   intel_device_info_apply_workarounds(devinfo);
 
    return true;
 }
@@ -1653,6 +1710,17 @@ intel_device_info_wa_stepping(struct intel_device_info *devinfo)
       if (devinfo->revision < 4)
          return INTEL_STEPPING_A0;
       return INTEL_STEPPING_B0;
+   } else if (devinfo->platform == INTEL_PLATFORM_TGL) {
+      switch (devinfo->revision) {
+      case 0:
+         return INTEL_STEPPING_A0;
+      case 1:
+         return INTEL_STEPPING_B0;
+      case 3:
+         return INTEL_STEPPING_C0;
+      default:
+         return INTEL_STEPPING_RELEASE;
+      }
    }
 
    /* all other platforms support only released steppings */

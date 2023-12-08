@@ -67,6 +67,8 @@ d3d12_init_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
    batch->objects = _mesa_set_create(NULL,
                                      _mesa_hash_pointer,
                                      _mesa_key_pointer_equal);
+   batch->queries = _mesa_set_create(NULL, _mesa_hash_pointer,
+                                     _mesa_key_pointer_equal);
 
    if (!batch->bos || !batch->sampler_tables || !batch->sampler_views || !batch->surfaces || !batch->objects)
       return false;
@@ -136,6 +138,14 @@ delete_object(set_entry *entry)
    object->Release();
 }
 
+static void
+delete_query(set_entry *entry)
+{
+   struct d3d12_query *query = (struct d3d12_query *)entry->key;
+   if (pipe_reference(&query->reference, nullptr))
+      d3d12_destroy_query(query);
+}
+
 bool
 d3d12_reset_batch(struct d3d12_context *ctx, struct d3d12_batch *batch, uint64_t timeout_ns)
 {
@@ -154,6 +164,7 @@ d3d12_reset_batch(struct d3d12_context *ctx, struct d3d12_batch *batch, uint64_t
    _mesa_set_clear(batch->sampler_views, delete_sampler_view);
    _mesa_set_clear(batch->surfaces, delete_surface);
    _mesa_set_clear(batch->objects, delete_object);
+   _mesa_set_clear(batch->queries, delete_query);
 
    
    util_dynarray_foreach(&batch->local_bos, d3d12_bo*, bo) {
@@ -181,7 +192,7 @@ d3d12_reset_batch(struct d3d12_context *ctx, struct d3d12_batch *batch, uint64_t
 void
 d3d12_destroy_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
 {
-   d3d12_reset_batch(ctx, batch, PIPE_TIMEOUT_INFINITE);
+   d3d12_reset_batch(ctx, batch, OS_TIMEOUT_INFINITE);
    batch->cmdalloc->Release();
    d3d12_descriptor_heap_free(batch->sampler_heap);
    d3d12_descriptor_heap_free(batch->view_heap);
@@ -190,6 +201,7 @@ d3d12_destroy_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
    _mesa_set_destroy(batch->sampler_views, NULL);
    _mesa_set_destroy(batch->surfaces, NULL);
    _mesa_set_destroy(batch->objects, NULL);
+   _mesa_set_destroy(batch->queries, NULL);
    util_dynarray_fini(&batch->zombie_samplers);
    util_dynarray_fini(&batch->local_bos);
 }
@@ -201,7 +213,7 @@ d3d12_start_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
    ID3D12DescriptorHeap* heaps[2] = { d3d12_descriptor_heap_get(batch->view_heap),
                                       d3d12_descriptor_heap_get(batch->sampler_heap) };
 
-   d3d12_reset_batch(ctx, batch, PIPE_TIMEOUT_INFINITE);
+   d3d12_reset_batch(ctx, batch, OS_TIMEOUT_INFINITE);
 
    /* Create or reset global command list */
    if (ctx->cmdlist) {
@@ -217,6 +229,12 @@ d3d12_start_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
          debug_printf("D3D12: creating ID3D12GraphicsCommandList failed\n");
          batch->has_errors = true;
          return;
+      }
+      if (FAILED(ctx->cmdlist->QueryInterface(IID_PPV_ARGS(&ctx->cmdlist2)))) {
+         ctx->cmdlist2 = nullptr;
+      }
+      if (FAILED(ctx->cmdlist->QueryInterface(IID_PPV_ARGS(&ctx->cmdlist8)))) {
+         ctx->cmdlist8 = nullptr;
       }
    }
 
@@ -266,10 +284,13 @@ d3d12_end_batch(struct d3d12_context *ctx, struct d3d12_batch *batch)
 
    batch->fence = d3d12_create_fence(screen);
 
-   util_dynarray_foreach(&ctx->ended_queries, struct d3d12_query*, query) {
-      (*query)->fence_value = screen->fence_value;
+   set_foreach_remove(batch->queries, entry) {
+      d3d12_query *query = (struct d3d12_query *)entry->key;
+      if (pipe_reference(&query->reference, nullptr))
+         d3d12_destroy_query(query);
+      else
+         query->fence_value = screen->fence_value;
    }
-   util_dynarray_clear(&ctx->ended_queries);
 
    mtx_unlock(&screen->submit_mutex);
 }
@@ -281,7 +302,7 @@ d3d12_batch_get_reference(struct d3d12_batch *batch,
 {
    if (batch->ctx_id != D3D12_CONTEXT_NO_ID) {
       if ((bo->local_reference_mask[batch->ctx_id] & (1 << batch->ctx_index)) != 0) {
-         return &bo->local_reference_state[(batch->ctx_id * 16) + batch->ctx_index];
+         return &bo->local_reference_state[batch->ctx_id][batch->ctx_index];
       }
       else
          return NULL;
@@ -304,9 +325,9 @@ d3d12_batch_acquire_reference(struct d3d12_batch *batch,
          d3d12_bo_reference(bo);
          util_dynarray_append(&batch->local_bos, d3d12_bo*, bo);
          bo->local_reference_mask[batch->ctx_id] |= (1 << batch->ctx_index);
-         bo->local_reference_state[(batch->ctx_id * 16) + batch->ctx_index] = batch_bo_reference_none;
+         bo->local_reference_state[batch->ctx_id][batch->ctx_index] = batch_bo_reference_none;
       }
-      return &bo->local_reference_state[(batch->ctx_id * 16) + batch->ctx_index];
+      return &bo->local_reference_state[batch->ctx_id][batch->ctx_index];
    }
    else {
       hash_entry* entry = _mesa_hash_table_search(batch->bos, bo);
@@ -371,5 +392,16 @@ d3d12_batch_reference_object(struct d3d12_batch *batch,
    if (!entry) {
       entry = _mesa_set_add(batch->objects, object);
       object->AddRef();
+   }
+}
+
+void
+d3d12_batch_reference_query(struct d3d12_batch *batch,
+                            struct d3d12_query *query)
+{
+   struct set_entry *entry = _mesa_set_search(batch->queries, query);
+   if (!entry) {
+      entry = _mesa_set_add(batch->queries, query);
+      pipe_reference(NULL, &query->reference);
    }
 }

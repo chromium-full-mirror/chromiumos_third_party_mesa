@@ -93,7 +93,7 @@ brw_set_dest(struct brw_codegen *p, brw_inst *inst, struct brw_reg dest)
    if (dest.file == BRW_MESSAGE_REGISTER_FILE)
       assert((dest.nr & ~BRW_MRF_COMPR4) < BRW_MAX_MRF(devinfo->ver));
    else if (dest.file == BRW_GENERAL_REGISTER_FILE)
-      assert(dest.nr < 128);
+      assert(dest.nr < XE2_MAX_GRF);
 
    /* The hardware has a restriction where a destination of size Byte with
     * a stride of 1 is only allowed for a packed byte MOV. For any other
@@ -213,7 +213,7 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    if (reg.file == BRW_MESSAGE_REGISTER_FILE)
       assert((reg.nr & ~BRW_MRF_COMPR4) < BRW_MAX_MRF(devinfo->ver));
    else if (reg.file == BRW_GENERAL_REGISTER_FILE)
-      assert(reg.nr < 128);
+      assert(reg.nr < XE2_MAX_GRF);
 
    gfx7_convert_mrf_to_grf(p, &reg);
 
@@ -347,7 +347,7 @@ brw_set_src1(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    const struct intel_device_info *devinfo = p->devinfo;
 
    if (reg.file == BRW_GENERAL_REGISTER_FILE)
-      assert(reg.nr < 128);
+      assert(reg.nr < XE2_MAX_GRF);
 
    if (brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDS ||
        brw_inst_opcode(p->isa, inst) == BRW_OPCODE_SENDSC ||
@@ -643,11 +643,11 @@ brw_inst_set_state(const struct brw_isa_info *isa,
 }
 
 static brw_inst *
-brw_append_insns(struct brw_codegen *p, unsigned nr_insn, unsigned align)
+brw_append_insns(struct brw_codegen *p, unsigned nr_insn, unsigned alignment)
 {
    assert(util_is_power_of_two_or_zero(sizeof(brw_inst)));
-   assert(util_is_power_of_two_or_zero(align));
-   const unsigned align_insn = MAX2(align / sizeof(brw_inst), 1);
+   assert(util_is_power_of_two_or_zero(alignment));
+   const unsigned align_insn = MAX2(alignment / sizeof(brw_inst), 1);
    const unsigned start_insn = ALIGN(p->nr_insn, align_insn);
    const unsigned new_nr_insn = start_insn + nr_insn;
 
@@ -672,17 +672,17 @@ brw_append_insns(struct brw_codegen *p, unsigned nr_insn, unsigned align)
 }
 
 void
-brw_realign(struct brw_codegen *p, unsigned align)
+brw_realign(struct brw_codegen *p, unsigned alignment)
 {
-   brw_append_insns(p, 0, align);
+   brw_append_insns(p, 0, alignment);
 }
 
 int
 brw_append_data(struct brw_codegen *p, void *data,
-                unsigned size, unsigned align)
+                unsigned size, unsigned alignment)
 {
    unsigned nr_insn = DIV_ROUND_UP(size, sizeof(brw_inst));
-   void *dst = brw_append_insns(p, nr_insn, align);
+   void *dst = brw_append_insns(p, nr_insn, alignment);
    memcpy(dst, data, size);
 
    /* If it's not a whole number of instructions, memset the end */
@@ -811,15 +811,15 @@ brw_alu3(struct brw_codegen *p, unsigned opcode, struct brw_reg dest,
 
    gfx7_convert_mrf_to_grf(p, &dest);
 
-   assert(dest.nr < 128);
+   assert(dest.nr < XE2_MAX_GRF);
 
    if (devinfo->ver >= 10)
       assert(!(src0.file == BRW_IMMEDIATE_VALUE &&
                src2.file == BRW_IMMEDIATE_VALUE));
 
-   assert(src0.file == BRW_IMMEDIATE_VALUE || src0.nr < 128);
-   assert(src1.file != BRW_IMMEDIATE_VALUE && src1.nr < 128);
-   assert(src2.file == BRW_IMMEDIATE_VALUE || src2.nr < 128);
+   assert(src0.file == BRW_IMMEDIATE_VALUE || src0.nr < XE2_MAX_GRF);
+   assert(src1.file != BRW_IMMEDIATE_VALUE && src1.nr < XE2_MAX_GRF);
+   assert(src2.file == BRW_IMMEDIATE_VALUE || src2.nr < XE2_MAX_GRF);
    assert(dest.address_mode == BRW_ADDRESS_DIRECT);
    assert(src0.address_mode == BRW_ADDRESS_DIRECT);
    assert(src1.address_mode == BRW_ADDRESS_DIRECT);
@@ -2739,6 +2739,7 @@ brw_send_indirect_split_message(struct brw_codegen *p,
                                 struct brw_reg ex_desc,
                                 unsigned ex_desc_imm,
                                 bool ex_desc_scratch,
+                                bool ex_bso,
                                 bool eot)
 {
    const struct intel_device_info *devinfo = p->devinfo;
@@ -2777,6 +2778,12 @@ brw_send_indirect_split_message(struct brw_codegen *p,
        !ex_desc_scratch &&
        (devinfo->ver >= 12 ||
         ((ex_desc.ud | ex_desc_imm) & INTEL_MASK(15, 12)) == 0)) {
+      /* ATS-M PRMs, Volume 2d: Command Reference: Structures,
+       * EU_INSTRUCTION_SEND instruction
+       *
+       *    "ExBSO: Exists If: ([ExDesc.IsReg]==true)"
+       */
+      assert(!ex_bso);
       ex_desc.ud |= ex_desc_imm;
    } else {
       const struct tgl_swsb swsb = brw_get_default_swsb(p);
@@ -2799,7 +2806,7 @@ brw_send_indirect_split_message(struct brw_codegen *p,
        * descriptor which comes from the address register.  If we don't OR
        * those two bits in, the external unit may get confused and hang.
        */
-      unsigned imm_part = ex_desc_imm | sfid | eot << 5;
+      unsigned imm_part = ex_bso ? 0 : (ex_desc_imm | sfid | eot << 5);
 
       if (ex_desc_scratch) {
          /* Or the scratch surface offset together with the immediate part of
@@ -2852,6 +2859,16 @@ brw_send_indirect_split_message(struct brw_codegen *p,
       brw_inst_set_send_ex_desc_ia_subreg_nr(devinfo, send, ex_desc.subnr >> 2);
    }
 
+   if (ex_bso) {
+      /* The send instruction ExBSO field does not exist with UGM on Gfx20+,
+       * it is assumed.
+       *
+       * BSpec 56890
+       */
+      if (devinfo->ver < 20 || sfid != GFX12_SFID_UGM)
+         brw_inst_set_send_ex_bso(devinfo, send, true);
+      brw_inst_set_send_src1_len(devinfo, send, GET_BITS(ex_desc_imm, 10, 6));
+   }
    brw_inst_set_sfid(devinfo, send, sfid);
    brw_inst_set_eot(devinfo, send, eot);
 }
@@ -3263,13 +3280,13 @@ gfx12_set_memory_fence_message(struct brw_codegen *p,
                                enum brw_message_target sfid,
                                uint32_t desc)
 {
-   const unsigned mlen = 1; /* g0 header */
+   const unsigned mlen = 1 * reg_unit(p->devinfo); /* g0 header */
     /* Completion signaled by write to register. No data returned. */
-   const unsigned rlen = 1;
+   const unsigned rlen = 1 * reg_unit(p->devinfo);
 
    brw_inst_set_sfid(p->devinfo, insn, sfid);
 
-   if (sfid == BRW_SFID_URB) {
+   if (sfid == BRW_SFID_URB && p->devinfo->ver < 20) {
       brw_set_desc(p, insn, brw_urb_fence_desc(p->devinfo) |
                             brw_message_desc(p->devinfo, mlen, rlen, true));
    } else {
@@ -3281,7 +3298,7 @@ gfx12_set_memory_fence_message(struct brw_codegen *p,
          flush_type = LSC_FLUSH_TYPE_EVICT;
       }
 
-      /* Wa_14014435656:
+      /* Wa_14012437816:
        *
        *   "For any fence greater than local scope, always set flush type to
        *    at least invalidate so that fence goes on properly."
@@ -3292,7 +3309,7 @@ gfx12_set_memory_fence_message(struct brw_codegen *p,
        * Here set scope to NONE_6 instead of NONE, which has the same effect
        * as NONE but avoids the downgrade to scope LOCAL.
        */
-      if (intel_device_info_is_dg2(p->devinfo) &&
+      if (intel_needs_workaround(p->devinfo, 14012437816) &&
           scope > LSC_FENCE_LOCAL &&
           flush_type == LSC_FLUSH_TYPE_NONE) {
          flush_type = LSC_FLUSH_TYPE_NONE_6;
@@ -3579,7 +3596,8 @@ brw_barrier(struct brw_codegen *p, struct brw_reg src)
    brw_set_dest(p, inst, retype(brw_null_reg(), BRW_REGISTER_TYPE_UW));
    brw_set_src0(p, inst, src);
    brw_set_src1(p, inst, brw_null_reg());
-   brw_set_desc(p, inst, brw_message_desc(devinfo, 1, 0, false));
+   brw_set_desc(p, inst, brw_message_desc(devinfo,
+                                          1 * reg_unit(devinfo), 0, false));
 
    brw_inst_set_sfid(devinfo, inst, BRW_SFID_MESSAGE_GATEWAY);
    brw_inst_set_gateway_subfuncid(devinfo, inst,
@@ -3614,6 +3632,8 @@ void
 brw_float_controls_mode(struct brw_codegen *p,
                         unsigned mode, unsigned mask)
 {
+   assert(p->current->mask_control == BRW_MASK_DISABLE);
+
    /* From the Skylake PRM, Volume 7, page 760:
     *  "Implementation Restriction on Register Access: When the control
     *   register is used as an explicit source and/or destination, hardware

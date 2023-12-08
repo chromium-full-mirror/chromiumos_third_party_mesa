@@ -317,17 +317,6 @@ typedef bool (*tc_is_resource_busy)(struct pipe_screen *screen,
 struct threaded_resource {
    struct pipe_resource b;
 
-   /* Pointer to the TC that first used this threaded_resource (buffer). This is used to
-    * allow TCs to determine whether they have been given a buffer that was created by a
-    * different TC, in which case all TCs have to disable busyness tracking and buffer
-    * replacement for that particular buffer.
-    * DO NOT DEREFERENCE. The only operation allowed on this pointer is equality-checking
-    * since it might be dangling if a buffer has been shared and its first_user has
-    * already been destroyed. The pointer is const void to discourage such disallowed usage.
-    * This is NULL if no TC has used this buffer yet.
-    */
-   const void *first_user;
-
    /* Since buffer invalidations are queued, we can't use the base resource
     * for unsychronized mappings. This points to the latest version of
     * the buffer after the latest invalidation. It's only used for unsychro-
@@ -355,17 +344,16 @@ struct threaded_resource {
     */
    struct util_range valid_buffer_range;
 
-   /* True if multiple threaded contexts have accessed this buffer.
-    * Disables non-multicontext-safe optimizations in TC.
-    * We can't just re-use is_shared for that purpose as that would confuse drivers.
-    */
-   bool used_by_multiple_contexts;
-
    /* Drivers are required to update this for shared resources and user
     * pointers. */
    bool is_shared;
    bool is_user_ptr;
    bool allow_cpu_storage;
+
+   /* internal tag for tc indicating which batch last touched this resource */
+   int8_t last_batch_usage;
+   /* for disambiguating last_batch_usage across batch cycles */
+   uint32_t batch_generation;
 
    /* Unique buffer ID. Drivers must set it to non-zero for buffers and it must
     * be unique. Textures must set 0. Low bits are used as a hash of the ID.
@@ -412,8 +400,8 @@ struct tc_call_base {
 #if !defined(NDEBUG) && TC_DEBUG >= 1
    uint32_t sentinel;
 #endif
-   ushort num_slots;
-   ushort call_id;
+   uint16_t num_slots;
+   uint16_t call_id;
 };
 
 /**
@@ -521,6 +509,7 @@ struct tc_batch {
    struct util_queue_fence fence;
    /* whether the first set_framebuffer_state call has been seen by this batch */
    bool first_set_fb;
+   uint8_t batch_idx;
    struct tc_unflushed_batch_token *token;
    uint64_t slots[TC_SLOTS_PER_BATCH];
    struct util_dynarray renderpass_infos;
@@ -552,6 +541,8 @@ struct threaded_context_options {
 
    /* If true, create_fence_fd doesn't access the context in the driver. */
    bool unsynchronized_create_fence_fd;
+   /* if true, texture_subdata calls may occur unsynchronized with PIPE_MAP_UNSYNCHRONIZED */
+   bool unsynchronized_texture_subdata;
    /* if true, parse and track renderpass info during execution */
    bool parse_renderpass_info;
    /* callbacks for drivers to read their DSA/FS state and update renderpass info accordingly
@@ -617,13 +608,16 @@ struct threaded_context {
    bool seen_image_buffers[PIPE_SHADER_TYPES];
    bool seen_sampler_buffers[PIPE_SHADER_TYPES];
 
+   int8_t last_completed;
+
    unsigned max_vertex_buffers;
    unsigned max_const_buffers;
    unsigned max_shader_buffers;
    unsigned max_images;
    unsigned max_samplers;
+   unsigned nr_cbufs;
 
-   unsigned last, next, next_buf_list;
+   unsigned last, next, next_buf_list, batch_generation;
 
    /* The list fences that the driver should signal after the next flush.
     * If this is empty, all driver command buffers have been flushed.

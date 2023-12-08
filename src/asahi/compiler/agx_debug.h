@@ -24,10 +24,12 @@ enum agx_compiler_dbg {
    AGX_DBG_NOOPT       = BITFIELD_BIT(6),
    AGX_DBG_WAIT        = BITFIELD_BIT(7),
    AGX_DBG_NOPREAMBLE  = BITFIELD_BIT(8),
+   AGX_DBG_DEMAND      = BITFIELD_BIT(9),
+   AGX_DBG_NOSCHED     = BITFIELD_BIT(10),
 };
 /* clang-format on */
 
-extern int agx_compiler_debug;
+uint64_t agx_get_compiler_debug(void);
 
 #ifdef __cplusplus
 } /* extern C */

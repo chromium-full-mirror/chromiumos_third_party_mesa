@@ -44,8 +44,10 @@
 
 #include <stdbool.h>
 #include "util/compiler.h"
-#include "main/macros.h"
-#include "program/prog_instruction.h"
+#include "util/glheader.h"
+#include "util/macros.h"
+#include "util/rounding.h"
+#include "util/u_math.h"
 #include "brw_eu_defines.h"
 #include "brw_reg_type.h"
 
@@ -55,8 +57,9 @@ extern "C" {
 
 struct intel_device_info;
 
-/** Number of general purpose registers (VS, WM, etc) */
+/** Size of general purpose register space in REG_SIZE units */
 #define BRW_MAX_GRF 128
+#define XE2_MAX_GRF 256
 
 /**
  * First GRF used for the MRF hack.
@@ -68,6 +71,15 @@ struct intel_device_info;
  * with actual GRF allocations.
  */
 #define GFX7_MRF_HACK_START 112
+
+/**
+ * BRW hardware swizzles.
+ * Only defines XYZW to ensure it can be contained in 2 bits
+ */
+#define BRW_SWIZZLE_X 0
+#define BRW_SWIZZLE_Y 1
+#define BRW_SWIZZLE_Z 2
+#define BRW_SWIZZLE_W 3
 
 /** Number of message register file registers */
 #define BRW_MAX_MRF(gen) (gen == 6 ? 24 : 16)
@@ -406,7 +418,7 @@ brw_reg(enum brw_reg_file file,
 {
    struct brw_reg reg;
    if (file == BRW_GENERAL_REGISTER_FILE)
-      assert(nr < BRW_MAX_GRF);
+      assert(nr < XE2_MAX_GRF);
    else if (file == BRW_ARCHITECTURE_REGISTER_FILE)
       assert(nr <= BRW_ARF_TIMESTAMP);
    /* Asserting on the MRF register number requires to know the hardware gen
@@ -806,6 +818,12 @@ brw_vecn_grf(unsigned width, unsigned nr, unsigned subnr)
    return brw_vecn_reg(width, BRW_GENERAL_REGISTER_FILE, nr, subnr);
 }
 
+
+static inline struct brw_reg
+brw_uw1_grf(unsigned nr, unsigned subnr)
+{
+   return brw_uw1_reg(BRW_GENERAL_REGISTER_FILE, nr, subnr);
+}
 
 static inline struct brw_reg
 brw_uw8_grf(unsigned nr, unsigned subnr)

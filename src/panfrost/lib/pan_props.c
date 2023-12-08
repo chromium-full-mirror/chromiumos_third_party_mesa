@@ -69,6 +69,7 @@ const struct panfrost_model panfrost_model_list[] = {
         MODEL(0x7211, "G76",    "TNOx", HAS_ANISO,         16384, {}),
         MODEL(0x7212, "G52",    "TGOx", HAS_ANISO,         16384, {}),
         MODEL(0x7402, "G52 r1", "TGOx", HAS_ANISO,         16384, {}),
+        MODEL(0x9091, "G57",    "TNAx", HAS_ANISO,         16384, {}),
         MODEL(0x9093, "G57",    "TNAx", HAS_ANISO,         16384, {}),
 };
 /* clang-format on */
@@ -269,12 +270,16 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
    dev->tiler_features = panfrost_query_tiler_features(fd);
    dev->has_afbc = panfrost_query_afbc(fd, dev->arch);
 
-   if (dev->arch <= 6)
+   if (dev->arch <= 6) {
       dev->formats = panfrost_pipe_format_v6;
-   else if (dev->arch <= 7)
+      dev->blendable_formats = panfrost_blendable_formats_v6;
+   } else if (dev->arch <= 7) {
       dev->formats = panfrost_pipe_format_v7;
-   else
+      dev->blendable_formats = panfrost_blendable_formats_v7;
+   } else {
       dev->formats = panfrost_pipe_format_v9;
+      dev->blendable_formats = panfrost_blendable_formats_v9;
+   }
 
    util_sparse_array_init(&dev->bo_map, sizeof(struct panfrost_bo), 512);
 
@@ -286,7 +291,7 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
 
    /* Initialize pandecode before we start allocating */
    if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC))
-      pandecode_initialize(!(dev->debug & PAN_DBG_TRACE));
+      dev->decode_ctx = pandecode_create_context(!(dev->debug & PAN_DBG_TRACE));
 
    /* Tiler heap is internally required by the tiler, which can only be
     * active for a single job chain at once, so a single heap can be

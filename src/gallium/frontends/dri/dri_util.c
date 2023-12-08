@@ -138,9 +138,7 @@ driCreateNewScreen2(int scrn, int fd,
 
     *driver_configs = mesa->initScreen(screen);
     if (*driver_configs == NULL) {
-        driDestroyOptionCache(&screen->optionCache);
-        driDestroyOptionInfo(&screen->optionInfo);
-        free(screen);
+        dri_destroy_screen(screen);
         return NULL;
     }
 
@@ -323,7 +321,13 @@ driGetConfigAttribIndex(const __DRIconfig *config,
     case __DRI_ATTRIB_VISUAL_SELECT_GROUP:
         *value = 0;
         break;
-    SIMPLE_CASE(__DRI_ATTRIB_SWAP_METHOD, swapMethod);
+    case __DRI_ATTRIB_SWAP_METHOD:
+        /* Not supported any more, but we have the __DRI_ATTRIB still defined
+         * for the X server's sake, and EGL will expect us to handle it because
+         * it iterates all __DRI_ATTRIBs.
+         */
+        *value = __DRI_ATTRIB_SWAP_EXCHANGE;
+        break;
     case __DRI_ATTRIB_MAX_SWAP_INTERVAL:
         *value = INT_MAX;
         break;
@@ -391,43 +395,53 @@ driIndexConfigAttrib(const __DRIconfig *config, int index,
     return GL_FALSE;
 }
 
-static bool
+static int
 validate_context_version(struct dri_screen *screen,
                          int mesa_api,
                          unsigned major_version,
-                         unsigned minor_version,
-                         unsigned *dri_ctx_error)
+                         unsigned minor_version)
 {
    unsigned req_version = 10 * major_version + minor_version;
    unsigned max_version = 0;
 
-   switch (mesa_api) {
-   case API_OPENGL_COMPAT:
+   if (major_version == 0 || major_version > 4)
+      return __DRI_CTX_ERROR_BAD_API;
+
+   if (mesa_api == API_OPENGL_COMPAT) {
+      if ((major_version == 4 && minor_version > 6) ||
+          (major_version == 3 && minor_version > 3) ||
+          (major_version == 2 && minor_version > 1) ||
+          (major_version == 1 && minor_version > 5))
+         return __DRI_CTX_ERROR_BAD_API;
       max_version = screen->max_gl_compat_version;
-      break;
-   case API_OPENGL_CORE:
-      max_version = screen->max_gl_core_version;
-      break;
-   case API_OPENGLES:
+   } else if (mesa_api == API_OPENGLES) {
+      if (major_version > 1 || minor_version > 1)
+         return __DRI_CTX_ERROR_BAD_API;
       max_version = screen->max_gl_es1_version;
-      break;
-   case API_OPENGLES2:
+   } else if (mesa_api == API_OPENGLES2) {
+      if ((major_version >  3) ||
+          (major_version == 3 && minor_version > 2) ||
+          (major_version == 2 && minor_version > 0) ||
+          (major_version <  2))
+         return __DRI_CTX_ERROR_BAD_API;
       max_version = screen->max_gl_es2_version;
-      break;
-   default:
-      max_version = 0;
-      break;
+   } else if (mesa_api == API_OPENGL_CORE) {
+      if ((major_version == 4 && minor_version > 6) ||
+          (major_version == 3 && minor_version > 3) ||
+          (major_version < 3))
+         return __DRI_CTX_ERROR_BAD_API;
+      max_version = screen->max_gl_core_version;
+   } else {
+      return __DRI_CTX_ERROR_BAD_API;
    }
 
-   if (max_version == 0) {
-      *dri_ctx_error = __DRI_CTX_ERROR_BAD_API;
-      return false;
-   } else if (req_version > max_version) {
-      *dri_ctx_error = __DRI_CTX_ERROR_BAD_VERSION;
-      return false;
-   }
+   if (max_version == 0)
+      return __DRI_CTX_ERROR_BAD_VERSION;
 
-   return true;
+   if (req_version > max_version)
+      return __DRI_CTX_ERROR_BAD_VERSION;
+
+   return __DRI_CTX_ERROR_SUCCESS;
 }
 
 /*****************************************************************/
@@ -456,11 +470,6 @@ driCreateContextAttribs(__DRIscreen *psp, int api,
     ctx_config.priority = __DRI_CTX_PRIORITY_MEDIUM;
 
     assert((num_attribs == 0) || (attribs != NULL));
-
-    if (!(screen->api_mask & (1 << api))) {
-        *error = __DRI_CTX_ERROR_BAD_API;
-        return NULL;
-    }
 
     switch (api) {
     case __DRI_API_OPENGL:
@@ -613,10 +622,10 @@ driCreateContextAttribs(__DRIscreen *psp, int api,
         return NULL;
     }
 
-    if (!validate_context_version(screen, mesa_api,
-                                  ctx_config.major_version,
-                                  ctx_config.minor_version,
-                                  error))
+    *error = validate_context_version(screen, mesa_api,
+                                      ctx_config.major_version,
+                                      ctx_config.minor_version);
+    if (*error != __DRI_CTX_ERROR_SUCCESS)
        return NULL;
 
     struct dri_context *ctx = dri_create_context(screen, mesa_api,
@@ -941,6 +950,11 @@ static const struct {
       .internal_format =        GL_RGB5_A1,
    },
    {
+      .image_format    = __DRI_IMAGE_FORMAT_ABGR1555,
+      .mesa_format     =        MESA_FORMAT_R5G5B5A1_UNORM,
+      .internal_format =        GL_RGB5_A1,
+   },
+   {
       .image_format    = __DRI_IMAGE_FORMAT_XRGB8888,
       .mesa_format     =        MESA_FORMAT_B8G8R8X8_UNORM,
       .internal_format =        GL_RGB8,
@@ -953,7 +967,7 @@ static const struct {
    {
       .image_format    = __DRI_IMAGE_FORMAT_XBGR16161616F,
       .mesa_format     =        MESA_FORMAT_RGBX_FLOAT16,
-      .internal_format =        GL_RGBA16F,
+      .internal_format =        GL_RGB16F,
    },
    {
       .image_format    = __DRI_IMAGE_FORMAT_ABGR16161616,
@@ -963,7 +977,7 @@ static const struct {
    {
       .image_format    = __DRI_IMAGE_FORMAT_XBGR16161616,
       .mesa_format     =        MESA_FORMAT_RGBX_UNORM16,
-      .internal_format =        GL_RGBA16,
+      .internal_format =        GL_RGB16,
    },
    {
       .image_format    = __DRI_IMAGE_FORMAT_ARGB2101010,
@@ -973,7 +987,7 @@ static const struct {
    {
       .image_format    = __DRI_IMAGE_FORMAT_XRGB2101010,
       .mesa_format     =        MESA_FORMAT_B10G10R10X2_UNORM,
-      .internal_format =        GL_RGB10_A2,
+      .internal_format =        GL_RGB10,
    },
    {
       .image_format    = __DRI_IMAGE_FORMAT_ABGR2101010,
@@ -983,7 +997,7 @@ static const struct {
    {
       .image_format    = __DRI_IMAGE_FORMAT_XBGR2101010,
       .mesa_format     =        MESA_FORMAT_R10G10B10X2_UNORM,
-      .internal_format =        GL_RGB10_A2,
+      .internal_format =        GL_RGB10,
    },
    {
       .image_format    = __DRI_IMAGE_FORMAT_ARGB8888,
@@ -1035,7 +1049,7 @@ static const struct {
    {
       .image_format = __DRI_IMAGE_FORMAT_SXRGB8,
       .mesa_format  =           MESA_FORMAT_B8G8R8X8_SRGB,
-      .internal_format =        GL_SRGB8_ALPHA8,
+      .internal_format =        GL_SRGB8,
    },
    {
       .image_format    = __DRI_IMAGE_FORMAT_R16,
@@ -1059,6 +1073,16 @@ static const struct {
       .internal_format =        GL_RG16,
    },
 #endif
+   {
+      .image_format    = __DRI_IMAGE_FORMAT_ARGB4444,
+      .mesa_format     =        MESA_FORMAT_B4G4R4A4_UNORM,
+      .internal_format =        GL_RGBA4,
+   },
+   {
+      .image_format    = __DRI_IMAGE_FORMAT_ABGR4444,
+      .mesa_format     =        MESA_FORMAT_R4G4B4A4_UNORM,
+      .internal_format =        GL_RGBA4,
+   },
 };
 
 uint32_t

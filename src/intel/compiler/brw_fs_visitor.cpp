@@ -49,6 +49,7 @@ fs_visitor::emit_mcs_fetch(const fs_reg &coordinate, unsigned components,
    srcs[TEX_LOGICAL_SRC_SURFACE_HANDLE] = texture_handle;
    srcs[TEX_LOGICAL_SRC_COORD_COMPONENTS] = brw_imm_d(components);
    srcs[TEX_LOGICAL_SRC_GRAD_COMPONENTS] = brw_imm_d(0);
+   srcs[TEX_LOGICAL_SRC_RESIDENCY] = brw_imm_d(0);
 
    fs_inst *inst = bld.emit(SHADER_OPCODE_TXF_MCS_LOGICAL, dest, srcs,
                             ARRAY_SIZE(srcs));
@@ -59,52 +60,6 @@ fs_visitor::emit_mcs_fetch(const fs_reg &coordinate, unsigned components,
    inst->size_written = 4 * dest.component_size(inst->exec_size);
 
    return dest;
-}
-
-/** Emits a dummy fragment shader consisting of magenta for bringup purposes. */
-void
-fs_visitor::emit_dummy_fs()
-{
-   int reg_width = dispatch_width / 8;
-
-   /* Everyone's favorite color. */
-   const float color[4] = { 1.0, 0.0, 1.0, 0.0 };
-   for (int i = 0; i < 4; i++) {
-      bld.MOV(fs_reg(MRF, 2 + i * reg_width, BRW_REGISTER_TYPE_F),
-              brw_imm_f(color[i]));
-   }
-
-   fs_inst *write;
-   write = bld.emit(FS_OPCODE_FB_WRITE);
-   write->eot = true;
-   write->last_rt = true;
-   if (devinfo->ver >= 6) {
-      write->base_mrf = 2;
-      write->mlen = 4 * reg_width;
-   } else {
-      write->header_size = 2;
-      write->base_mrf = 0;
-      write->mlen = 2 + 4 * reg_width;
-   }
-
-   /* Tell the SF we don't have any inputs.  Gfx4-5 require at least one
-    * varying to avoid GPU hangs, so set that.
-    */
-   struct brw_wm_prog_data *wm_prog_data = brw_wm_prog_data(this->prog_data);
-   wm_prog_data->num_varying_inputs = devinfo->ver < 6 ? 1 : 0;
-   memset(wm_prog_data->urb_setup, -1,
-          sizeof(wm_prog_data->urb_setup[0]) * VARYING_SLOT_MAX);
-   brw_compute_urb_setup_index(wm_prog_data);
-
-   /* We don't have any uniforms. */
-   stage_prog_data->nr_params = 0;
-   stage_prog_data->curb_read_length = 0;
-   stage_prog_data->dispatch_grf_start_reg = 2;
-   wm_prog_data->dispatch_grf_start_reg_16 = 2;
-   wm_prog_data->dispatch_grf_start_reg_32 = 2;
-   grf_used = 1; /* Gfx4-5 don't allow zero GRF blocks */
-
-   calculate_cfg();
 }
 
 /* Input data is organized with first the per-primitive values, followed
@@ -126,6 +81,7 @@ fs_visitor::interp_reg(int location, int channel)
 
    assert(prog_data->urb_setup[location] >= 0);
    unsigned nr = prog_data->urb_setup[location];
+   channel += prog_data->urb_setup_channel[location];
 
    /* Adjust so we start counting from the first per_vertex input. */
    assert(nr >= prog_data->num_per_primitive_inputs);
@@ -142,19 +98,22 @@ fs_visitor::interp_reg(int location, int channel)
  * generate_code() time.
  */
 fs_reg
-fs_visitor::per_primitive_reg(int location)
+fs_visitor::per_primitive_reg(int location, unsigned comp)
 {
    assert(stage == MESA_SHADER_FRAGMENT);
    assert(BITFIELD64_BIT(location) & nir->info.per_primitive_inputs);
 
    const struct brw_wm_prog_data *prog_data = brw_wm_prog_data(this->prog_data);
 
+   comp += prog_data->urb_setup_channel[location];
+
    assert(prog_data->urb_setup[location] >= 0);
 
-   const unsigned regnr = prog_data->urb_setup[location];
+   const unsigned regnr = prog_data->urb_setup[location] + comp / 4;
+
    assert(regnr < prog_data->num_per_primitive_inputs);
 
-   return fs_reg(ATTR, regnr, BRW_REGISTER_TYPE_F);
+   return component(fs_reg(ATTR, regnr, BRW_REGISTER_TYPE_F), comp % 4);
 }
 
 /** Emits the interpolation for the varying inputs. */
@@ -577,10 +536,8 @@ fs_visitor::emit_interpolation_setup_gfx6()
       abld.MAD(coarse_z, coarse_z, z_cy, float_pixel_y);
    }
 
-   if (wm_prog_data->uses_src_depth) {
-      assert(!wm_prog_data->uses_depth_w_coefficients);
+   if (wm_prog_data->uses_src_depth)
       this->pixel_z = fetch_payload_reg(bld, fs_payload().source_depth_reg);
-   }
 
    if (wm_prog_data->uses_depth_w_coefficients ||
        wm_prog_data->uses_src_depth) {
@@ -599,7 +556,8 @@ fs_visitor::emit_interpolation_setup_gfx6()
          this->pixel_z = abld.vgrf(BRW_REGISTER_TYPE_F);
 
          /* We re-use the check_dynamic_msaa_flag() call from above */
-         abld.SEL(this->pixel_z, coarse_z, sample_z);
+         set_predicate(BRW_PREDICATE_NORMAL,
+                       abld.SEL(this->pixel_z, coarse_z, sample_z));
          break;
 
       case BRW_ALWAYS:
@@ -658,10 +616,10 @@ fs_visitor::emit_interpolation_setup_gfx6()
          }
 
          for (unsigned j = 0; j < dispatch_width / 8; j++) {
-            fs_inst *mov =
+            set_predicate(
+               BRW_PREDICATE_NORMAL,
                ubld.MOV(brw_vec8_grf(barys[j / 2] + (j % 2) * 2, 0),
-                        brw_vec8_grf(sample_barys[j / 2] + (j % 2) * 2, 0));
-            mov->predicate = BRW_PREDICATE_NORMAL;
+                        brw_vec8_grf(sample_barys[j / 2] + (j % 2) * 2, 0)));
          }
       }
    }
@@ -945,7 +903,6 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
       unreachable("invalid stage");
    }
 
-   int header_size = 1;
    fs_reg per_slot_offsets;
 
    if (stage == MESA_SHADER_GEOMETRY) {
@@ -959,12 +916,6 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
       starting_urb_offset = 2 * gs_prog_data->control_data_header_size_hwords;
       if (gs_prog_data->static_vertex_count == -1)
          starting_urb_offset += 2;
-
-      /* We also need to use per-slot offsets.  The per-slot offset is the
-       * Vertex Count.  SIMD8 mode processes 8 different primitives at a
-       * time; each may output a different number of vertices.
-       */
-      header_size++;
 
       /* The URB offset is in 128-bit units, so we need to multiply by 2 */
       const int output_vertex_size_owords =
@@ -1010,7 +961,8 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
             break;
          }
 
-         fs_reg zero(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
+         fs_reg zero(VGRF, alloc.allocate(dispatch_width / 8),
+                     BRW_REGISTER_TYPE_UD);
          bld.MOV(zero, brw_imm_ud(0u));
 
          if (vue_map->slots_valid & VARYING_BIT_PRIMITIVE_SHADING_RATE &&
@@ -1018,7 +970,8 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
             sources[length++] = this->outputs[VARYING_SLOT_PRIMITIVE_SHADING_RATE];
          } else if (devinfo->has_coarse_pixel_primitive_and_cb) {
             uint32_t one_fp16 = 0x3C00;
-            fs_reg one_by_one_fp16(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
+            fs_reg one_by_one_fp16(VGRF, alloc.allocate(dispatch_width / 8),
+                                   BRW_REGISTER_TYPE_UD);
             bld.MOV(one_by_one_fp16, brw_imm_ud((one_fp16 << 16) | one_fp16));
             sources[length++] = one_by_one_fp16;
          } else {
@@ -1073,7 +1026,8 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
              * temp register and use that for the payload.
              */
             for (int i = 0; i < 4; i++) {
-               fs_reg reg = fs_reg(VGRF, alloc.allocate(1), outputs[varying].type);
+               fs_reg reg = fs_reg(VGRF, alloc.allocate(dispatch_width / 8),
+                                   outputs[varying].type);
                fs_reg src = offset(this->outputs[varying], bld, i);
                set_saturate(true, bld.MOV(reg, src));
                sources[length++] = reg;
@@ -1108,8 +1062,10 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
 
          srcs[URB_LOGICAL_SRC_HANDLE] = urb_handle;
          srcs[URB_LOGICAL_SRC_PER_SLOT_OFFSETS] = per_slot_offsets;
-         srcs[URB_LOGICAL_SRC_DATA] = fs_reg(VGRF, alloc.allocate(length),
+         srcs[URB_LOGICAL_SRC_DATA] = fs_reg(VGRF,
+                                             alloc.allocate((dispatch_width / 8) * length),
                                              BRW_REGISTER_TYPE_F);
+         srcs[URB_LOGICAL_SRC_COMPONENTS] = brw_imm_ud(length);
          abld.LOAD_PAYLOAD(srcs[URB_LOGICAL_SRC_DATA], sources, length, 0);
 
          fs_inst *inst = abld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL, reg_undef,
@@ -1121,7 +1077,6 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
          else
             inst->eot = slot == last_slot && stage != MESA_SHADER_GEOMETRY;
 
-         inst->mlen = length + header_size;
          inst->offset = urb_offset;
          urb_offset = starting_urb_offset + slot + 1;
          length = 0;
@@ -1148,19 +1103,21 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
       if (stage == MESA_SHADER_GEOMETRY)
          return;
 
-      fs_reg uniform_urb_handle = fs_reg(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
-      fs_reg payload = fs_reg(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
+      fs_reg uniform_urb_handle = fs_reg(VGRF, alloc.allocate(dispatch_width / 8),
+                                         BRW_REGISTER_TYPE_UD);
+      fs_reg payload = fs_reg(VGRF, alloc.allocate(dispatch_width / 8),
+                              BRW_REGISTER_TYPE_UD);
 
       bld.exec_all().MOV(uniform_urb_handle, urb_handle);
 
       fs_reg srcs[URB_LOGICAL_NUM_SRCS];
       srcs[URB_LOGICAL_SRC_HANDLE] = uniform_urb_handle;
       srcs[URB_LOGICAL_SRC_DATA] = payload;
+      srcs[URB_LOGICAL_SRC_COMPONENTS] = brw_imm_ud(1);
 
       fs_inst *inst = bld.emit(SHADER_OPCODE_URB_WRITE_LOGICAL, reg_undef,
                                srcs, ARRAY_SIZE(srcs));
       inst->eot = true;
-      inst->mlen = 2;
       inst->offset = 1;
       return;
    }
@@ -1172,6 +1129,7 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
     * all 8 lanes must valid.
     */
    if (devinfo->ver == 11 && stage == MESA_SHADER_TESS_EVAL) {
+      assert(dispatch_width == 8);
       fs_reg uniform_urb_handle = fs_reg(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
       fs_reg uniform_mask = fs_reg(VGRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
       fs_reg payload = fs_reg(VGRF, alloc.allocate(4), BRW_REGISTER_TYPE_UD);
@@ -1207,11 +1165,11 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
       srcs[URB_LOGICAL_SRC_HANDLE] = uniform_urb_handle;
       srcs[URB_LOGICAL_SRC_CHANNEL_MASK] = uniform_mask;
       srcs[URB_LOGICAL_SRC_DATA] = payload;
+      srcs[URB_LOGICAL_SRC_COMPONENTS] = brw_imm_ud(4);
 
       fs_inst *inst = bld.exec_all().emit(SHADER_OPCODE_URB_WRITE_LOGICAL,
                                           reg_undef, srcs, ARRAY_SIZE(srcs));
       inst->eot = true;
-      inst->mlen = 6;
       inst->offset = 0;
    }
 }
@@ -1348,16 +1306,15 @@ fs_visitor::emit_tcs_barrier()
    bld.emit(SHADER_OPCODE_BARRIER, bld.null_reg_ud(), m0);
 }
 
-fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
-                       void *mem_ctx,
+fs_visitor::fs_visitor(const struct brw_compiler *compiler,
+                       const struct brw_compile_params *params,
                        const brw_base_prog_key *key,
                        struct brw_stage_prog_data *prog_data,
                        const nir_shader *shader,
                        unsigned dispatch_width,
                        bool needs_register_pressure,
                        bool debug_enabled)
-   : backend_shader(compiler, log_data, mem_ctx, shader, prog_data,
-                    debug_enabled),
+   : backend_shader(compiler, params, shader, prog_data, debug_enabled),
      key(key), gs_compile(NULL), prog_data(prog_data),
      live_analysis(this), regpressure_analysis(this),
      performance_analysis(this),
@@ -1373,15 +1330,15 @@ fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
           api_subgroup_size == 32);
 }
 
-fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
-                       void *mem_ctx,
+fs_visitor::fs_visitor(const struct brw_compiler *compiler,
+                       const struct brw_compile_params *params,
                        struct brw_gs_compile *c,
                        struct brw_gs_prog_data *prog_data,
                        const nir_shader *shader,
                        bool needs_register_pressure,
                        bool debug_enabled)
-   : backend_shader(compiler, log_data, mem_ctx, shader,
-                    &prog_data->base.base, debug_enabled),
+   : backend_shader(compiler, params, shader, &prog_data->base.base,
+                    debug_enabled),
      key(&c->key.base), gs_compile(c),
      prog_data(&prog_data->base.base),
      live_analysis(this), regpressure_analysis(this),
@@ -1412,8 +1369,10 @@ fs_visitor::init()
    this->failed = false;
    this->fail_msg = NULL;
 
-   this->nir_locals = NULL;
    this->nir_ssa_values = NULL;
+   this->nir_resource_insts = NULL;
+   this->nir_ssa_bind_infos = NULL;
+   this->nir_resource_values = NULL;
    this->nir_system_values = NULL;
 
    this->payload_ = NULL;

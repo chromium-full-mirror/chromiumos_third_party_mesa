@@ -25,6 +25,7 @@
 #define VK_PIPELINE_H
 
 #include "vulkan/vulkan_core.h"
+#include "vk_util.h"
 
 #include <stdbool.h>
 
@@ -36,6 +37,18 @@ struct vk_device;
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+#define VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_NIR_CREATE_INFO_MESA \
+   (VkStructureType)1000290001
+
+#define VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_NIR_CREATE_INFO_MESA_cast \
+   VkPipelineShaderStageNirCreateInfoMESA
+
+typedef struct VkPipelineShaderStageNirCreateInfoMESA {
+   VkStructureType sType;
+   const void *pNext;
+   struct nir_shader *nir;
+} VkPipelineShaderStageNirCreateInfoMESA;
 
 bool
 vk_pipeline_shader_stage_is_null(const VkPipelineShaderStageCreateInfo *info);
@@ -75,6 +88,56 @@ vk_pipeline_robustness_state_fill(const struct vk_device *device,
                                   struct vk_pipeline_robustness_state *rs,
                                   const void *pipeline_pNext,
                                   const void *shader_stage_pNext);
+
+static inline VkPipelineCreateFlags2KHR
+vk_compute_pipeline_create_flags(const VkComputePipelineCreateInfo *info)
+{
+   const VkPipelineCreateFlags2CreateInfoKHR *flags2 =
+      vk_find_struct_const(info->pNext,
+                           PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR);
+   if (flags2)
+      return flags2->flags;
+   else
+      return info->flags;
+}
+
+static inline VkPipelineCreateFlags2KHR
+vk_graphics_pipeline_create_flags(const VkGraphicsPipelineCreateInfo *info)
+{
+   const VkPipelineCreateFlags2CreateInfoKHR *flags2 =
+      vk_find_struct_const(info->pNext,
+                           PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR);
+   if (flags2)
+      return flags2->flags;
+   else
+      return info->flags;
+}
+
+static inline VkPipelineCreateFlags2KHR
+vk_rt_pipeline_create_flags(const VkRayTracingPipelineCreateInfoKHR *info)
+{
+   const VkPipelineCreateFlags2CreateInfoKHR *flags2 =
+      vk_find_struct_const(info->pNext,
+                           PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR);
+   if (flags2)
+      return flags2->flags;
+   else
+      return info->flags;
+}
+
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+static inline VkPipelineCreateFlags2KHR
+vk_graph_pipeline_create_flags(const VkExecutionGraphPipelineCreateInfoAMDX *info)
+{
+   const VkPipelineCreateFlags2CreateInfoKHR *flags2 =
+      vk_find_struct_const(info->pNext,
+                           PIPELINE_CREATE_FLAGS_2_CREATE_INFO_KHR);
+   if (flags2)
+      return flags2->flags;
+   else
+      return info->flags;
+}
+#endif
 
 #ifdef __cplusplus
 }

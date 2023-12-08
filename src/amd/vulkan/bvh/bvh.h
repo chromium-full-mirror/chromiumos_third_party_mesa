@@ -28,12 +28,12 @@
 #define radv_bvh_node_box16    4
 #define radv_bvh_node_box32    5
 #define radv_bvh_node_instance 6
-#define radv_bvh_node_aabb 7
+#define radv_bvh_node_aabb     7
 
 #define radv_ir_node_triangle 0
 #define radv_ir_node_internal 1
 #define radv_ir_node_instance 2
-#define radv_ir_node_aabb 3
+#define radv_ir_node_aabb     3
 
 #define RADV_GEOMETRY_OPAQUE (1u << 31)
 
@@ -181,11 +181,10 @@ struct radv_bvh_triangle_node {
 };
 
 struct radv_bvh_aabb_node {
-   radv_aabb aabb;
    uint32_t primitive_id;
    /* flags in upper 4 bits */
    uint32_t geometry_id_and_flags;
-   uint32_t reserved[8];
+   uint32_t reserved[14];
 };
 
 struct radv_bvh_instance_node {
@@ -217,7 +216,7 @@ struct radv_bvh_box32_node {
    uint32_t reserved[4];
 };
 
-#define RADV_BVH_ROOT_NODE radv_bvh_node_box32
+#define RADV_BVH_ROOT_NODE    radv_bvh_node_box32
 #define RADV_BVH_INVALID_NODE 0xffffffffu
 
 /* If the task index is set to this value, there is no

@@ -156,13 +156,44 @@ enum iris_mmap_mode {
 };
 
 enum iris_heap {
-   IRIS_HEAP_SYSTEM_MEMORY,
+   /**
+    * System memory which is CPU-cached at (at least 1-way) coherent.
+    *
+    * This will use WB (write-back) CPU mappings.
+    *
+    * LLC systems and discrete cards (which enable snooping) will mostly use
+    * this heap.  Non-LLC systems will only use it when explicit coherency is
+    * required, as snooping is expensive there.
+    */
+   IRIS_HEAP_SYSTEM_MEMORY_CACHED_COHERENT,
+
+   /**
+    * System memory which is not CPU cached.
+    *
+    * This will use WC (write-combining) CPU mappings, which has uncached
+    * performance for reads.  This can be used for scanout on integrated
+    * GPUs (which is never coherent with CPU caches).  It will be used for
+    * most buffers on non-LLC platforms, where cache coherency is expensive.
+    */
+   IRIS_HEAP_SYSTEM_MEMORY_UNCACHED,
+
+   /** Device-local memory (VRAM).  Cannot be placed in system memory! */
    IRIS_HEAP_DEVICE_LOCAL,
+
+   /** Device-local memory that may be evicted to system memory if needed. */
    IRIS_HEAP_DEVICE_LOCAL_PREFERRED,
+
    IRIS_HEAP_MAX,
 };
 
 extern const char *iris_heap_to_string[];
+
+static inline bool
+iris_heap_is_device_local(enum iris_heap heap)
+{
+   return heap == IRIS_HEAP_DEVICE_LOCAL ||
+          heap == IRIS_HEAP_DEVICE_LOCAL_PREFERRED;
+}
 
 #define IRIS_BATCH_COUNT 3
 
@@ -190,7 +221,7 @@ struct iris_bo {
    uint32_t gem_handle;
 
    /**
-    * Virtual address of the buffer inside the PPGTT (Per-Process Graphics
+    * Canonical virtual address of the buffer inside the PPGTT (Per-Process Graphics
     * Translation Table).
     *
     * Although each hardware context has its own VMA, we assign BO's to the
@@ -234,7 +265,7 @@ struct iris_bo {
     * Also align it to 64 bits. This will make atomic operations faster on 32
     * bit platforms.
     */
-   uint64_t last_seqnos[NUM_IRIS_DOMAINS] __attribute__ ((aligned (8)));
+   alignas(8) uint64_t last_seqnos[NUM_IRIS_DOMAINS];
 
    /** Up to one per screen, may need realloc. */
    struct iris_bo_screen_deps *deps;
@@ -267,6 +298,9 @@ struct iris_bo {
           * List contains both flink named and prime fd'd objects
           */
          unsigned global_name;
+
+         /** Prime fd used for shared buffers, -1 otherwise. */
+         int prime_fd;
 
          /** The mmap coherency mode selected at BO allocation time */
          enum iris_mmap_mode mmap_mode;
@@ -452,7 +486,7 @@ iris_bo_likely_local(const struct iris_bo *bo)
       return false;
 
    bo = iris_get_backing_bo((struct iris_bo *) bo);
-   return bo->real.heap != IRIS_HEAP_SYSTEM_MEMORY;
+   return iris_heap_is_device_local(bo->real.heap);
 }
 
 static inline enum iris_mmap_mode
@@ -486,7 +520,8 @@ int iris_gem_get_tiling(struct iris_bo *bo, uint32_t *tiling);
 int iris_gem_set_tiling(struct iris_bo *bo, const struct isl_surf *surf);
 
 int iris_bo_export_dmabuf(struct iris_bo *bo, int *prime_fd);
-struct iris_bo *iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd);
+struct iris_bo *iris_bo_import_dmabuf(struct iris_bufmgr *bufmgr, int prime_fd,
+                                      const uint64_t modifier);
 
 /**
  * Exports a bo as a GEM handle into a given DRM file descriptor
@@ -535,6 +570,13 @@ iris_bo_bump_seqno(struct iris_bo *bo, uint64_t seqno,
       prev_seqno = tmp;
 }
 
+/**
+ * Return the PAT entry based for the given heap.
+ */
+const struct intel_device_info_pat_entry *
+iris_heap_to_pat_entry(const struct intel_device_info *devinfo,
+                       enum iris_heap heap);
+
 enum iris_memory_zone iris_memzone_for_address(uint64_t address);
 
 int iris_bufmgr_create_screen_id(struct iris_bufmgr *bufmgr);
@@ -580,5 +622,8 @@ enum iris_madvice {
    IRIS_MADVICE_WILL_NEED = 0,
    IRIS_MADVICE_DONT_NEED = 1,
 };
+
+void iris_bo_import_sync_state(struct iris_bo *bo, int sync_file_fd);
+struct iris_syncobj *iris_bo_export_sync_state(struct iris_bo *bo);
 
 #endif /* IRIS_BUFMGR_H */

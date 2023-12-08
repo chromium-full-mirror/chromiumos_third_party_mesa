@@ -340,4 +340,30 @@ static inline uint64_t p_atomic_xchg_64(uint64_t *v, uint64_t i)
                                       (assert(!"should not get here"), 0))
 #endif
 
+/* On x86 we can have sizeof(uint64_t) = 8 and _Alignof(uint64_t) = 4. causing split locks. The
+ * implementation does handle that correctly, but with an internal mutex. Extend the alignment to
+ * avoid this.
+ * `p_atomic_int64_t` and `p_atomic_uint64_t` are used for casting any pointer to
+ * `p_atomic_int64_t *` and `p_atomic_uint64_t *`. That's for telling the compiler is accessing
+ * the 64 bits atomic in 8 byte aligned way to avoid clang `misaligned atomic operation` warning.
+ * To define 64 bits atomic memeber in struct type,
+ * use `alignas(8) int64_t $member` or `alignas(8) uint64_t $member` is enough.
+ */
+typedef struct {
+#ifndef __cplusplus
+   _Alignas(8)
+#else
+   alignas(8)
+#endif
+   int64_t value;
+} p_atomic_int64_t;
+typedef struct {
+#ifndef __cplusplus
+   _Alignas(8)
+#else
+   alignas(8)
+#endif
+   uint64_t value;
+} p_atomic_uint64_t;
+
 #endif /* U_ATOMIC_H */

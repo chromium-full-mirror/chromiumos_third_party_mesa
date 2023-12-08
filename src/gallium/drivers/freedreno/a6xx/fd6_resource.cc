@@ -29,6 +29,7 @@
 
 #include "drm-uapi/drm_fourcc.h"
 
+#include "a6xx/fd6_blitter.h"
 #include "fd6_resource.h"
 #include "fdl/fd6_format_table.h"
 
@@ -54,6 +55,13 @@ ok_ubwc_format(struct pipe_screen *pscreen, enum pipe_format pfmt)
       return info->a6xx.has_z24uint_s8uint;
 
    case PIPE_FORMAT_R8_G8B8_420_UNORM:
+      /* The difference between NV12 and R8_G8B8_420_UNORM is only where the
+       * conversion to RGB happens, with the latter it happens _after_ the
+       * texture samp instruction.  But dri2_get_mapping_by_fourcc() doesn't
+       * know this, so it asks for NV12 when it really meant to ask for
+       * R8_G8B8_420_UNORM.  Just treat them the same here to work around it:
+       */
+   case PIPE_FORMAT_NV12:
       return true;
 
    default:
@@ -119,10 +127,31 @@ is_norm(enum pipe_format format)
 }
 
 static bool
+is_z24s8(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
+   case PIPE_FORMAT_Z24X8_UNORM:
+   case PIPE_FORMAT_X24S8_UINT:
+   case PIPE_FORMAT_Z24_UNORM_S8_UINT_AS_R8G8B8A8:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
 valid_format_cast(struct fd_resource *rsc, enum pipe_format format)
 {
    /* Special case "casting" format in hw: */
    if (format == PIPE_FORMAT_Z24_UNORM_S8_UINT_AS_R8G8B8A8)
+      return true;
+
+   /* If we support z24s8 ubwc then allow casts between the various
+    * permutations of z24s8:
+    */
+   if (fd_screen(rsc->b.b.screen)->info->a6xx.has_z24uint_s8uint &&
+         is_z24s8(format) && is_z24s8(rsc->b.b.format))
       return true;
 
    /* For some color values (just "solid white") compression metadata maps to
@@ -248,10 +277,10 @@ fd6_setup_slices(struct fd_resource *rsc)
 {
    struct pipe_resource *prsc = &rsc->b.b;
 
-   if (!FD_DBG(NOLRZ) && has_depth(rsc->b.b.format))
+   if (!FD_DBG(NOLRZ) && has_depth(prsc->format) && !is_z32(prsc->format))
       setup_lrz(rsc);
 
-   if (rsc->layout.ubwc && !ok_ubwc_format(rsc->b.b.screen, rsc->b.b.format))
+   if (rsc->layout.ubwc && !ok_ubwc_format(prsc->screen, prsc->format))
       rsc->layout.ubwc = false;
 
    fdl6_layout(&rsc->layout, prsc->format, fd_resource_nr_samples(prsc),
@@ -300,7 +329,13 @@ fd6_layout_resource_for_modifier(struct fd_resource *rsc, uint64_t modifier)
                     PRSC_ARGS(&rsc->b.b));
       }
       return 0;
+   case DRM_FORMAT_MOD_QCOM_TILED3:
+      rsc->layout.tile_mode = fd6_tile_mode(&rsc->b.b);
+      FALLTHROUGH;
    case DRM_FORMAT_MOD_INVALID:
+      /* For now, without buffer metadata, we must assume that buffers
+       * imported with INVALID modifier are linear
+       */
       if (can_do_ubwc(&rsc->b.b)) {
          perf_debug("%" PRSC_FMT
                     ": not UBWC: imported with DRM_FORMAT_MOD_INVALID!",
@@ -312,10 +347,22 @@ fd6_layout_resource_for_modifier(struct fd_resource *rsc, uint64_t modifier)
    }
 }
 
-static const uint64_t supported_modifiers[] = {
-   DRM_FORMAT_MOD_LINEAR,
-   DRM_FORMAT_MOD_QCOM_COMPRESSED,
-};
+static bool
+fd6_is_format_supported(struct pipe_screen *pscreen,
+                        enum pipe_format fmt,
+                        uint64_t modifier)
+{
+   switch (modifier) {
+   case DRM_FORMAT_MOD_LINEAR:
+      return true;
+   case DRM_FORMAT_MOD_QCOM_COMPRESSED:
+      return ok_ubwc_format(pscreen, fmt);
+   case DRM_FORMAT_MOD_QCOM_TILED3:
+      return fd6_tile_mode_for_format(fmt) == TILE6_3;
+   default:
+      return false;
+   }
+}
 
 void
 fd6_resource_screen_init(struct pipe_screen *pscreen)
@@ -324,6 +371,5 @@ fd6_resource_screen_init(struct pipe_screen *pscreen)
 
    screen->setup_slices = fd6_setup_slices;
    screen->layout_resource_for_modifier = fd6_layout_resource_for_modifier;
-   screen->supported_modifiers = supported_modifiers;
-   screen->num_supported_modifiers = ARRAY_SIZE(supported_modifiers);
+   screen->is_format_supported = fd6_is_format_supported;
 }

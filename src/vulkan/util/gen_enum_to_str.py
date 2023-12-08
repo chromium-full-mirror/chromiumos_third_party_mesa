@@ -243,6 +243,12 @@ H_DEFINE_TEMPLATE = Template(textwrap.dedent(u"""\
       % endif
     % endfor
 
+    static inline VkFormatFeatureFlags
+    vk_format_features2_to_features(VkFormatFeatureFlags2 features2)
+    {
+       return features2 & VK_ALL_FORMAT_FEATURE_FLAG_BITS;
+    }
+
     #ifdef __cplusplus
     } /* extern "C" */
     #endif
@@ -286,7 +292,7 @@ def compute_max_enum_name(s):
     max_enum_name = CamelCase_to_SHOUT_CASE(s)
     last_prefix = max_enum_name.rsplit('_', 1)[-1]
     # Those special prefixes need to be always at the end
-    if last_prefix in ['AMD', 'EXT', 'INTEL', 'KHR', 'NV', 'LUNARG'] :
+    if last_prefix in ['AMD', 'EXT', 'INTEL', 'KHR', 'NV', 'LUNARG', 'QCOM', 'MSFT'] :
         max_enum_name = "_".join(max_enum_name.split('_')[:-1])
         max_enum_name = max_enum_name + "_MAX_ENUM_" + last_prefix
     else:
@@ -398,7 +404,7 @@ class VkObjectType(object):
 
 
 def parse_xml(enum_factory, ext_factory, struct_factory, bitmask_factory,
-              obj_type_factory, filename):
+              obj_type_factory, filename, beta):
     """Parse the XML file. Accumulate results into the factories.
 
     This parser is a memory efficient iterative XML parser that returns a list
@@ -408,7 +414,7 @@ def parse_xml(enum_factory, ext_factory, struct_factory, bitmask_factory,
     xml = et.parse(filename)
     api = 'vulkan'
 
-    required_types = get_all_required(xml, 'type', api)
+    required_types = get_all_required(xml, 'type', api, beta)
 
     for enum_type in xml.findall('./enums[@type="enum"]'):
         if not filter_api(enum_type, api):
@@ -523,6 +529,7 @@ def parse_xml(enum_factory, ext_factory, struct_factory, bitmask_factory,
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument('--beta', required=True, help='Enable beta extensions.')
     parser.add_argument('--xml', required=True,
                         help='Vulkan API XML files',
                         action='append',
@@ -541,7 +548,7 @@ def main():
 
     for filename in args.xml_files:
         parse_xml(enum_factory, ext_factory, struct_factory, bitmask_factory,
-                  obj_type_factory, filename)
+                  obj_type_factory, filename, args.beta)
     enums = sorted(enum_factory.registry.values(), key=lambda e: e.name)
     extensions = sorted(ext_factory.registry.values(), key=lambda e: e.name)
     structs = sorted(struct_factory.registry.values(), key=lambda e: e.name)

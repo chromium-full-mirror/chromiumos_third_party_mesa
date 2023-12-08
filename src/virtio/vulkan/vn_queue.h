@@ -16,12 +16,7 @@
 #include "vn_feedback.h"
 
 struct vn_queue {
-   struct vn_object_base base;
-
-   struct vn_device *device;
-   uint32_t family;
-   uint32_t index;
-   uint32_t flags;
+   struct vn_queue_base base;
 
    /* only used if renderer supports multiple timelines */
    uint32_t ring_idx;
@@ -29,10 +24,13 @@ struct vn_queue {
    /* wait fence used for vn_QueueWaitIdle */
    VkFence wait_fence;
 
-   /* sync fence used for Android wsi */
-   VkFence sync_fence;
+   /* semaphore for gluing vkQueueSubmit feedback commands to
+    * vkQueueBindSparse
+    */
+   VkSemaphore sparse_semaphore;
+   uint64_t sparse_semaphore_counter;
 };
-VK_DEFINE_HANDLE_CASTS(vn_queue, base.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
+VK_DEFINE_HANDLE_CASTS(vn_queue, base.base.base, VkQueue, VK_OBJECT_TYPE_QUEUE)
 
 enum vn_sync_type {
    /* no payload */
@@ -58,11 +56,7 @@ struct vn_sync_payload {
 struct vn_sync_payload_external {
    /* ring_idx of the last queue submission */
    uint32_t ring_idx;
-   /* ring_seqno_valid is false when:
-    * - feature asyncRoundtrip is not supported by the renderer
-    * - NO_ASYNC_QUEUE_SUBMIT perf option is used
-    * - external fence and external semaphore
-    */
+   /* valid when NO_ASYNC_QUEUE_SUBMIT perf option is not used */
    bool ring_seqno_valid;
    /* ring seqno of the last queue submission */
    uint32_t ring_seqno;
@@ -83,7 +77,7 @@ struct vn_fence {
    } feedback;
 
    bool is_external;
-   struct vn_sync_payload_external external;
+   struct vn_sync_payload_external external_payload;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_fence,
                                base.base,
@@ -133,7 +127,7 @@ struct vn_semaphore {
    } feedback;
 
    bool is_external;
-   struct vn_sync_payload_external external;
+   struct vn_sync_payload_external external_payload;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vn_semaphore,
                                base.base,
