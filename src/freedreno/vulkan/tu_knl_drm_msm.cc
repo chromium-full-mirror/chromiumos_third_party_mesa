@@ -353,6 +353,8 @@ tu_bo_init(struct tu_device *dev,
          vk_realloc(&dev->vk.alloc, dev->bo_list, new_len * sizeof(*dev->bo_list),
                     8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
       if (!new_ptr) {
+         dev->bo_count--;
+         mtx_unlock(&dev->bo_mutex);
          tu_gem_close(dev, gem_handle);
          return VK_ERROR_OUT_OF_HOST_MEMORY;
       }
@@ -488,6 +490,9 @@ msm_bo_init_dmabuf(struct tu_device *dev,
    lseek(prime_fd, 0, SEEK_SET);
    if (real_size < 0 || (uint64_t) real_size < size)
       return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
+
+   /* iova allocation needs to consider the object's *real* size: */
+   size = real_size;
 
    /* Importing the same dmabuf several times would yield the same
     * gem_handle. Thus there could be a race when destroying

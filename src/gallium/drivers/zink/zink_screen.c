@@ -313,17 +313,24 @@ cache_put_job(void *data, void *gdata, int thread_index)
    struct zink_program *pg = data;
    struct zink_screen *screen = gdata;
    size_t size = 0;
+   u_rwlock_rdlock(&pg->pipeline_cache_lock);
    VkResult result = VKSCR(GetPipelineCacheData)(screen->dev, pg->pipeline_cache, &size, NULL);
    if (result != VK_SUCCESS) {
+      u_rwlock_rdunlock(&pg->pipeline_cache_lock);
       mesa_loge("ZINK: vkGetPipelineCacheData failed (%s)", vk_Result_to_str(result));
       return;
    }
-   if (pg->pipeline_cache_size == size)
+   if (pg->pipeline_cache_size == size) {
+      u_rwlock_rdunlock(&pg->pipeline_cache_lock);
       return;
+   }
    void *pipeline_data = malloc(size);
-   if (!pipeline_data)
+   if (!pipeline_data) {
+      u_rwlock_rdunlock(&pg->pipeline_cache_lock);
       return;
+   }
    result = VKSCR(GetPipelineCacheData)(screen->dev, pg->pipeline_cache, &size, pipeline_data);
+   u_rwlock_rdunlock(&pg->pipeline_cache_lock);
    if (result == VK_SUCCESS) {
       pg->pipeline_cache_size = size;
 
@@ -343,7 +350,7 @@ zink_screen_update_pipeline_cache(struct zink_screen *screen, struct zink_progra
 
    if (in_thread)
       cache_put_job(pg, screen, 0);
-   else
+   else if (util_queue_fence_is_signalled(&pg->cache_fence))
       util_queue_add_job(&screen->cache_put_thread, pg, &pg->cache_fence, cache_put_job, NULL, 0);
 }
 
@@ -2691,7 +2698,8 @@ zink_internal_create_screen(const struct pipe_screen_config *config)
       return NULL;
 
    zink_debug = debug_get_option_zink_debug();
-   zink_descriptor_mode = debug_get_option_zink_descriptor_mode();
+   if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_AUTO)
+      zink_descriptor_mode = debug_get_option_zink_descriptor_mode();
 
    screen->threaded = util_get_cpu_caps()->nr_cpus > 1 && debug_get_bool_option("GALLIUM_THREAD", util_get_cpu_caps()->nr_cpus > 1);
    if (zink_debug & ZINK_DEBUG_FLUSHSYNC)

@@ -407,7 +407,11 @@ CopyPropFwdVisitor::visit(AluInstr *instr)
       if (can_propagate) {
          sfn_log << SfnLog::opt << "   Try replace in " << i->block_id() << ":"
                  << i->index() << *i << "\n";
-         progress |= i->replace_source(dest, src);
+
+         if (i->as_alu() && i->as_alu()->parent_group()) {
+            progress |= i->as_alu()->parent_group()->replace_source(dest, src);
+         } else
+            progress |= i->replace_source(dest, src);
       }
    }
    if (instr->dest()) {
@@ -465,6 +469,9 @@ CopyPropFwdVisitor::propagate_to(RegisterVec4& value, Instr *instr)
          if (value[i]->parents().empty())
             return;
 
+         if (value[i]->uses().size() > 1)
+            return;
+
          assert(value[i]->parents().size() == 1);
          parents[i] = (*value[i]->parents().begin())->as_alu();
 
@@ -472,6 +479,7 @@ CopyPropFwdVisitor::propagate_to(RegisterVec4& value, Instr *instr)
 				copy-propagate */
 			if (!parents[i])
 				return; 
+
 
          if ((parents[i]->opcode() != op1_mov) ||
              parents[i]->has_alu_flag(alu_src0_neg) ||
@@ -534,6 +542,12 @@ CopyPropFwdVisitor::propagate_to(RegisterVec4& value, Instr *instr)
          auto alu = p->as_alu();
          if (alu)
             allowed_mask &= alu->allowed_dest_chan_mask();
+      }
+
+      for (auto u : src->uses()) {
+         auto alu = u->as_alu();
+         if (alu)
+            allowed_mask &= alu->allowed_src_chan_mask();
       }
 
       if (!allowed_mask)

@@ -1524,7 +1524,8 @@ emit_intrinsic_load_ssbo(struct ir3_context *ctx,
 {
    /* Note: isam currently can't handle vectorized loads/stores */
    if (!(nir_intrinsic_access(intr) & ACCESS_CAN_REORDER) ||
-       intr->dest.ssa.num_components > 1) {
+       intr->dest.ssa.num_components > 1 ||
+       !ctx->compiler->has_isam_ssbo) {
       ctx->funcs->emit_intrinsic_load_ssbo(ctx, intr, dst);
       return;
    }
@@ -4953,8 +4954,10 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
    collect_tex_prefetches(ctx, ir);
 
    if (so->type == MESA_SHADER_FRAGMENT &&
-       ctx->s->info.fs.needs_quad_helper_invocations)
+       ctx->s->info.fs.needs_quad_helper_invocations) {
       so->need_pixlod = true;
+      so->need_full_quad = true;
+   }
 
    if ((ctx->so->type == MESA_SHADER_FRAGMENT) &&
        !ctx->s->info.fs.early_fragment_tests)

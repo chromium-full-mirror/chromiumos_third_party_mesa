@@ -676,9 +676,15 @@ void
 zink_descriptor_shader_get_binding_offsets(const struct zink_shader *shader, unsigned *offsets)
 {
    offsets[ZINK_DESCRIPTOR_TYPE_UBO] = 0;
-   offsets[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] = shader->bindings[ZINK_DESCRIPTOR_TYPE_UBO][shader->num_bindings[ZINK_DESCRIPTOR_TYPE_UBO] - 1].binding + 1;
-   offsets[ZINK_DESCRIPTOR_TYPE_SSBO] = offsets[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] + shader->bindings[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW][shader->num_bindings[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] - 1].binding + 1;
-   offsets[ZINK_DESCRIPTOR_TYPE_IMAGE] = offsets[ZINK_DESCRIPTOR_TYPE_SSBO] + shader->bindings[ZINK_DESCRIPTOR_TYPE_SSBO][shader->num_bindings[ZINK_DESCRIPTOR_TYPE_SSBO] - 1].binding + 1;
+   offsets[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] = (shader->num_bindings[ZINK_DESCRIPTOR_TYPE_UBO] ?
+                                                shader->bindings[ZINK_DESCRIPTOR_TYPE_UBO][shader->num_bindings[ZINK_DESCRIPTOR_TYPE_UBO] - 1].binding + 1 :
+                                                1);
+   offsets[ZINK_DESCRIPTOR_TYPE_SSBO] = offsets[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] + (shader->num_bindings[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] ?
+                                                                                     shader->bindings[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW][shader->num_bindings[ZINK_DESCRIPTOR_TYPE_SAMPLER_VIEW] - 1].binding + 1 :
+                                                                                     1);
+   offsets[ZINK_DESCRIPTOR_TYPE_IMAGE] = offsets[ZINK_DESCRIPTOR_TYPE_SSBO] + (shader->num_bindings[ZINK_DESCRIPTOR_TYPE_SSBO] ?
+                                                                              shader->bindings[ZINK_DESCRIPTOR_TYPE_SSBO][shader->num_bindings[ZINK_DESCRIPTOR_TYPE_SSBO] - 1].binding + 1 :
+                                                                              1);
 }
 
 void
@@ -1565,7 +1571,7 @@ zink_batch_descriptor_init(struct zink_screen *screen, struct zink_batch_state *
       if (!pres)
          return false;
       bs->dd.db = zink_resource(pres);
-      bs->dd.db_map = pipe_buffer_map(&bs->ctx->base, pres, PIPE_MAP_READ | PIPE_MAP_WRITE | PIPE_MAP_PERSISTENT, &bs->dd.db_xfer);
+      bs->dd.db_map = pipe_buffer_map(&bs->ctx->base, pres, PIPE_MAP_READ | PIPE_MAP_WRITE | PIPE_MAP_PERSISTENT | PIPE_MAP_THREAD_SAFE, &bs->dd.db_xfer);
    }
    return true;
 }
