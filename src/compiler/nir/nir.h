@@ -5827,6 +5827,9 @@ nir_function_impl *nir_shader_get_preamble(nir_shader *shader);
 bool nir_lower_point_smooth(nir_shader *shader);
 bool nir_lower_poly_line_smooth(nir_shader *shader, unsigned num_smooth_aa_sample);
 
+unsigned
+nir_static_workgroup_size(const nir_shader *s);
+
 #include "nir_inline_helpers.h"
 
 #ifdef __cplusplus
