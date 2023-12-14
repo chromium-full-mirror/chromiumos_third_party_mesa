@@ -6023,6 +6023,9 @@ bool nir_lower_poly_line_smooth(nir_shader *shader, unsigned num_smooth_aa_sampl
 
 bool nir_mod_analysis(nir_ssa_scalar val, nir_alu_type val_type, unsigned div, unsigned *mod);
 
+unsigned
+nir_static_workgroup_size(const nir_shader *s);
+
 #include "nir_inline_helpers.h"
 
 #ifdef __cplusplus
