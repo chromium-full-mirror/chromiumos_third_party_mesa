@@ -267,7 +267,7 @@ nir_clear_shared_memory(nir_shader *shader,
       }
    } else {
       nir_phi_instr *offset_phi = nir_phi_instr_create(shader);
-      nir_ssa_def_init(&offset_phi->instr, &offset_phi->dest.ssa, 1, 32);
+      nir_ssa_dest_init(&offset_phi->instr, &offset_phi->dest, 1, 32, NULL);
       nir_phi_instr_add_src(offset_phi, nir_cursor_current_block(b.cursor), nir_src_for_ssa(first_offset));
 
       nir_ssa_def *size_per_iteration_def = shader->info.workgroup_size_variable ?
