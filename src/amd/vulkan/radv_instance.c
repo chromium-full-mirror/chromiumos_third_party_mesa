@@ -43,7 +43,6 @@ static const struct debug_control radv_debug_options[] = {{"nofastclears", RADV_
                                                           {"allbos", RADV_DEBUG_ALL_BOS},
                                                           {"noibs", RADV_DEBUG_NO_IBS},
                                                           {"spirv", RADV_DEBUG_DUMP_SPIRV},
-                                                          {"vmfaults", RADV_DEBUG_VM_FAULTS},
                                                           {"zerovram", RADV_DEBUG_ZERO_VRAM},
                                                           {"syncshaders", RADV_DEBUG_SYNC_SHADERS},
                                                           {"preoptir", RADV_DEBUG_PREOPTIR},
@@ -100,6 +99,7 @@ static const struct debug_control radv_perftest_options[] = {{"localbos", RADV_P
                                                              {"ngg_streamout", RADV_PERFTEST_NGG_STREAMOUT},
                                                              {"video_decode", RADV_PERFTEST_VIDEO_DECODE},
                                                              {"dmashaders", RADV_PERFTEST_DMA_SHADERS},
+                                                             {"gsfastlaunch2", RADV_PERFTEST_GS_FAST_LAUNCH_2},
                                                              {NULL, 0}};
 
 const char *
@@ -128,9 +128,7 @@ static const driOptionDescription radv_dri_options[] = {
       DRI_CONF_RADV_ENABLE_MRT_OUTPUT_NAN_FIXUP(false)
       DRI_CONF_RADV_DISABLE_SHRINK_IMAGE_STORE(false)
       DRI_CONF_RADV_NO_DYNAMIC_BOUNDS(false)
-      DRI_CONF_RADV_ABSOLUTE_DEPTH_BIAS(false)
       DRI_CONF_RADV_OVERRIDE_UNIFORM_OFFSET_ALIGNMENT(0)
-      DRI_CONF_RADV_CLEAR_LDS(true)
    DRI_CONF_SECTION_END
 
    DRI_CONF_SECTION_DEBUG
@@ -146,6 +144,7 @@ static const driOptionDescription radv_dri_options[] = {
       DRI_CONF_RADV_DISABLE_TC_COMPAT_HTILE_GENERAL(false)
       DRI_CONF_RADV_DISABLE_DCC(false)
       DRI_CONF_RADV_DISABLE_ANISO_SINGLE_LEVEL(false)
+      DRI_CONF_RADV_DISABLE_TRUNC_COORD(false)
       DRI_CONF_RADV_DISABLE_SINKING_LOAD_INPUT_FS(false)
       DRI_CONF_RADV_DGC(false)
       DRI_CONF_RADV_FLUSH_BEFORE_QUERY_COPY(false)
@@ -154,6 +153,7 @@ static const driOptionDescription radv_dri_options[] = {
       DRI_CONF_RADV_FLUSH_BEFORE_TIMESTAMP_WRITE(false)
       DRI_CONF_RADV_RT_WAVE64(false)
       DRI_CONF_DUAL_COLOR_BLEND_BY_LOCATION(false)
+      DRI_CONF_RADV_SSBO_NON_UNIFORM(false)
       DRI_CONF_RADV_APP_LAYER()
    DRI_CONF_SECTION_END
 };
@@ -170,8 +170,6 @@ radv_init_dri_options(struct radv_instance *instance)
    instance->enable_mrt_output_nan_fixup = driQueryOptionb(&instance->dri_options, "radv_enable_mrt_output_nan_fixup");
 
    instance->disable_shrink_image_store = driQueryOptionb(&instance->dri_options, "radv_disable_shrink_image_store");
-
-   instance->absolute_depth_bias = driQueryOptionb(&instance->dri_options, "radv_absolute_depth_bias");
 
    instance->disable_tc_compat_htile_in_general =
       driQueryOptionb(&instance->dri_options, "radv_disable_tc_compat_htile_general");
@@ -191,11 +189,11 @@ radv_init_dri_options(struct radv_instance *instance)
    if (driQueryOptionb(&instance->dri_options, "radv_disable_dcc"))
       instance->debug_flags |= RADV_DEBUG_NO_DCC;
 
-   instance->clear_lds = driQueryOptionb(&instance->dri_options, "radv_clear_lds");
-
    instance->zero_vram = driQueryOptionb(&instance->dri_options, "radv_zero_vram");
 
    instance->disable_aniso_single_level = driQueryOptionb(&instance->dri_options, "radv_disable_aniso_single_level");
+
+   instance->disable_trunc_coord = driQueryOptionb(&instance->dri_options, "radv_disable_trunc_coord");
 
    instance->disable_sinking_load_input_fs =
       driQueryOptionb(&instance->dri_options, "radv_disable_sinking_load_input_fs");
@@ -205,6 +203,8 @@ radv_init_dri_options(struct radv_instance *instance)
    instance->enable_unified_heap_on_apu = driQueryOptionb(&instance->dri_options, "radv_enable_unified_heap_on_apu");
 
    instance->tex_non_uniform = driQueryOptionb(&instance->dri_options, "radv_tex_non_uniform");
+
+   instance->ssbo_non_uniform = driQueryOptionb(&instance->dri_options, "radv_ssbo_non_uniform");
 
    instance->app_layer = driQueryOptionstr(&instance->dri_options, "radv_app_layer");
 

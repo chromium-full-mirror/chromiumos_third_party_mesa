@@ -1094,7 +1094,8 @@ radv_get_modifier_flags(struct radv_physical_device *dev, VkFormat format, uint6
       /* Only disable support for STORAGE_IMAGE on modifiers that
        * do not support DCC image stores.
        */
-      if (!ac_modifier_supports_dcc_image_stores(modifier) || radv_is_atomic_format_supported(format))
+      if (!ac_modifier_supports_dcc_image_stores(dev->rad_info.gfx_level, modifier) ||
+          radv_is_atomic_format_supported(format))
          features &= ~VK_FORMAT_FEATURE_2_STORAGE_IMAGE_BIT;
 
       if (dev->instance->debug_flags & (RADV_DEBUG_NO_DCC | RADV_DEBUG_NO_DISPLAY_DCC))
@@ -1559,28 +1560,19 @@ get_external_image_format_properties(struct radv_physical_device *physical_devic
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
       if (pImageFormatInfo->tiling != VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
          break;
-
-      switch (pImageFormatInfo->type) {
-      case VK_IMAGE_TYPE_2D:
-         flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
-
-         compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-         break;
-      default:
-         break;
-      }
-      break;
+      FALLTHROUGH;
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
-      switch (pImageFormatInfo->type) {
-      case VK_IMAGE_TYPE_2D:
-         flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
-         if (pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
-            flags |= VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
+      if (pImageFormatInfo->type != VK_IMAGE_TYPE_2D)
+         break;
+      flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
+      if (handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT &&
+          pImageFormatInfo->tiling != VK_IMAGE_TILING_LINEAR)
+         flags |= VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT;
 
-         compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-         break;
-      default:
-         break;
+      compat_flags = export_flags = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+      if (pImageFormatInfo->tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT) {
+         compat_flags |= VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+         export_flags |= VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
       }
       break;
    case VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID:
@@ -1703,7 +1695,7 @@ radv_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice,
    }
 
    if (ycbcr_props) {
-      ycbcr_props->combinedImageSamplerDescriptorCount = vk_format_get_plane_count(format);
+      ycbcr_props->combinedImageSamplerDescriptorCount = 1;
    }
 
    if (texture_lod_props) {
