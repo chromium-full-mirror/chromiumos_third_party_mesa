@@ -3399,3 +3399,10 @@ nir_remove_non_entrypoints(nir_shader *nir)
    }
    assert(exec_list_length(&nir->functions) == 1);
 }
+
+unsigned
+nir_static_workgroup_size(const nir_shader *s)
+{
+   return s->info.workgroup_size[0] * s->info.workgroup_size[1] *
+          s->info.workgroup_size[2];
+}
