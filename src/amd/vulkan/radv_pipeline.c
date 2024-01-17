@@ -256,6 +256,8 @@ radv_get_hash_flags(const struct radv_device *device, bool stats)
       hash_flags |= RADV_HASH_SHADER_NO_RT;
    if (device->instance->dual_color_blend_by_location)
       hash_flags |= RADV_HASH_SHADER_DUAL_BLEND_MRT1;
+   if (device->instance->clear_lds)
+      hash_flags |= RADV_HASH_SHADER_CLEAR_LDS;
    return hash_flags;
 }
 
@@ -715,6 +717,12 @@ radv_postprocess_nir(struct radv_device *device, const struct radv_pipeline_key 
       NIR_PASS_V(stage->nir, ac_nir_lower_ps, &options);
    }
 
+   if (radv_shader_should_clear_lds(device, stage->nir)) {
+      const unsigned chunk_size = 16; /* max single store size */
+      const unsigned shared_size = ALIGN(stage->nir->info.shared_size, chunk_size);
+      NIR_PASS(_, stage->nir, nir_clear_shared_memory, shared_size, chunk_size);
+   }
+
    NIR_PASS(_, stage->nir, nir_lower_int64);
 
    NIR_PASS(_, stage->nir, nir_opt_idiv_const, 8);
@@ -792,6 +800,14 @@ radv_postprocess_nir(struct radv_device *device, const struct radv_pipeline_key 
          nir_move_const_undef | nir_move_load_ubo | nir_move_load_input | nir_move_comparisons | nir_move_copies;
       NIR_PASS(_, stage->nir, nir_opt_move, move_opts);
    }
+}
+
+bool
+radv_shader_should_clear_lds(const struct radv_device *device, const nir_shader *shader)
+{
+   return (shader->info.stage == MESA_SHADER_COMPUTE || shader->info.stage == MESA_SHADER_MESH ||
+           shader->info.stage == MESA_SHADER_TASK) &&
+          shader->info.shared_size > 0 && device->instance->clear_lds;
 }
 
 static uint32_t
