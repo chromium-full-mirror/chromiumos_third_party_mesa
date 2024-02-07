@@ -1660,7 +1660,7 @@ cleanup:
           */
          fprintf(stderr, "amdgpu: The CS has been rejected (%i), but the context isn't robust.\n", r);
          fprintf(stderr, "amdgpu: The process will be terminated.\n");
-         exit(1);
+         abort();
       }
 
       fprintf(stderr, "amdgpu: The CS has been rejected (%i). Recreate the context.\n", r);
