@@ -245,6 +245,7 @@ struct vn_tls {
  *
  * The current users are:
  * - VkCommandPool
+ * - VkQueue
  */
 struct vn_cached_storage {
    const VkAllocationCallbacks *alloc;
