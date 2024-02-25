@@ -65,7 +65,8 @@ enum PACKED brw_reg_type {
    BRW_REGISTER_TYPE_UV, /* vector of 8 unsigned 4-bit integers (treated as UW) */
    /** @} */
 
-   BRW_REGISTER_TYPE_LAST = BRW_REGISTER_TYPE_UV
+   BRW_REGISTER_TYPE_LAST = BRW_REGISTER_TYPE_UV,
+   BRW_TYPE_D  = 0b00110
 };
 
 static inline bool
