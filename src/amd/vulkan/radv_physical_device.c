@@ -98,9 +98,6 @@ radv_calibrated_timestamps_enabled(const struct radv_physical_device *pdevice)
 bool
 radv_enable_rt(const struct radv_physical_device *pdevice, bool rt_pipelines)
 {
-   /* it causes hangs on mendocino */
-   return false;
-
    if (pdevice->rad_info.gfx_level < GFX10_3 && !radv_emulate_rt(pdevice))
       return false;
 
