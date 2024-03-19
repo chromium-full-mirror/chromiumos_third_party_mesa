@@ -682,7 +682,6 @@ vn_cmd_reset(struct vn_command_buffer *cmd)
    vn_cs_encoder_reset(&cmd->cs);
 
    cmd->state = VN_COMMAND_BUFFER_STATE_INITIAL;
-   cmd->draw_cmd_batched = 0;
 
    /* reset cmd builder */
    vk_free(&cmd->pool->allocator, cmd->builder.present_src_images);
@@ -1043,14 +1042,6 @@ vn_cmd_submit(struct vn_command_buffer *cmd)
    }
 
    vn_cs_encoder_reset(&cmd->cs);
-   cmd->draw_cmd_batched = 0;
-}
-
-static inline void
-vn_cmd_count_draw_and_submit_on_batch_limit(struct vn_command_buffer *cmd)
-{
-   if (++cmd->draw_cmd_batched >= vn_env.draw_cmd_batch_limit)
-      vn_cmd_submit(cmd);
 }
 
 VkResult
@@ -1215,9 +1206,6 @@ vn_CmdDraw(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdDraw, commandBuffer, vertexCount, instanceCount,
                   firstVertex, firstInstance);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -1248,9 +1236,6 @@ vn_CmdDrawIndexed(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdDrawIndexed, commandBuffer, indexCount, instanceCount,
                   firstIndex, vertexOffset, firstInstance);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -1262,9 +1247,6 @@ vn_CmdDrawIndirect(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdDrawIndirect, commandBuffer, buffer, offset, drawCount,
                   stride);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -1276,9 +1258,6 @@ vn_CmdDrawIndexedIndirect(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdDrawIndexedIndirect, commandBuffer, buffer, offset,
                   drawCount, stride);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -1292,9 +1271,6 @@ vn_CmdDrawIndirectCount(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdDrawIndirectCount, commandBuffer, buffer, offset,
                   countBuffer, countBufferOffset, maxDrawCount, stride);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -1309,9 +1285,6 @@ vn_CmdDrawIndexedIndirectCount(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdDrawIndexedIndirectCount, commandBuffer, buffer,
                   offset, countBuffer, countBufferOffset, maxDrawCount,
                   stride);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -2027,9 +2000,6 @@ vn_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdDrawIndirectByteCountEXT, commandBuffer, instanceCount,
                   firstInstance, counterBuffer, counterBufferOffset,
                   counterOffset, vertexStride);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -2203,9 +2173,6 @@ vn_CmdDrawMultiEXT(VkCommandBuffer commandBuffer,
 {
    VN_CMD_ENQUEUE(vkCmdDrawMultiEXT, commandBuffer, drawCount, pVertexInfo,
                   instanceCount, firstInstance, stride);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
@@ -2220,9 +2187,6 @@ vn_CmdDrawMultiIndexedEXT(VkCommandBuffer commandBuffer,
    VN_CMD_ENQUEUE(vkCmdDrawMultiIndexedEXT, commandBuffer, drawCount,
                   pIndexInfo, instanceCount, firstInstance, stride,
                   pVertexOffset);
-
-   vn_cmd_count_draw_and_submit_on_batch_limit(
-      vn_command_buffer_from_handle(commandBuffer));
 }
 
 void
