@@ -219,7 +219,7 @@ try_pbo_readpixels(struct st_context *st, struct gl_renderbuffer *rb,
    fb.width = surface->width;
    fb.height = surface->height;
    fb.samples = 1;
-   fb.layers = 1;
+   fb.layers = addr.depth;
    cso_set_framebuffer(cso, &fb);
 
    /* Any blend state would do. Set this just to prevent drivers having
@@ -426,6 +426,9 @@ st_ReadPixels(struct gl_context *ctx, GLint x, GLint y,
    struct pipe_transfer *tex_xfer;
    uint8_t *map = NULL;
    int dst_x, dst_y;
+
+   if (rb == NULL)
+      return;
 
    /* Validate state (to be sure we have up-to-date framebuffer surfaces)
     * and flush the bitmap cache prior to reading. */

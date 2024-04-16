@@ -114,6 +114,7 @@ vn_CreateQueryPool(VkDevice device,
     */
    switch (dev->physical_device->renderer_driver_id) {
    case VK_DRIVER_ID_ARM_PROPRIETARY:
+   case VK_DRIVER_ID_MESA_LLVMPIPE:
    case VK_DRIVER_ID_MESA_TURNIP:
       pool->saturate_on_overflow = true;
       break;
@@ -122,7 +123,7 @@ vn_CreateQueryPool(VkDevice device,
    };
 
    VkQueryPool pool_handle = vn_query_pool_to_handle(pool);
-   vn_async_vkCreateQueryPool(dev->instance, device, pCreateInfo, NULL,
+   vn_async_vkCreateQueryPool(dev->primary_ring, device, pCreateInfo, NULL,
                               &pool_handle);
 
    *pQueryPool = pool_handle;
@@ -148,7 +149,7 @@ vn_DestroyQueryPool(VkDevice device,
    if (pool->feedback)
       vn_feedback_buffer_destroy(dev, pool->feedback, alloc);
 
-   vn_async_vkDestroyQueryPool(dev->instance, device, queryPool, NULL);
+   vn_async_vkDestroyQueryPool(dev->primary_ring, device, queryPool, NULL);
 
    vn_object_base_fini(&pool->base);
    vk_free(alloc, pool);
@@ -164,7 +165,7 @@ vn_ResetQueryPool(VkDevice device,
    struct vn_device *dev = vn_device_from_handle(device);
    struct vn_query_pool *pool = vn_query_pool_from_handle(queryPool);
 
-   vn_async_vkResetQueryPool(dev->instance, device, queryPool, firstQuery,
+   vn_async_vkResetQueryPool(dev->primary_ring, device, queryPool, firstQuery,
                              queryCount);
    if (pool->feedback) {
       /* Feedback results are always 64 bit and include availability bit
@@ -252,29 +253,33 @@ vn_get_query_pool_feedback(struct vn_query_pool *pool,
    return result;
 }
 
-static void
-vn_query_feedback_wait_ready(struct vn_device *dev,
-                             struct vn_query_pool *pool,
-                             uint32_t first_query,
-                             uint32_t query_count)
+static VkResult
+vn_query_feedback_wait_ready(struct vn_query_pool *pool,
+                             uint32_t firstQuery,
+                             uint32_t queryCount)
 {
-   VN_TRACE_FUNC();
+   /* Timeout after 5 seconds */
+   uint64_t timeout = 5000ull * 1000 * 1000;
+   uint64_t abs_timeout_ns = os_time_get_absolute_timeout(timeout);
 
    /* Feedback results are always 64 bit and include availability bit
     * (also 64 bit)
     */
-   const uint32_t step = pool->result_array_size + 1;
-   const uint64_t *avail = (uint64_t *)pool->feedback->data +
-                           first_query * step + pool->result_array_size;
+   const uint32_t slot_array_size = pool->result_array_size + 1;
+   volatile uint64_t *src = pool->feedback->data;
+   src += (slot_array_size * firstQuery) + pool->result_array_size;
 
-   struct vn_relax_state relax_state =
-      vn_relax_init(&dev->instance->ring.ring, "query");
-   for (uint32_t i = 0, j = 0; i < query_count; i++, j += step) {
-      while (!avail[j]) {
-         vn_relax(&relax_state);
+   uint32_t src_index = 0;
+   for (uint32_t i = 0; i < queryCount; i++) {
+      while (!src[src_index]) {
+         if (os_time_get_nano() > abs_timeout_ns)
+            return VK_ERROR_DEVICE_LOST;
+
+         thrd_yield();
       }
+      src_index += slot_array_size;
    }
-   vn_relax_fini(&relax_state);
+   return VK_SUCCESS;
 }
 
 VkResult
@@ -303,9 +308,11 @@ vn_GetQueryPoolResults(VkDevice device,
     */
    if (pool->feedback) {
       /* If wait bit is set, wait poll until query is ready */
-      if (flags & VK_QUERY_RESULT_WAIT_BIT)
-         vn_query_feedback_wait_ready(dev, pool, firstQuery, queryCount);
-
+      if (flags & VK_QUERY_RESULT_WAIT_BIT) {
+         result = vn_query_feedback_wait_ready(pool, firstQuery, queryCount);
+         if (result != VK_SUCCESS)
+            return vn_result(dev->instance, result);
+      }
       result = vn_get_query_pool_feedback(pool, firstQuery, queryCount, pData,
                                           stride, flags);
       return vn_result(dev->instance, result);
@@ -329,8 +336,8 @@ vn_GetQueryPoolResults(VkDevice device,
          return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
    }
    result = vn_call_vkGetQueryPoolResults(
-      dev->instance, device, queryPool, firstQuery, queryCount, packed_size,
-      packed_data, packed_stride, packed_flags);
+      dev->primary_ring, device, queryPool, firstQuery, queryCount,
+      packed_size, packed_data, packed_stride, packed_flags);
 
    if (packed_data == pData)
       return vn_result(dev->instance, result);

@@ -55,6 +55,8 @@ void si_execute_clears(struct si_context *sctx, struct si_clear_info *info,
    if (sctx->gfx_level <= GFX8)
       sctx->flags |= SI_CONTEXT_INV_L2;
 
+   si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
+
    /* Execute clears. */
    for (unsigned i = 0; i < num_clears; i++) {
       if (info[i].is_dcc_msaa) {
@@ -83,6 +85,8 @@ void si_execute_clears(struct si_context *sctx, struct si_clear_info *info,
    /* GFX6-8: CB and DB don't use L2. */
    if (sctx->gfx_level <= GFX8)
       sctx->flags |= SI_CONTEXT_WB_L2;
+
+   si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
 }
 
 static bool si_alloc_separate_cmask(struct si_screen *sscreen, struct si_texture *tex)
@@ -104,6 +108,9 @@ static bool si_alloc_separate_cmask(struct si_screen *sscreen, struct si_texture
    if (tex->cmask_buffer == NULL)
       return false;
 
+   /* These 2 fields are part of the framebuffer state but dirtying the atom
+    * will be done by the caller.
+    */
    tex->cmask_base_address_reg = tex->cmask_buffer->gpu_address >> 8;
    tex->cb_color_info |= S_028C70_FAST_CLEAR(1);
 
@@ -705,6 +712,7 @@ static void si_fast_clear(struct si_context *sctx, unsigned *buffers,
       bool too_small = tex->buffer.b.b.nr_samples <= 1 && fb_too_small;
       bool eliminate_needed = false;
       bool fmask_decompress_needed = false;
+      bool need_dirtying_fb = false;
 
       /* Try to clear DCC first, otherwise try CMASK. */
       if (vi_dcc_enabled(tex, level)) {
@@ -801,6 +809,7 @@ static void si_fast_clear(struct si_context *sctx, unsigned *buffers,
 
          uint64_t cmask_offset = 0;
          unsigned clear_size = 0;
+         bool had_cmask_buffer = tex->cmask_buffer != NULL;
 
          if (sctx->gfx_level >= GFX10) {
             assert(level == 0);
@@ -853,6 +862,10 @@ static void si_fast_clear(struct si_context *sctx, unsigned *buffers,
                               cmask_offset, clear_size, 0);
          clear_types |= SI_CLEAR_TYPE_CMASK;
          eliminate_needed = true;
+         /* If we allocated a cmask buffer for this tex we need to re-emit
+          * the fb state.
+          */
+         need_dirtying_fb = !had_cmask_buffer;
       }
 
       if ((eliminate_needed || fmask_decompress_needed) &&
@@ -873,7 +886,7 @@ static void si_fast_clear(struct si_context *sctx, unsigned *buffers,
       /* There are no clear color registers on GFX11. */
       assert(sctx->gfx_level < GFX11);
 
-      if (si_set_clear_color(tex, fb->cbufs[i]->format, color)) {
+      if (si_set_clear_color(tex, fb->cbufs[i]->format, color) || need_dirtying_fb) {
          sctx->framebuffer.dirty_cbufs |= 1 << i;
          si_mark_atom_dirty(sctx, &sctx->atoms.s.framebuffer);
       }
@@ -1162,8 +1175,10 @@ static void si_clear(struct pipe_context *ctx, unsigned buffers,
          si_mark_atom_dirty(sctx, &sctx->atoms.s.db_render_state);
       }
 
-      if (needs_db_flush)
+      if (needs_db_flush) {
          sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_DB;
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
+      }
    }
 
    if (unlikely(sctx->sqtt_enabled)) {

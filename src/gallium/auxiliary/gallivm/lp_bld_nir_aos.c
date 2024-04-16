@@ -313,7 +313,7 @@ emit_tex(struct lp_build_nir_context *bld_base,
    params->type = bld_base->base.type;
    params->texel[0] = bld->sampler->emit_fetch_texel(bld->sampler,
                                                      &bld->bld_base.base,
-                                                     PIPE_TEXTURE_2D,
+                                                     TGSI_TEXTURE_2D,
                                                      params->texture_index,
                                                      params->coords[0],
                                                      params->derivs ? params->derivs[0] : derivs,
@@ -363,8 +363,7 @@ lp_build_nir_aos(struct gallivm_state *gallivm,
                  LLVMValueRef consts_ptr,
                  const LLVMValueRef *inputs,
                  LLVMValueRef *outputs,
-                 const struct lp_build_sampler_aos *sampler,
-                 const struct tgsi_shader_info *info)
+                 const struct lp_build_sampler_aos *sampler)
 {
    struct lp_build_nir_aos_context bld;
 
@@ -395,5 +394,9 @@ lp_build_nir_aos(struct gallivm_state *gallivm,
    bld.bld_base.tex = emit_tex;
    bld.bld_base.emit_var_decl = emit_var_decl;
 
-   lp_build_nir_llvm(&bld.bld_base, shader);
+   lp_build_nir_prepasses(shader);
+   NIR_PASS_V(shader, nir_move_vec_src_uses_to_dest, false);
+   NIR_PASS_V(shader, nir_lower_vec_to_regs, NULL, NULL);
+   lp_build_nir_llvm(&bld.bld_base, shader,
+                     nir_shader_get_entrypoint(shader));
 }

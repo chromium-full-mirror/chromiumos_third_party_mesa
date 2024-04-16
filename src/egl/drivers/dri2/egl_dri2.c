@@ -73,7 +73,7 @@
 #include "egl_dri2.h"
 #include "egldefines.h"
 
-#define NUM_ATTRIBS 12
+#define NUM_ATTRIBS 16
 
 static const struct dri2_pbuffer_visual {
    const char *format_name;
@@ -732,6 +732,7 @@ static const struct dri_extension_match swrast_driver_extensions[] = {
 
 static const struct dri_extension_match swrast_core_extensions[] = {
    {__DRI_TEX_BUFFER, 2, offsetof(struct dri2_egl_display, tex_buffer), false},
+   {__DRI_IMAGE, 6, offsetof(struct dri2_egl_display, image), true},
 };
 
 static const struct dri_extension_match optional_core_extensions[] = {
@@ -740,7 +741,6 @@ static const struct dri_extension_match optional_core_extensions[] = {
    {__DRI2_BUFFER_DAMAGE, 1, offsetof(struct dri2_egl_display, buffer_damage),
     true},
    {__DRI2_INTEROP, 1, offsetof(struct dri2_egl_display, interop), true},
-   {__DRI_IMAGE, 6, offsetof(struct dri2_egl_display, image), true},
    {__DRI2_FLUSH_CONTROL, 1, offsetof(struct dri2_egl_display, flush_control),
     true},
    {__DRI2_BLOB, 1, offsetof(struct dri2_egl_display, blob), true},
@@ -870,6 +870,10 @@ dri2_setup_screen(_EGLDisplay *disp)
    disp->Extensions.KHR_no_config_context = EGL_TRUE;
    disp->Extensions.KHR_surfaceless_context = EGL_TRUE;
 
+   if (dri2_dpy->interop) {
+      disp->Extensions.MESA_gl_interop = EGL_TRUE;
+   }
+
    if (dri2_dpy->configOptions) {
       disp->Extensions.MESA_query_driver = EGL_TRUE;
    }
@@ -888,6 +892,11 @@ dri2_setup_screen(_EGLDisplay *disp)
 
    disp->Extensions.EXT_create_context_robustness =
       get_screen_param(disp, PIPE_CAP_DEVICE_RESET_STATUS_QUERY);
+
+   /* EXT_query_reset_notification_strategy complements and requires
+    * EXT_create_context_robustness. */
+   disp->Extensions.EXT_query_reset_notification_strategy =
+      disp->Extensions.EXT_create_context_robustness;
 
    if (dri2_dpy->fence) {
       disp->Extensions.KHR_fence_sync = EGL_TRUE;
@@ -1058,9 +1067,56 @@ dri2_setup_extensions(_EGLDisplay *disp)
         dri2_dpy->present_minor_version >= 2)) &&
       (dri2_dpy->image && dri2_dpy->image->base.version >= 15);
 #endif
+   if (disp->Options.Zink && !disp->Options.ForceSoftware &&
+#ifdef HAVE_DRI3_MODIFIERS
+       dri2_dpy->dri3_major_version != -1 &&
+       !dri2_dpy->multibuffers_available &&
+#endif
+       /* this is enum _egl_platform_type */
+       (disp->Platform == _EGL_PLATFORM_X11 ||
+        disp->Platform == _EGL_PLATFORM_XCB) &&
+       !debug_get_bool_option("LIBGL_KOPPER_DRI2", false))
+      return EGL_FALSE;
 
    loader_bind_extensions(dri2_dpy, optional_core_extensions,
                           ARRAY_SIZE(optional_core_extensions), extensions);
+   return EGL_TRUE;
+}
+
+EGLBoolean
+dri2_setup_device(_EGLDisplay *disp, EGLBoolean software)
+{
+   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
+   _EGLDevice *dev;
+   int render_fd;
+
+   /* Extensions must be loaded before calling this function */
+   assert(dri2_dpy->mesa);
+   /* If we're not software, we need a DRM node FD */
+   assert(software || dri2_dpy->fd_render_gpu >= 0);
+
+   /* fd_render_gpu is what we got from WSI, so might actually be a lie and
+    * not a render node... */
+   if (software) {
+      render_fd = -1;
+   } else if (loader_is_device_render_capable(dri2_dpy->fd_render_gpu)) {
+      render_fd = dri2_dpy->fd_render_gpu;
+   } else {
+      render_fd = dri2_dpy->mesa->queryCompatibleRenderOnlyDeviceFd(
+         dri2_dpy->fd_render_gpu);
+      if (render_fd < 0)
+         return EGL_FALSE;
+   }
+
+   dev = _eglFindDevice(render_fd, software);
+
+   if (render_fd >= 0 && render_fd != dri2_dpy->fd_render_gpu)
+      close(render_fd);
+
+   if (!dev)
+      return EGL_FALSE;
+
+   disp->Device = dev;
    return EGL_TRUE;
 }
 
@@ -1188,6 +1244,10 @@ dri2_display_destroy(_EGLDisplay *disp)
    free(dri2_dpy->device_name);
 #endif
 
+#ifdef HAVE_ANDROID_PLATFORM
+   u_gralloc_destroy(&dri2_dpy->gralloc);
+#endif
+
    switch (disp->Platform) {
    case _EGL_PLATFORM_X11:
       dri2_teardown_x11(dri2_dpy);
@@ -1214,6 +1274,28 @@ dri2_display_destroy(_EGLDisplay *disp)
    }
    free(dri2_dpy);
    disp->DriverData = NULL;
+}
+
+struct dri2_egl_display *
+dri2_display_create(void)
+{
+   struct dri2_egl_display *dri2_dpy = calloc(1, sizeof *dri2_dpy);
+   if (!dri2_dpy) {
+      _eglError(EGL_BAD_ALLOC, "eglInitialize");
+      return NULL;
+   }
+
+   dri2_dpy->fd_render_gpu = -1;
+   dri2_dpy->fd_display_gpu = -1;
+
+#ifdef HAVE_DRI3_MODIFIERS
+   dri2_dpy->dri3_major_version = -1;
+   dri2_dpy->dri3_minor_version = -1;
+   dri2_dpy->present_major_version = -1;
+   dri2_dpy->present_minor_version = -1;
+#endif
+
+   return dri2_dpy;
 }
 
 __DRIbuffer *
@@ -1595,8 +1677,13 @@ dri2_create_drawable(struct dri2_egl_display *dri2_dpy,
    if (dri2_dpy->kopper) {
       dri2_surf->dri_drawable = dri2_dpy->kopper->createNewDrawable(
          dri2_dpy->dri_screen_render_gpu, config, loaderPrivate,
-         dri2_surf->base.Type == EGL_PBUFFER_BIT ||
-            dri2_surf->base.Type == EGL_PIXMAP_BIT);
+         &(__DRIkopperDrawableInfo){
+#ifdef HAVE_X11_PLATFORM
+            .multiplanes_available = dri2_dpy->multibuffers_available,
+#endif
+            .is_pixmap = dri2_surf->base.Type == EGL_PBUFFER_BIT ||
+                         dri2_surf->base.Type == EGL_PIXMAP_BIT,
+         });
    } else {
       __DRIcreateNewDrawableFunc createNewDrawable;
       if (dri2_dpy->image_driver)
@@ -3626,7 +3713,7 @@ dri2_interop_export_object(_EGLDisplay *disp, _EGLContext *ctx,
 static int
 dri2_interop_flush_objects(_EGLDisplay *disp, _EGLContext *ctx, unsigned count,
                            struct mesa_glinterop_export_in *objects,
-                           GLsync *sync)
+                           struct mesa_glinterop_flush_out *out)
 {
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
    struct dri2_egl_context *dri2_ctx = dri2_egl_context(ctx);
@@ -3635,7 +3722,7 @@ dri2_interop_flush_objects(_EGLDisplay *disp, _EGLContext *ctx, unsigned count,
       return MESA_GLINTEROP_UNSUPPORTED;
 
    return dri2_dpy->interop->flush_objects(dri2_ctx->dri_context, count,
-                                           objects, sync);
+                                           objects, out);
 }
 
 const _EGLDriver _eglDriver = {

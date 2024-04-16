@@ -162,6 +162,28 @@ vk_common_GetImageDrmFormatModifierPropertiesEXT(UNUSED VkDevice device,
 }
 #endif
 
+VKAPI_ATTR void VKAPI_CALL
+vk_common_GetImageSubresourceLayout(VkDevice _device, VkImage _image,
+                                    const VkImageSubresource *pSubresource,
+                                    VkSubresourceLayout *pLayout)
+{
+   VK_FROM_HANDLE(vk_device, device, _device);
+
+   const VkImageSubresource2KHR subresource = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_SUBRESOURCE_2_KHR,
+      .imageSubresource = *pSubresource,
+   };
+
+   VkSubresourceLayout2KHR layout = {
+      .sType = VK_STRUCTURE_TYPE_SUBRESOURCE_LAYOUT_2_KHR
+   };
+
+   device->dispatch_table.GetImageSubresourceLayout2KHR(_device, _image,
+                                                        &subresource, &layout);
+
+   *pLayout = layout.subresourceLayout;
+}
+
 void
 vk_image_set_format(struct vk_image *image, VkFormat format)
 {
@@ -301,6 +323,36 @@ vk_image_buffer_copy_layout(const struct vk_image *image,
       .row_stride_B = row_stride_B,
       .image_stride_B = image_stride_B,
    };
+}
+
+struct vk_image_buffer_layout
+vk_memory_to_image_copy_layout(const struct vk_image *image,
+                               const VkMemoryToImageCopyEXT* region)
+{
+   const VkBufferImageCopy2 bic = {
+      .bufferOffset = 0,
+      .bufferRowLength = region->memoryRowLength,
+      .bufferImageHeight = region->memoryImageHeight,
+      .imageSubresource = region->imageSubresource,
+      .imageOffset = region->imageOffset,
+      .imageExtent = region->imageExtent,
+   };
+   return vk_image_buffer_copy_layout(image, &bic);
+}
+
+struct vk_image_buffer_layout
+vk_image_to_memory_copy_layout(const struct vk_image *image,
+                               const VkImageToMemoryCopyEXT* region)
+{
+   const VkBufferImageCopy2 bic = {
+      .bufferOffset = 0,
+      .bufferRowLength = region->memoryRowLength,
+      .bufferImageHeight = region->memoryImageHeight,
+      .imageSubresource = region->imageSubresource,
+      .imageOffset = region->imageOffset,
+      .imageExtent = region->imageExtent,
+   };
+   return vk_image_buffer_copy_layout(image, &bic);
 }
 
 static VkComponentSwizzle
@@ -584,11 +636,9 @@ vk_image_layout_is_read_only(VkImageLayout layout,
    case VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR:
    case VK_IMAGE_LAYOUT_VIDEO_DECODE_SRC_KHR:
    case VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR:
-#ifdef VK_ENABLE_BETA_EXTENSIONS
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_DST_KHR:
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR:
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR:
-#endif
       unreachable("Invalid image layout.");
    }
 
@@ -968,14 +1018,12 @@ vk_image_layout_to_usage_flags(VkImageLayout layout,
       return VK_IMAGE_USAGE_VIDEO_DECODE_SRC_BIT_KHR;
    case VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR:
       return VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
-#ifdef VK_ENABLE_BETA_EXTENSIONS
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_DST_KHR:
       return VK_IMAGE_USAGE_VIDEO_ENCODE_DST_BIT_KHR;
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR:
       return VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR;
    case VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR:
       return VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR;
-#endif
    case VK_IMAGE_LAYOUT_MAX_ENUM:
       unreachable("Invalid image layout.");
    }

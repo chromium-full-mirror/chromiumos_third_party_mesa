@@ -13,9 +13,18 @@ S3_ARGS="--token-file ${CI_JOB_JWT_FILE}"
 RESULTS=$(realpath -s "$PWD"/results)
 mkdir -p "$RESULTS"
 
+export PIGLIT_REPLAY_DESCRIPTION_FILE="$INSTALL/$PIGLIT_TRACES_FILE"
+
+# FIXME: guess why /usr/local/bin is not included in all runners PATH.
+# Needed because yq and ci-fairy are installed there.
+PATH="/usr/local/bin:$PATH"
+
 if [ "$PIGLIT_REPLAY_SUBCOMMAND" = "profile" ]; then
     yq -iY 'del(.traces[][] | select(.label[]? == "no-perf"))' \
       "$PIGLIT_REPLAY_DESCRIPTION_FILE"
+else
+    # keep the images for the later upload
+    export PIGLIT_REPLAY_EXTRA_ARGS="--keep-image ${PIGLIT_REPLAY_EXTRA_ARGS}"
 fi
 
 # WINE
@@ -122,7 +131,7 @@ if [ -n "$CI_NODE_INDEX" ]; then
 fi
 
 # shellcheck disable=SC2317
-replay_minio_upload_images() {
+replay_s3_upload_images() {
     find "$RESULTS/$__PREFIX" -type f -name "*.png" -printf "%P\n" \
         | while read -r line; do
 
@@ -133,7 +142,7 @@ replay_minio_upload_images() {
             fi
             __S3_PATH="$PIGLIT_REPLAY_REFERENCE_IMAGES_BASE"
             __DESTINATION_FILE_PATH="${line##*-}"
-            if curl -L -s -X HEAD "https://${__S3_PATH}/${__DESTINATION_FILE_PATH}" 2>/dev/null; then
+            if curl -L -s -I "https://${__S3_PATH}/${__DESTINATION_FILE_PATH}" | grep -q "content-type: application/octet-stream" 2>/dev/null; then
                 continue
             fi
         else
@@ -185,8 +194,6 @@ then
     printf "%s\n" "Found $(cat /tmp/version.txt), expected $MESA_VERSION"
 fi
 
-ARTIFACTS_BASE_URL="https://${CI_PROJECT_ROOT_NAMESPACE}.${CI_PAGES_DOMAIN}/-/${CI_PROJECT_NAME}/-/jobs/${CI_JOB_ID}/artifacts"
-
 ./piglit summary aggregate "$RESULTS" -o junit.xml
 
 PIGLIT_RESULTS="${PIGLIT_RESULTS:-replay}"
@@ -203,7 +210,7 @@ __S3_PATH="$PIGLIT_REPLAY_ARTIFACTS_BASE_URL"
 __S3_TRACES_PREFIX="traces"
 
 if [ "$PIGLIT_REPLAY_SUBCOMMAND" != "profile" ]; then
-    quiet replay_minio_upload_images
+    quiet replay_s3_upload_images
 fi
 
 
@@ -221,5 +228,5 @@ find "$RESULTS"/summary -type f -name "*.html" -print0 \
 
 echo "Failures in traces:"
 cat $RESULTSFILE
-error echo "Review the image changes and get the new checksums at: ${ARTIFACTS_BASE_URL}/results/summary/problems.html"
+error echo "Review the image changes and get the new checksums at: ${ARTIFACTS_BASE_URL}/results/summary/problems.html "
 exit 1

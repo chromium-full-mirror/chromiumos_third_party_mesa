@@ -98,8 +98,8 @@ clear_in_rp(struct pipe_context *pctx,
          return;
       cr.rect.offset.x = scissor_state->minx;
       cr.rect.offset.y = scissor_state->miny;
-      cr.rect.extent.width = MIN2(fb->width, scissor_state->maxx - scissor_state->minx);
-      cr.rect.extent.height = MIN2(fb->height, scissor_state->maxy - scissor_state->miny);
+      cr.rect.extent.width = MIN2(fb->width - cr.rect.offset.x, scissor_state->maxx - scissor_state->minx);
+      cr.rect.extent.height = MIN2(fb->height - cr.rect.offset.y, scissor_state->maxy - scissor_state->miny);
    } else {
       cr.rect.extent.width = fb->width;
       cr.rect.extent.height = fb->height;
@@ -145,37 +145,6 @@ get_clear_data(struct zink_context *ctx, struct zink_framebuffer_clear *fb_clear
    return add_new_clear(fb_clear);
 }
 
-static void
-convert_color(struct pipe_surface *psurf, union pipe_color_union *color)
-{
-   const struct util_format_description *desc = util_format_description(psurf->format);
-   union pipe_color_union tmp = *color;
-
-   if (zink_format_is_emulated_alpha(psurf->format)) {
-      if (util_format_is_alpha(psurf->format)) {
-         tmp.ui[0] = tmp.ui[3];
-         tmp.ui[1] = 0;
-         tmp.ui[2] = 0;
-         tmp.ui[3] = 0;
-      } else if (util_format_is_luminance(psurf->format)) {
-         tmp.ui[1] = 0;
-         tmp.ui[2] = 0;
-         tmp.f[3] = 1.0;
-      } else if (util_format_is_luminance_alpha(psurf->format)) {
-         tmp.ui[1] = tmp.ui[3];
-         tmp.ui[2] = 0;
-         tmp.f[3] = 1.0;
-      } else /* zink_format_is_red_alpha */ {
-         tmp.ui[1] = tmp.ui[3];
-         tmp.ui[2] = 0;
-         tmp.ui[3] = 0;
-      }
-      memcpy(color, &tmp, sizeof(union pipe_color_union));
-   }
-   for (unsigned i = 0; i < 4; i++)
-      zink_format_clamp_channel_color(desc, color, &tmp, i);
-}
-
 void
 zink_clear(struct pipe_context *pctx,
            unsigned buffers,
@@ -184,6 +153,7 @@ zink_clear(struct pipe_context *pctx,
            double depth, unsigned stencil)
 {
    struct zink_context *ctx = zink_context(pctx);
+   struct zink_screen *screen = zink_screen(pctx->screen);
    struct pipe_framebuffer_state *fb = &ctx->fb_state;
    struct zink_batch *batch = &ctx->batch;
    bool needs_rp = false;
@@ -288,7 +258,7 @@ zink_clear(struct pipe_context *pctx,
             clear->conditional = ctx->render_condition_active;
             clear->has_scissor = needs_rp;
             memcpy(&clear->color, pcolor, sizeof(union pipe_color_union));
-            convert_color(psurf, &clear->color);
+            zink_convert_color(screen, psurf->format, &clear->color, pcolor);
             if (scissor_state && needs_rp)
                clear->scissor = *scissor_state;
             if (zink_fb_clear_first_needs_explicit(fb_clear))
@@ -465,6 +435,7 @@ zink_clear_texture_dynamic(struct pipe_context *pctx,
                            const void *data)
 {
    struct zink_context *ctx = zink_context(pctx);
+   struct zink_screen *screen = zink_screen(pctx->screen);
    struct zink_resource *res = zink_resource(pres);
 
    bool full_clear = 0 <= box->x && u_minify(pres->width0, level) >= box->x + box->width &&
@@ -488,12 +459,12 @@ zink_clear_texture_dynamic(struct pipe_context *pctx,
    info.renderArea.extent.height = box->height;
    info.layerCount = MAX2(box->depth, 1);
 
-   union pipe_color_union color;
+   union pipe_color_union color, tmp;
    float depth = 0.0;
    uint8_t stencil = 0;
    if (res->aspect & VK_IMAGE_ASPECT_COLOR_BIT) {
-      util_format_unpack_rgba(pres->format, color.ui, data, 1);
-      convert_color(surf, &color);
+      util_format_unpack_rgba(pres->format, tmp.ui, data, 1);
+      zink_convert_color(screen, surf->format, &color, &tmp);
    } else {
       if (res->aspect & VK_IMAGE_ASPECT_DEPTH_BIT)
          util_format_unpack_z_float(pres->format, &depth, data, 1);
@@ -673,6 +644,8 @@ zink_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
                          bool render_condition_enabled)
 {
    struct zink_context *ctx = zink_context(pctx);
+   /* check for stencil fallback */
+   bool blitting = ctx->blitting;
    zink_flush_dgc_if_enabled(ctx);
    bool render_condition_active = ctx->render_condition_active;
    if (!render_condition_enabled && render_condition_active) {
@@ -685,14 +658,16 @@ zink_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
        dsty + height > ctx->fb_state.height)
       cur_attachment = false;
    if (!cur_attachment) {
-      util_blitter_save_framebuffer(ctx->blitter, &ctx->fb_state);
-      set_clear_fb(pctx, NULL, dst);
-      zink_blit_barriers(ctx, NULL, zink_resource(dst->texture), false);
-      ctx->blitting = true;
+      if (!blitting) {
+         util_blitter_save_framebuffer(ctx->blitter, &ctx->fb_state);
+         set_clear_fb(pctx, NULL, dst);
+         zink_blit_barriers(ctx, NULL, zink_resource(dst->texture), false);
+         ctx->blitting = true;
+      }
    }
    struct pipe_scissor_state scissor = {dstx, dsty, dstx + width, dsty + height};
    pctx->clear(pctx, clear_flags, &scissor, NULL, depth, stencil);
-   if (!cur_attachment) {
+   if (!cur_attachment && !blitting) {
       util_blitter_restore_fb_state(ctx->blitter);
       ctx->blitting = false;
    }
@@ -734,14 +709,14 @@ fb_clears_apply_internal(struct zink_context *ctx, struct pipe_resource *pres, i
       bool can_reorder = zink_screen(ctx->base.screen)->info.have_KHR_dynamic_rendering &&
                          !ctx->render_condition_active &&
                          !ctx->unordered_blitting &&
-                         zink_get_cmdbuf(ctx, NULL, res) == ctx->batch.state->barrier_cmdbuf;
+                         zink_get_cmdbuf(ctx, NULL, res) == ctx->batch.state->reordered_cmdbuf;
       if (can_reorder) {
          /* set unordered_blitting but NOT blitting:
           * let begin_rendering handle layouts
           */
          ctx->unordered_blitting = true;
          /* for unordered clears, swap the unordered cmdbuf for the main one for the whole op to avoid conditional hell */
-         ctx->batch.state->cmdbuf = ctx->batch.state->barrier_cmdbuf;
+         ctx->batch.state->cmdbuf = ctx->batch.state->reordered_cmdbuf;
          ctx->rp_changed = true;
          ctx->queries_disabled = true;
          ctx->batch.state->has_barriers = true;

@@ -5,7 +5,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "si_compute.h"
 #include "si_pipe.h"
 #include "util/format/u_format.h"
 #include "util/u_log.h"
@@ -100,7 +99,7 @@ void si_blitter_end(struct si_context *sctx)
       si_mark_atom_dirty(sctx, &sctx->atoms.s.ngg_cull_state);
 
    sctx->vertex_buffers_dirty = sctx->num_vertex_elements > 0;
-   si_mark_atom_dirty(sctx, &sctx->atoms.s.shader_pointers);
+   si_mark_atom_dirty(sctx, &sctx->atoms.s.gfx_shader_pointers);
 
    /* We force-disabled fbfetch for u_blitter, so recompute the state. */
    si_update_ps_colorbuf0_slot(sctx);
@@ -497,16 +496,20 @@ static void si_blit_decompress_color(struct si_context *sctx, struct si_texture 
 
          /* Required before and after FMASK and DCC_DECOMPRESS. */
          if (custom_blend == sctx->custom_blend_fmask_decompress ||
-             custom_blend == sctx->custom_blend_dcc_decompress)
+             custom_blend == sctx->custom_blend_dcc_decompress) {
             sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_CB;
+            si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
+         }
 
          si_blitter_begin(sctx, SI_DECOMPRESS);
          util_blitter_custom_color(sctx->blitter, cbsurf, custom_blend);
          si_blitter_end(sctx);
 
          if (custom_blend == sctx->custom_blend_fmask_decompress ||
-             custom_blend == sctx->custom_blend_dcc_decompress)
+             custom_blend == sctx->custom_blend_dcc_decompress) {
             sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_CB;
+            si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
+         }
 
          /* When running FMASK decompression with DCC, we need to run the "eliminate fast clear" pass
           * separately because FMASK decompression doesn't eliminate DCC fast clear. This makes
@@ -730,7 +733,7 @@ static void si_check_render_feedback(struct si_context *sctx)
    /* There is no render feedback if color writes are disabled.
     * (e.g. a pixel shader with image stores)
     */
-   if (!si_get_total_colormask(sctx))
+   if (!si_any_colorbuffer_written(sctx))
       return;
 
    for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; ++i) {
@@ -959,6 +962,13 @@ void si_resource_copy_region(struct pipe_context *ctx, struct pipe_resource *dst
                              src_box, SI_OP_SYNC_BEFORE_AFTER))
       return;
 
+   /* If the blitter isn't available fail here instead of crashing. */
+   if (!sctx->blitter) {
+      fprintf(stderr, "si_resource_copy_region failed src_format: %s dst_format: %s\n",
+              util_format_name(src->format), util_format_name(dst->format));
+      return;
+   }
+
    assert(u_max_sample(dst) == u_max_sample(src));
 
    /* The driver doesn't decompress resources automatically while
@@ -1037,6 +1047,7 @@ static void si_do_CB_resolve(struct si_context *sctx, const struct pipe_blit_inf
 {
    /* Required before and after CB_RESOLVE. */
    sctx->flags |= SI_CONTEXT_FLUSH_AND_INV_CB;
+   si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
 
    si_blitter_begin(
       sctx, SI_COLOR_RESOLVE | (info->render_condition_enable ? 0 : SI_DISABLE_RENDER_COND));

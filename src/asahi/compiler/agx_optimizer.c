@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "agx_builder.h"
 #include "agx_compiler.h"
 #include "agx_minifloat.h"
+#include "agx_opcodes.h"
 
 /* AGX peephole optimizer responsible for instruction combining. It operates in
  * a forward direction and a backward direction, in each case traversing in
@@ -104,19 +106,40 @@ agx_optimizer_fmov(agx_instr **defs, agx_instr *ins)
    }
 }
 
-static void
-agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, unsigned srcs,
-                         bool is_float)
+static bool
+image_write_source_can_be_immediate(agx_instr *I, unsigned s)
 {
-   for (unsigned s = 0; s < srcs; ++s) {
+   assert(I->op == AGX_OPCODE_IMAGE_WRITE);
+
+   /* LOD can always be immediate. Actually, it's just zero so far, we don't
+    * support nonzero LOD for images yet.
+    */
+   if (s == 2)
+      return true;
+
+   /* If the "bindless" source (source 3) is an immediate, it means we don't
+    * have a bindless image, instead we have a texture state index. We're
+    * allowed to have immediate texture state registers (source 4). However,
+    * we're not allowed to have immediate bindless offsets (also source 4).
+    */
+   bool is_texture_state = (I->src[3].type == AGX_INDEX_IMMEDIATE);
+   if (s == 4 && is_texture_state)
+      return true;
+
+   /* Otherwise, must be from a register */
+   return false;
+}
+
+static void
+agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, bool is_float)
+{
+   agx_foreach_ssa_src(I, s) {
       agx_index src = I->src[s];
-      if (src.type != AGX_INDEX_NORMAL)
-         continue;
       if (src.neg)
          continue;
 
       agx_instr *def = defs[src.value];
-      if (def->op != AGX_OPCODE_MOV_IMM)
+      if (!def || def->op != AGX_OPCODE_MOV_IMM)
          continue;
 
       uint8_t value = def->imm;
@@ -125,7 +148,7 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, unsigned srcs,
       bool float_src = is_float;
 
       /* fcmpsel takes first 2 as floats specially */
-      if (s < 2 && I->op == AGX_OPCODE_FCMPSEL)
+      if (s < 2 && (I->op == AGX_OPCODE_FCMPSEL || I->op == AGX_OPCODE_FCMP))
          float_src = true;
       if (I->op == AGX_OPCODE_ST_TILE && s == 0)
          continue;
@@ -138,6 +161,12 @@ agx_optimizer_inline_imm(agx_instr **defs, agx_instr *I, unsigned srcs,
          continue;
       if ((I->op == AGX_OPCODE_LOCAL_LOAD || I->op == AGX_OPCODE_DEVICE_LOAD) &&
           s != 1)
+         continue;
+      if (I->op == AGX_OPCODE_SPLIT)
+         continue;
+
+      if (I->op == AGX_OPCODE_IMAGE_WRITE &&
+          !image_write_source_can_be_immediate(I, s))
          continue;
 
       if (float_src) {
@@ -182,7 +211,7 @@ agx_optimizer_fmov_rev(agx_instr *I, agx_instr *use)
 }
 
 static void
-agx_optimizer_copyprop(agx_instr **defs, agx_instr *I)
+agx_optimizer_copyprop(agx_context *ctx, agx_instr **defs, agx_instr *I)
 {
    agx_foreach_ssa_src(I, s) {
       agx_index src = I->src[s];
@@ -200,6 +229,28 @@ agx_optimizer_copyprop(agx_instr **defs, agx_instr *I)
       if (def->src[0].size != src.size)
          continue;
 
+      /* Optimize split(64-bit uniform) so we can get better copyprop of the
+       * 32-bit uniform parts. This helps reduce moves with 64-bit uniforms.
+       */
+      if (I->op == AGX_OPCODE_SPLIT && def->src[0].type == AGX_INDEX_UNIFORM &&
+          src.size == AGX_SIZE_64 && I->dest[0].size == AGX_SIZE_32) {
+
+         assert(I->nr_dests == 2 && "decomposing a 64-bit scalar");
+         agx_builder b = agx_init_builder(ctx, agx_before_instr(I));
+
+         agx_index lo = def->src[0];
+         lo.size = AGX_SIZE_32;
+
+         agx_index hi = lo;
+         hi.value += 2 /* half of 64-bits = 32-bits = 2 x 16-bits */;
+
+         defs[I->dest[0].value] = agx_mov_to(&b, I->dest[0], lo);
+         defs[I->dest[1].value] = agx_mov_to(&b, I->dest[1], hi);
+
+         agx_remove_instruction(I);
+         continue;
+      }
+
       /* Immediate inlining happens elsewhere */
       if (def->src[0].type == AGX_INDEX_IMMEDIATE)
          continue;
@@ -215,12 +266,91 @@ agx_optimizer_copyprop(agx_instr **defs, agx_instr *I)
    }
 }
 
+/*
+ * Fuse conditions into if. Specifically, acts on if_icmp and fuses:
+ *
+ *    if_icmp(cmp(x, y, *), 0, ne) -> if_cmp(x, y, *)
+ */
+static void
+agx_optimizer_if_cmp(agx_instr **defs, agx_instr *I)
+{
+   /* Check for unfused if */
+   if (!agx_is_equiv(I->src[1], agx_zero()) || I->icond != AGX_ICOND_UEQ ||
+       !I->invert_cond || I->src[0].type != AGX_INDEX_NORMAL)
+      return;
+
+   /* Check for condition */
+   agx_instr *def = defs[I->src[0].value];
+   if (def->op != AGX_OPCODE_ICMP && def->op != AGX_OPCODE_FCMP)
+      return;
+
+   /* Fuse */
+   I->src[0] = def->src[0];
+   I->src[1] = def->src[1];
+   I->invert_cond = def->invert_cond;
+
+   if (def->op == AGX_OPCODE_ICMP) {
+      I->op = AGX_OPCODE_IF_ICMP;
+      I->icond = def->icond;
+   } else {
+      I->op = AGX_OPCODE_IF_FCMP;
+      I->fcond = def->fcond;
+   }
+}
+
+/*
+ * Fuse conditions into select. Specifically, acts on icmpsel and fuses:
+ *
+ *    icmpsel(cmp(x, y, *), 0, z, w, eq) -> cmpsel(x, y, w, z, *)
+ *
+ * Care must be taken to invert the condition by swapping cmpsel arguments.
+ */
+static void
+agx_optimizer_cmpsel(agx_instr **defs, agx_instr *I)
+{
+   /* Check for unfused select */
+   if (!agx_is_equiv(I->src[1], agx_zero()) || I->icond != AGX_ICOND_UEQ ||
+       I->src[0].type != AGX_INDEX_NORMAL)
+      return;
+
+   /* Check for condition */
+   agx_instr *def = defs[I->src[0].value];
+   if (def->op != AGX_OPCODE_ICMP && def->op != AGX_OPCODE_FCMP)
+      return;
+
+   /* Fuse */
+   I->src[0] = def->src[0];
+   I->src[1] = def->src[1];
+
+   /* In the unfused select, the condition is inverted due to the form:
+    *
+    *    (cond == 0) ? x : y
+    *
+    * So we need to swap the arguments when fusing to become cond ? y : x. If
+    * the condition was supposed to be inverted, we don't swap since it's
+    * already inverted. cmpsel does not have an invert_cond bit to use.
+    */
+   if (!def->invert_cond) {
+      agx_index temp = I->src[2];
+      I->src[2] = I->src[3];
+      I->src[3] = temp;
+   }
+
+   if (def->op == AGX_OPCODE_ICMP) {
+      I->op = AGX_OPCODE_ICMPSEL;
+      I->icond = def->icond;
+   } else {
+      I->op = AGX_OPCODE_FCMPSEL;
+      I->fcond = def->fcond;
+   }
+}
+
 static void
 agx_optimizer_forward(agx_context *ctx)
 {
    agx_instr **defs = calloc(ctx->alloc, sizeof(*defs));
 
-   agx_foreach_instr_global(ctx, I) {
+   agx_foreach_instr_global_safe(ctx, I) {
       struct agx_opcode_info info = agx_opcodes_info[I->op];
 
       agx_foreach_ssa_dest(I, d) {
@@ -228,19 +358,25 @@ agx_optimizer_forward(agx_context *ctx)
       }
 
       /* Optimize moves */
-      agx_optimizer_copyprop(defs, I);
+      agx_optimizer_copyprop(ctx, defs, I);
 
       /* Propagate fmov down */
-      if (info.is_float || I->op == AGX_OPCODE_FCMPSEL)
+      if (info.is_float || I->op == AGX_OPCODE_FCMPSEL ||
+          I->op == AGX_OPCODE_FCMP)
          agx_optimizer_fmov(defs, I);
 
       /* Inline immediates if we can. TODO: systematic */
       if (I->op != AGX_OPCODE_ST_VARY && I->op != AGX_OPCODE_COLLECT &&
           I->op != AGX_OPCODE_TEXTURE_SAMPLE &&
-          I->op != AGX_OPCODE_TEXTURE_LOAD &&
+          I->op != AGX_OPCODE_IMAGE_LOAD && I->op != AGX_OPCODE_TEXTURE_LOAD &&
           I->op != AGX_OPCODE_UNIFORM_STORE &&
           I->op != AGX_OPCODE_BLOCK_IMAGE_STORE)
-         agx_optimizer_inline_imm(defs, I, info.nr_srcs, info.is_float);
+         agx_optimizer_inline_imm(defs, I, info.is_float);
+
+      if (I->op == AGX_OPCODE_IF_ICMP)
+         agx_optimizer_if_cmp(defs, I);
+      else if (I->op == AGX_OPCODE_ICMPSEL)
+         agx_optimizer_cmpsel(defs, I);
    }
 
    free(defs);

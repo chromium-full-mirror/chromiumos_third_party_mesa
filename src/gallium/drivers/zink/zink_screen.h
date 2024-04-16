@@ -61,6 +61,7 @@ static inline bool
 zink_screen_check_last_finished(struct zink_screen *screen, uint32_t batch_id)
 {
    const uint32_t check_id = (uint32_t)batch_id;
+   assert(check_id);
    /* last_finished may have wrapped */
    if (screen->last_finished < UINT_MAX / 2) {
       /* last_finished has wrapped, batch_id has not */
@@ -114,6 +115,18 @@ zink_string_vkflags_unroll(char *buf, size_t bufsize, uint64_t flags, zink_vkfla
    return idx;
 }
 
+#define VRAM_ALLOC_LOOP(RET, DOIT, ...) \
+   do { \
+      unsigned _us[] = {0, 1000, 10000, 500000, 1000000}; \
+      for (unsigned _i = 0; _i < ARRAY_SIZE(_us); _i++) { \
+         RET = DOIT; \
+         if (RET == VK_SUCCESS || RET != VK_ERROR_OUT_OF_DEVICE_MEMORY) \
+            break; \
+         os_time_sleep(_us[_i]); \
+      } \
+      __VA_ARGS__ \
+   } while (0)
+
 VkSemaphore
 zink_create_semaphore(struct zink_screen *screen);
 
@@ -122,8 +135,20 @@ zink_screen_lock_context(struct zink_screen *screen);
 void
 zink_screen_unlock_context(struct zink_screen *screen);
 
+VkSemaphore
+zink_create_exportable_semaphore(struct zink_screen *screen);
+VkSemaphore
+zink_screen_export_dmabuf_semaphore(struct zink_screen *screen, struct zink_resource *res);
+bool
+zink_screen_import_dmabuf_semaphore(struct zink_screen *screen, struct zink_resource *res, VkSemaphore sem);
+
 VkFormat
 zink_get_format(struct zink_screen *screen, enum pipe_format format);
+
+void
+zink_convert_color(const struct zink_screen *screen, enum pipe_format format,
+                   union pipe_color_union *dst,
+                   const union pipe_color_union *src);
 
 bool
 zink_screen_timeline_wait(struct zink_screen *screen, uint64_t batch_id, uint64_t timeout);
@@ -150,9 +175,10 @@ zink_screen_debug_marker_end(struct zink_screen *screen, bool emitted);
 #define warn_missing_feature(warned, feat) \
    do { \
       if (!warned) { \
-         mesa_logw("WARNING: Incorrect rendering will happen " \
-                         "because the Vulkan device doesn't support " \
-                         "the '%s' feature\n", feat); \
+         if (!(zink_debug & ZINK_DEBUG_QUIET)) \
+            mesa_logw("WARNING: Incorrect rendering will happen " \
+                           "because the Vulkan device doesn't support " \
+                           "the '%s' feature\n", feat); \
          warned = true; \
       } \
    } while (0)

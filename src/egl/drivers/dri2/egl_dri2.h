@@ -72,6 +72,8 @@ struct zwp_linux_dmabuf_feedback_v1;
 
 #include <hardware/gralloc.h>
 
+#include "util/u_gralloc/u_gralloc.h"
+
 #if ANDROID_API_LEVEL >= 26
 #include <vndk/window.h>
 #else
@@ -307,15 +309,14 @@ struct dri2_egl_display {
    bool authenticated;
    uint32_t capabilities;
    char *device_name;
+   bool is_render_node;
 #endif
 
 #ifdef HAVE_ANDROID_PLATFORM
-   const gralloc_module_t *gralloc;
+   struct u_gralloc *gralloc;
    /* gralloc vendor usage bit for front rendering */
    uint32_t front_rendering_usage;
 #endif
-
-   bool is_render_node;
 };
 
 struct dri2_egl_context {
@@ -484,6 +485,9 @@ dri2_create_screen(_EGLDisplay *disp);
 EGLBoolean
 dri2_setup_extensions(_EGLDisplay *disp);
 
+EGLBoolean
+dri2_setup_device(_EGLDisplay *disp, EGLBoolean software);
+
 __DRIdrawable *
 dri2_surface_get_dri_drawable(_EGLSurface *surf);
 
@@ -644,6 +648,9 @@ dri2_set_WL_bind_wayland_display(_EGLDisplay *disp)
 
 void
 dri2_display_destroy(_EGLDisplay *disp);
+
+struct dri2_egl_display *
+dri2_display_create(void);
 
 __DRIbuffer *
 dri2_egl_surface_alloc_local_buffer(struct dri2_egl_surface *dri2_surf,

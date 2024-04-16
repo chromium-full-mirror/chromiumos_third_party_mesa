@@ -66,14 +66,13 @@ static const nir_shader_compiler_options midgard_nir_options = {
 
    .lower_bit_count = true,
    .lower_bitfield_reverse = true,
-   .lower_bitfield_insert_to_shifts = true,
-   .lower_bitfield_extract_to_shifts = true,
+   .lower_bitfield_insert = true,
+   .lower_bitfield_extract = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
    .lower_insert_byte = true,
    .lower_insert_word = true,
    .lower_ldexp = true,
-   .lower_rotate = true,
 
    .lower_pack_half_2x16 = true,
    .lower_pack_unorm_2x16 = true,

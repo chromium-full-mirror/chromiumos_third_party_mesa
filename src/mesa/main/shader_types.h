@@ -482,12 +482,6 @@ struct gl_shader_program
     */
    struct gl_linked_shader *_LinkedShaders[MESA_SHADER_STAGES];
 
-   /**
-    * True if any of the fragment shaders attached to this program use:
-    * #extension ARB_fragment_coord_conventions: enable
-    */
-   GLboolean ARB_fragment_coord_conventions_enable;
-
    unsigned GLSL_Version; /**< GLSL version used for linking */
 };
 
@@ -514,9 +508,6 @@ struct gl_program
    /* Saved and restored with metadata. Freed with ralloc. */
    void *driver_cache_blob;
    size_t driver_cache_blob_size;
-
-   /** Is this program written to on disk shader cache */
-   bool program_written_to_cache;
 
    /** whether to skip VARYING_SLOT_PSIZ in st_translate_stream_output_info() */
    bool skip_pointsize_xfb;

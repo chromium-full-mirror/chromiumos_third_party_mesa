@@ -46,7 +46,7 @@
 #include "draw_tess.h"
 #include "draw_mesh.h"
 
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
 #include "gallivm/lp_bld_init.h"
 #include "gallivm/lp_bld_limits.h"
 #include "draw_llvm.h"
@@ -56,7 +56,7 @@
 bool
 draw_get_option_use_llvm(void)
 {
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
    return debug_get_bool_option("DRAW_USE_LLVM", true);
 #else
    return false;
@@ -75,7 +75,7 @@ draw_create_context(struct pipe_context *pipe, void *context,
    if (!draw)
       goto err_out;
 
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
    if (try_llvm && draw_get_option_use_llvm()) {
       draw->llvm = draw_llvm_create(draw, (LLVMContextRef)context);
    }
@@ -110,7 +110,7 @@ draw_create(struct pipe_context *pipe)
 }
 
 
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
 struct draw_context *
 draw_create_with_llvm_context(struct pipe_context *pipe,
                               void *context)
@@ -222,7 +222,7 @@ draw_destroy(struct draw_context *draw)
    draw_pt_destroy(draw);
    draw_vs_destroy(draw);
    draw_gs_destroy(draw);
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_destroy(draw->llvm);
 #endif
@@ -404,15 +404,15 @@ draw_set_viewport_states(struct draw_context *draw,
 
 void
 draw_set_vertex_buffers(struct draw_context *draw,
-                        unsigned start_slot, unsigned count,
+                        unsigned count,
                         unsigned unbind_num_trailing_slots,
                         const struct pipe_vertex_buffer *buffers)
 {
-   assert(start_slot + count <= PIPE_MAX_ATTRIBS);
+   assert(count <= PIPE_MAX_ATTRIBS);
 
    util_set_vertex_buffers_count(draw->pt.vertex_buffer,
                                  &draw->pt.nr_vertex_buffers,
-                                 buffers, start_slot, count,
+                                 buffers, count,
                                  unbind_num_trailing_slots, false);
 }
 
@@ -430,6 +430,8 @@ draw_set_vertex_elements(struct draw_context *draw,
 
    memcpy(draw->pt.vertex_element, elements, count * sizeof(elements[0]));
    draw->pt.nr_vertex_elements = count;
+   for (unsigned i = 0; i < count; i++)
+      draw->pt.vertex_strides[elements[i].vertex_buffer_index] = elements[i].src_stride;
 }
 
 
@@ -1081,7 +1083,7 @@ draw_set_samplers(struct draw_context *draw,
 
    draw->num_samplers[shader_stage] = num;
 
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_set_sampler_state(draw, shader_stage);
 #endif
@@ -1121,7 +1123,7 @@ draw_set_mapped_texture(struct draw_context *draw,
                         uint32_t img_stride[PIPE_MAX_TEXTURE_LEVELS],
                         uint32_t mip_offsets[PIPE_MAX_TEXTURE_LEVELS])
 {
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_set_mapped_texture(draw,
                                    shader_stage,
@@ -1144,7 +1146,7 @@ draw_set_mapped_image(struct draw_context *draw,
                       uint32_t num_samples,
                       uint32_t sample_stride)
 {
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
    if (draw->llvm)
       draw_llvm_set_mapped_image(draw,
                                  shader_stage,
@@ -1184,7 +1186,7 @@ draw_get_shader_param_no_llvm(enum pipe_shader_type shader,
 int
 draw_get_shader_param(enum pipe_shader_type shader, enum pipe_shader_cap param)
 {
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
    if (draw_get_option_use_llvm()) {
       switch(shader) {
       case PIPE_SHADER_VERTEX:

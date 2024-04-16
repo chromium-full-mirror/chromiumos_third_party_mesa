@@ -57,6 +57,7 @@ libintel_compiler_files = files(
   'brw_fs.h',
   'brw_fs_live_variables.cpp',
   'brw_fs_live_variables.h',
+  'brw_fs_lower_dpas.cpp',
   'brw_fs_lower_pack.cpp',
   'brw_fs_lower_regioning.cpp',
   'brw_fs_nir.cpp',
@@ -88,14 +89,17 @@ libintel_compiler_files = files(
   'brw_nir_blockify_uniform_loads.c',
   'brw_nir_clamp_per_vertex_loads.c',
   'brw_nir_lower_conversions.c',
+  'brw_nir_lower_cooperative_matrix.c',
   'brw_nir_lower_cs_intrinsics.c',
   'brw_nir_lower_alpha_to_coverage.c',
   'brw_nir_lower_intersection_shader.c',
   'brw_nir_lower_non_uniform_resource_intel.c',
+  'brw_nir_lower_non_uniform_barycentric_at_sample.c',
   'brw_nir_lower_ray_queries.c',
   'brw_nir_lower_rt_intrinsics.c',
   'brw_nir_lower_shader_calls.c',
   'brw_nir_lower_shading_rate_output.c',
+  'brw_nir_lower_sparse.c',
   'brw_nir_lower_storage_image.c',
   'brw_nir_opt_peephole_ffma.c',
   'brw_nir_opt_peephole_imul32x16.c',
@@ -159,7 +163,7 @@ brw_nir_trig = custom_target(
 libintel_compiler = static_library(
   'intel_compiler',
   [libintel_compiler_files, brw_nir_trig, ir_expression_operation_h],
-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel],
+  include_directories : [inc_include, inc_src, inc_intel],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
   dependencies : [idep_nir_headers, idep_mesautil, idep_intel_dev],
@@ -167,19 +171,23 @@ libintel_compiler = static_library(
 )
 
 # For now this tool is only going to be used by Anv
-if with_intel_clc
+if get_option('intel-clc') == 'system'
+  prog_intel_clc = find_program('intel_clc', native : true)
+  dep_prog_intel_clc = []
+elif with_intel_clc
   prog_intel_clc = executable(
     'intel_clc',
     ['intel_clc.c', 'brw_kernel.c'],
     link_with : [
       libintel_compiler, libintel_common,libisl,
     ],
-    include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel],
+    include_directories : [inc_include, inc_src, inc_intel],
     c_args : [pre_args, no_override_init_args],
     link_args : [ld_args_build_id],
     dependencies : [idep_nir, idep_vtn, idep_mesaclc, idep_mesautil, idep_intel_dev],
     native : true,
   )
+  dep_prog_intel_clc = [prog_intel_clc]
 endif
 
 if with_tests
@@ -188,6 +196,7 @@ if with_tests
     executable(
       'intel_compiler_tests',
       files(
+        'test_predicated_break.cpp',
         'test_eu_compact.cpp',
         'test_eu_validate.cpp',
         'test_fs_cmod_propagation.cpp',
@@ -202,7 +211,7 @@ if with_tests
         'test_vf_float_conversions.cpp',
       ),
       ir_expression_operation_h,
-      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_intel],
+      include_directories : [inc_include, inc_src, inc_intel],
       link_with : [
         libintel_compiler, libintel_common, libisl
       ],

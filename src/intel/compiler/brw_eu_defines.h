@@ -254,6 +254,7 @@ enum opcode {
    BRW_OPCODE_DP2,
    BRW_OPCODE_DP4A, /**< Gfx12+ */
    BRW_OPCODE_LINE,
+   BRW_OPCODE_DPAS,  /**< Gfx12.5+ */
    BRW_OPCODE_PLN, /**< G45+ */
    BRW_OPCODE_MAD, /**< Gfx6+ */
    BRW_OPCODE_LRP, /**< Gfx6+ */
@@ -883,6 +884,8 @@ enum tex_logical_srcs {
    TEX_LOGICAL_SRC_COORD_COMPONENTS,
    /** REQUIRED: Number of derivative components (as UD immediate) */
    TEX_LOGICAL_SRC_GRAD_COMPONENTS,
+   /** REQUIRED: request residency (as UD immediate) */
+   TEX_LOGICAL_SRC_RESIDENCY,
 
    TEX_LOGICAL_NUM_SRCS,
 };
@@ -980,8 +983,19 @@ enum urb_logical_srcs {
    URB_LOGICAL_SRC_CHANNEL_MASK,
    /** Data to be written.  BAD_FILE for reads. */
    URB_LOGICAL_SRC_DATA,
-
+   URB_LOGICAL_SRC_COMPONENTS,
    URB_LOGICAL_NUM_SRCS
+};
+
+enum interpolator_logical_srcs {
+   /** Interpolation offset */
+   INTERP_SRC_OFFSET,
+   /** Message data  */
+   INTERP_SRC_MSG_DESC,
+   /** Flag register for dynamic mode */
+   INTERP_SRC_DYNAMIC_MODE,
+
+   INTERP_NUM_SRCS
 };
 
 
@@ -1124,6 +1138,24 @@ enum tgl_sbid_mode {
    TGL_SBID_SET = 4
 };
 
+
+enum gfx12_sub_byte_precision {
+   BRW_SUB_BYTE_PRECISION_NONE = 0,
+
+   /** 4 bits. Signedness determined by base type */
+   BRW_SUB_BYTE_PRECISION_4BIT = 1,
+
+   /** 2 bits. Signedness determined by base type */
+   BRW_SUB_BYTE_PRECISION_2BIT = 2,
+};
+
+enum gfx12_systolic_depth {
+   BRW_SYSTOLIC_DEPTH_16 = 0,
+   BRW_SYSTOLIC_DEPTH_2 = 1,
+   BRW_SYSTOLIC_DEPTH_4 = 2,
+   BRW_SYSTOLIC_DEPTH_8 = 3,
+};
+
 #ifdef __cplusplus
 /**
  * Allow bitwise arithmetic of tgl_sbid_mode enums.
@@ -1166,6 +1198,7 @@ enum tgl_pipe {
    TGL_PIPE_FLOAT,
    TGL_PIPE_INT,
    TGL_PIPE_LONG,
+   TGL_PIPE_MATH,
    TGL_PIPE_ALL
 };
 
@@ -1176,7 +1209,7 @@ enum tgl_pipe {
 struct tgl_swsb {
    unsigned regdist : 3;
    enum tgl_pipe pipe : 3;
-   unsigned sbid : 4;
+   unsigned sbid : 5;
    enum tgl_sbid_mode mode : 3;
 };
 
@@ -1243,21 +1276,46 @@ tgl_swsb_src_dep(struct tgl_swsb swsb)
  * Convert the provided tgl_swsb to the hardware's binary representation of an
  * SWSB annotation.
  */
-static inline uint8_t
+static inline uint32_t
 tgl_swsb_encode(const struct intel_device_info *devinfo, struct tgl_swsb swsb)
 {
    if (!swsb.mode) {
       const unsigned pipe = devinfo->verx10 < 125 ? 0 :
          swsb.pipe == TGL_PIPE_FLOAT ? 0x10 :
          swsb.pipe == TGL_PIPE_INT ? 0x18 :
-         swsb.pipe == TGL_PIPE_LONG ? 0x50 :
+         swsb.pipe == TGL_PIPE_LONG ? 0x20 :
+         swsb.pipe == TGL_PIPE_MATH ? 0x28 :
          swsb.pipe == TGL_PIPE_ALL ? 0x8 : 0;
       return pipe | swsb.regdist;
+
    } else if (swsb.regdist) {
-      return 0x80 | swsb.regdist << 4 | swsb.sbid;
+      if (devinfo->ver >= 20) {
+         if ((swsb.mode & TGL_SBID_SET)) {
+            assert(swsb.pipe == TGL_PIPE_ALL ||
+                   swsb.pipe == TGL_PIPE_INT || swsb.pipe == TGL_PIPE_FLOAT);
+            return (swsb.pipe == TGL_PIPE_INT ? 0x300 :
+                    swsb.pipe == TGL_PIPE_FLOAT ? 0x200 : 0x100) |
+                   swsb.regdist << 5 | swsb.sbid;
+         } else {
+            assert(!(swsb.mode & ~(TGL_SBID_DST | TGL_SBID_SRC)));
+            return (swsb.pipe == TGL_PIPE_ALL ? 0x300 :
+                    swsb.mode == TGL_SBID_SRC ? 0x200 : 0x100) |
+                   swsb.regdist << 5 | swsb.sbid;
+         }
+      } else {
+         assert(!(swsb.sbid & ~0xfu));
+         return 0x80 | swsb.regdist << 4 | swsb.sbid;
+      }
+
    } else {
-      return swsb.sbid | (swsb.mode & TGL_SBID_SET ? 0x40 :
-                          swsb.mode & TGL_SBID_DST ? 0x20 : 0x30);
+      if (devinfo->ver >= 20) {
+         return swsb.sbid | (swsb.mode & TGL_SBID_SET ? 0xc0 :
+                             swsb.mode & TGL_SBID_DST ? 0x80 : 0xa0);
+      } else {
+         assert(!(swsb.sbid & ~0xfu));
+         return swsb.sbid | (swsb.mode & TGL_SBID_SET ? 0x40 :
+                             swsb.mode & TGL_SBID_DST ? 0x20 : 0x30);
+      }
    }
 }
 
@@ -1267,29 +1325,70 @@ tgl_swsb_encode(const struct intel_device_info *devinfo, struct tgl_swsb swsb)
  */
 static inline struct tgl_swsb
 tgl_swsb_decode(const struct intel_device_info *devinfo,
-                const bool is_unordered, const uint8_t x)
+                const bool is_unordered, const uint32_t x)
 {
-   if (x & 0x80) {
-      const struct tgl_swsb swsb = { (x & 0x70u) >> 4, TGL_PIPE_NONE,
-                                     x & 0xfu,
-                                     is_unordered ?
-                                     TGL_SBID_SET : TGL_SBID_DST };
-      return swsb;
-   } else if ((x & 0x70) == 0x20) {
-      return tgl_swsb_sbid(TGL_SBID_DST, x & 0xfu);
-   } else if ((x & 0x70) == 0x30) {
-      return tgl_swsb_sbid(TGL_SBID_SRC, x & 0xfu);
-   } else if ((x & 0x70) == 0x40) {
-      return tgl_swsb_sbid(TGL_SBID_SET, x & 0xfu);
+   if (devinfo->ver >= 20) {
+      if (x & 0x300) {
+         if (is_unordered) {
+            const struct tgl_swsb swsb = {
+               (x & 0xe0u) >> 5,
+               ((x & 0x300) == 0x300 ? TGL_PIPE_INT :
+                (x & 0x300) == 0x200 ? TGL_PIPE_FLOAT :
+                TGL_PIPE_ALL),
+               x & 0x1fu,
+               TGL_SBID_SET
+            };
+            return swsb;
+         } else {
+            const struct tgl_swsb swsb = {
+               (x & 0xe0u) >> 5,
+               ((x & 0x300) == 0x300 ? TGL_PIPE_ALL : TGL_PIPE_NONE),
+               x & 0x1fu,
+               ((x & 0x300) == 0x200 ? TGL_SBID_SRC : TGL_SBID_DST)
+            };
+            return swsb;
+         }
+
+      } else if ((x & 0xe0) == 0x80) {
+         return tgl_swsb_sbid(TGL_SBID_DST, x & 0x1f);
+      } else if ((x & 0xe0) == 0xa0) {
+         return tgl_swsb_sbid(TGL_SBID_SRC, x & 0x1fu);
+      } else if ((x & 0xe0) == 0xc0) {
+         return tgl_swsb_sbid(TGL_SBID_SET, x & 0x1fu);
+      } else {
+            const struct tgl_swsb swsb = { x & 0x7u,
+                                           ((x & 0x38) == 0x10 ? TGL_PIPE_FLOAT :
+                                            (x & 0x38) == 0x18 ? TGL_PIPE_INT :
+                                            (x & 0x38) == 0x20 ? TGL_PIPE_LONG :
+                                            (x & 0x38) == 0x28 ? TGL_PIPE_MATH :
+                                            (x & 0x38) == 0x8 ? TGL_PIPE_ALL :
+                                            TGL_PIPE_NONE) };
+            return swsb;
+      }
+
    } else {
-      const struct tgl_swsb swsb = { x & 0x7u,
-                                     ((x & 0x78) == 0x10 ? TGL_PIPE_FLOAT :
-                                      (x & 0x78) == 0x18 ? TGL_PIPE_INT :
-                                      (x & 0x78) == 0x50 ? TGL_PIPE_LONG :
-                                      (x & 0x78) == 0x8 ? TGL_PIPE_ALL :
-                                      TGL_PIPE_NONE) };
-      assert(devinfo->verx10 >= 125 || swsb.pipe == TGL_PIPE_NONE);
-      return swsb;
+      if (x & 0x80) {
+         const struct tgl_swsb swsb = { (x & 0x70u) >> 4, TGL_PIPE_NONE,
+                                        x & 0xfu,
+                                        is_unordered ?
+                                        TGL_SBID_SET : TGL_SBID_DST };
+         return swsb;
+      } else if ((x & 0x70) == 0x20) {
+         return tgl_swsb_sbid(TGL_SBID_DST, x & 0xfu);
+      } else if ((x & 0x70) == 0x30) {
+         return tgl_swsb_sbid(TGL_SBID_SRC, x & 0xfu);
+      } else if ((x & 0x70) == 0x40) {
+         return tgl_swsb_sbid(TGL_SBID_SET, x & 0xfu);
+      } else {
+         const struct tgl_swsb swsb = { x & 0x7u,
+                                        ((x & 0x78) == 0x10 ? TGL_PIPE_FLOAT :
+                                         (x & 0x78) == 0x18 ? TGL_PIPE_INT :
+                                         (x & 0x78) == 0x50 ? TGL_PIPE_LONG :
+                                         (x & 0x78) == 0x8 ? TGL_PIPE_ALL :
+                                         TGL_PIPE_NONE) };
+         assert(devinfo->verx10 >= 125 || swsb.pipe == TGL_PIPE_NONE);
+         return swsb;
+      }
    }
 }
 
@@ -1297,6 +1396,7 @@ enum tgl_sync_function {
    TGL_SYNC_NOP = 0x0,
    TGL_SYNC_ALLRD = 0x2,
    TGL_SYNC_ALLWR = 0x3,
+   TGL_SYNC_FENCE = 0xd,
    TGL_SYNC_BAR = 0xe,
    TGL_SYNC_HOST = 0xf
 };
@@ -1863,6 +1963,39 @@ enum lsc_cache_load {
 
 /*
  * Specifies the dataport message override to the default L1 and L3 memory
+ * cache policies. Dataport L1 cache policies are uncached (UC), cached (C),
+ * streaming (S) and invalidate-after-read (IAR). Dataport L3 cache policies
+ * are uncached (UC), cached (C), cached-as-a-constand (CC) and
+ * invalidate-after-read (IAR).
+ */
+enum PACKED xe2_lsc_cache_load {
+   /* No override. Use the non-pipelined or surface state cache settings for L1
+    * and L3.
+    */
+   XE2_LSC_CACHE_LOAD_L1STATE_L3MOCS = 0,
+   /* Override to L1 uncached and L3 uncached */
+   XE2_LSC_CACHE_LOAD_L1UC_L3UC = 2,
+   /* Override to L1 uncached and L3 cached */
+   XE2_LSC_CACHE_LOAD_L1UC_L3C = 4,
+   /* Override to L1 uncached and L3 cached as a constant */
+   XE2_LSC_CACHE_LOAD_L1UC_L3CC = 5,
+   /* Override to L1 cached and L3 uncached */
+   XE2_LSC_CACHE_LOAD_L1C_L3UC = 6,
+   /* Override to L1 cached and L3 cached */
+   XE2_LSC_CACHE_LOAD_L1C_L3C = 8,
+   /* Override to L1 cached and L3 cached as a constant */
+   XE2_LSC_CACHE_LOAD_L1C_L3CC = 9,
+   /* Override to L1 cached as streaming load and L3 uncached */
+   XE2_LSC_CACHE_LOAD_L1S_L3UC = 10,
+   /* Override to L1 cached as streaming load and L3 cached */
+   XE2_LSC_CACHE_LOAD_L1S_L3C = 12,
+   /* Override to L1 and L3 invalidate after read */
+   XE2_LSC_CACHE_LOAD_L1IAR_L3IAR = 14,
+
+};
+
+/*
+ * Specifies the dataport message override to the default L1 and L3 memory
  * cache policies. Dataport L1 cache policies are uncached (UC), write-through
  * (WT), write-back (WB) and streaming (S). Dataport L3 cache policies are
  * uncached (UC) and cached (WB).
@@ -1888,6 +2021,38 @@ enum ENUM_PACKED lsc_cache_store {
    LSC_CACHE_STORE_L1WB_L3WB = 7,
 
 };
+
+/*
+ * Specifies the dataport message override to the default L1 and L3 memory
+ * cache policies. Dataport L1 cache policies are uncached (UC), write-through
+ * (WT), write-back (WB) and streaming (S). Dataport L3 cache policies are
+ * uncached (UC) and cached (WB).
+ */
+enum PACKED xe2_lsc_cache_store {
+   /* No override. Use the non-pipelined or surface state cache settings for L1
+    * and L3.
+    */
+   XE2_LSC_CACHE_STORE_L1STATE_L3MOCS = 0,
+   /* Override to L1 uncached and L3 uncached */
+   XE2_LSC_CACHE_STORE_L1UC_L3UC = 2,
+   /* Override to L1 uncached and L3 cached */
+   XE2_LSC_CACHE_STORE_L1UC_L3WB = 4,
+   /* Override to L1 write-through and L3 uncached */
+   XE2_LSC_CACHE_STORE_L1WT_L3UC = 6,
+   /* Override to L1 write-through and L3 cached */
+   XE2_LSC_CACHE_STORE_L1WT_L3WB = 8,
+   /* Override to L1 streaming and L3 uncached */
+   XE2_LSC_CACHE_STORE_L1S_L3UC = 10,
+   /* Override to L1 streaming and L3 cached */
+   XE2_LSC_CACHE_STORE_L1S_L3WB = 12,
+   /* Override to L1 write-back and L3 cached */
+   XE2_LSC_CACHE_STORE_L1WB_L3WB = 14,
+
+};
+
+#define LSC_CACHE(devinfo, l_or_s, cc)                                  \
+   ((devinfo)->ver < 20 ? (unsigned)LSC_CACHE_ ## l_or_s ## _ ## cc :   \
+                          (unsigned)XE2_LSC_CACHE_ ## l_or_s ## _ ## cc)
 
 /*
  * Specifies which components of the data payload 4-element vector (X,Y,Z,W) is

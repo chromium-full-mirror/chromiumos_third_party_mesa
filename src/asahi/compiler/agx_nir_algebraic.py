@@ -27,6 +27,13 @@ lower_pack = [
     (('pack_half_2x16_split', a, b),
      ('pack_32_2x16_split', ('f2f16', a), ('f2f16', b))),
 
+    # We don't have 8-bit ALU, so we need to lower this. But if we lower it like
+    # this, we can at least coalesce the pack_32_2x16_split and only pay the
+    # cost of the iors and ishl. (u2u16 of 8-bit is assumed free.)
+    (('pack_32_4x8_split', a, b, c, d),
+     ('pack_32_2x16_split', ('ior', ('u2u16', a), ('ishl', ('u2u16', b), 8)),
+                            ('ior', ('u2u16', c), ('ishl', ('u2u16', d), 8)))),
+
     (('unpack_half_2x16_split_x', a), ('f2f32', ('unpack_32_2x16_split_x', a))),
     (('unpack_half_2x16_split_y', a), ('f2f32', ('unpack_32_2x16_split_y', a))),
 
@@ -38,6 +45,15 @@ lower_pack = [
     # For optimizing extract->convert sequences for unpack/pack norm
     (('u2f32', ('u2u32', a)), ('u2f32', a)),
     (('i2f32', ('i2i32', a)), ('i2f32', a)),
+
+    # Chew through some 8-bit before the backend has to deal with it
+    (('f2u8', a), ('u2u8', ('f2u16', a))),
+    (('f2i8', a), ('i2i8', ('f2i16', a))),
+
+    # Based on the VIR lowering
+    (('f2f16_rtz', 'a@32'),
+     ('bcsel', ('flt', ('fabs', a), ('fabs', ('f2f32', ('f2f16_rtne', a)))),
+      ('isub', ('f2f16_rtne', a), 1), ('f2f16_rtne', a))),
 
     # These are based on the lowerings from nir_opt_algebraic, but conditioned
     # on the number of bits not being constant. If the bit count is constant
@@ -66,6 +82,20 @@ lower_pack = [
      ('ishr', ('ishl', ('ubitfield_extract', a, b, 'bits'), ('isub', 32, 'bits')),
       ('isub', 32, 'bits'))),
 ]
+
+fuse_extr = []
+for start in range(32):
+    fuse_extr.extend([
+        (('ior', ('ushr', 'a@32', start), ('ishl', 'b@32', 32 - start)),
+         ('extr_agx', a, b, start, 0)),
+    ])
+
+fuse_ubfe = []
+for bits in range(1, 32):
+    fuse_ubfe.extend([
+        (('iand', ('ushr', 'a@32', b), (1 << bits) - 1),
+         ('ubitfield_extract', a, b, bits))
+    ])
 
 # (x * y) + s = (x * y) + (s << 0)
 def imad(x, y, z):
@@ -142,7 +172,7 @@ def run():
     print(nir_algebraic.AlgebraicPass("agx_nir_lower_algebraic_late",
                                       lower_sm5_shift + lower_pack).render())
     print(nir_algebraic.AlgebraicPass("agx_nir_fuse_algebraic_late",
-                                      fuse_imad).render())
+                                      fuse_extr + fuse_ubfe + fuse_imad).render())
     print(nir_algebraic.AlgebraicPass("agx_nir_opt_ixor_bcsel",
                                       ixor_bcsel).render())
 

@@ -23,6 +23,7 @@
 
 #include "brw_vec4.h"
 #include "brw_fs.h"
+#include "brw_eu.h"
 #include "brw_cfg.h"
 #include "brw_nir.h"
 #include "brw_vec4_builder.h"
@@ -30,7 +31,6 @@
 #include "brw_dead_control_flow.h"
 #include "brw_private.h"
 #include "dev/intel_debug.h"
-#include "program/prog_parameter.h"
 #include "util/u_math.h"
 
 #define MAX_INSTRUCTION (1 << 30)
@@ -53,7 +53,7 @@ src_reg::src_reg(enum brw_reg_file file, int nr, const glsl_type *type)
 
    this->file = file;
    this->nr = nr;
-   if (type && (type->is_scalar() || type->is_vector() || type->is_matrix()))
+   if (type && (glsl_type_is_scalar(type) || glsl_type_is_vector(type) || glsl_type_is_matrix(type)))
       this->swizzle = brw_swizzle_for_size(type->vector_elements);
    else
       this->swizzle = BRW_SWIZZLE_XYZW;
@@ -290,15 +290,28 @@ vec4_instruction::can_do_writemask(const struct intel_device_info *devinfo)
    case TES_OPCODE_ADD_INDIRECT_URB_OFFSET:
    case VEC4_OPCODE_URB_READ:
    case SHADER_OPCODE_MOV_INDIRECT:
+   case SHADER_OPCODE_TEX:
+   case FS_OPCODE_TXB:
+   case SHADER_OPCODE_TXD:
+   case SHADER_OPCODE_TXF:
+   case SHADER_OPCODE_TXF_LZ:
+   case SHADER_OPCODE_TXF_CMS:
+   case SHADER_OPCODE_TXF_CMS_W:
+   case SHADER_OPCODE_TXF_UMS:
+   case SHADER_OPCODE_TXF_MCS:
+   case SHADER_OPCODE_TXL:
+   case SHADER_OPCODE_TXL_LZ:
+   case SHADER_OPCODE_TXS:
+   case SHADER_OPCODE_LOD:
+   case SHADER_OPCODE_TG4:
+   case SHADER_OPCODE_TG4_OFFSET:
+   case SHADER_OPCODE_SAMPLEINFO:
       return false;
    default:
       /* The MATH instruction on Gfx6 only executes in align1 mode, which does
        * not support writemasking.
        */
       if (devinfo->ver == 6 && is_math())
-         return false;
-
-      if (is_tex())
          return false;
 
       return true;
@@ -1195,7 +1208,7 @@ vec4_visitor::eliminate_find_live_channel()
    bool progress = false;
    unsigned depth = 0;
 
-   if (!brw_stage_has_packed_dispatch(devinfo, stage, stage_prog_data)) {
+   if (!brw_stage_has_packed_dispatch(devinfo, stage, 0, stage_prog_data)) {
       /* The optimization below assumes that channel zero is live on thread
        * dispatch, which may not be the case if the fixed function dispatches
        * threads sparsely.
@@ -1659,7 +1672,7 @@ vec4_visitor::get_timestamp()
                                 BRW_SWIZZLE_XYZW,
                                 WRITEMASK_XYZW));
 
-   dst_reg dst = dst_reg(this, glsl_type::uvec4_type);
+   dst_reg dst = dst_reg(this, glsl_uvec4_type());
 
    vec4_instruction *mov = emit(MOV(dst, ts));
    /* We want to read the 3 fields we care about (mostly field 0, but also 2)
@@ -2220,7 +2233,7 @@ vec4_visitor::lower_64bit_mad_to_mul_add()
       if (type_sz(inst->dst.type) != 8)
          continue;
 
-      dst_reg mul_dst = dst_reg(this, glsl_type::dvec4_type);
+      dst_reg mul_dst = dst_reg(this, glsl_dvec4_type());
 
       /* Use the copy constructor so we copy all relevant instruction fields
        * from the original mad into the add and mul instructions
@@ -2379,6 +2392,7 @@ vec4_visitor::run()
    emit_thread_end();
 
    calculate_cfg();
+   cfg->validate(_mesa_shader_stage_to_abbrev(stage));
 
    /* Before any optimization, push array accesses out to scratch
     * space where we need them to be.  This pass may allocate new
@@ -2398,11 +2412,13 @@ vec4_visitor::run()
       if (INTEL_DEBUG(DEBUG_OPTIMIZER) && this_progress) {             \
          char filename[64];                                            \
          snprintf(filename, 64, "%s-%s-%02d-%02d-" #pass,              \
-                  stage_abbrev, nir->info.name, iteration, pass_num); \
+                  _mesa_shader_stage_to_abbrev(stage),                 \
+                  nir->info.name, iteration, pass_num);                \
                                                                        \
          backend_shader::dump_instructions(filename);                  \
       }                                                                \
                                                                        \
+      cfg->validate(_mesa_shader_stage_to_abbrev(stage));              \
       progress = progress || this_progress;                            \
       this_progress;                                                   \
    })
@@ -2411,7 +2427,7 @@ vec4_visitor::run()
    if (INTEL_DEBUG(DEBUG_OPTIMIZER)) {
       char filename[64];
       snprintf(filename, 64, "%s-%s-00-00-start",
-               stage_abbrev, nir->info.name);
+               _mesa_shader_stage_to_abbrev(stage), nir->info.name);
 
       backend_shader::dump_instructions(filename);
    }
@@ -2499,7 +2515,7 @@ vec4_visitor::run()
                           "%s shader triggered register spilling.  "
                           "Try reducing the number of live vec4 values "
                           "to improve performance.\n",
-                          stage_name);
+                          _mesa_shader_stage_to_string(stage));
 
       while (!reg_allocate()) {
          if (failed)
@@ -2533,14 +2549,14 @@ extern "C" {
 
 const unsigned *
 brw_compile_vs(const struct brw_compiler *compiler,
-               void *mem_ctx,
                struct brw_compile_vs_params *params)
 {
-   struct nir_shader *nir = params->nir;
+   struct nir_shader *nir = params->base.nir;
    const struct brw_vs_prog_key *key = params->key;
    struct brw_vs_prog_data *prog_data = params->prog_data;
    const bool debug_enabled =
-      brw_should_print_shader(nir, params->debug_flag ? params->debug_flag : DEBUG_VS);
+      brw_should_print_shader(nir, params->base.debug_flag ?
+                                   params->base.debug_flag : DEBUG_VS);
 
    prog_data->base.base.stage = MESA_SHADER_VERTEX;
    prog_data->base.base.ray_queries = nir->info.ray_queries;
@@ -2557,7 +2573,7 @@ brw_compile_vs(const struct brw_compiler *compiler,
    brw_nir_lower_vs_inputs(nir, params->edgeflag_is_last, key->gl_attrib_wa_flags);
    brw_nir_lower_vue_outputs(nir);
    brw_postprocess_nir(nir, compiler, debug_enabled,
-                       key->base.robust_buffer_access);
+                       key->base.robust_flags);
 
    prog_data->base.clip_distance_mask =
       ((1 << nir->info.clip_distance_array_size) - 1);
@@ -2633,32 +2649,36 @@ brw_compile_vs(const struct brw_compiler *compiler,
    }
 
    if (is_scalar) {
+      const unsigned dispatch_width = compiler->devinfo->ver >= 20 ? 16 : 8;
       prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
 
-      fs_visitor v(compiler, params->log_data, mem_ctx, &key->base,
-                   &prog_data->base.base, nir, 8,
-                   params->stats != NULL, debug_enabled);
+      fs_visitor v(compiler, &params->base, &key->base,
+                   &prog_data->base.base, nir, dispatch_width,
+                   params->base.stats != NULL, debug_enabled);
       if (!v.run_vs()) {
-         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->base.error_str =
+            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
          return NULL;
       }
 
-      prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs;
+      assert(v.payload().num_regs % reg_unit(compiler->devinfo) == 0);
+      prog_data->base.base.dispatch_grf_start_reg =
+         v.payload().num_regs / reg_unit(compiler->devinfo);
 
-      fs_generator g(compiler, params->log_data, mem_ctx,
+      fs_generator g(compiler, &params->base,
                      &prog_data->base.base, v.runtime_check_aads_emit,
                      MESA_SHADER_VERTEX);
       if (unlikely(debug_enabled)) {
          const char *debug_name =
-            ralloc_asprintf(mem_ctx, "%s vertex shader %s",
+            ralloc_asprintf(params->base.mem_ctx, "%s vertex shader %s",
                             nir->info.label ? nir->info.label :
                                "unnamed",
                             nir->info.name);
 
          g.enable_debug(debug_name);
       }
-      g.generate_code(v.cfg, 8, v.shader_stats,
-                      v.performance_analysis.require(), params->stats);
+      g.generate_code(v.cfg, dispatch_width, v.shader_stats,
+                      v.performance_analysis.require(), params->base.stats);
       g.add_const_data(nir->constant_data, nir->constant_data_size);
       assembly = g.get_assembly();
    }
@@ -2666,19 +2686,19 @@ brw_compile_vs(const struct brw_compiler *compiler,
    if (!assembly) {
       prog_data->base.dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
 
-      vec4_vs_visitor v(compiler, params->log_data, key, prog_data,
-                        nir, mem_ctx,
-                        debug_enabled);
+      vec4_vs_visitor v(compiler, &params->base, key, prog_data,
+                        nir, debug_enabled);
       if (!v.run()) {
-         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->base.error_str =
+            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
          return NULL;
       }
 
-      assembly = brw_vec4_generate_assembly(compiler, params->log_data, mem_ctx,
+      assembly = brw_vec4_generate_assembly(compiler, &params->base,
                                             nir, &prog_data->base,
                                             v.cfg,
                                             v.performance_analysis.require(),
-                                            params->stats, debug_enabled);
+                                            debug_enabled);
    }
 
    return assembly;

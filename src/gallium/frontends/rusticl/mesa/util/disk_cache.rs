@@ -1,3 +1,4 @@
+use libc_rust_gen::free;
 use mesa_rust_gen::*;
 
 use std::ffi::{c_void, CString};
@@ -89,11 +90,7 @@ impl DiskCache {
                 }
             }
             SHA1Final(&mut sha, &mut sha_ctx);
-            mesa_bytes_to_hex(
-                cache_id.as_mut_ptr(),
-                sha.as_ptr(),
-                (cache_id.len() - 1) as u32,
-            );
+            mesa_bytes_to_hex(cache_id.as_mut_ptr(), sha.as_ptr(), sha.len() as u32);
             disk_cache_create(c_name.as_ptr(), cache_id.as_ptr(), flags)
         };
 

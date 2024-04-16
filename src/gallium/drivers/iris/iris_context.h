@@ -118,6 +118,7 @@ enum {
 #define IRIS_DIRTY_RENDER_MISC_BUFFER_FLUSHES     (1ull << 33)
 #define IRIS_DIRTY_COMPUTE_MISC_BUFFER_FLUSHES    (1ull << 34)
 #define IRIS_DIRTY_VFG                            (1ull << 35)
+#define IRIS_DIRTY_DS_WRITE_ENABLE                (1ull << 36)
 
 #define IRIS_ALL_DIRTY_FOR_COMPUTE (IRIS_DIRTY_COMPUTE_RESOLVES_AND_FLUSHES | \
                                     IRIS_DIRTY_COMPUTE_MISC_BUFFER_FLUSHES)
@@ -353,7 +354,7 @@ enum pipe_control_flags
    PIPE_CONTROL_STATE_CACHE_INVALIDATE          = (1 << 22),
    PIPE_CONTROL_STALL_AT_SCOREBOARD             = (1 << 23),
    PIPE_CONTROL_DEPTH_CACHE_FLUSH               = (1 << 24),
-   PIPE_CONTROL_TILE_CACHE_FLUSH                = (1 << 25),
+   PIPE_CONTROL_TILE_CACHE_FLUSH                = (1 << 25), /* Not available in Gfx20+ */
    PIPE_CONTROL_FLUSH_HDC                       = (1 << 26),
    PIPE_CONTROL_PSS_STALL_SYNC                  = (1 << 27),
    PIPE_CONTROL_L3_READ_ONLY_CACHE_INVALIDATE   = (1 << 28),
@@ -433,6 +434,9 @@ struct iris_uncompiled_shader {
 
    /* A SHA1 of the serialized NIR for the disk cache. */
    unsigned char nir_sha1[20];
+
+   /* Hash value based on shader source program */
+   unsigned source_hash;
 
    unsigned program_id;
 
@@ -634,6 +638,9 @@ struct iris_context {
    /** Whether the context protected (through EGL_EXT_protected_content) */
    bool protected;
 
+   /** Whether a banned context was already signalled */
+   bool context_reset_signaled;
+
    /** A device reset status callback for notifying that the GPU is hosed. */
    struct pipe_device_reset_callback reset;
 
@@ -749,6 +756,9 @@ struct iris_context {
    /** Frame number for debug prints */
    uint32_t frame;
 
+   /** Track draw call count for adding GPU breakpoint on 3DPRIMITIVE */
+   uint32_t draw_call_count;
+
    struct {
       uint64_t dirty;
       uint64_t stage_dirty;
@@ -811,6 +821,16 @@ struct iris_context {
 
       /** Are stencil writes enabled?  (Stencil buffer may or may not exist.) */
       bool stencil_writes_enabled;
+
+      /** Current/upcoming ds_write_state for Wa_18019816803. */
+      bool ds_write_state;
+
+      /** State tracking for Wa_14018912822. */
+      bool color_blend_zero;
+      bool alpha_blend_zero;
+
+      /** State tracking for Wa_18020335297. */
+      bool viewport_ptr_set;
 
       /** Do we have integer RT in current framebuffer state? */
       bool has_integer_rt;
@@ -897,6 +917,8 @@ struct iris_context {
 
       /** Resource holding the pixel pipe hashing tables. */
       struct pipe_resource *pixel_hashing_tables;
+
+      bool use_tbimr;
    } state;
 };
 
@@ -933,7 +955,7 @@ void iris_fill_cs_push_const_buffer(struct brw_cs_prog_data *cs_prog_data,
 /* iris_blit.c */
 #define IRIS_BLORP_RELOC_FLAGS_EXEC_OBJECT_WRITE      (1 << 2)
 
-void iris_blorp_surf_for_resource(struct isl_device *isl_dev,
+void iris_blorp_surf_for_resource(struct iris_batch *batch,
                                   struct blorp_surf *surf,
                                   struct pipe_resource *p_res,
                                   enum isl_aux_usage aux_usage,
@@ -958,6 +980,21 @@ iris_blorp_flags_for_batch(struct iris_batch *batch)
       return BLORP_BATCH_USE_BLITTER;
 
    return 0;
+}
+
+static inline isl_surf_usage_flags_t
+iris_blorp_batch_usage(struct iris_batch *batch, bool is_dest)
+{
+   switch (batch->name) {
+   case IRIS_BATCH_RENDER:
+      return is_dest ? ISL_SURF_USAGE_RENDER_TARGET_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
+   case IRIS_BATCH_COMPUTE:
+      return is_dest ? ISL_SURF_USAGE_STORAGE_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
+   case IRIS_BATCH_BLITTER:
+      return is_dest ? ISL_SURF_USAGE_BLITTER_DST_BIT : ISL_SURF_USAGE_BLITTER_SRC_BIT;
+   default:
+      unreachable("Unhandled batch type");
+   }
 }
 
 /* iris_draw.c */
@@ -1130,8 +1167,30 @@ int iris_get_driver_query_group_info(struct pipe_screen *pscreen,
 void gfx9_toggle_preemption(struct iris_context *ice,
                             struct iris_batch *batch,
                             const struct pipe_draw_info *draw);
+static const bool
+iris_execute_indirect_draw_supported(const struct iris_context *ice,
+                                     const struct pipe_draw_indirect_info *indirect,
+                                     const struct pipe_draw_info *draw)
+{
+   const struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
+   const struct brw_vs_prog_data *vs_prog_data = (void *)
+      ice->shaders.prog[MESA_SHADER_VERTEX]->prog_data;
+   const bool is_multiview = draw->view_mask != 0;
+   const size_t struct_size = draw->index_size ?
+      sizeof(uint32_t) * 5 :
+      sizeof(uint32_t) * 4;
+   const bool aligned_stride =
+      indirect && (indirect->stride == 0 || indirect->stride == struct_size);
 
-
+   return (screen->devinfo->has_indirect_unroll &&
+           aligned_stride &&
+           (indirect &&
+           !indirect->count_from_stream_output) &&
+           !is_multiview &&
+           !(vs_prog_data->uses_firstvertex ||
+             vs_prog_data->uses_baseinstance ||
+             vs_prog_data->uses_drawid));
+}
 
 #ifdef genX
 #  include "iris_genx_protos.h"
@@ -1164,6 +1223,9 @@ void gfx9_toggle_preemption(struct iris_context *ice,
 #  include "iris_genx_protos.h"
 #  undef genX
 #  define genX(x) gfx125_##x
+#  include "iris_genx_protos.h"
+#  undef genX
+#  define genX(x) gfx20_##x
 #  include "iris_genx_protos.h"
 #  undef genX
 #endif

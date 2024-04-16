@@ -42,7 +42,7 @@
 static bool
 do_winsys_init(struct radv_amdgpu_winsys *ws, int fd)
 {
-   if (!ac_query_gpu_info(fd, ws->dev, &ws->info))
+   if (!ac_query_gpu_info(fd, ws->dev, &ws->info, true))
       return false;
 
    /*
@@ -56,14 +56,6 @@ do_winsys_init(struct radv_amdgpu_winsys *ws, int fd)
     */
    for (enum amd_ip_type ip_type = AMD_IP_UVD; ip_type <= AMD_IP_VCN_ENC; ip_type++)
       ws->info.max_submitted_ibs[ip_type] = 1;
-
-   if (!ac_query_pci_bus_info(fd, &ws->info))
-      return false;
-
-   if (ws->info.drm_minor < 27) {
-      fprintf(stderr, "radv/amdgpu: DRM 3.27+ is required (Linux kernel 4.20+)\n");
-      return false;
-   }
 
    ws->addrlib = ac_addrlib_create(&ws->info, &ws->info.max_alignment);
    if (!ws->addrlib) {
@@ -149,6 +141,30 @@ radv_amdgpu_winsys_get_chip_name(struct radeon_winsys *rws)
    amdgpu_device_handle dev = ((struct radv_amdgpu_winsys *)rws)->dev;
 
    return amdgpu_get_marketing_name(dev);
+}
+
+static bool
+radv_amdgpu_winsys_query_gpuvm_fault(struct radeon_winsys *rws, struct radv_winsys_gpuvm_fault_info *fault_info)
+{
+   struct radv_amdgpu_winsys *ws = (struct radv_amdgpu_winsys *)rws;
+   struct drm_amdgpu_info_gpuvm_fault gpuvm_fault = {0};
+   int r;
+
+   r = amdgpu_query_info(ws->dev, AMDGPU_INFO_GPUVM_FAULT, sizeof(gpuvm_fault), &gpuvm_fault);
+   if (r < 0) {
+      fprintf(stderr, "radv/amdgpu: Failed to query the last GPUVM fault (%d).\n", r);
+      return false;
+   }
+
+   /* When the GPUVM fault status is 0, no faults happened. */
+   if (!gpuvm_fault.status)
+      return false;
+
+   fault_info->addr = gpuvm_fault.addr;
+   fault_info->status = gpuvm_fault.status;
+   fault_info->vmhub = gpuvm_fault.vmhub;
+
+   return true;
 }
 
 static simple_mtx_t winsys_creation_mutex = SIMPLE_MTX_INITIALIZER;
@@ -297,6 +313,7 @@ radv_amdgpu_winsys_create(int fd, uint64_t debug_flags, uint64_t perftest_flags,
    ws->base.query_value = radv_amdgpu_winsys_query_value;
    ws->base.read_registers = radv_amdgpu_winsys_read_registers;
    ws->base.get_chip_name = radv_amdgpu_winsys_get_chip_name;
+   ws->base.query_gpuvm_fault = radv_amdgpu_winsys_query_gpuvm_fault;
    ws->base.destroy = radv_amdgpu_winsys_destroy;
    ws->base.get_fd = radv_amdgpu_winsys_get_fd;
    ws->base.get_sync_types = radv_amdgpu_winsys_get_sync_types;

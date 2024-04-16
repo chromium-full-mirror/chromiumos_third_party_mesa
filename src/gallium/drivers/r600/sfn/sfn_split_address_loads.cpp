@@ -24,8 +24,9 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "../r600_isa.h"
+
 #include "sfn_split_address_loads.h"
-#include "r600_isa.h"
 #include "sfn_alu_defines.h"
 #include "sfn_defines.h"
 #include "sfn_instr_alugroup.h"
@@ -156,8 +157,11 @@ void AddressSplitVisitor::visit(AluInstr *instr)
    if (addr) {
       assert(!index);
 
-      if (!m_current_addr || !m_current_addr->equal_to(*addr))
+      if (!m_current_addr || !m_current_addr->equal_to(*addr)) {
          load_ar(instr, addr);
+         for (auto na: m_prev_non_alu)
+            m_last_ar_load->add_required_instr(na);
+      }
 
       // Do this with a visitor to catch also local array values
       CollectDeps collector;
@@ -166,7 +170,7 @@ void AddressSplitVisitor::visit(AluInstr *instr)
          s->accept(collector);
       }
 
-      instr->update_indirect_addr(m_vf.addr());
+      instr->update_indirect_addr(addr, m_vf.addr());
       addr->del_use(instr);
       m_last_ar_load->inc_ar_uses();
       m_last_ar_use.push_back(instr);
@@ -185,7 +189,7 @@ auto AddressSplitVisitor::load_index_register(Instr *instr, PRegister index) -> 
    m_last_idx_use[idx_id].push_back(instr);
 
    index->del_use(instr);
-   instr->update_indirect_addr(m_current_idx[idx_id]);
+   instr->update_indirect_addr(index, m_current_idx[idx_id]);
    m_last_idx_load_index[idx_id] = (instr->block_id() << 16) | instr->index();
    return idx_id == 0 ? bim_zero : bim_one;
 }
@@ -205,8 +209,10 @@ auto AddressSplitVisitor::load_index_register_eg(Instr *instr,
       m_last_idx_load[idx_id] = new AluInstr(idx_op[idx_id], idx, m_vf.addr(), {});
       m_current_block->insert(m_block_iterator, m_last_idx_load[idx_id]);
       for (auto&& i : m_last_idx_use[idx_id])
-         m_last_idx_load[idx_id]->add_required_instr(i);
+         m_last_ar_load->add_required_instr(i);
+
       m_last_idx_use[idx_id].clear();
+      m_last_idx_load[idx_id]->add_required_instr(m_last_ar_load);
 
       m_last_ar_load->inc_ar_uses();
       m_last_ar_use.push_back(m_last_idx_load[idx_id]);
@@ -271,9 +277,6 @@ void AddressSplitVisitor::load_ar(Instr *instr, PRegister addr)
    for (auto& i : m_last_ar_use) {
       m_last_ar_load->add_required_instr(i);
    }
-   for (auto na: m_prev_non_alu) {
-      m_last_ar_load->add_required_instr(na);
-   }
    m_last_ar_use.clear();
 }
 
@@ -289,6 +292,9 @@ void AddressSplitVisitor::visit(TexInstr *instr)
 {
    if (instr->resource_offset())
       load_index_register(instr, instr->resource_offset());
+   if (instr->sampler_offset())
+      load_index_register(instr, instr->sampler_offset());
+
    m_prev_non_alu.push_back(instr);
    m_current_addr = nullptr;
 }

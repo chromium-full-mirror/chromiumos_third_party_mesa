@@ -28,13 +28,12 @@ static const struct glsl_type *
 strip_shadow(const struct glsl_type *type)
 {
    const struct glsl_type *new_type =
-         glsl_sampler_type(
-            glsl_get_sampler_dim(type),
-            false, glsl_sampler_type_is_array(type),
-            GLSL_TYPE_FLOAT);
+      glsl_sampler_type(
+         glsl_get_sampler_dim(type),
+         false, glsl_sampler_type_is_array(type),
+         GLSL_TYPE_FLOAT);
    return new_type;
 }
-
 
 static inline const struct glsl_type *
 strip_shadow_with_array(const struct glsl_type *type)
@@ -49,7 +48,7 @@ change_deref_var_type(struct nir_builder *b, nir_instr *instr, void *data)
       return false;
 
    nir_variable *sampler = data;
-   nir_deref_instr *deref = nir_instr_as_deref (instr);
+   nir_deref_instr *deref = nir_instr_as_deref(instr);
    if (deref->var == sampler) {
       deref->type = sampler->type;
       return true;
@@ -86,7 +85,8 @@ remove_tex_shadow(struct nir_builder *b, nir_instr *instr, void *data)
          sampler->type = strip_shadow_with_array(sampler->type);
          sampler_deref->type = sampler->type;
       } else {
-         sampler = nir_find_variable_with_location(b->shader, nir_var_uniform, tex->sampler_index);
+         sampler = nir_find_sampler_variable_with_tex_index(b->shader,
+                                                            tex->texture_index);
          sampler->type = strip_shadow_with_array(sampler->type);
       }
 

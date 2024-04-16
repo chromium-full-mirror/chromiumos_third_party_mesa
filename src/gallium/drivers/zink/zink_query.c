@@ -148,7 +148,7 @@ reset_vk_query_pool(struct zink_context *ctx, struct zink_vk_query *vkq)
 {
    struct zink_batch *batch = &ctx->batch;
    if (vkq->needs_reset) {
-      VKCTX(CmdResetQueryPool)(batch->state->barrier_cmdbuf, vkq->pool->query_pool, vkq->query_id, 1);
+      VKCTX(CmdResetQueryPool)(batch->state->reordered_cmdbuf, vkq->pool->query_pool, vkq->query_id, 1);
       batch->state->has_barriers = true;
    }
    vkq->needs_reset = false;
@@ -403,7 +403,7 @@ unref_vk_query(struct zink_context *ctx, struct zink_vk_query *vkq)
 static void
 destroy_query(struct zink_context *ctx, struct zink_query *query)
 {
-   struct zink_screen *screen = zink_screen(ctx->base.screen);
+   ASSERTED struct zink_screen *screen = zink_screen(ctx->base.screen);
    assert(zink_screen_usage_check_completion(screen, query->batch_uses));
    struct zink_query_buffer *qbo, *next;
 
@@ -946,7 +946,7 @@ begin_query(struct zink_context *ctx, struct zink_batch *batch, struct zink_quer
    if (q->needs_rast_discard_workaround) {
       ctx->primitives_generated_active = true;
       if (zink_set_rasterizer_discard(ctx, true))
-         zink_set_color_write_enables(ctx);
+         zink_set_null_fs(ctx);
    }
 }
 
@@ -960,6 +960,11 @@ zink_begin_query(struct pipe_context *pctx,
 
    /* drop all past results */
    reset_qbo(query);
+
+   if (query->vkqtype == VK_QUERY_TYPE_OCCLUSION)
+      ctx->occlusion_query_active = true;
+   if (query->type == PIPE_QUERY_PIPELINE_STATISTICS_SINGLE && query->index == PIPE_STAT_QUERY_PS_INVOCATIONS)
+      ctx->fs_query_active = true;
 
    query->predicate_dirty = true;
 
@@ -1033,7 +1038,7 @@ end_query(struct zink_context *ctx, struct zink_batch *batch, struct zink_query 
    if (q->needs_rast_discard_workaround) {
       ctx->primitives_generated_active = false;
       if (zink_set_rasterizer_discard(ctx, false))
-         zink_set_color_write_enables(ctx);
+         zink_set_null_fs(ctx);
    }
 }
 
@@ -1055,6 +1060,15 @@ zink_end_query(struct pipe_context *pctx,
 
    /* FIXME: this can be called from a thread, but it needs to write to the cmdbuf */
    threaded_context_unwrap_sync(pctx);
+
+   if (query->vkqtype == VK_QUERY_TYPE_OCCLUSION)
+      ctx->occlusion_query_active = true;
+   if (query->type == PIPE_QUERY_PIPELINE_STATISTICS_SINGLE && query->index == PIPE_STAT_QUERY_PS_INVOCATIONS)
+      ctx->fs_query_active = true;
+
+   bool unset_null_fs = query->type == PIPE_QUERY_PRIMITIVES_GENERATED && (ctx->primitives_generated_suspended || ctx->primitives_generated_active);
+   if (query->type == PIPE_QUERY_PRIMITIVES_GENERATED)
+      ctx->primitives_generated_suspended = false;
 
    if (list_is_linked(&query->stats_list))
       list_delinit(&query->stats_list);
@@ -1079,6 +1093,9 @@ zink_end_query(struct pipe_context *pctx,
          zink_batch_no_rp(ctx);
       end_query(ctx, batch, query);
    }
+
+   if (unset_null_fs)
+      zink_set_null_fs(ctx);
 
    return true;
 }

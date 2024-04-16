@@ -111,9 +111,8 @@ hud_draw_colored_prims(struct hud_context *hud, unsigned prim,
                  num_vertices * 2 * sizeof(float), 16, buffer,
                  &vbuffer.buffer_offset, &vbuffer.buffer.resource);
    u_upload_unmap(hud->pipe->stream_uploader);
-   vbuffer.stride = 2 * sizeof(float);
 
-   cso_set_vertex_buffers(cso, 0, 1, 0, false, &vbuffer);
+   cso_set_vertex_buffers(cso, 1, 0, false, &vbuffer);
    pipe_resource_reference(&vbuffer.buffer.resource, NULL);
    cso_set_fragment_shader_handle(hud->cso, hud->fs_color);
    cso_draw_arrays(cso, prim, 0, num_vertices);
@@ -474,7 +473,6 @@ hud_prepare_vertices(struct hud_context *hud, struct vertex_queue *v,
 {
    v->num_vertices = 0;
    v->max_num_vertices = num_vertices;
-   v->vbuf.stride = stride;
    v->buffer_size = stride * num_vertices;
 }
 
@@ -603,7 +601,7 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
 
       pipe->set_constant_buffer(pipe, PIPE_SHADER_VERTEX, 0, false, &hud->constbuf);
 
-      cso_set_vertex_buffers(cso, 0, 1, 0, false, &hud->bg.vbuf);
+      cso_set_vertex_buffers(cso, 1, 0, false, &hud->bg.vbuf);
       cso_draw_arrays(cso, MESA_PRIM_QUADS, 0, hud->bg.num_vertices);
    }
    pipe_resource_reference(&hud->bg.vbuf.buffer.resource, NULL);
@@ -611,9 +609,11 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
    /* draw accumulated vertices for text */
    if (hud->text.num_vertices) {
       cso_set_vertex_shader_handle(cso, hud->vs_text);
-      cso_set_vertex_buffers(cso, 0, 1, 0, false, &hud->text.vbuf);
+      cso_set_vertex_elements(cso, &hud->text_velems);
+      cso_set_vertex_buffers(cso, 1, 0, false, &hud->text.vbuf);
       cso_set_fragment_shader_handle(hud->cso, hud->fs_text);
       cso_draw_arrays(cso, MESA_PRIM_QUADS, 0, hud->text.num_vertices);
+      cso_set_vertex_elements(cso, &hud->velems);
    }
    pipe_resource_reference(&hud->text.vbuf.buffer.resource, NULL);
 
@@ -635,7 +635,7 @@ hud_draw_results(struct hud_context *hud, struct pipe_resource *tex)
 
    if (hud->whitelines.num_vertices) {
       cso_set_vertex_shader_handle(cso, hud->vs_color);
-      cso_set_vertex_buffers(cso, 0, 1, 0, false, &hud->whitelines.vbuf);
+      cso_set_vertex_buffers(cso, 1, 0, false, &hud->whitelines.vbuf);
       cso_set_fragment_shader_handle(hud->cso, hud->fs_color);
       cso_draw_arrays(cso, MESA_PRIM_LINES, 0, hud->whitelines.num_vertices);
    }
@@ -762,7 +762,7 @@ void
 hud_run(struct hud_context *hud, struct cso_context *cso,
         struct pipe_resource *tex)
 {
-   struct pipe_context *pipe = cso ? cso_get_pipe_context(cso) : NULL;
+   struct pipe_context *pipe = cso ? cso->pipe : NULL;
 
    /* If "cso" is the recording or drawing context or NULL, execute
     * the operation. Otherwise, don't do anything.
@@ -1703,7 +1703,7 @@ hud_set_draw_context(struct hud_context *hud, struct cso_context *cso,
                      struct st_context *st,
                      hud_st_invalidate_state_func st_invalidate_state)
 {
-   struct pipe_context *pipe = cso_get_pipe_context(cso);
+   struct pipe_context *pipe = cso->pipe;
 
    assert(!hud->pipe);
    hud->pipe = pipe;
@@ -1873,6 +1873,18 @@ hud_set_record_context(struct hud_context *hud, struct pipe_context *pipe)
    hud->record_pipe = pipe;
 }
 
+static void
+hud_init_velems(struct cso_velems_state *velems, unsigned stride)
+{
+   velems->count = 2;
+   for (unsigned i = 0; i < 2; i++) {
+      velems->velems[i].src_offset = i * 2 * sizeof(float);
+      velems->velems[i].src_format = PIPE_FORMAT_R32G32_FLOAT;
+      velems->velems[i].vertex_buffer_index = 0;
+      velems->velems[i].src_stride = stride;
+   }
+}
+
 /**
  * Create the HUD.
  *
@@ -1904,7 +1916,7 @@ hud_create(struct cso_context *cso, struct hud_context *share,
 
       if (context_id == record_ctx) {
          assert(!share->record_pipe);
-         hud_set_record_context(share, cso_get_pipe_context(cso));
+         hud_set_record_context(share, cso->pipe);
       }
 
       if (context_id == draw_ctx) {
@@ -1915,7 +1927,7 @@ hud_create(struct cso_context *cso, struct hud_context *share,
       return share;
    }
 
-   struct pipe_screen *screen = cso_get_pipe_context(cso)->screen;
+   struct pipe_screen *screen = cso->pipe->screen;
    struct hud_context *hud;
    unsigned i;
    unsigned default_period_ms = 500;/* default period (1/2 second) */
@@ -1962,8 +1974,7 @@ hud_create(struct cso_context *cso, struct hud_context *share,
       return NULL;
 
    /* font (the context is only used for the texture upload) */
-   if (!util_font_create(cso_get_pipe_context(cso),
-                         UTIL_FONT_FIXED_8X13, &hud->font)) {
+   if (!util_font_create(cso->pipe, UTIL_FONT_FIXED_8X13, &hud->font)) {
       FREE(hud);
       return NULL;
    }
@@ -2007,12 +2018,8 @@ hud_create(struct cso_context *cso, struct hud_context *share,
    hud->rasterizer_aa_lines.line_smooth = 1;
 
    /* vertex elements */
-   hud->velems.count = 2;
-   for (i = 0; i < 2; i++) {
-      hud->velems.velems[i].src_offset = i * 2 * sizeof(float);
-      hud->velems.velems[i].src_format = PIPE_FORMAT_R32G32_FLOAT;
-      hud->velems.velems[i].vertex_buffer_index = 0;
-   }
+   hud_init_velems(&hud->velems, 2 * sizeof(float));
+   hud_init_velems(&hud->text_velems, 4 * sizeof(float));
 
    /* sampler state (for font drawing) */
    hud->font_sampler_state.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
@@ -2042,7 +2049,7 @@ hud_create(struct cso_context *cso, struct hud_context *share,
 #endif
 
    if (record_ctx == 0)
-      hud_set_record_context(hud, cso_get_pipe_context(cso));
+      hud_set_record_context(hud, cso->pipe);
    if (draw_ctx == 0)
       hud_set_draw_context(hud, cso, st, st_invalidate_state);
 
@@ -2057,7 +2064,7 @@ hud_create(struct cso_context *cso, struct hud_context *share,
 void
 hud_destroy(struct hud_context *hud, struct cso_context *cso)
 {
-   if (!cso || hud->record_pipe == cso_get_pipe_context(cso))
+   if (!cso || hud->record_pipe == cso->pipe)
       hud_unset_record_context(hud);
 
    if (!cso || hud->cso == cso)

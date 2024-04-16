@@ -1,8 +1,10 @@
 #include "nir/nir_builder.h"
 #include "radv_meta.h"
+#include "radv_sdma.h"
 
 #include "radv_cs.h"
 #include "sid.h"
+#include "vk_common_entrypoints.h"
 
 static nir_shader *
 build_buffer_fill_shader(struct radv_device *dev)
@@ -10,17 +12,17 @@ build_buffer_fill_shader(struct radv_device *dev)
    nir_builder b = radv_meta_init_shader(dev, MESA_SHADER_COMPUTE, "meta_buffer_fill");
    b.shader->info.workgroup_size[0] = 64;
 
-   nir_ssa_def *pconst = nir_load_push_constant(&b, 4, 32, nir_imm_int(&b, 0), .range = 16);
-   nir_ssa_def *buffer_addr = nir_pack_64_2x32(&b, nir_channels(&b, pconst, 0b0011));
-   nir_ssa_def *size_minus16 = nir_channel(&b, pconst, 2);
-   nir_ssa_def *data = nir_swizzle(&b, nir_channel(&b, pconst, 3), (unsigned[]){0, 0, 0, 0}, 4);
+   nir_def *pconst = nir_load_push_constant(&b, 4, 32, nir_imm_int(&b, 0), .range = 16);
+   nir_def *buffer_addr = nir_pack_64_2x32(&b, nir_channels(&b, pconst, 0b0011));
+   nir_def *max_offset = nir_channel(&b, pconst, 2);
+   nir_def *data = nir_swizzle(&b, nir_channel(&b, pconst, 3), (unsigned[]){0, 0, 0, 0}, 4);
 
-   nir_ssa_def *global_id = nir_iadd(
-      &b, nir_imul_imm(&b, nir_channel(&b, nir_load_workgroup_id(&b, 32), 0), b.shader->info.workgroup_size[0]),
-      nir_load_local_invocation_index(&b));
+   nir_def *global_id =
+      nir_iadd(&b, nir_imul_imm(&b, nir_channel(&b, nir_load_workgroup_id(&b), 0), b.shader->info.workgroup_size[0]),
+               nir_load_local_invocation_index(&b));
 
-   nir_ssa_def *offset = nir_imin(&b, nir_imul_imm(&b, global_id, 16), size_minus16);
-   nir_ssa_def *dst_addr = nir_iadd(&b, buffer_addr, nir_u2u64(&b, offset));
+   nir_def *offset = nir_imin(&b, nir_imul_imm(&b, global_id, 16), max_offset);
+   nir_def *dst_addr = nir_iadd(&b, buffer_addr, nir_u2u64(&b, offset));
    nir_build_store_global(&b, data, dst_addr, .align_mul = 4);
 
    return b.shader;
@@ -32,18 +34,18 @@ build_buffer_copy_shader(struct radv_device *dev)
    nir_builder b = radv_meta_init_shader(dev, MESA_SHADER_COMPUTE, "meta_buffer_copy");
    b.shader->info.workgroup_size[0] = 64;
 
-   nir_ssa_def *pconst = nir_load_push_constant(&b, 4, 32, nir_imm_int(&b, 0), .range = 16);
-   nir_ssa_def *size_minus16 = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 16, .range = 4);
-   nir_ssa_def *src_addr = nir_pack_64_2x32(&b, nir_channels(&b, pconst, 0b0011));
-   nir_ssa_def *dst_addr = nir_pack_64_2x32(&b, nir_channels(&b, pconst, 0b1100));
+   nir_def *pconst = nir_load_push_constant(&b, 4, 32, nir_imm_int(&b, 0), .range = 16);
+   nir_def *max_offset = nir_load_push_constant(&b, 1, 32, nir_imm_int(&b, 0), .base = 16, .range = 4);
+   nir_def *src_addr = nir_pack_64_2x32(&b, nir_channels(&b, pconst, 0b0011));
+   nir_def *dst_addr = nir_pack_64_2x32(&b, nir_channels(&b, pconst, 0b1100));
 
-   nir_ssa_def *global_id = nir_iadd(
-      &b, nir_imul_imm(&b, nir_channel(&b, nir_load_workgroup_id(&b, 32), 0), b.shader->info.workgroup_size[0]),
-      nir_load_local_invocation_index(&b));
+   nir_def *global_id =
+      nir_iadd(&b, nir_imul_imm(&b, nir_channel(&b, nir_load_workgroup_id(&b), 0), b.shader->info.workgroup_size[0]),
+               nir_load_local_invocation_index(&b));
 
-   nir_ssa_def *offset = nir_u2u64(&b, nir_imin(&b, nir_imul_imm(&b, global_id, 16), size_minus16));
+   nir_def *offset = nir_u2u64(&b, nir_imin(&b, nir_imul_imm(&b, global_id, 16), max_offset));
 
-   nir_ssa_def *data = nir_build_load_global(&b, 4, 32, nir_iadd(&b, src_addr, offset), .align_mul = 4);
+   nir_def *data = nir_build_load_global(&b, 4, 32, nir_iadd(&b, src_addr, offset), .align_mul = 4);
    nir_build_store_global(&b, data, nir_iadd(&b, dst_addr, offset), .align_mul = 4);
 
    return b.shader;
@@ -51,14 +53,14 @@ build_buffer_copy_shader(struct radv_device *dev)
 
 struct fill_constants {
    uint64_t addr;
-   uint32_t size_minus16;
+   uint32_t max_offset;
    uint32_t data;
 };
 
 struct copy_constants {
    uint64_t src_addr;
    uint64_t dst_addr;
-   uint32_t size_minus16;
+   uint32_t max_offset;
 };
 
 VkResult
@@ -158,8 +160,7 @@ fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint64_t siz
    struct radv_device *device = cmd_buffer->device;
    struct radv_meta_saved_state saved_state;
 
-   radv_meta_save(&saved_state, cmd_buffer,
-                  RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS | RADV_META_SAVE_DESCRIPTORS);
+   radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS);
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
                         device->meta_state.buffer.fill_pipeline);
@@ -168,12 +169,12 @@ fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint64_t siz
 
    struct fill_constants fill_consts = {
       .addr = va,
-      .size_minus16 = size - 16,
+      .max_offset = size - 16,
       .data = data,
    };
 
-   radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.fill_p_layout,
-                         VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fill_consts), &fill_consts);
+   vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.fill_p_layout,
+                              VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fill_consts), &fill_consts);
 
    radv_unaligned_dispatch(cmd_buffer, DIV_ROUND_UP(size, 16), 1, 1);
 
@@ -186,8 +187,7 @@ copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t
    struct radv_device *device = cmd_buffer->device;
    struct radv_meta_saved_state saved_state;
 
-   radv_meta_save(&saved_state, cmd_buffer,
-                  RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS | RADV_META_SAVE_DESCRIPTORS);
+   radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS);
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE,
                         device->meta_state.buffer.copy_pipeline);
@@ -197,11 +197,11 @@ copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t
    struct copy_constants copy_consts = {
       .src_addr = src_va,
       .dst_addr = dst_va,
-      .size_minus16 = size - 16,
+      .max_offset = size - 16,
    };
 
-   radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.copy_p_layout,
-                         VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(copy_consts), &copy_consts);
+   vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.copy_p_layout,
+                              VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(copy_consts), &copy_consts);
 
    radv_unaligned_dispatch(cmd_buffer, DIV_ROUND_UP(size, 16), 1, 1);
 
@@ -238,7 +238,9 @@ radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *im
    if (bo)
       radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, bo);
 
-   if (use_compute) {
+   if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
+      radv_sdma_fill_buffer(cmd_buffer->device, cmd_buffer->cs, va, size, value);
+   } else if (use_compute) {
       cmd_buffer->state.flush_bits |= radv_dst_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_WRITE_BIT, image);
 
       fill_buffer_shader(cmd_buffer, va, size, value);
@@ -246,7 +248,7 @@ radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *im
       flush_bits = RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_INV_VCACHE |
                    radv_src_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_WRITE_BIT, image);
    } else if (size)
-      si_cp_dma_clear_buffer(cmd_buffer, va, size, value);
+      radv_cp_dma_clear_buffer(cmd_buffer, va, size, value);
 
    return flush_bits;
 }
@@ -264,10 +266,12 @@ radv_copy_buffer(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *sr
    radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, src_bo);
    radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_bo);
 
-   if (use_compute)
+   if (cmd_buffer->qf == RADV_QUEUE_TRANSFER)
+      radv_sdma_copy_buffer(cmd_buffer->device, cmd_buffer->cs, src_va, dst_va, size);
+   else if (use_compute)
       copy_buffer_shader(cmd_buffer, src_va, dst_va, size);
    else if (size)
-      si_cp_dma_buffer_copy(cmd_buffer, src_va, dst_va, size);
+      radv_cp_dma_buffer_copy(cmd_buffer, src_va, dst_va, size);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -322,7 +326,7 @@ radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const voi
 
    assert(size < RADV_BUFFER_UPDATE_THRESHOLD);
 
-   si_emit_cache_flush(cmd_buffer);
+   radv_emit_cache_flush(cmd_buffer);
    radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, words + 4);
 
    radeon_emit(cmd_buffer->cs, PKT3(PKT3_WRITE_DATA, 2 + words, 0));
@@ -351,7 +355,7 @@ radv_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDevice
    if (!dataSize)
       return;
 
-   if (dataSize < RADV_BUFFER_UPDATE_THRESHOLD) {
+   if (dataSize < RADV_BUFFER_UPDATE_THRESHOLD && cmd_buffer->qf != RADV_QUEUE_TRANSFER) {
       radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_buffer->bo);
       radv_update_buffer_cp(cmd_buffer, va, pData, dataSize);
    } else {

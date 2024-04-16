@@ -28,6 +28,7 @@ virtio_icd = custom_target(
   ],
   build_by_default : true,
   install_dir : with_vulkan_icd_dir,
+  install_tag : 'runtime',
   install : true,
 )
 
@@ -103,7 +104,7 @@ endif
 
 if with_platform_android
   libvn_files += files('vn_android.c')
-  vn_deps += dep_android
+  vn_deps += [dep_android, idep_u_gralloc]
 endif
 
 libvulkan_virtio = shared_library(

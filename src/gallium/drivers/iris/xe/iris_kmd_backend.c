@@ -47,16 +47,38 @@ xe_gem_create(struct iris_bufmgr *bufmgr,
    uint32_t vm_id = iris_bufmgr_get_global_vm_id(bufmgr);
    vm_id = alloc_flags & BO_ALLOC_SHARED ? 0 : vm_id;
 
+   uint32_t flags = 0;
+   /* TODO: we might need to consider scanout for shared buffers too as we
+    * do not know what the process this is shared with will do with it
+    */
+   if (alloc_flags & BO_ALLOC_SCANOUT)
+      flags |= DRM_XE_GEM_CREATE_FLAG_SCANOUT;
+   if (!intel_vram_all_mappable(iris_bufmgr_get_device_info(bufmgr)) &&
+       heap_flags == IRIS_HEAP_DEVICE_LOCAL_PREFERRED)
+      flags |= DRM_XE_GEM_CREATE_FLAG_NEEDS_VISIBLE_VRAM;
+
    struct drm_xe_gem_create gem_create = {
      .vm_id = vm_id,
      .size = align64(size, iris_bufmgr_get_device_info(bufmgr)->mem_alignment),
-     /* TODO: we might need to consider scanout for shared buffers too as we
-      * do not know what the process this is shared with will do with it
-      */
-     .flags = alloc_flags & BO_ALLOC_SCANOUT ? XE_GEM_CREATE_FLAG_SCANOUT : 0,
+     .flags = flags,
    };
    for (uint16_t i = 0; i < regions_count; i++)
-      gem_create.flags |= BITFIELD_BIT(regions[i]->instance);
+      gem_create.placement |= BITFIELD_BIT(regions[i]->instance);
+
+   const struct intel_device_info *devinfo = iris_bufmgr_get_device_info(bufmgr);
+   const struct intel_device_info_pat_entry *pat_entry;
+   pat_entry = iris_heap_to_pat_entry(devinfo, heap_flags);
+   switch (pat_entry->mmap) {
+   case INTEL_DEVICE_INFO_MMAP_MODE_WC:
+      gem_create.cpu_caching = DRM_XE_GEM_CPU_CACHING_WC;
+      break;
+   case INTEL_DEVICE_INFO_MMAP_MODE_WB:
+      gem_create.cpu_caching = DRM_XE_GEM_CPU_CACHING_WB;
+      break;
+   default:
+      unreachable("missing");
+      gem_create.cpu_caching = DRM_XE_GEM_CPU_CACHING_WC;
+   }
 
    if (intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_XE_GEM_CREATE,
                    &gem_create))
@@ -82,84 +104,76 @@ xe_gem_mmap(struct iris_bufmgr *bufmgr, struct iris_bo *bo)
 static inline int
 xe_gem_vm_bind_op(struct iris_bo *bo, uint32_t op)
 {
-   struct drm_syncobj_create create = {};
-   int ret = intel_ioctl(iris_bufmgr_get_fd(bo->bufmgr),
-                         DRM_IOCTL_SYNCOBJ_CREATE, &create);
-   if (ret) {
-      DBG("vm_bind_op: Unable to create SYNCOBJ(%i)", ret);
-      return ret;
-   }
-
-   struct drm_xe_sync sync = {
-      .flags = DRM_XE_SYNC_SYNCOBJ | DRM_XE_SYNC_SIGNAL,
-      .handle = create.handle,
+   const struct intel_device_info *devinfo = iris_bufmgr_get_device_info(bo->bufmgr);
+   uint32_t handle = op == DRM_XE_VM_BIND_OP_UNMAP ? 0 : bo->gem_handle;
+   struct drm_xe_sync xe_sync = {
+      .type = DRM_XE_SYNC_TYPE_SYNCOBJ,
+      .flags = DRM_XE_SYNC_FLAG_SIGNAL,
    };
-   /* Old compilers do not allow declarations after 'goto label' */
-   struct drm_syncobj_destroy destroy = {
-      .handle = create.handle,
+   struct drm_syncobj_create syncobj_create = {};
+   struct drm_syncobj_destroy syncobj_destroy = {};
+   struct drm_syncobj_wait syncobj_wait = {
+      .timeout_nsec = INT64_MAX,
+      .count_handles = 1,
    };
-
-   uint32_t handle = op == XE_VM_BIND_OP_UNMAP ? 0 : bo->gem_handle;
    uint64_t range, obj_offset = 0;
+   int ret, fd;
+
+   fd = iris_bufmgr_get_fd(bo->bufmgr);
+   ret = intel_ioctl(fd, DRM_IOCTL_SYNCOBJ_CREATE, &syncobj_create);
+   if (ret)
+      return ret;
+
+   xe_sync.handle = syncobj_create.handle;
 
    if (iris_bo_is_imported(bo))
       range = bo->size;
    else
-      range = align64(bo->size,
-                      iris_bufmgr_get_device_info(bo->bufmgr)->mem_alignment);
+      range = align64(bo->size, devinfo->mem_alignment);
 
    if (bo->real.userptr) {
       handle = 0;
       obj_offset = (uintptr_t)bo->real.map;
-      if (op == XE_VM_BIND_OP_MAP)
-         op = XE_VM_BIND_OP_MAP_USERPTR;
+      if (op == DRM_XE_VM_BIND_OP_MAP)
+         op = DRM_XE_VM_BIND_OP_MAP_USERPTR;
    }
 
    struct drm_xe_vm_bind args = {
       .vm_id = iris_bufmgr_get_global_vm_id(bo->bufmgr),
+      .num_syncs = 1,
+      .syncs = (uintptr_t)&xe_sync,
       .num_binds = 1,
       .bind.obj = handle,
       .bind.obj_offset = obj_offset,
       .bind.range = range,
       .bind.addr = intel_48b_address(bo->address),
       .bind.op = op,
-      .num_syncs = 1,
-      .syncs = (uintptr_t)&sync,
+      .bind.pat_index = iris_heap_to_pat_entry(devinfo, bo->real.heap)->index,
    };
-   ret = intel_ioctl(iris_bufmgr_get_fd(bo->bufmgr), DRM_IOCTL_XE_VM_BIND, &args);
-   if (ret) {
+   ret = intel_ioctl(fd, DRM_IOCTL_XE_VM_BIND, &args);
+   if (ret == 0) {
+      syncobj_wait.handles = (uintptr_t)&xe_sync.handle;
+      ret = intel_ioctl(fd, DRM_IOCTL_SYNCOBJ_WAIT, &syncobj_wait);
+   } else {
       DBG("vm_bind_op: DRM_IOCTL_XE_VM_BIND failed(%i)", ret);
-      goto bind_error;
    }
 
-   struct drm_syncobj_wait wait = {
-      .handles = (uintptr_t)&create.handle,
-      .timeout_nsec = INT64_MAX,
-      .count_handles = 1,
-      .flags = 0,
-      .first_signaled = 0,
-      .pad = 0,
-   };
-   ret = intel_ioctl(iris_bufmgr_get_fd(bo->bufmgr), DRM_IOCTL_SYNCOBJ_WAIT, &wait);
-   if (ret)
-      DBG("vm_bind_op: DRM_IOCTL_SYNCOBJ_WAIT failed(%i)", ret);
+   syncobj_destroy.handle = xe_sync.handle;
+   intel_ioctl(fd, DRM_IOCTL_SYNCOBJ_DESTROY, &syncobj_destroy);
 
-bind_error:
-   if (intel_ioctl(iris_bufmgr_get_fd(bo->bufmgr), DRM_IOCTL_SYNCOBJ_DESTROY, &destroy))
-      DBG("vm_bind_op: Unable to destroy SYNCOBJ(%i)", ret);
    return ret;
 }
 
 static bool
 xe_gem_vm_bind(struct iris_bo *bo)
 {
-   return xe_gem_vm_bind_op(bo, XE_VM_BIND_OP_MAP) == 0;
+   return xe_gem_vm_bind_op(bo, DRM_XE_VM_BIND_OP_MAP) == 0;
 }
 
 static bool
 xe_gem_vm_unbind(struct iris_bo *bo)
 {
-   return xe_gem_vm_bind_op(bo, XE_VM_BIND_OP_UNMAP) == 0;
+   return xe_gem_vm_bind_op(bo, DRM_XE_VM_BIND_OP_UNMAP) == 0;
 }
 
 static bool
@@ -185,15 +199,15 @@ static enum pipe_reset_status
 xe_batch_check_for_reset(struct iris_batch *batch)
 {
    enum pipe_reset_status status = PIPE_NO_RESET;
-   struct drm_xe_engine_get_property engine_get_property = {
-      .engine_id = batch->xe.engine_id,
-      .property = XE_ENGINE_GET_PROPERTY_BAN,
+   struct drm_xe_exec_queue_get_property exec_queue_get_property = {
+      .exec_queue_id = batch->xe.exec_queue_id,
+      .property = DRM_XE_EXEC_QUEUE_GET_PROPERTY_BAN,
    };
    int ret = intel_ioctl(iris_bufmgr_get_fd(batch->screen->bufmgr),
-                         DRM_IOCTL_XE_ENGINE_GET_PROPERTY,
-                         &engine_get_property);
+                         DRM_IOCTL_XE_EXEC_QUEUE_GET_PROPERTY,
+                         &exec_queue_get_property);
 
-   if (ret || engine_get_property.value)
+   if (ret || exec_queue_get_property.value)
       status = PIPE_GUILTY_CONTEXT_RESET;
 
    return status;
@@ -357,13 +371,12 @@ xe_batch_submit(struct iris_batch *batch)
 
       util_dynarray_foreach(&batch->exec_fences, struct iris_batch_fence,
                             fence) {
-         uint32_t flags = DRM_XE_SYNC_SYNCOBJ;
 
          if (fence->flags & IRIS_BATCH_FENCE_SIGNAL)
-            flags |= DRM_XE_SYNC_SIGNAL;
+            syncs[i].flags = DRM_XE_SYNC_FLAG_SIGNAL;
 
          syncs[i].handle = fence->handle;
-         syncs[i].flags = flags;
+         syncs[i].type = DRM_XE_SYNC_TYPE_SYNCOBJ;
          i++;
       }
    }
@@ -376,7 +389,7 @@ xe_batch_submit(struct iris_batch *batch)
    }
 
    struct drm_xe_exec exec = {
-      .engine_id = batch->xe.engine_id,
+      .exec_queue_id = batch->xe.exec_queue_id,
       .num_batch_buffer = 1,
       .address = batch->exec_bos[0]->address,
       .syncs = (uintptr_t)syncs,
@@ -420,10 +433,36 @@ error_implicit_sync_import:
    return ret;
 }
 
+static int
+xe_gem_close(struct iris_bufmgr *bufmgr, struct iris_bo *bo)
+{
+   if (bo->real.userptr)
+      return 0;
+
+   struct drm_gem_close close = {
+      .handle = bo->gem_handle,
+   };
+   return intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_GEM_CLOSE, &close);
+}
+
+static uint32_t
+xe_gem_create_userptr(struct iris_bufmgr *bufmgr, void *ptr, uint64_t size)
+{
+   /* We return UINT32_MAX, because Xe doesn't create handles for userptrs but
+    * it needs a gem_handle different than 0 so iris_bo_is_real() returns true
+    * for userptr bos.
+    * UINT32_MAX handle here will not conflict with an actual gem handle with
+    * same id as userptr bos are not put to slab or bo cache.
+    */
+   return UINT32_MAX;
+}
+
 const struct iris_kmd_backend *xe_get_backend(void)
 {
    static const struct iris_kmd_backend xe_backend = {
       .gem_create = xe_gem_create,
+      .gem_create_userptr = xe_gem_create_userptr,
+      .gem_close = xe_gem_close,
       .gem_mmap = xe_gem_mmap,
       .gem_vm_bind = xe_gem_vm_bind,
       .gem_vm_unbind = xe_gem_vm_unbind,

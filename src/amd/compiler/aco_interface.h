@@ -27,16 +27,21 @@
 
 #include "aco_shader_info.h"
 
+#include "nir.h"
+
 #include "amd_family.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct nir_shader nir_shader;
+/* Special launch size to indicate this dispatch is a 1D dispatch converted into a 2D one */
+#define ACO_RT_CONVERTED_2D_LAUNCH_SIZE -1u
+
 struct ac_shader_config;
 struct aco_shader_info;
 struct aco_vs_prolog_info;
 struct aco_ps_epilog_info;
+struct radeon_info;
 
 struct aco_compiler_statistic_info {
    char name[32];
@@ -77,7 +82,29 @@ void aco_compile_ps_epilog(const struct aco_compiler_options* options,
                            const struct ac_shader_args* args,
                            aco_shader_part_callback* build_epilog, void** binary);
 
+void aco_compile_tcs_epilog(const struct aco_compiler_options* options,
+                            const struct aco_shader_info* info,
+                            const struct aco_tcs_epilog_info* epilog_info,
+                            const struct ac_shader_args* args,
+                            aco_shader_part_callback* build_epilog, void** binary);
+
+void aco_compile_gl_vs_prolog(const struct aco_compiler_options* options,
+                              const struct aco_shader_info* info,
+                              const struct aco_gl_vs_prolog_info* pinfo,
+                              const struct ac_shader_args* args,
+                              aco_shader_part_callback* build_prolog, void** binary);
+
+void aco_compile_ps_prolog(const struct aco_compiler_options* options,
+                           const struct aco_shader_info* info,
+                           const struct aco_ps_prolog_info* pinfo,
+                           const struct ac_shader_args* args,
+                           aco_shader_part_callback* build_prolog, void** binary);
+
 uint64_t aco_get_codegen_flags();
+
+bool aco_is_gpu_supported(const struct radeon_info* info);
+
+bool aco_nir_op_supports_packed_math_16bit(const nir_alu_instr* alu);
 
 #ifdef __cplusplus
 }

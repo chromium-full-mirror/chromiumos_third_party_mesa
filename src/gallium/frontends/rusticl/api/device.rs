@@ -127,13 +127,16 @@ impl CLInfo<cl_device_info> for cl_device_id {
                     let sdot = dev.sdot_4x8_supported() && pack;
                     let udot = dev.udot_4x8_supported() && pack;
                     let sudot = dev.sudot_4x8_supported() && pack;
+                    let sdot_sat = dev.sdot_4x8_sat_supported() && pack;
+                    let udot_sat = dev.udot_4x8_sat_supported() && pack;
+                    let sudot_sat = dev.sudot_4x8_sat_supported() && pack;
                     IdpAccelProps::new(
                         sdot.into(),
                         udot.into(),
                         sudot.into(),
-                        sdot.into(),
-                        udot.into(),
-                        sudot.into(),
+                        sdot_sat.into(),
+                        udot_sat.into(),
+                        sudot_sat.into(),
                     )
                 })
             }
@@ -143,9 +146,9 @@ impl CLInfo<cl_device_info> for cl_device_id {
                         dev.sdot_4x8_supported().into(),
                         dev.udot_4x8_supported().into(),
                         dev.sudot_4x8_supported().into(),
-                        dev.sdot_4x8_supported().into(),
-                        dev.udot_4x8_supported().into(),
-                        dev.sudot_4x8_supported().into(),
+                        dev.sdot_4x8_sat_supported().into(),
+                        dev.udot_4x8_sat_supported().into(),
+                        dev.sudot_4x8_sat_supported().into(),
                     )
                 })
             }
@@ -199,13 +202,9 @@ impl CLInfo<cl_device_info> for cl_device_id {
             }
             CL_DEVICE_NAME => cl_prop::<&str>(&dev.screen().name()),
             CL_DEVICE_NATIVE_VECTOR_WIDTH_CHAR => cl_prop::<cl_uint>(1),
-            CL_DEVICE_NATIVE_VECTOR_WIDTH_DOUBLE => {
-                cl_prop::<cl_uint>(if dev.fp64_supported() { 1 } else { 0 })
-            }
+            CL_DEVICE_NATIVE_VECTOR_WIDTH_DOUBLE => cl_prop::<cl_uint>(dev.fp64_supported().into()),
             CL_DEVICE_NATIVE_VECTOR_WIDTH_FLOAT => cl_prop::<cl_uint>(1),
-            CL_DEVICE_NATIVE_VECTOR_WIDTH_HALF => {
-                cl_prop::<cl_uint>(if dev.fp16_supported() { 1 } else { 0 })
-            }
+            CL_DEVICE_NATIVE_VECTOR_WIDTH_HALF => cl_prop::<cl_uint>(dev.fp16_supported().into()),
             CL_DEVICE_NATIVE_VECTOR_WIDTH_INT => cl_prop::<cl_uint>(1),
             CL_DEVICE_NATIVE_VECTOR_WIDTH_LONG => cl_prop::<cl_uint>(1),
             CL_DEVICE_NATIVE_VECTOR_WIDTH_SHORT => cl_prop::<cl_uint>(1),
@@ -241,11 +240,11 @@ impl CLInfo<cl_device_info> for cl_device_id {
             CL_DEVICE_PREFERRED_PLATFORM_ATOMIC_ALIGNMENT => cl_prop::<cl_uint>(0),
             CL_DEVICE_PREFERRED_VECTOR_WIDTH_CHAR => cl_prop::<cl_uint>(1),
             CL_DEVICE_PREFERRED_VECTOR_WIDTH_DOUBLE => {
-                cl_prop::<cl_uint>(if dev.fp64_supported() { 1 } else { 0 })
+                cl_prop::<cl_uint>(dev.fp64_supported().into())
             }
             CL_DEVICE_PREFERRED_VECTOR_WIDTH_FLOAT => cl_prop::<cl_uint>(1),
             CL_DEVICE_PREFERRED_VECTOR_WIDTH_HALF => {
-                cl_prop::<cl_uint>(if dev.fp16_supported() { 1 } else { 0 })
+                cl_prop::<cl_uint>(dev.fp16_supported().into())
             }
             CL_DEVICE_PREFERRED_VECTOR_WIDTH_INT => cl_prop::<cl_uint>(1),
             CL_DEVICE_PREFERRED_VECTOR_WIDTH_LONG => cl_prop::<cl_uint>(1),

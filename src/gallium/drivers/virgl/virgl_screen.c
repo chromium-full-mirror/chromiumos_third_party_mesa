@@ -92,9 +92,15 @@ virgl_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return vscreen->caps.caps.v1.max_dual_source_render_targets;
    case PIPE_CAP_OCCLUSION_QUERY:
       return vscreen->caps.caps.v1.bset.occlusion_query;
-   case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
-      return vscreen->caps.caps.v1.bset.mirror_clamp;
+      if (vscreen->caps.caps.v2.host_feature_check_version >= 20)
+         return vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_MIRROR_CLAMP_TO_EDGE;
+      FALLTHROUGH;
+   case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
+      if (vscreen->caps.caps.v2.host_feature_check_version >= 22)
+         return vscreen->caps.caps.v2.capability_bits_v2 & VIRGL_CAP_V2_MIRROR_CLAMP;
+      return vscreen->caps.caps.v1.bset.mirror_clamp &&
+             !(vscreen->caps.caps.v2.capability_bits & VIRGL_CAP_HOST_IS_GLES);
    case PIPE_CAP_TEXTURE_SWIZZLE:
       return 1;
    case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
@@ -418,9 +424,20 @@ virgl_get_shader_param(struct pipe_screen *screen,
          return (shader == PIPE_SHADER_VERTEX ||
                  shader == PIPE_SHADER_GEOMETRY) ? vscreen->caps.caps.v2.max_vertex_attribs : 32;
       case PIPE_SHADER_CAP_MAX_OUTPUTS:
-         if (shader == PIPE_SHADER_FRAGMENT)
+         switch (shader) {
+         case PIPE_SHADER_FRAGMENT:
             return vscreen->caps.caps.v1.max_render_targets;
-         return vscreen->caps.caps.v2.max_vertex_outputs;
+         case PIPE_SHADER_TESS_CTRL:
+            if (vscreen->caps.caps.v2.host_feature_check_version >= 19)
+               return vscreen->caps.caps.v2.max_tcs_outputs;
+            FALLTHROUGH;
+         case PIPE_SHADER_TESS_EVAL:
+            if (vscreen->caps.caps.v2.host_feature_check_version >= 19)
+               return vscreen->caps.caps.v2.max_tes_outputs;
+            FALLTHROUGH;
+         default:
+            return vscreen->caps.caps.v2.max_vertex_outputs;
+         }
      // case PIPE_SHADER_CAP_MAX_CONSTS:
      //    return 4096;
       case PIPE_SHADER_CAP_MAX_TEMPS:
@@ -498,6 +515,13 @@ virgl_get_video_param(struct pipe_screen *screen,
        drv_supported = (entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM ||
                         entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE);
        break;
+   case PIPE_VIDEO_FORMAT_MPEG12:
+   case PIPE_VIDEO_FORMAT_VC1:
+   case PIPE_VIDEO_FORMAT_JPEG:
+   case PIPE_VIDEO_FORMAT_VP9:
+   case PIPE_VIDEO_FORMAT_AV1:
+      drv_supported = (entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM);
+      break;
    default:
        drv_supported = false;
        break;
@@ -1032,8 +1056,10 @@ static void virgl_disk_cache_create(struct virgl_screen *screen)
 {
    const struct build_id_note *note =
       build_id_find_nhdr_for_addr(virgl_disk_cache_create);
+   assert(note);
+
    unsigned build_id_len = build_id_length(note);
-   assert(note && build_id_len == 20); /* sha1 */
+   assert(build_id_len == 20); /* sha1 */
 
    const uint8_t *id_sha1 = build_id_data(note);
    assert(id_sha1);

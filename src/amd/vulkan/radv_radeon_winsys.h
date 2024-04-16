@@ -184,15 +184,12 @@ struct radeon_winsys_ctx;
 
 struct radeon_winsys_bo {
    uint64_t va;
+   /* buffer is created with AMDGPU_GEM_CREATE_VM_ALWAYS_VALID */
    bool is_local;
    bool vram_no_cpu_access;
+   /* buffer is added to the BO list of all submissions */
    bool use_global_list;
    enum radeon_bo_domain initial_domain;
-};
-
-struct radv_winsys_bo_list {
-   struct radeon_winsys_bo **bos;
-   unsigned count;
 };
 
 struct radv_winsys_submit_info {
@@ -231,6 +228,12 @@ enum {
    RADV_BO_PRIORITY_CS = 31,
 };
 
+struct radv_winsys_gpuvm_fault_info {
+   uint64_t addr;
+   uint32_t status;
+   uint32_t vmhub;
+};
+
 struct radeon_winsys {
    void (*destroy)(struct radeon_winsys *ws);
 
@@ -241,6 +244,8 @@ struct radeon_winsys {
    bool (*read_registers)(struct radeon_winsys *ws, unsigned reg_offset, unsigned num_registers, uint32_t *out);
 
    const char *(*get_chip_name)(struct radeon_winsys *ws);
+
+   bool (*query_gpuvm_fault)(struct radeon_winsys *ws, struct radv_winsys_gpuvm_fault_info *fault_info);
 
    VkResult (*buffer_create)(struct radeon_winsys *ws, uint64_t size, unsigned alignment, enum radeon_bo_domain domain,
                              enum radeon_bo_flag flags, unsigned priority, uint64_t address,
@@ -304,7 +309,7 @@ struct radeon_winsys {
    void (*cs_execute_secondary)(struct radeon_cmdbuf *parent, struct radeon_cmdbuf *child, bool allow_ib2);
 
    void (*cs_execute_ib)(struct radeon_cmdbuf *cs, struct radeon_winsys_bo *bo, const uint64_t offset,
-                         const uint32_t cdw);
+                         const uint32_t cdw, const bool predicate);
 
    void (*cs_dump)(struct radeon_cmdbuf *cs, FILE *file, const int *trace_ids, int trace_id_count);
 
@@ -342,10 +347,16 @@ radv_buffer_get_va(const struct radeon_winsys_bo *bo)
    return bo->va;
 }
 
+static inline bool
+radv_buffer_is_resident(const struct radeon_winsys_bo *bo)
+{
+   return bo->use_global_list || bo->is_local;
+}
+
 static inline void
 radv_cs_add_buffer(struct radeon_winsys *ws, struct radeon_cmdbuf *cs, struct radeon_winsys_bo *bo)
 {
-   if (bo->use_global_list)
+   if (radv_buffer_is_resident(bo))
       return;
 
    ws->cs_add_buffer(cs, bo);

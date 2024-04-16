@@ -185,7 +185,12 @@ zink_fence_finish(struct zink_screen *screen, struct pipe_context *pctx, struct 
    if (submit_diff > 1)
       return true;
 
-   if (fence->submitted && zink_screen_check_last_finished(screen, fence->batch_id))
+   /* - if fence is submitted, batch_id is nonzero and can be checked
+    * - if fence is not submitted here, it must be reset; batch_id will be 0 and submitted is false
+    * in either case, the fence has finished
+    */
+   if ((fence->submitted && zink_screen_check_last_finished(screen, fence->batch_id)) ||
+       (!fence->submitted && submit_diff))
       return true;
 
    return fence_wait(screen, fence, timeout_ns);
@@ -255,6 +260,8 @@ zink_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *pfen
    VkPipelineStageFlags flag = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
    util_dynarray_append(&ctx->batch.state->wait_semaphores, VkSemaphore, mfence->sem);
    util_dynarray_append(&ctx->batch.state->wait_semaphore_stages, VkPipelineStageFlags, flag);
+   pipe_reference(NULL, &mfence->reference);
+   util_dynarray_append(&ctx->batch.state->fences, struct zink_tc_fence*, mfence);
 
    /* transfer the external wait sempahore ownership to the next submit */
    mfence->sem = VK_NULL_HANDLE;

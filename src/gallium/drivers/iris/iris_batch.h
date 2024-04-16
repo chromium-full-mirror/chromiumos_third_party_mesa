@@ -99,7 +99,7 @@ struct iris_batch {
          uint32_t exec_flags;
       } i915;
       struct {
-         uint32_t engine_id;
+         uint32_t exec_queue_id;
       } xe;
    };
 
@@ -212,6 +212,8 @@ struct iris_batch {
 
    /** Batch wrapper structure for perfetto */
    struct intel_ds_queue ds;
+
+   uint8_t num_3d_primitives_emitted;
 };
 
 void iris_init_batches(struct iris_context *ice);
@@ -443,6 +445,9 @@ iris_batch_mark_reset_sync(struct iris_batch *batch)
 
 const char *
 iris_batch_name_to_string(enum iris_batch_name name);
+
+bool
+iris_batch_is_banned(struct iris_bufmgr *bufmgr, int ret);
 
 #define iris_foreach_batch(ice, batch)                \
    for (struct iris_batch *batch = &ice->batches[0];  \

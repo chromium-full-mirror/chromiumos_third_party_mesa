@@ -25,7 +25,6 @@
 #include "nir_clc_helpers.h"
 #include "nir_serialize.h"
 #include "glsl_types.h"
-#include "nir_types.h"
 #include "clc_compiler.h"
 #include "clc_helpers.h"
 #include "clc_nir.h"
@@ -58,9 +57,16 @@ lower_image_deref_impl(nir_builder *b, struct clc_image_lower_context *context,
                        unsigned *num_bindings)
 {
    nir_variable *in_var = nir_deref_instr_get_variable(context->deref);
+   nir_foreach_variable_with_modes(var, b->shader, var_mode) {
+      // Check if we've already created a variable for this image
+      if (var->data.driver_location == in_var->data.driver_location &&
+          var->type == new_var_type)
+         return var->data.binding;
+   }
    nir_variable *image = nir_variable_create(b->shader, var_mode, new_var_type, NULL);
    image->data.access = in_var->data.access;
    image->data.binding = in_var->data.binding;
+   image->data.driver_location = in_var->data.driver_location;
    if (context->num_buf_ids > 0) {
       // Need to assign a new binding
       context->metadata->args[context->metadata_index].
@@ -124,15 +130,15 @@ clc_lower_input_image_deref(nir_builder *b, struct clc_image_lower_context *cont
    };
 
    int image_bindings[IMAGE_TYPE_COUNT] = {-1, -1, -1};
-   nir_ssa_def *format_deref_dest = NULL, *order_deref_dest = NULL;
+   nir_def *format_deref_dest = NULL, *order_deref_dest = NULL;
 
    nir_variable *in_var = nir_deref_instr_get_variable(context->deref);
 
    context->metadata_index = 0;
-   while (context->metadata->args[context->metadata_index].image.buf_ids[0] != in_var->data.binding)
+   while (context->metadata->args[context->metadata_index].offset != in_var->data.driver_location)
       context->metadata_index++;
 
-   context->num_buf_ids = 0;
+   context->num_buf_ids = context->metadata->args[context->metadata_index].image.num_buf_ids;
 
    /* Do this in 2 passes:
     * 1. When encountering a strongly-typed access (load/store), replace the deref
@@ -145,11 +151,11 @@ clc_lower_input_image_deref(nir_builder *b, struct clc_image_lower_context *cont
     *    arbitrary type for it.
     */
    for (int pass = 0; pass < 2; ++pass) {
-      nir_foreach_use_safe(src, &context->deref->dest.ssa) {
+      nir_foreach_use_safe(src, &context->deref->def) {
          enum image_type type;
 
-         if (src->parent_instr->type == nir_instr_type_intrinsic) {
-            nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(src->parent_instr);
+         if (nir_src_parent_instr(src)->type == nir_instr_type_intrinsic) {
+            nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(nir_src_parent_instr(src));
             nir_alu_type dest_type;
 
             b->cursor = nir_before_instr(&intrinsic->instr);
@@ -203,14 +209,26 @@ clc_lower_input_image_deref(nir_builder *b, struct clc_image_lower_context *cont
 
             case nir_intrinsic_image_deref_format:
             case nir_intrinsic_image_deref_order: {
-               nir_ssa_def **cached_deref = intrinsic->intrinsic == nir_intrinsic_image_deref_format ?
+               nir_def **cached_deref = intrinsic->intrinsic == nir_intrinsic_image_deref_format ?
                   &format_deref_dest : &order_deref_dest;
                if (!*cached_deref) {
-                  nir_variable *new_input = nir_variable_create(b->shader, nir_var_uniform, glsl_uint_type(), NULL);
-                  new_input->data.driver_location = in_var->data.driver_location;
+                  unsigned driver_location = in_var->data.driver_location;
                   if (intrinsic->intrinsic == nir_intrinsic_image_deref_format) {
                      /* Match cl_image_format { image_channel_order, image_channel_data_type }; */
-                     new_input->data.driver_location += glsl_get_cl_size(new_input->type);
+                     driver_location += 4;
+                  }
+
+                  nir_variable *new_input = NULL;
+                  nir_foreach_variable_with_modes(var, b->shader, nir_var_uniform) {
+                     if (var->data.driver_location == driver_location &&
+                         var->type == glsl_uint_type()) {
+                        new_input = var;
+                        break;
+                     }
+                  }
+                  if (!new_input) {
+                     new_input = nir_variable_create(b->shader, nir_var_uniform, glsl_uint_type(), NULL);
+                     new_input->data.driver_location = driver_location;
                   }
 
                   b->cursor = nir_after_instr(&context->deref->instr);
@@ -218,7 +236,7 @@ clc_lower_input_image_deref(nir_builder *b, struct clc_image_lower_context *cont
                }
 
                /* No actual intrinsic needed here, just reference the loaded variable */
-               nir_ssa_def_rewrite_uses(&intrinsic->dest.ssa, *cached_deref);
+               nir_def_rewrite_uses(&intrinsic->def, *cached_deref);
                nir_instr_remove(&intrinsic->instr);
                break;
             }
@@ -226,9 +244,9 @@ clc_lower_input_image_deref(nir_builder *b, struct clc_image_lower_context *cont
             default:
                unreachable("Unsupported image intrinsic");
             }
-         } else if (src->parent_instr->type == nir_instr_type_tex) {
+         } else if (nir_src_parent_instr(src)->type == nir_instr_type_tex) {
             assert(in_var->data.access & ACCESS_NON_WRITEABLE);
-            nir_tex_instr *tex = nir_instr_as_tex(src->parent_instr);
+            nir_tex_instr *tex = nir_instr_as_tex(nir_src_parent_instr(src));
 
             switch (nir_alu_type_get_base_type(tex->dest_type)) {
             case nir_type_float: type = FLOAT4; break;
@@ -252,7 +270,6 @@ clc_lower_input_image_deref(nir_builder *b, struct clc_image_lower_context *cont
    context->metadata->args[context->metadata_index].image.num_buf_ids = context->num_buf_ids;
 
    nir_instr_remove(&context->deref->instr);
-   exec_node_remove(&in_var->node);
 }
 
 static void
@@ -278,15 +295,20 @@ clc_lower_images(nir_shader *nir, struct clc_image_lower_context *context)
          }
       }
    }
+
+   nir_foreach_variable_with_modes_safe(var, nir, nir_var_image) {
+      if (glsl_type_is_image(var->type) && glsl_get_sampler_result_type(var->type) == GLSL_TYPE_VOID)
+         exec_node_remove(&var->node);
+   }
 }
 
 static void
 clc_lower_64bit_semantics(nir_shader *nir)
 {
-   nir_foreach_function(func, nir) {
-      nir_builder b = nir_builder_create(func->impl);
+   nir_foreach_function_impl(impl, nir) {
+      nir_builder b = nir_builder_create(impl);
 
-      nir_foreach_block(block, func->impl) {
+      nir_foreach_block(block, impl) {
          nir_foreach_instr_safe(instr, block) {
             if (instr->type == nir_instr_type_intrinsic) {
                nir_intrinsic_instr *intrinsic = nir_instr_as_intrinsic(instr);
@@ -304,15 +326,15 @@ clc_lower_64bit_semantics(nir_shader *nir)
                   continue;
                }
 
-               if (nir_instr_ssa_def(instr)->bit_size != 64)
+               if (nir_instr_def(instr)->bit_size != 64)
                   continue;
 
-               intrinsic->dest.ssa.bit_size = 32;
+               intrinsic->def.bit_size = 32;
                b.cursor = nir_after_instr(instr);
 
-               nir_ssa_def *i64 = nir_u2u64(&b, &intrinsic->dest.ssa);
-               nir_ssa_def_rewrite_uses_after(
-                  &intrinsic->dest.ssa,
+               nir_def *i64 = nir_u2u64(&b, &intrinsic->def);
+               nir_def_rewrite_uses_after(
+                  &intrinsic->def,
                   i64,
                   i64->parent_instr);
             }
@@ -343,7 +365,7 @@ clc_lower_nonnormalized_samplers(nir_shader *nir,
                continue;
 
             nir_src *sampler_src = &tex->src[sampler_src_idx].src;
-            assert(sampler_src->is_ssa && sampler_src->ssa->parent_instr->type == nir_instr_type_deref);
+            assert(sampler_src->ssa->parent_instr->type == nir_instr_type_deref);
             nir_variable *sampler = nir_deref_instr_get_variable(
                nir_instr_as_deref(sampler_src->ssa->parent_instr));
 
@@ -359,14 +381,14 @@ clc_lower_nonnormalized_samplers(nir_shader *nir,
 
             int coords_idx = nir_tex_instr_src_index(tex, nir_tex_src_coord);
             assert(coords_idx != -1);
-            nir_ssa_def *coords =
-               nir_ssa_for_src(&b, tex->src[coords_idx].src, tex->coord_components);
+            nir_def *coords =
+               tex->src[coords_idx].src.ssa;
 
-            nir_ssa_def *txs = nir_i2f32(&b, nir_get_texture_size(&b, tex));
+            nir_def *txs = nir_i2f32(&b, nir_get_texture_size(&b, tex));
 
             // Normalize coords for tex
-            nir_ssa_def *scale = nir_frcp(&b, txs);
-            nir_ssa_def *comps[4];
+            nir_def *scale = nir_frcp(&b, txs);
+            nir_def *comps[4];
             for (unsigned i = 0; i < coords->num_components; ++i) {
                comps[i] = nir_channel(&b, coords, i);
                if (tex->is_array && i == coords->num_components - 1) {
@@ -383,10 +405,8 @@ clc_lower_nonnormalized_samplers(nir_shader *nir,
                   comps[i] = nir_fadd_imm(&b, nir_ffloor(&b, comps[i]), 0.5f);
                comps[i] = nir_fmul(&b, comps[i], nir_channel(&b, scale, i));
             }
-            nir_ssa_def *normalized_coords = nir_vec(&b, comps, coords->num_components);
-            nir_instr_rewrite_src(&tex->instr,
-                                  &tex->src[coords_idx].src,
-                                  nir_src_for_ssa(normalized_coords));
+            nir_def *normalized_coords = nir_vec(&b, comps, coords->num_components);
+            nir_src_rewrite(&tex->src[coords_idx].src, normalized_coords);
          }
       }
    }
@@ -544,7 +564,7 @@ copy_const_initializer(const nir_constant *constant, const struct glsl_type *typ
    }
 }
 
-static enum pipe_tex_wrap
+static enum dxil_tex_wrap
 wrap_from_cl_addressing(unsigned addressing_mode)
 {
    switch (addressing_mode)
@@ -553,10 +573,10 @@ wrap_from_cl_addressing(unsigned addressing_mode)
    case SAMPLER_ADDRESSING_MODE_NONE:
    case SAMPLER_ADDRESSING_MODE_CLAMP:
       // Since OpenCL's only border color is 0's and D3D specs out-of-bounds loads to return 0, don't apply any wrap mode
-      return (enum pipe_tex_wrap)-1;
-   case SAMPLER_ADDRESSING_MODE_CLAMP_TO_EDGE: return PIPE_TEX_WRAP_CLAMP_TO_EDGE;
-   case SAMPLER_ADDRESSING_MODE_REPEAT: return PIPE_TEX_WRAP_REPEAT;
-   case SAMPLER_ADDRESSING_MODE_REPEAT_MIRRORED: return PIPE_TEX_WRAP_MIRROR_REPEAT;
+      return (enum dxil_tex_wrap)-1;
+   case SAMPLER_ADDRESSING_MODE_CLAMP_TO_EDGE: return DXIL_TEX_WRAP_CLAMP_TO_EDGE;
+   case SAMPLER_ADDRESSING_MODE_REPEAT: return DXIL_TEX_WRAP_REPEAT;
+   case SAMPLER_ADDRESSING_MODE_REPEAT_MIRRORED: return DXIL_TEX_WRAP_MIRROR_REPEAT;
    }
 }
 
@@ -577,7 +597,7 @@ static bool shader_has_double(nir_shader *nir)
              const nir_op_info *info = &nir_op_infos[alu->op];
 
              if (info->output_type & nir_type_float &&
-                 nir_dest_bit_size(alu->dest.dest) == 64)
+                 alu->def.bit_size == 64)
                  return true;
          }
       }
@@ -641,6 +661,11 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
          .kernel_image_read_write = true,
          .literal_sampler = true,
          .printf = true,
+
+         // These aren't fully supported, but silence warnings about them from
+         // code that doesn't really use them.
+         .linkage = true,
+         .generic_pointers = true,
       },
    };
    unsigned supported_int_sizes = (16 | 32 | 64);
@@ -702,7 +727,7 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
    // according to the comment on nir_inline_functions
    NIR_PASS_V(nir, nir_lower_variable_initializers, nir_var_function_temp);
    NIR_PASS_V(nir, nir_lower_returns);
-   NIR_PASS_V(nir, nir_lower_libclc, clc_libclc_get_clc_shader(lib));
+   NIR_PASS_V(nir, nir_link_shader_functions, clc_libclc_get_clc_shader(lib));
    NIR_PASS_V(nir, nir_inline_functions);
 
    // Pick off the single entrypoint that we want.
@@ -724,7 +749,7 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
          NIR_PASS(progress, nir, nir_lower_var_copies);
          NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
          NIR_PASS(progress, nir, nir_opt_algebraic);
-         NIR_PASS(progress, nir, nir_opt_if, nir_opt_if_aggressive_last_continue | nir_opt_if_optimize_phi_true_false);
+         NIR_PASS(progress, nir, nir_opt_if, nir_opt_if_optimize_phi_true_false);
          NIR_PASS(progress, nir, nir_opt_dead_cf);
          NIR_PASS(progress, nir, nir_opt_remove_phis);
          NIR_PASS(progress, nir, nir_opt_peephole_select, 8, true, true);
@@ -735,7 +760,8 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
 
    NIR_PASS_V(nir, nir_scale_fdiv);
 
-   dxil_wrap_sampler_state int_sampler_states[PIPE_MAX_SHADER_SAMPLER_VIEWS] = { {{0}} };
+   /* 128 is the minimum value for CL_DEVICE_MAX_READ_IMAGE_ARGS and used by CLOn12 */
+   dxil_wrap_sampler_state int_sampler_states[128] = { {{0}} };
    unsigned sampler_id = 0;
 
    NIR_PASS_V(nir, nir_lower_variable_initializers, ~(nir_var_function_temp | nir_var_shader_temp));
@@ -811,7 +837,7 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
          metadata->args[i].image.buf_ids[0] = uav_id++;
       }
 
-      metadata->args[i].image.num_buf_ids = 1;
+      metadata->args[i].image.num_buf_ids = 0;
       var->data.binding = metadata->args[i].image.buf_ids[0];
 
       // Assign location that'll be used for uniforms for format/order
@@ -855,9 +881,7 @@ clc_spirv_to_dxil(struct clc_libclc *lib,
    NIR_PASS_V(nir, clc_lower_nonnormalized_samplers, int_sampler_states);
    NIR_PASS_V(nir, nir_lower_samplers);
    NIR_PASS_V(nir, dxil_lower_sample_to_txf_for_integer_tex,
-              PIPE_MAX_SHADER_SAMPLER_VIEWS, int_sampler_states, NULL, 14.0f);
-
-   NIR_PASS_V(nir, nir_remove_dead_variables, nir_var_mem_shared | nir_var_function_temp, NULL);
+              sampler_id, int_sampler_states, NULL, 14.0f);
 
    nir->scratch_size = 0;
    NIR_PASS_V(nir, nir_lower_vars_to_explicit_types,

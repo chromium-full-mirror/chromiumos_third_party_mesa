@@ -27,9 +27,7 @@
 #include "zink_types.h"
 
 #define ZINK_MAP_TEMPORARY (PIPE_MAP_DRV_PRV << 0)
-#define ZINK_BIND_SAMPLER_DESCRIPTOR (1u << 26)
-#define ZINK_BIND_RESOURCE_DESCRIPTOR (1u << 27)
-#define ZINK_BIND_DESCRIPTOR (ZINK_BIND_SAMPLER_DESCRIPTOR | ZINK_BIND_RESOURCE_DESCRIPTOR)
+#define ZINK_BIND_DESCRIPTOR (1u << 27)
 #define ZINK_BIND_MUTABLE (1u << 28)
 #define ZINK_BIND_DMABUF (1u << 29)
 #define ZINK_BIND_TRANSIENT (1u << 30) //transient fb attachment
@@ -44,7 +42,8 @@ zink_screen_resource_init(struct pipe_screen *pscreen);
 
 void
 zink_context_resource_init(struct pipe_context *pctx);
-
+void
+zink_screen_buffer_unmap(struct pipe_screen *pscreen, struct pipe_transfer *ptrans);
 void
 zink_get_depth_stencil_resources(struct pipe_resource *res,
                                  struct zink_resource **out_z,
@@ -163,6 +162,7 @@ static inline void
 zink_resource_usage_set(struct zink_resource *res, struct zink_batch_state *bs, bool write)
 {
    zink_bo_usage_set(res->obj->bo, bs, write);
+   res->obj->unsync_access = false;
 }
 
 static inline bool
@@ -180,7 +180,7 @@ zink_batch_resource_usage_set(struct zink_batch *batch, struct zink_resource *re
          if (acquire)
             util_dynarray_append(&batch->state->acquires, VkSemaphore, acquire);
       }
-      if (write && !res->obj->is_buffer) {
+      if (write) {
          if (!res->valid && res->fb_bind_count)
             batch->state->ctx->rp_loadop_changed = true;
          res->valid = true;

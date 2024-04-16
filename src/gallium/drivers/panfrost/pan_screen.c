@@ -54,6 +54,8 @@
 
 #include "pan_context.h"
 
+#define DEFAULT_MAX_AFBC_PACKING_RATIO 90
+
 /* clang-format off */
 static const struct debug_named_value panfrost_debug_options[] = {
    {"perf",       PAN_DBG_PERF,     "Enable performance warnings"},
@@ -71,6 +73,8 @@ static const struct debug_named_value panfrost_debug_options[] = {
 #ifdef PAN_DBG_OVERFLOW
    {"overflow",   PAN_DBG_OVERFLOW, "Check for buffer overflows in pool uploads"},
 #endif
+   {"yuv",        PAN_DBG_YUV,      "Tint YUV textures with blue for 1-plane and green for 2-plane"},
+   {"forcepack",  PAN_DBG_FORCE_PACK,  "Force packing of AFBC textures on upload"},
    DEBUG_NAMED_VALUE_END
 };
 /* clang-format on */
@@ -105,8 +109,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
    bool has_mrt = (dev->arch >= 5);
 
    /* Only kernel drivers >= 1.1 can allocate HEAP BOs */
-   bool has_heap = dev->kernel_version->version_major > 1 ||
-                   dev->kernel_version->version_minor >= 1;
+   bool has_heap = panfrost_device_kmod_version_major(dev) > 1 ||
+                   panfrost_device_kmod_version_minor(dev) >= 1;
 
    switch (param) {
    case PIPE_CAP_NPOT_TEXTURES:
@@ -122,6 +126,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
    case PIPE_CAP_SHADER_PACK_HALF_FLOAT:
+   case PIPE_CAP_HAS_CONST_BW:
       return 1;
 
    case PIPE_CAP_MAX_RENDER_TARGETS:
@@ -138,7 +143,7 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return true;
 
    case PIPE_CAP_ANISOTROPIC_FILTER:
-      return dev->revision >= dev->model->min_rev_anisotropic;
+      return panfrost_device_gpu_rev(dev) >= dev->model->min_rev_anisotropic;
 
    /* Compile side is done for Bifrost, Midgard TODO. Needs some kernel
     * work to turn on, since CYCLE_COUNT_START needs to be issued. In
@@ -175,10 +180,8 @@ panfrost_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_INT64:
       return 1;
 
-   /* We need this for OES_copy_image, but currently there are some awful
-    * interactions with AFBC that need to be worked out. */
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
-      return 0;
+      return 1;
 
    case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
       return PIPE_MAX_SO_BUFFERS;
@@ -457,7 +460,6 @@ panfrost_get_shader_param(struct pipe_screen *screen,
       return false;
 
    case PIPE_SHADER_CAP_INT64_ATOMICS:
-   case PIPE_SHADER_CAP_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return 0;
 
@@ -803,7 +805,7 @@ panfrost_get_disk_shader_cache(struct pipe_screen *pscreen)
 static int
 panfrost_get_screen_fd(struct pipe_screen *pscreen)
 {
-   return pan_device(pscreen)->fd;
+   return panfrost_device_fd(pan_device(pscreen));
 }
 
 int
@@ -838,6 +840,8 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
    /* Debug must be set first for pandecode to work correctly */
    dev->debug =
       debug_get_flags_option("PAN_MESA_DEBUG", panfrost_debug_options, 0);
+   screen->max_afbc_packing_ratio = debug_get_num_option(
+      "PAN_MAX_AFBC_PACKING_RATIO", DEFAULT_MAX_AFBC_PACKING_RATIO);
    panfrost_open_device(screen, fd, dev);
 
    if (dev->debug & PAN_DBG_NO_AFBC)
@@ -845,7 +849,8 @@ panfrost_create_screen(int fd, const struct pipe_screen_config *config,
 
    /* Bail early on unsupported hardware */
    if (dev->model == NULL) {
-      debug_printf("panfrost: Unsupported model %X", dev->gpu_id);
+      debug_printf("panfrost: Unsupported model %X",
+                   panfrost_device_gpu_id(dev));
       panfrost_destroy_screen(&(screen->base));
       return NULL;
    }

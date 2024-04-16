@@ -258,7 +258,6 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_SHADER_ARRAY_COMPONENTS:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:
-   case PIPE_CAP_INT64_DIVMOD:
    case PIPE_CAP_QUERY_SO_OVERFLOW:
    case PIPE_CAP_TGSI_DIV:
       return 1;
@@ -340,6 +339,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
+   case PIPE_CAP_IMAGE_LOAD_FORMATTED:
       return 1;
 #ifdef PIPE_MEMORY_FD
    case PIPE_CAP_MEMOBJ:
@@ -357,6 +357,8 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_POST_DEPTH_COVERAGE:
    case PIPE_CAP_SHADER_CLOCK:
    case PIPE_CAP_PACKED_UNIFORMS:
+      return 1;
+   case PIPE_CAP_SYSTEM_SVM:
       return 1;
    case PIPE_CAP_ATOMIC_FLOAT_MINMAX:
       return LLVM_VERSION_MAJOR >= 15;
@@ -408,6 +410,11 @@ llvmpipe_get_shader_param(struct pipe_screen *screen,
             return PIPE_MAX_SHADER_SAMPLER_VIEWS;
          else
             return 0;
+      case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
+         if (debug_get_bool_option("DRAW_USE_LLVM", false))
+            return LP_MAX_TGSI_CONST_BUFFERS;
+         else
+            return draw_get_shader_param(shader, param);
       default:
          return draw_get_shader_param(shader, param);
       }
@@ -585,8 +592,8 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_flrp32 = true,
    .lower_flrp64 = true,
    .lower_fsat = true,
-   .lower_bitfield_insert_to_shifts = true,
-   .lower_bitfield_extract_to_shifts = true,
+   .lower_bitfield_insert = true,
+   .lower_bitfield_extract = true,
    .lower_fdot = true,
    .lower_fdph = true,
    .lower_ffma16 = true,
@@ -614,12 +621,12 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_extract_word = true,
    .lower_insert_byte = true,
    .lower_insert_word = true,
-   .lower_rotate = true,
    .lower_uadd_carry = true,
    .lower_usub_borrow = true,
    .lower_mul_2x32_64 = true,
    .lower_ifind_msb = true,
    .lower_int64_options = nir_lower_imul_2x32_64,
+   .lower_doubles_options = nir_lower_dround_even,
    .max_unroll_iterations = 32,
    .use_interpolated_input_intrinsics = true,
    .lower_to_scalar = true,
@@ -628,6 +635,8 @@ static const struct nir_shader_compiler_options gallivm_nir_options = {
    .lower_device_index_to_zero = true,
    .support_16bit_alu = true,
    .lower_fisnormal = true,
+   .lower_fquantize2f16 = true,
+   .driver_functions = true,
 };
 
 
@@ -726,6 +735,7 @@ lp_storage_image_format_supported(enum pipe_format format)
    case PIPE_FORMAT_R16_SNORM:
    case PIPE_FORMAT_R8_SNORM:
    case PIPE_FORMAT_B8G8R8A8_UNORM:
+   case PIPE_FORMAT_A8_UNORM:
       return true;
    default:
       return false;
@@ -826,7 +836,10 @@ llvmpipe_is_format_supported(struct pipe_screen *_screen,
        format != PIPE_FORMAT_ETC1_RGB8)
       return false;
 
-   if (format_desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED && target == PIPE_BUFFER)
+   if ((format_desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED ||
+        format_desc->layout == UTIL_FORMAT_LAYOUT_PLANAR2 ||
+        format_desc->layout == UTIL_FORMAT_LAYOUT_PLANAR3) &&
+       target == PIPE_BUFFER)
       return false;
 
    /*

@@ -70,7 +70,7 @@ extern "C" {
 #define PIPE_MAX_SHADER_IMAGES    64
 #define PIPE_MAX_TEXTURE_LEVELS   16
 #define PIPE_MAX_SO_BUFFERS        4
-#define PIPE_MAX_SO_OUTPUTS       64
+#define PIPE_MAX_SO_OUTPUTS       128
 #define PIPE_MAX_VIEWPORTS        16
 #define PIPE_MAX_CLIP_OR_CULL_DISTANCE_COUNT 8
 #define PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT 2
@@ -313,17 +313,6 @@ pipe_shader_state_from_tgsi(struct pipe_shader_state *state,
    state->tokens = tokens;
    memset(&state->stream_output, 0, sizeof(state->stream_output));
 }
-
-static inline void
-pipe_shader_state_from_nir(struct pipe_shader_state *state,
-                           void *nir)
-{
-   state->type = PIPE_SHADER_IR_NIR;
-   state->ir.nir = nir;
-   state->tokens = NULL;
-   memset(&state->stream_output, 0, sizeof(state->stream_output));
-}
-
 
 struct pipe_stencil_state
 {
@@ -650,7 +639,6 @@ struct pipe_transfer
  */
 struct pipe_vertex_buffer
 {
-   uint16_t stride;    /**< stride to same attrib in next vertex, in bytes */
    bool is_user_buffer;
    unsigned buffer_offset;  /**< offset to start of data in buffer, in bytes */
 
@@ -741,6 +729,9 @@ struct pipe_vertex_element
     * This has only 8 bits because all vertex formats should be <= 255.
     */
    uint8_t src_format; /* low 8 bits of enum pipe_format. */
+
+   /**< stride to same attrib in next vertex, in bytes */
+   uint32_t src_stride; /* technically only uint16_t, expanded for struct padding */
 
    /** Instance data rate divisor. 0 means this is per-vertex data,
     *  n means per-instance data used for n consecutive instances (n > 0).

@@ -70,7 +70,7 @@ panfrost_clear(struct pipe_context *pipe, unsigned buffers,
    struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
 
    /* At the start of the batch, we can clear for free */
-   if (!batch->scoreboard.first_job) {
+   if (batch->draw_count == 0) {
       panfrost_batch_clear(batch, buffers, color, depth, stencil);
       return;
    }
@@ -114,7 +114,7 @@ panfrost_flush(struct pipe_context *pipe, struct pipe_fence_handle **fence,
    }
 
    if (dev->debug & PAN_DBG_TRACE)
-      pandecode_next_frame();
+      pandecode_next_frame(dev->decode_ctx);
 }
 
 static void
@@ -172,7 +172,7 @@ panfrost_get_blend(struct panfrost_batch *batch, unsigned rti,
 
    /* Use fixed-function if the equation permits, the format is blendable,
     * and no more than one unique constant is accessed */
-   if (info.fixed_function && panfrost_blendable_formats_v7[fmt].internal &&
+   if (info.fixed_function && dev->blendable_formats[fmt].internal &&
        pan_blend_is_homogenous_constant(info.constant_mask,
                                         ctx->blend_color.color)) {
       return 0;
@@ -254,7 +254,7 @@ panfrost_set_shader_images(struct pipe_context *pctx,
                            const struct pipe_image_view *iviews)
 {
    struct panfrost_context *ctx = pan_context(pctx);
-   ctx->dirty_shader[PIPE_SHADER_FRAGMENT] |= PAN_DIRTY_STAGE_IMAGE;
+   ctx->dirty_shader[shader] |= PAN_DIRTY_STAGE_IMAGE;
 
    /* Unbind start_slot...start_slot+count */
    if (!iviews) {
@@ -283,7 +283,7 @@ panfrost_set_shader_images(struct pipe_context *pctx,
        */
       if (drm_is_afbc(rsrc->image.layout.modifier)) {
          pan_resource_modifier_convert(
-            ctx, rsrc, DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED,
+            ctx, rsrc, DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED, true,
             "Shader image");
       }
 
@@ -326,8 +326,7 @@ panfrost_bind_sampler_states(struct pipe_context *pctx,
 }
 
 static void
-panfrost_set_vertex_buffers(struct pipe_context *pctx, unsigned start_slot,
-                            unsigned num_buffers,
+panfrost_set_vertex_buffers(struct pipe_context *pctx, unsigned num_buffers,
                             unsigned unbind_num_trailing_slots,
                             bool take_ownership,
                             const struct pipe_vertex_buffer *buffers)
@@ -335,8 +334,8 @@ panfrost_set_vertex_buffers(struct pipe_context *pctx, unsigned start_slot,
    struct panfrost_context *ctx = pan_context(pctx);
 
    util_set_vertex_buffers_mask(ctx->vertex_buffers, &ctx->vb_mask, buffers,
-                                start_slot, num_buffers,
-                                unbind_num_trailing_slots, take_ownership);
+                                num_buffers, unbind_num_trailing_slots,
+                                take_ownership);
 
    ctx->dirty |= PAN_DIRTY_VERTEX;
 }
@@ -561,12 +560,13 @@ panfrost_destroy(struct pipe_context *pipe)
 
    panfrost_pool_cleanup(&panfrost->descs);
    panfrost_pool_cleanup(&panfrost->shaders);
+   panfrost_afbc_context_destroy(panfrost);
 
-   drmSyncobjDestroy(dev->fd, panfrost->in_sync_obj);
+   drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->in_sync_obj);
    if (panfrost->in_sync_fd != -1)
       close(panfrost->in_sync_fd);
 
-   drmSyncobjDestroy(dev->fd, panfrost->syncobj);
+   drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->syncobj);
    ralloc_free(pipe);
 }
 
@@ -860,7 +860,7 @@ panfrost_fence_server_sync(struct pipe_context *pctx,
    struct panfrost_context *ctx = pan_context(pctx);
    int fd = -1, ret;
 
-   ret = drmSyncobjExportSyncFile(dev->fd, f->syncobj, &fd);
+   ret = drmSyncobjExportSyncFile(panfrost_device_fd(dev), f->syncobj, &fd);
    assert(!ret);
 
    sync_accumulate("panfrost", &ctx->in_sync_fd, fd);
@@ -940,10 +940,11 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    gallium->set_global_binding = panfrost_set_global_binding;
    gallium->memory_barrier = panfrost_memory_barrier;
 
-   pan_screen(screen)->vtbl.context_init(gallium);
+   pan_screen(screen)->vtbl.context_populate_vtbl(gallium);
 
    panfrost_resource_context_init(gallium);
    panfrost_shader_context_init(gallium);
+   panfrost_afbc_context_init(ctx);
 
    gallium->stream_uploader = u_upload_create_default(gallium);
    gallium->const_uploader = gallium->stream_uploader;
@@ -972,12 +973,13 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    /* Create a syncobj in a signaled state. Will be updated to point to the
     * last queued job out_sync every time we submit a new job.
     */
-   ret = drmSyncobjCreate(dev->fd, DRM_SYNCOBJ_CREATE_SIGNALED, &ctx->syncobj);
+   ret = drmSyncobjCreate(panfrost_device_fd(dev), DRM_SYNCOBJ_CREATE_SIGNALED,
+                          &ctx->syncobj);
    assert(!ret && ctx->syncobj);
 
    /* Sync object/FD used for NATIVE_FENCE_FD. */
    ctx->in_sync_fd = -1;
-   ret = drmSyncobjCreate(dev->fd, 0, &ctx->in_sync_obj);
+   ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &ctx->in_sync_obj);
    assert(!ret);
 
    return gallium;

@@ -163,7 +163,7 @@ static void r300_split_index_bias(struct r300_context *r300, int index_bias,
         max_neg_bias = INT_MAX;
         for (i = 0; i < r300->velems->count; i++) {
             vb = &vbufs[velem[i].vertex_buffer_index];
-            size = (vb->buffer_offset + velem[i].src_offset) / vb->stride;
+            size = (vb->buffer_offset + velem[i].src_offset) / velem[i].src_stride;
             max_neg_bias = MIN2(max_neg_bias, size);
         }
 
@@ -372,7 +372,7 @@ static void r300_draw_arrays_immediate(struct r300_context *r300,
         size[i] = r300->velems->format_size[i] / 4;
         vbi = velem->vertex_buffer_index;
         vbuf = &r300->vertex_buffer[vbi];
-        stride[i] = vbuf->stride / 4;
+        stride[i] = velem->src_stride / 4;
 
         /* Map the buffer. */
         if (!map[vbi]) {
@@ -752,7 +752,7 @@ static unsigned r300_max_vertex_count(struct r300_context *r300)
 
       /* We're not interested in constant and per-instance attribs. */
       if (!vb->buffer.resource ||
-          !vb->stride ||
+          !velems[i].src_stride ||
           velems[i].instance_divisor) {
          continue;
       }
@@ -774,7 +774,7 @@ static unsigned r300_max_vertex_count(struct r300_context *r300)
       size -= value;
 
       /* Compute the max count. */
-      max_count = 1 + size / vb->stride;
+      max_count = 1 + size / velems[i].src_stride;
       result = MIN2(result, max_count);
    }
    return result;
@@ -951,7 +951,7 @@ static bool r300_render_allocate_vertices(struct vbuf_render* render,
     DBG(r300, DBG_DRAW, "r300: render_allocate_vertices (size: %d)\n", size);
 
     if (!r300->vbo || size + r300->draw_vbo_offset > r300->vbo->size) {
-	pb_reference(&r300->vbo, NULL);
+	radeon_bo_reference(r300->rws, &r300->vbo, NULL);
         r300->vbo = NULL;
         r300render->vbo_ptr = NULL;
 

@@ -85,7 +85,6 @@ static const nir_shader_compiler_options sp_compiler_options = {
    .lower_fdph = true,
    .lower_flrp64 = true,
    .lower_fmod = true,
-   .lower_rotate = true,
    .lower_uniforms_to_ubo = true,
    .lower_vector_cmp = true,
    .lower_int64_options = nir_lower_imul_2x32_64,
@@ -206,7 +205,6 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VS_LAYER_VIEWPORT:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:
-   case PIPE_CAP_INT64_DIVMOD:
    case PIPE_CAP_TGSI_DIV:
       return 1;
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:

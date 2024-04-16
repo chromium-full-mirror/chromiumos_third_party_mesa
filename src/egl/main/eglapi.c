@@ -411,7 +411,7 @@ eglGetDisplay(EGLNativeDisplayType nativeDisplay)
    _EGLDisplay *disp;
    void *native_display_ptr;
 
-   util_perfetto_init();
+   util_cpu_trace_init();
    _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL);
 
    STATIC_ASSERT(sizeof(void *) == sizeof(nativeDisplay));
@@ -476,7 +476,7 @@ eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
    EGLAttrib *attrib_list;
    EGLDisplay disp;
 
-   util_perfetto_init();
+   util_cpu_trace_init();
    _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL);
 
    if (_eglConvertIntsToAttribs(int_attribs, &attrib_list) != EGL_SUCCESS)
@@ -491,7 +491,7 @@ PUBLIC EGLDisplay EGLAPIENTRY
 eglGetPlatformDisplay(EGLenum platform, void *native_display,
                       const EGLAttrib *attrib_list)
 {
-   util_perfetto_init();
+   util_cpu_trace_init();
    _EGL_FUNC_START(NULL, EGL_OBJECT_THREAD_KHR, NULL);
    return _eglGetPlatformDisplayCommon(platform, native_display, attrib_list);
 }
@@ -549,9 +549,10 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
    _EGL_CHECK_EXTENSION(EXT_create_context_robustness);
    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import);
    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import_modifiers);
+   _EGL_CHECK_EXTENSION(EXT_present_opaque);
    _EGL_CHECK_EXTENSION(EXT_protected_content);
    _EGL_CHECK_EXTENSION(EXT_protected_surface);
-   _EGL_CHECK_EXTENSION(EXT_present_opaque);
+   _EGL_CHECK_EXTENSION(EXT_query_reset_notification_strategy);
    _EGL_CHECK_EXTENSION(EXT_surface_CTA861_3_metadata);
    _EGL_CHECK_EXTENSION(EXT_surface_SMPTE2086_metadata);
    _EGL_CHECK_EXTENSION(EXT_swap_buffers_with_damage);
@@ -588,6 +589,7 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
    if (disp->Extensions.KHR_no_config_context)
       _eglAppendExtension(&exts, "EGL_MESA_configless_context");
    _EGL_CHECK_EXTENSION(MESA_drm_image);
+   _EGL_CHECK_EXTENSION(MESA_gl_interop);
    _EGL_CHECK_EXTENSION(MESA_image_dma_buf_export);
    _EGL_CHECK_EXTENSION(MESA_query_driver);
 
@@ -666,6 +668,8 @@ eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
 
    _EGL_FUNC_START(disp, EGL_OBJECT_DISPLAY_KHR, NULL);
 
+   _eglDeviceRefreshList();
+
    if (!disp)
       RETURN_EGL_ERROR(NULL, EGL_BAD_DISPLAY, EGL_FALSE);
 
@@ -679,7 +683,6 @@ eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
 
       const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
       disp->Options.Zink = env && !strcmp(env, "zink");
-      disp->Options.ForceSoftware |= disp->Options.Zink;
 
       const char *gallium_hud_env = getenv("GALLIUM_HUD");
       disp->Options.GalliumHudWarn =
@@ -693,9 +696,17 @@ eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
          if (disp->Options.ForceSoftware)
             RETURN_EGL_ERROR(disp, EGL_NOT_INITIALIZED, EGL_FALSE);
          else {
-            disp->Options.ForceSoftware = EGL_TRUE;
-            if (!_eglDriver.Initialize(disp))
-               RETURN_EGL_ERROR(disp, EGL_NOT_INITIALIZED, EGL_FALSE);
+            bool success = false;
+            if (!disp->Options.Zink && !getenv("GALLIUM_DRIVER")) {
+               disp->Options.Zink = EGL_TRUE;
+               success = _eglDriver.Initialize(disp);
+            }
+            if (!success) {
+               disp->Options.Zink = EGL_FALSE;
+               disp->Options.ForceSoftware = EGL_TRUE;
+               if (!_eglDriver.Initialize(disp))
+                  RETURN_EGL_ERROR(disp, EGL_NOT_INITIALIZED, EGL_FALSE);
+            }
          }
       }
 
@@ -2795,8 +2806,10 @@ PUBLIC __eglMustCastToProperFunctionPointerType EGLAPIENTRY
 eglGetProcAddress(const char *procname)
 {
    static const struct _egl_entrypoint egl_functions[] = {
-#define EGL_ENTRYPOINT(f) {.name = #f, .function = (_EGLProc)f},
+#define EGL_ENTRYPOINT(f)     {.name = #f, .function = (_EGLProc)f},
+#define EGL_ENTRYPOINT2(n, f) {.name = #n, .function = (_EGLProc)f},
 #include "eglentrypoint.h"
+#undef EGL_ENTRYPOINT2
 #undef EGL_ENTRYPOINT
    };
    _EGLProc ret = NULL;
@@ -2887,7 +2900,7 @@ MesaGLInteropEGLExportObject(EGLDisplay dpy, EGLContext context,
 PUBLIC int
 MesaGLInteropEGLFlushObjects(EGLDisplay dpy, EGLContext context, unsigned count,
                              struct mesa_glinterop_export_in *objects,
-                             GLsync *sync)
+                             struct mesa_glinterop_flush_out *out)
 {
    _EGLDisplay *disp;
    _EGLContext *ctx;
@@ -2898,8 +2911,7 @@ MesaGLInteropEGLFlushObjects(EGLDisplay dpy, EGLContext context, unsigned count,
       return ret;
 
    if (disp->Driver->GLInteropFlushObjects)
-      ret =
-         disp->Driver->GLInteropFlushObjects(disp, ctx, count, objects, sync);
+      ret = disp->Driver->GLInteropFlushObjects(disp, ctx, count, objects, out);
    else
       ret = MESA_GLINTEROP_UNSUPPORTED;
 

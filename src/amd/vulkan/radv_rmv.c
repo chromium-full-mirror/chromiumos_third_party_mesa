@@ -410,6 +410,10 @@ memory_type_from_vram_type(uint32_t vram_type)
    case AMD_VRAM_TYPE_GDDR6:
       return VK_RMV_MEMORY_TYPE_GDDR6;
    case AMD_VRAM_TYPE_DDR5:
+      return VK_RMV_MEMORY_TYPE_DDR5;
+   case AMD_VRAM_TYPE_LPDDR4:
+      return VK_RMV_MEMORY_TYPE_LPDDR4;
+   case AMD_VRAM_TYPE_LPDDR5:
       return VK_RMV_MEMORY_TYPE_LPDDR5;
    default:
       unreachable("Invalid vram type");
@@ -607,8 +611,8 @@ radv_rmv_log_query_pool_create(struct radv_device *device, VkQueryPool _pool, bo
 
    RADV_FROM_HANDLE(radv_query_pool, pool, _pool);
 
-   if (pool->type != VK_QUERY_TYPE_OCCLUSION && pool->type != VK_QUERY_TYPE_PIPELINE_STATISTICS &&
-       pool->type != VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT)
+   if (pool->vk.query_type != VK_QUERY_TYPE_OCCLUSION && pool->vk.query_type != VK_QUERY_TYPE_PIPELINE_STATISTICS &&
+       pool->vk.query_type != VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT)
       return;
 
    radv_rmv_log_bo_allocate(device, pool->bo, pool->size, is_internal);
@@ -618,7 +622,7 @@ radv_rmv_log_query_pool_create(struct radv_device *device, VkQueryPool _pool, bo
    create_token.is_driver_internal = is_internal;
    create_token.resource_id = vk_rmv_get_resource_id_locked(&device->vk, (uint64_t)_pool);
    create_token.type = VK_RMV_RESOURCE_TYPE_QUERY_HEAP;
-   create_token.query_pool.type = pool->type;
+   create_token.query_pool.type = pool->vk.query_type;
    create_token.query_pool.has_cpu_access = true;
 
    vk_rmv_emit_token(&device->vk.memory_trace_data, VK_RMV_TOKEN_TYPE_RESOURCE_CREATE, &create_token);
@@ -802,8 +806,7 @@ radv_rmv_log_descriptor_pool_create(struct radv_device *device, const VkDescript
 }
 
 void
-radv_rmv_log_graphics_pipeline_create(struct radv_device *device, VkPipelineCreateFlags flags,
-                                      struct radv_pipeline *pipeline, bool is_internal)
+radv_rmv_log_graphics_pipeline_create(struct radv_device *device, struct radv_pipeline *pipeline, bool is_internal)
 {
    if (!device->vk.memory_trace_data.is_enabled)
       return;
@@ -834,16 +837,12 @@ radv_rmv_log_graphics_pipeline_create(struct radv_device *device, VkPipelineCrea
 }
 
 void
-radv_rmv_log_compute_pipeline_create(struct radv_device *device, VkPipelineCreateFlags flags,
-                                     struct radv_pipeline *pipeline, bool is_internal)
+radv_rmv_log_compute_pipeline_create(struct radv_device *device, struct radv_pipeline *pipeline, bool is_internal)
 {
    if (!device->vk.memory_trace_data.is_enabled)
       return;
 
    VkPipeline _pipeline = radv_pipeline_to_handle(pipeline);
-
-   VkShaderStageFlagBits active_stages =
-      pipeline->type == RADV_PIPELINE_COMPUTE ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 
    simple_mtx_lock(&device->vk.memory_trace_data.token_mtx);
    struct vk_rmv_resource_create_token create_token = {0};
@@ -853,11 +852,56 @@ radv_rmv_log_compute_pipeline_create(struct radv_device *device, VkPipelineCreat
    create_token.pipeline.is_internal = is_internal;
    create_token.pipeline.hash_lo = pipeline->pipeline_hash;
    create_token.pipeline.is_ngg = false;
-   create_token.pipeline.shader_stages = active_stages;
+   create_token.pipeline.shader_stages = VK_SHADER_STAGE_COMPUTE_BIT;
 
    vk_rmv_emit_token(&device->vk.memory_trace_data, VK_RMV_TOKEN_TYPE_RESOURCE_CREATE, &create_token);
-   struct radv_shader *shader = pipeline->shaders[vk_to_mesa_shader_stage(active_stages)];
+   struct radv_shader *shader = pipeline->shaders[MESA_SHADER_COMPUTE];
    log_resource_bind_locked(device, (uint64_t)_pipeline, shader->bo, shader->alloc->offset, shader->alloc->size);
+   simple_mtx_unlock(&device->vk.memory_trace_data.token_mtx);
+}
+
+void
+radv_rmv_log_rt_pipeline_create(struct radv_device *device, struct radv_ray_tracing_pipeline *pipeline)
+{
+   if (!device->vk.memory_trace_data.is_enabled)
+      return;
+
+   VkPipeline _pipeline = radv_pipeline_to_handle(&pipeline->base.base);
+
+   struct radv_shader *prolog = pipeline->prolog;
+   struct radv_shader *traversal = pipeline->base.base.shaders[MESA_SHADER_INTERSECTION];
+
+   VkShaderStageFlagBits active_stages = traversal ? VK_SHADER_STAGE_INTERSECTION_BIT_KHR : 0;
+   if (prolog)
+      active_stages |= VK_SHADER_STAGE_COMPUTE_BIT;
+
+   for (uint32_t i = 0; i < pipeline->stage_count; i++) {
+      if (pipeline->stages[i].shader)
+         active_stages |= mesa_to_vk_shader_stage(pipeline->stages[i].stage);
+   }
+
+   simple_mtx_lock(&device->vk.memory_trace_data.token_mtx);
+
+   struct vk_rmv_resource_create_token create_token = {0};
+   create_token.resource_id = vk_rmv_get_resource_id_locked(&device->vk, (uint64_t)_pipeline);
+   create_token.type = VK_RMV_RESOURCE_TYPE_PIPELINE;
+   create_token.pipeline.hash_lo = pipeline->base.base.pipeline_hash;
+   create_token.pipeline.shader_stages = active_stages;
+   vk_rmv_emit_token(&device->vk.memory_trace_data, VK_RMV_TOKEN_TYPE_RESOURCE_CREATE, &create_token);
+
+   if (prolog)
+      log_resource_bind_locked(device, (uint64_t)_pipeline, prolog->bo, prolog->alloc->offset, prolog->alloc->size);
+
+   if (traversal)
+      log_resource_bind_locked(device, (uint64_t)_pipeline, traversal->bo, traversal->alloc->offset,
+                               traversal->alloc->size);
+
+   for (uint32_t i = 0; i < pipeline->non_imported_stage_count; i++) {
+      struct radv_shader *shader = pipeline->stages[i].shader;
+      if (shader)
+         log_resource_bind_locked(device, (uint64_t)_pipeline, shader->bo, shader->alloc->offset, shader->alloc->size);
+   }
+
    simple_mtx_unlock(&device->vk.memory_trace_data.token_mtx);
 }
 

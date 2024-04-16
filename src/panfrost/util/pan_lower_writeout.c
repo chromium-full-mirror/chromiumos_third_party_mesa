@@ -61,10 +61,10 @@ pan_nir_emit_combined_store(nir_builder *b, nir_intrinsic_instr *rt0_store,
    nir_intrinsic_set_dest_type(intr, pan_nir_rt_store_type(stores[2]));
    nir_intrinsic_set_component(intr, writeout);
 
-   nir_ssa_def *zero = nir_imm_int(b, 0);
-   nir_ssa_def *zero4 = nir_imm_ivec4(b, 0, 0, 0, 0);
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_def *zero4 = nir_imm_ivec4(b, 0, 0, 0, 0);
 
-   nir_ssa_def *src[] = {
+   nir_def *src[] = {
       rt0_store ? rt0_store->src[0].ssa : zero4,
       rt0_store ? rt0_store->src[1].ssa : zero,
       stores[0] ? stores[0]->src[0].ssa : zero,
@@ -106,6 +106,7 @@ pan_nir_lower_zs_store(nir_shader *nir)
                stores[1] = intr;
                writeout |= PAN_WRITEOUT_S;
             } else if (sem.dual_source_blend_index) {
+               assert(!stores[2]); /* there should be only 1 source for dual blending */
                stores[2] = intr;
                writeout |= PAN_WRITEOUT_2;
             }

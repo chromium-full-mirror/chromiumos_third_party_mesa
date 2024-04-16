@@ -126,7 +126,15 @@ if [ "$PIGLIT_PLATFORM" = "gbm" ]; then
     DEQP_SKIPS="$DEQP_SKIPS $INSTALL/gbm-skips.txt"
 fi
 
+if [ -n "$VK_DRIVER" ] && [ -z "$DEQP_SUITE" ]; then
+    # Bump the number of tests per group to reduce the startup time of VKCTS.
+    DEQP_RUNNER_OPTIONS="$DEQP_RUNNER_OPTIONS --tests-per-group ${DEQP_RUNNER_TESTS_PER_GROUP:-5000}"
+fi
+
 # Set the path to VK validation layer settings (in case it ends up getting loaded)
+# Note: If you change the format of this filename, look through the rest of the
+# tree for other places that need to be kept in sync (e.g.
+# src/gallium/drivers/zink/ci/gitlab-ci-inc.yml)
 export VK_LAYER_SETTINGS_PATH=$INSTALL/$GPU_VERSION-validation-settings.txt
 
 report_load() {
@@ -154,12 +162,14 @@ if [ -z "$DEQP_SUITE" ]; then
         export DEQP_RUNNER_OPTIONS="$DEQP_RUNNER_OPTIONS --renderer-check $DEQP_EXPECTED_RENDERER"
     fi
     if [ $DEQP_VER != vk ] && [ $DEQP_VER != egl ]; then
-	VER=$(sed 's/[() ]/./g' "$INSTALL/VERSION")
+        VER=$(sed 's/[() ]/./g' "$INSTALL/VERSION")
         export DEQP_RUNNER_OPTIONS="$DEQP_RUNNER_OPTIONS --version-check $VER"
     fi
 fi
 
 uncollapsed_section_switch deqp "deqp: deqp-runner"
+
+cat /deqp/version-log
 
 set +e
 if [ -z "$DEQP_SUITE" ]; then
@@ -172,10 +182,14 @@ if [ -z "$DEQP_SUITE" ]; then
         --flakes $INSTALL/$GPU_VERSION-flakes.txt \
         --testlog-to-xml /deqp/executor/testlog-to-xml \
         --jobs ${FDO_CI_CONCURRENT:-4} \
-	$DEQP_RUNNER_OPTIONS \
+        $DEQP_RUNNER_OPTIONS \
         -- \
         $DEQP_OPTIONS
 else
+    # If you change the format of the suite toml filenames or the
+    # $GPU_VERSION-{fails,flakes,skips}.txt filenames, look through the rest
+    # of the tree for other places that need to be kept in sync (e.g.
+    # src/**/ci/gitlab-ci*.yml)
     deqp-runner \
         suite \
         --suite $INSTALL/deqp-$DEQP_SUITE.toml \
@@ -184,12 +198,13 @@ else
         --flakes $INSTALL/$GPU_VERSION-flakes.txt \
         --testlog-to-xml /deqp/executor/testlog-to-xml \
         --fraction-start $CI_NODE_INDEX \
-	--fraction $((CI_NODE_TOTAL * ${DEQP_FRACTION:-1})) \
+        --fraction $((CI_NODE_TOTAL * ${DEQP_FRACTION:-1})) \
         --jobs ${FDO_CI_CONCURRENT:-4} \
-	$DEQP_RUNNER_OPTIONS
+        $DEQP_RUNNER_OPTIONS
 fi
 
 DEQP_EXITCODE=$?
+set -e
 
 set +x
 
@@ -215,7 +230,7 @@ deqp-runner junit \
    --results $RESULTS/failures.csv \
    --output $RESULTS/junit.xml \
    --limit 50 \
-   --template "See https://$CI_PROJECT_ROOT_NAMESPACE.pages.freedesktop.org/-/$CI_PROJECT_NAME/-/jobs/$CI_JOB_ID/artifacts/results/{{testcase}}.xml"
+   --template "See $ARTIFACTS_BASE_URL/results/{{testcase}}.xml"
 
 # Report the flakes to the IRC channel for monitoring (if configured):
 if [ -n "$FLAKES_CHANNEL" ]; then
@@ -229,7 +244,7 @@ if [ -n "$FLAKES_CHANNEL" ]; then
          --job "$CI_JOB_ID" \
          --url "$CI_JOB_URL" \
          --branch "${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME:-$CI_COMMIT_BRANCH}" \
-         --branch-title "${CI_MERGE_REQUEST_TITLE:-$CI_COMMIT_TITLE}"
+         --branch-title "${CI_MERGE_REQUEST_TITLE:-$CI_COMMIT_TITLE}" || true
 fi
 
 # Compress results.csv to save on bandwidth during the upload of artifacts to

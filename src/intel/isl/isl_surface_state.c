@@ -49,12 +49,24 @@ static const uint8_t isl_encode_tiling[] = {
    [ISL_TILING_64]      = TILE64,
 #else
    [ISL_TILING_Y0]      = YMAJOR,
-   [ISL_TILING_Yf]      = YMAJOR,
-   [ISL_TILING_Ys]      = YMAJOR,
-#endif
+   [ISL_TILING_ICL_Yf]  = YMAJOR,
+   [ISL_TILING_ICL_Ys]  = YMAJOR,
+   [ISL_TILING_SKL_Yf]  = YMAJOR,
+   [ISL_TILING_SKL_Ys]  = YMAJOR,
+#endif /* GFX_VERx10 < 125 */
 #if GFX_VER <= 11
    [ISL_TILING_W]       = WMAJOR,
 #endif
+};
+#endif
+
+#if GFX_VER >= 9 && GFX_VERx10 <= 120
+static const uint8_t isl_tiling_encode_trmode[] = {
+   [ISL_TILING_Y0]         = NONE,
+   [ISL_TILING_SKL_Yf]     = TILEYF,
+   [ISL_TILING_SKL_Ys]     = TILEYS,
+   [ISL_TILING_ICL_Yf]     = TILEYF,
+   [ISL_TILING_ICL_Ys]     = TILEYS,
 };
 #endif
 
@@ -66,7 +78,13 @@ static const uint32_t isl_encode_multisample_layout[] = {
 };
 #endif
 
-#if GFX_VER >= 12
+#if GFX_VER >= 20
+static const uint32_t isl_encode_aux_mode[] = {
+   [ISL_AUX_USAGE_NONE] = AUX_NONE,
+   [ISL_AUX_USAGE_MC] = AUX_NONE,
+   [ISL_AUX_USAGE_MCS_CCS] = AUX_MCS,
+};
+#elif GFX_VER >= 12
 static const uint32_t isl_encode_aux_mode[] = {
    [ISL_AUX_USAGE_NONE] = AUX_NONE,
    [ISL_AUX_USAGE_MC] = AUX_NONE,
@@ -404,10 +422,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    }
 
 #if GFX_VER >= 9
-   /* We don't use miptails yet.  The PRM recommends that you set "Mip Tail
-    * Start LOD" to 15 to prevent the hardware from trying to use them.
-    */
-   s.MipTailStartLOD = 15;
+   s.MipTailStartLOD = info->surf->miptail_start_level;
 #endif
 
 #if GFX_VERx10 >= 125
@@ -438,7 +453,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
                            ISL_ARRAY_PITCH_SPAN_COMPACT;
 #endif
 
-#if GFX_VER >= 8
+#if GFX_VER >= 9 && GFX_VERx10 <= 120
    assert(GFX_VER < 12 || info->surf->tiling != ISL_TILING_W);
 
    /* From the SKL+ PRMs, RENDER_SURFACE_STATE:TileMode,
@@ -446,8 +461,14 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
     *    If Surface Format is ASTC*, this field must be TILEMODE_YMAJOR.
     */
    if (isl_format_get_layout(info->view->format)->txc == ISL_TXC_ASTC)
-      assert(info->surf->tiling == ISL_TILING_Y0);
+      assert(isl_tiling_is_any_y(info->surf->tiling));
 
+   s.TileMode = isl_encode_tiling[info->surf->tiling];
+   if (isl_tiling_is_std_y(info->surf->tiling))
+      s.TiledResourceMode = isl_tiling_encode_trmode[info->surf->tiling];
+#elif GFX_VER >= 8
+   assert(isl_format_get_layout(info->view->format)->txc != ISL_TXC_ASTC);
+   assert(!isl_tiling_is_std_y(info->surf->tiling));
    s.TileMode = isl_encode_tiling[info->surf->tiling];
 #else
    s.TiledSurface = info->surf->tiling != ISL_TILING_LINEAR,
@@ -500,6 +521,21 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 
 #if GFX_VER >= 7
    s.ResourceMinLOD = info->view->min_lod_clamp;
+
+#if GFX_VERx10 >= 200
+   s.EnableSamplerRoutetoLSC = isl_format_support_sampler_route_to_lsc(info->view->format);
+   s.EnableSamplerRoutetoLSC &= (s.SurfaceType == SURFTYPE_2D);
+
+/* Wa_14018471104:
+ * For APIs that use ResourceMinLod, do the following: (remains same as before)
+ *    1. If ResourceMinLod == 0.0 then **Enable Sampler Route to LSC**
+ *       in RENDER SURFACE STATE to 1 else to 0
+ */
+#if INTEL_NEEDS_WA_14018471104
+   s.EnableSamplerRoutetoLSC &= info->view->min_lod_clamp == 0;
+#endif
+#endif /* if GFX_VERx10 >= 200 */
+
 #else
    assert(info->view->min_lod_clamp == 0);
 #endif
@@ -649,7 +685,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
             isl_get_render_compression_format(info->surf->format);
       }
 #endif
-#if GFX_VER >= 12
+#if GFX_VER == 12
       s.MemoryCompressionEnable = info->aux_usage == ISL_AUX_USAGE_MC;
 
       /* The Tiger Lake PRM for RENDER_SURFACE_STATE::DecompressInL3 says:
@@ -775,11 +811,11 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 
    if (isl_aux_usage_has_fast_clears(info->aux_usage)) {
       if (info->use_clear_address) {
-#if GFX_VER >= 10
+#if GFX_VER > 10 && GFX_VER < 20
          s.ClearValueAddressEnable = true;
          s.ClearValueAddress = info->clear_address;
 #else
-         unreachable("Gfx9 and earlier do not support indirect clear colors");
+         unreachable("Only Gfx11 and Gfx12 support indirect clear colors");
 #endif
       }
 
@@ -928,25 +964,6 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    s.Depth = ((num_elements - 1) >> 20) & 0x7f;
 #endif
 
-   if (GFX_VER == 12 && dev->info->revision == 0) {
-      /* TGL-LP A0 has a HW bug (fixed in later HW) which causes buffer
-       * textures with very close base addresses (delta < 64B) to corrupt each
-       * other.  We can sort-of work around this by making small buffer
-       * textures 1D textures instead.  This doesn't fix the problem for large
-       * buffer textures but the liklihood of large, overlapping, and very
-       * close buffer textures is fairly low and the point is to hack around
-       * the bug so we can run apps and tests.
-       */
-       if (info->format != ISL_FORMAT_RAW &&
-           info->stride_B == isl_format_get_layout(info->format)->bpb / 8 &&
-           num_elements <= (1 << 14)) {
-         s.SurfaceType = SURFTYPE_1D;
-         s.Width = num_elements - 1;
-         s.Height = 0;
-         s.Depth = 0;
-      }
-   }
-
 #if GFX_VER >= 6
    s.NumberofMultisamples = MULTISAMPLECOUNT_1;
 #endif
@@ -963,9 +980,24 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    s.RenderCacheReadWriteMode = 0;
 #endif
 
+#if GFX_VERx10 >= 200
+   s.EnableSamplerRoutetoLSC = isl_format_support_sampler_route_to_lsc(info->format);
+#endif /* if GFX_VERx10 >= 200 */
+
    s.SurfaceBaseAddress = info->address;
 #if GFX_VER >= 6
    s.MOCS = info->mocs;
+#endif
+
+#if GFX_VER >= 9
+   /* Store the buffer size in the upper dword of the AUX surface base
+    * address. Only enabled on Gfx9+ since Gfx8 has an Atom version with only
+    * 32bits of address space.
+    */
+   if (dev->buffer_length_in_aux_addr)
+      s.AuxiliarySurfaceBaseAddress = info->size_B << 32;
+#else
+   assert(!dev->buffer_length_in_aux_addr);
 #endif
 
 #if GFX_VERx10 >= 125

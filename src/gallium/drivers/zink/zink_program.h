@@ -231,7 +231,7 @@ VkPipelineLayout
 zink_pipeline_layout_create(struct zink_screen *screen, VkDescriptorSetLayout *dsl, unsigned num_dsl, bool is_compute, VkPipelineLayoutCreateFlags flags);
 
 void
-zink_program_update_compute_pipeline_state(struct zink_context *ctx, struct zink_compute_program *comp, const uint block[3]);
+zink_program_update_compute_pipeline_state(struct zink_context *ctx, struct zink_compute_program *comp, const struct pipe_grid_info *info);
 void
 zink_update_compute_program(struct zink_context *ctx);
 VkPipeline
@@ -418,6 +418,21 @@ zink_can_use_pipeline_libs(const struct zink_context *ctx)
           !ctx->is_generated_gs_bound;
 }
 
+/* stricter requirements */
+ALWAYS_INLINE static bool
+zink_can_use_shader_objects(const struct zink_context *ctx)
+{
+   return
+          /* TODO: if there's ever a dynamic render extension with input attachments */
+          !ctx->gfx_pipeline_state.render_pass &&
+          ZINK_SHADER_KEY_OPTIMAL_IS_DEFAULT(ctx->gfx_pipeline_state.optimal_key) &&
+          /* TODO: is sample shading even possible to handle with GPL? */
+          !ctx->gfx_stages[MESA_SHADER_FRAGMENT]->info.fs.uses_sample_shading &&
+          !ctx->gfx_pipeline_state.force_persample_interp &&
+          !ctx->gfx_pipeline_state.min_samples &&
+          !ctx->is_generated_gs_bound;
+}
+
 bool
 zink_set_rasterizer_discard(struct zink_context *ctx, bool disable);
 void
@@ -428,6 +443,21 @@ zink_driver_thread_add_job(struct pipe_screen *pscreen, void *data,
                            const size_t job_size);
 equals_gfx_pipeline_state_func
 zink_get_gfx_pipeline_eq_func(struct zink_screen *screen, struct zink_gfx_program *prog);
+
+static inline uint32_t
+zink_sanitize_optimal_key(struct zink_shader **shaders, uint32_t val)
+{
+   union zink_shader_key_optimal k;
+   if (shaders[MESA_SHADER_TESS_EVAL] && !shaders[MESA_SHADER_TESS_CTRL])
+      k.val = val;
+   else
+      k.val = zink_shader_key_optimal_no_tcs(val);
+   if (!(shaders[MESA_SHADER_FRAGMENT]->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)))
+      k.fs.samples = false;
+   if (!(shaders[MESA_SHADER_FRAGMENT]->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_DATA1)))
+      k.fs.force_dual_color_blend = false;
+   return k.val;
+}
 #ifdef __cplusplus
 }
 #endif

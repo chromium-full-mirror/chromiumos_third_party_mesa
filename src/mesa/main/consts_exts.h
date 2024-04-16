@@ -64,7 +64,6 @@ struct gl_extensions
    GLboolean ARB_conservative_depth;
    GLboolean ARB_copy_image;
    GLboolean ARB_cull_distance;
-   GLboolean EXT_color_buffer_half_float;
    GLboolean ARB_depth_buffer_float;
    GLboolean ARB_depth_clamp;
    GLboolean ARB_derivative_control;
@@ -161,6 +160,8 @@ struct gl_extensions
    GLboolean ARB_vertex_type_2_10_10_10_rev;
    GLboolean ARB_viewport_array;
    GLboolean EXT_blend_equation_separate;
+   GLboolean EXT_color_buffer_float;
+   GLboolean EXT_color_buffer_half_float;
    GLboolean EXT_demote_to_helper_invocation;
    GLboolean EXT_depth_bounds_test;
    GLboolean EXT_disjoint_timer_query;
@@ -249,6 +250,7 @@ struct gl_extensions
    GLboolean KHR_texture_compression_astc_ldr;
    GLboolean KHR_texture_compression_astc_sliced_3d;
    GLboolean MESA_framebuffer_flip_y;
+   GLboolean MESA_texture_const_bandwidth;
    GLboolean MESA_pack_invert;
    GLboolean MESA_tile_raster_order;
    GLboolean EXT_shader_framebuffer_fetch;
@@ -751,6 +753,8 @@ struct gl_constants
     */
    GLboolean GLSLSkipStrictMaxUniformLimitCheck;
 
+   GLboolean GLSLHasHalfFloatPacking;
+
    /**
     * Whether gl_FragCoord, gl_PointCoord and gl_FrontFacing
     * are system values.
@@ -797,6 +801,16 @@ struct gl_constants
     * Disable the glsl optimisation that resizes uniform arrays.
     */
    bool DisableUniformArrayResize;
+
+   /**
+    * Alias extension e.g. GL_ATI_shader_texture_lod to GL_ARB_shader_texture_lod.
+    */
+   char *AliasShaderExtension;
+
+   /**
+    * Allow fs-only bias argument in vertex shaders.
+    */
+   GLboolean AllowVertexTextureBias;
 
    /**
     * Align varyings to POT in a slot

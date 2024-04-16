@@ -267,16 +267,6 @@ record_timestamp(struct fd_ringbuffer *ring, struct fd_bo *bo, unsigned offset)
    OUT_RING(ring, 0x00000000);
 }
 
-static uint64_t
-ticks_to_ns(uint64_t ts)
-{
-   /* This is based on the 19.2MHz always-on rbbm timer.
-    *
-    * TODO we should probably query this value from kernel..
-    */
-   return ts * (1000000000 / 19200000);
-}
-
 static void
 time_elapsed_accumulate_result(struct fd_acc_query *aq,
                                struct fd_acc_query_sample *s,
@@ -703,6 +693,9 @@ so_overflow_predicate_result_resource(struct fd_acc_query *aq,
                                       int index, struct fd_resource *dst,
                                       unsigned offset)
 {
+   fd_ringbuffer_attach_bo(ring, dst->bo);
+   fd_ringbuffer_attach_bo(ring, fd_resource(aq->prsc)->bo);
+
    /* result = generated - emitted: */
    OUT_PKT7(ring, CP_MEM_TO_MEM, 7);
    OUT_RING(ring, CP_MEM_TO_MEM_0_NEG_B |

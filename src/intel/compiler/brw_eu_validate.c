@@ -242,6 +242,19 @@ invalid_values(const struct brw_isa_info *isa, const brw_inst *inst)
       break;
    }
 
+   if (error_msg.str)
+      return error_msg;
+
+   if (devinfo->ver >= 12) {
+      unsigned group_size = 1 << brw_inst_exec_size(devinfo, inst);
+      unsigned qtr_ctrl = brw_inst_qtr_control(devinfo, inst);
+      unsigned nib_ctrl = brw_inst_nib_control(devinfo, inst);
+
+      unsigned chan_off = (qtr_ctrl * 2 + nib_ctrl) << 2;
+      ERROR_IF(chan_off % group_size != 0,
+               "The execution size must be a factor of the chosen offset");
+   }
+
    if (inst_is_send(isa, inst))
       return error_msg;
 
@@ -385,13 +398,14 @@ send_restrictions(const struct brw_isa_info *isa,
          unsigned mlen = 1;
          if (!brw_inst_send_sel_reg32_desc(devinfo, inst)) {
             const uint32_t desc = brw_inst_send_desc(devinfo, inst);
-            mlen = brw_message_desc_mlen(devinfo, desc);
+            mlen = brw_message_desc_mlen(devinfo, desc) / reg_unit(devinfo);
          }
 
          unsigned ex_mlen = 1;
          if (!brw_inst_send_sel_reg32_ex_desc(devinfo, inst)) {
             const uint32_t ex_desc = brw_inst_sends_ex_desc(devinfo, inst);
-            ex_mlen = brw_message_ex_desc_ex_mlen(devinfo, ex_desc);
+            ex_mlen = brw_message_ex_desc_ex_mlen(devinfo, ex_desc) /
+                      reg_unit(devinfo);
          }
          const unsigned src0_reg_nr = brw_inst_src0_da_reg_nr(devinfo, inst);
          const unsigned src1_reg_nr = brw_inst_send_src1_reg_nr(devinfo, inst);
@@ -686,7 +700,10 @@ general_restrictions_based_on_operand_types(const struct brw_isa_info *isa,
       return error_msg;
 
    if (devinfo->ver >= 11) {
-      if (num_sources == 3) {
+      /* A register type of B or UB for DPAS actually means 4 bytes packed into
+       * a D or UD, so it is allowed.
+       */
+      if (num_sources == 3 && brw_inst_opcode(isa, inst) != BRW_OPCODE_DPAS) {
          ERROR_IF(brw_reg_type_to_size(brw_inst_3src_a1_src1_type(devinfo, inst)) == 1 ||
                   brw_reg_type_to_size(brw_inst_3src_a1_src2_type(devinfo, inst)) == 1,
                   "Byte data type is not supported for src1/2 register regioning. This includes "
@@ -1464,7 +1481,7 @@ region_alignment_rules(const struct brw_isa_info *isa,
       unsigned hstride_elements = (num_hstride - 1) * hstride;
       unsigned offset = (vstride_elements + hstride_elements) * element_size +
                         subreg;
-      ERROR_IF(offset >= 64,
+      ERROR_IF(offset >= 64 * reg_unit(devinfo),
                "A source cannot span more than 2 adjacent GRF registers");
    }
 
@@ -1476,7 +1493,7 @@ region_alignment_rules(const struct brw_isa_info *isa,
    unsigned element_size = brw_reg_type_to_size(dst_type);
    unsigned subreg = brw_inst_dst_da1_subreg_nr(devinfo, inst);
    unsigned offset = ((exec_size - 1) * stride * element_size) + subreg;
-   ERROR_IF(offset >= 64,
+   ERROR_IF(offset >= 64 * reg_unit(devinfo),
             "A destination cannot span more than 2 adjacent GRF registers");
 
    if (error_msg.str)
@@ -1677,6 +1694,16 @@ region_alignment_rules(const struct brw_isa_info *isa,
     *
     * Additionally the simulator source code indicates that the real condition
     * is that the size of the destination type is 4 bytes.
+    *
+    * HSW PRMs also add a note to the second exception:
+    *  "When lower 8 channels are disabled, the sub register of source1
+    *   operand is not incremented. If the lower 8 channels are expected
+    *   to be disabled, say by predication, the instruction must be split
+    *   into pair of simd8 operations."
+    *
+    * We can't reliably know if the channels won't be disabled due to,
+    * for example, IMASK. So, play it safe and disallow packed-word exception
+    * for src1.
     */
    if (devinfo->ver <= 7 && dst_regs == 2) {
       enum brw_reg_type dst_type = inst_dst_type(isa, inst);
@@ -1691,7 +1718,7 @@ region_alignment_rules(const struct brw_isa_info *isa,
          width = WIDTH(brw_inst_src ## n ## _width(devinfo, inst));                \
          hstride = STRIDE(brw_inst_src ## n ## _hstride(devinfo, inst));           \
          bool src ## n ## _is_packed_word =                                        \
-            is_packed(vstride, width, hstride) &&                                  \
+            n != 1 && is_packed(vstride, width, hstride) &&                        \
             (brw_inst_src ## n ## _type(devinfo, inst) == BRW_REGISTER_TYPE_W ||   \
              brw_inst_src ## n ## _type(devinfo, inst) == BRW_REGISTER_TYPE_UW);   \
                                                                                    \
@@ -1700,7 +1727,7 @@ region_alignment_rules(const struct brw_isa_info *isa,
                   !(dst_is_packed_dword && src ## n ## _is_packed_word),           \
                   "When the destination spans two registers, the source must "     \
                   "span two registers\n" ERROR_INDENT "(exceptions for scalar "    \
-                  "source and packed-word to packed-dword expansion)")
+                  "sources, and packed-word to packed-dword expansion for src0)")
 
          if (i == 0) {
             DO_SRC(0);
@@ -2459,6 +2486,153 @@ instruction_restrictions(const struct brw_isa_info *isa,
       }
    }
 
+   if (brw_inst_opcode(isa, inst) == BRW_OPCODE_DPAS) {
+      ERROR_IF(brw_inst_dpas_3src_sdepth(devinfo, inst) != BRW_SYSTOLIC_DEPTH_8,
+               "Systolic depth must be 8.");
+
+      const unsigned sdepth = 8;
+
+      const enum brw_reg_type dst_type =
+         brw_inst_dpas_3src_dst_type(devinfo, inst);
+      const enum brw_reg_type src0_type =
+         brw_inst_dpas_3src_src0_type(devinfo, inst);
+      const enum brw_reg_type src1_type =
+         brw_inst_dpas_3src_src1_type(devinfo, inst);
+      const enum brw_reg_type src2_type =
+         brw_inst_dpas_3src_src2_type(devinfo, inst);
+
+      const enum gfx12_sub_byte_precision src1_sub_byte =
+         brw_inst_dpas_3src_src1_subbyte(devinfo, inst);
+
+      if (src1_type != BRW_REGISTER_TYPE_B && src1_type != BRW_REGISTER_TYPE_UB) {
+         ERROR_IF(src1_sub_byte != BRW_SUB_BYTE_PRECISION_NONE,
+                  "Sub-byte precision must be None for source type larger than Byte.");
+      } else {
+         ERROR_IF(src1_sub_byte != BRW_SUB_BYTE_PRECISION_NONE &&
+                  src1_sub_byte != BRW_SUB_BYTE_PRECISION_4BIT &&
+                  src1_sub_byte != BRW_SUB_BYTE_PRECISION_2BIT,
+                  "Invalid sub-byte precision.");
+      }
+
+      const enum gfx12_sub_byte_precision src2_sub_byte =
+         brw_inst_dpas_3src_src2_subbyte(devinfo, inst);
+
+      if (src2_type != BRW_REGISTER_TYPE_B && src2_type != BRW_REGISTER_TYPE_UB) {
+         ERROR_IF(src2_sub_byte != BRW_SUB_BYTE_PRECISION_NONE,
+                  "Sub-byte precision must be None.");
+      } else {
+         ERROR_IF(src2_sub_byte != BRW_SUB_BYTE_PRECISION_NONE &&
+                  src2_sub_byte != BRW_SUB_BYTE_PRECISION_4BIT &&
+                  src2_sub_byte != BRW_SUB_BYTE_PRECISION_2BIT,
+                  "Invalid sub-byte precision.");
+      }
+
+      const unsigned src1_bits_per_element =
+         (8 * brw_reg_type_to_size(src1_type)) >>
+         brw_inst_dpas_3src_src1_subbyte(devinfo, inst);
+
+      const unsigned src2_bits_per_element =
+         (8 * brw_reg_type_to_size(src2_type)) >>
+         brw_inst_dpas_3src_src2_subbyte(devinfo, inst);
+
+      /* The MAX2(1, ...) is just to prevent possible division by 0 later. */
+      const unsigned ops_per_chan =
+         MAX2(1, 32 / MAX2(src1_bits_per_element, src2_bits_per_element));
+
+      ERROR_IF(brw_inst_exec_size(devinfo, inst) != BRW_EXECUTE_8,
+               "DPAS execution size must be 8.");
+
+      const unsigned exec_size = 8;
+
+      const unsigned dst_subnr  = brw_inst_dpas_3src_dst_subreg_nr(devinfo, inst);
+      const unsigned src0_subnr = brw_inst_dpas_3src_src0_subreg_nr(devinfo, inst);
+      const unsigned src1_subnr = brw_inst_dpas_3src_src1_subreg_nr(devinfo, inst);
+      const unsigned src2_subnr = brw_inst_dpas_3src_src2_subreg_nr(devinfo, inst);
+
+      /* Until HF is supported as dst type, this is effectively subnr == 0. */
+      ERROR_IF(dst_subnr % exec_size != 0,
+               "Destination subregister offset must be a multiple of ExecSize.");
+
+      /* Until HF is supported as src0 type, this is effectively subnr == 0. */
+      ERROR_IF(src0_subnr % exec_size != 0,
+               "Src0 subregister offset must be a multiple of ExecSize.");
+
+      ERROR_IF(src1_subnr != 0,
+               "Src1 subregister offsets must be 0.");
+
+      /* In nearly all cases, this effectively requires that src2.subnr be
+       * 0. It is only when src1 is 8 bits and src2 is 2 or 4 bits that the
+       * ops_per_chan value can allow non-zero src2.subnr.
+       */
+      ERROR_IF(src2_subnr % (sdepth * ops_per_chan) != 0,
+               "Src2 subregister offset must be a multiple of SystolicDepth "
+               "times OPS_PER_CHAN.");
+
+      ERROR_IF(dst_subnr * type_sz(dst_type) >= REG_SIZE,
+               "Destination subregister specifies next register.");
+
+      ERROR_IF(src0_subnr * type_sz(src0_type) >= REG_SIZE,
+               "Src0 subregister specifies next register.");
+
+      ERROR_IF((src1_subnr * type_sz(src1_type) * src1_bits_per_element) / 8 >= REG_SIZE,
+               "Src1 subregister specifies next register.");
+
+      ERROR_IF((src2_subnr * type_sz(src2_type) * src2_bits_per_element) / 8 >= REG_SIZE,
+               "Src2 subregister specifies next register.");
+
+      if (brw_inst_3src_atomic_control(devinfo, inst)) {
+         /* FINISHME: When we start emitting DPAS with Atomic set, figure out
+          * a way to validate it. Also add a test in test_eu_validate.cpp.
+          */
+         ERROR_IF(true,
+                  "When instruction option Atomic is used it must be follwed by a "
+                  "DPAS instruction.");
+      }
+
+      if (brw_inst_dpas_3src_exec_type(devinfo, inst) ==
+          BRW_ALIGN1_3SRC_EXEC_TYPE_FLOAT) {
+         ERROR_IF(dst_type != BRW_REGISTER_TYPE_F,
+                  "DPAS destination type must be F.");
+         ERROR_IF(src0_type != BRW_REGISTER_TYPE_F,
+                  "DPAS src0 type must be F.");
+         ERROR_IF(src1_type != BRW_REGISTER_TYPE_HF,
+                  "DPAS src1 type must be HF.");
+         ERROR_IF(src2_type != BRW_REGISTER_TYPE_HF,
+                  "DPAS src2 type must be HF.");
+      } else {
+         ERROR_IF(dst_type != BRW_REGISTER_TYPE_D &&
+                  dst_type != BRW_REGISTER_TYPE_UD,
+                  "DPAS destination type must be D or UD.");
+         ERROR_IF(src0_type != BRW_REGISTER_TYPE_D &&
+                  src0_type != BRW_REGISTER_TYPE_UD,
+                  "DPAS src0 type must be D or UD.");
+         ERROR_IF(src1_type != BRW_REGISTER_TYPE_B &&
+                  src1_type != BRW_REGISTER_TYPE_UB,
+                  "DPAS src1 base type must be B or UB.");
+         ERROR_IF(src2_type != BRW_REGISTER_TYPE_B &&
+                  src2_type != BRW_REGISTER_TYPE_UB,
+                  "DPAS src2 base type must be B or UB.");
+
+         if (brw_reg_type_is_unsigned_integer(dst_type)) {
+            ERROR_IF(!brw_reg_type_is_unsigned_integer(src0_type) ||
+                     !brw_reg_type_is_unsigned_integer(src1_type) ||
+                     !brw_reg_type_is_unsigned_integer(src2_type),
+                     "If any source datatype is signed, destination datatype "
+                     "must be signed.");
+         }
+      }
+
+      /* FINISHME: Additional restrictions mentioned in the Bspec that are not
+       * yet enforced here:
+       *
+       *    - General Accumulator registers access is not supported. This is
+       *      currently enforced in brw_dpas_three_src (brw_eu_emit.c).
+       *
+       *    - Given any combination of datatypes in the sources of a DPAS
+       *      instructions, the boundaries of a register should not be crossed.
+       */
+   }
+
    return error_msg;
 }
 
@@ -2484,6 +2658,10 @@ send_descriptor_restrictions(const struct brw_isa_info *isa,
    const uint32_t desc = brw_inst_send_desc(devinfo, inst);
 
    switch (brw_inst_sfid(devinfo, inst)) {
+   case BRW_SFID_URB:
+      if (devinfo->ver < 20)
+         break;
+      FALLTHROUGH;
    case GFX12_SFID_TGM:
    case GFX12_SFID_SLM:
    case GFX12_SFID_UGM:
@@ -2499,7 +2677,7 @@ send_descriptor_restrictions(const struct brw_isa_info *isa,
       break;
    }
 
-   if (brw_inst_sfid(devinfo, inst) == BRW_SFID_URB) {
+   if (brw_inst_sfid(devinfo, inst) == BRW_SFID_URB && devinfo->ver < 20) {
       /* Gfx4 doesn't have a "header present" bit in the SEND message. */
       ERROR_IF(devinfo->ver > 4 && !brw_inst_header_present(devinfo, inst),
                "Header must be present for all URB messages.");

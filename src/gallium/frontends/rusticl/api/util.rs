@@ -13,7 +13,6 @@ use std::ffi::CStr;
 use std::ffi::CString;
 use std::mem::{size_of, MaybeUninit};
 use std::ops::BitAnd;
-use std::os::raw::c_void;
 use std::slice;
 use std::sync::Arc;
 
@@ -294,15 +293,6 @@ pub fn to_maybeuninit_vec<T: Copy>(v: Vec<T>) -> Vec<MaybeUninit<T>> {
     v.into_iter().map(MaybeUninit::new).collect()
 }
 
-pub fn check_cb<T>(cb: &Option<T>, user_data: *mut c_void) -> CLResult<()> {
-    // CL_INVALID_VALUE if pfn_notify is NULL but user_data is not NULL.
-    if cb.is_none() && !user_data.is_null() {
-        return Err(CL_INVALID_VALUE);
-    }
-
-    Ok(())
-}
-
 pub fn checked_compare(a: usize, o: cmp::Ordering, b: u64) -> bool {
     if usize::BITS > u64::BITS {
         a.cmp(&(b as usize)) == o
@@ -374,4 +364,69 @@ pub fn check_copy_overlap(
 
     /* Otherwise src and dst overlap. */
     true
+}
+
+pub mod cl_slice {
+    use crate::api::util::CLResult;
+    use mesa_rust_util::ptr::addr;
+    use rusticl_opencl_gen::CL_INVALID_VALUE;
+    use std::mem;
+    use std::slice;
+
+    /// Wrapper around [`std::slice::from_raw_parts`] that returns `Err(CL_INVALID_VALUE)` if any of these conditions is met:
+    /// - `data` is null
+    /// - `data` is not correctly aligned for `T`
+    /// - `len * std::mem::size_of::<T>()` is larger than `isize::MAX`
+    /// - `data` + `len * std::mem::size_of::<T>()` wraps around the address space
+    ///
+    /// # Safety
+    /// The behavior is undefined if any of the other requirements imposed by
+    /// [`std::slice::from_raw_parts`] is violated.
+    #[inline]
+    pub unsafe fn from_raw_parts<'a, T>(data: *const T, len: usize) -> CLResult<&'a [T]> {
+        if allocation_obviously_invalid(data, len) {
+            return Err(CL_INVALID_VALUE);
+        }
+
+        // SAFETY: We've checked that `data` is not null and properly aligned. We've also checked
+        // that the total size in bytes does not exceed `isize::MAX` and that adding that size to
+        // `data` does not wrap around the address space.
+        //
+        // The caller has to uphold the other safety requirements imposed by [`std::slice::from_raw_parts`].
+        unsafe { Ok(slice::from_raw_parts(data, len)) }
+    }
+
+    /// Wrapper around [`std::slice::from_raw_parts_mut`] that returns `Err(CL_INVALID_VALUE)` if any of these conditions is met:
+    /// - `data` is null
+    /// - `data` is not correctly aligned for `T`
+    /// - `len * std::mem::size_of::<T>()` is larger than `isize::MAX`
+    /// - `data` + `len * std::mem::size_of::<T>()` wraps around the address space
+    ///
+    /// # Safety
+    /// The behavior is undefined if any of the other requirements imposed by
+    /// [`std::slice::from_raw_parts_mut`] is violated.
+    #[inline]
+    pub unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> CLResult<&'a mut [T]> {
+        if allocation_obviously_invalid(data, len) {
+            return Err(CL_INVALID_VALUE);
+        }
+
+        // SAFETY: We've checked that `data` is not null and properly aligned. We've also checked
+        // that the total size in bytes does not exceed `isize::MAX` and that adding that size to
+        // `data` does not wrap around the address space.
+        //
+        // The caller has to uphold the other safety requirements imposed by [`std::slice::from_raw_parts_mut`].
+        unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
+    }
+
+    #[must_use]
+    fn allocation_obviously_invalid<T>(data: *const T, len: usize) -> bool {
+        let Some(total_size) = mem::size_of::<T>().checked_mul(len) else {
+            return true;
+        };
+        data.is_null()
+            || !mesa_rust_util::ptr::is_aligned(data)
+            || total_size > isize::MAX as usize
+            || addr(data).checked_add(total_size).is_none()
+    }
 }

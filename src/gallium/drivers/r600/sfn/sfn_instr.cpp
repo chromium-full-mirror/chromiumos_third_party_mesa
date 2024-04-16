@@ -68,17 +68,28 @@ Instr::ready() const
    return do_ready();
 }
 
-int
-int_from_string_with_prefix(const std::string& str, const std::string& prefix)
+bool
+int_from_string_with_prefix_optional(const std::string& str,
+                                     const std::string& prefix,
+                                     int& value)
 {
    if (str.substr(0, prefix.length()) != prefix) {
-      std::cerr << "Expect '" << prefix << "' as start of '" << str << "'\n";
-      assert(0);
+      return false;
    }
 
    std::stringstream help(str.substr(prefix.length()));
-   int retval;
-   help >> retval;
+   help >> value;
+   return true;
+}
+
+int
+int_from_string_with_prefix(const std::string& str, const std::string& prefix)
+{
+   int retval = 0;
+   if (!int_from_string_with_prefix_optional(str, prefix, retval)) {
+      std::cerr << "Expect '" << prefix << "' as start of '" << str << "'\n";
+      assert(0);
+   }
    return retval;
 }
 
@@ -216,7 +227,7 @@ InstrWithVectorResult::InstrWithVectorResult(const RegisterVec4& dest,
                                              const RegisterVec4::Swizzle& dest_swizzle,
                                              int resource_base,
                                              PRegister resource_offset):
-    InstrWithResource(resource_base, resource_offset),
+    Resource(this, resource_base, resource_offset),
     m_dest(dest),
     m_dest_swizzle(dest_swizzle)
 {
@@ -296,15 +307,27 @@ Block::erase(iterator node)
 }
 
 void
-Block::set_type(Type t)
+Block::set_type(Type t, r600_chip_class chip_class)
 {
-   m_blocK_type = t;
+   m_block_type = t;
    switch (t) {
    case vtx:
+      /* In theory on >= EG VTX support 16 slots, but with vertex fetch
+       * instructions the register pressure increases fast - i.e. in the worst
+       * case four register more get used, so stick to 8 slots for now.
+       * TODO: think about some trickery in the schedler to make use of up
+       * to 16 slots if the register pressure doesn't get too high.
+       */
+      m_remaining_slots = 8;
+      break;
    case gds:
    case tex:
-      m_remaining_slots = 8;
-      break; /* TODO: 16 for >= EVERGREEN */
+      m_remaining_slots = chip_class >= ISA_CC_EVERGREEN ? 16 : 8;
+      break;
+   case alu:
+      /* 128 but a follow up block might need to emit and ADDR + INDEX load */
+      m_remaining_slots = 118;
+      break;
    default:
       m_remaining_slots = 0xffff;
    }
@@ -492,10 +515,15 @@ Block::lds_group_end()
 }
 
 InstrWithVectorResult::InstrWithVectorResult(const InstrWithVectorResult& orig):
-    InstrWithResource(orig),
+    Resource(orig),
     m_dest(orig.m_dest),
     m_dest_swizzle(orig.m_dest_swizzle)
 {
+}
+
+void InstrWithVectorResult::update_indirect_addr(UNUSED PRegister old_reg, PRegister addr)
+{
+   set_resource_offset(addr);
 }
 
 class InstrComparer : public ConstInstrVisitor {

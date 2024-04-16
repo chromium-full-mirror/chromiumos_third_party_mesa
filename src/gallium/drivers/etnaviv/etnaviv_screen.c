@@ -419,7 +419,6 @@ etna_screen_get_shader_param(struct pipe_screen *pscreen,
       return shader == PIPE_SHADER_FRAGMENT
                 ? screen->specs.max_ps_uniforms * sizeof(float[4])
                 : screen->specs.max_vs_uniforms * sizeof(float[4]);
-   case PIPE_SHADER_CAP_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return false;
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
@@ -458,6 +457,11 @@ gpu_supports_texture_format(struct etna_screen *screen, uint32_t fmt,
                             enum pipe_format format)
 {
    bool supported = true;
+
+   /* Requires split sampler support, which the driver doesn't support, yet. */
+   if (!util_format_is_compressed(format) &&
+       util_format_get_blocksizebits(format) > 32)
+      return false;
 
    if (fmt == TEXTURE_FORMAT_ETC1)
       supported = VIV_FEATURE(screen, chipFeatures, ETC1_TEXTURE_COMPRESSION);
@@ -499,6 +503,10 @@ gpu_supports_render_format(struct etna_screen *screen, enum pipe_format format,
    const uint32_t fmt = translate_pe_format(format);
 
    if (fmt == ETNA_NO_MATCH)
+      return false;
+
+   /* Requires split target support, which the driver doesn't support, yet. */
+   if (util_format_get_blocksizebits(format) > 32)
       return false;
 
    if (sample_count > 1) {
@@ -888,7 +896,7 @@ etna_get_specs(struct etna_screen *screen)
       DBG("could not get ETNA_GPU_NUM_VARYINGS");
       goto fail;
    }
-   screen->specs.max_varyings = MAX2(val, ETNA_NUM_VARYINGS);
+   screen->specs.max_varyings = MIN2(val, ETNA_NUM_VARYINGS);
 
    /* Figure out gross GPU architecture. See rnndb/common.xml for a specific
     * description of the differences. */

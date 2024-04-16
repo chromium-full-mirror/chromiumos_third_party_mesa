@@ -36,14 +36,13 @@
 namespace brw {
 
 vec4_tcs_visitor::vec4_tcs_visitor(const struct brw_compiler *compiler,
-                                   void *log_data,
+                                   const struct brw_compile_params *params,
                                    const struct brw_tcs_prog_key *key,
                                    struct brw_tcs_prog_data *prog_data,
                                    const nir_shader *nir,
-                                   void *mem_ctx,
                                    bool debug_enabled)
-   : vec4_visitor(compiler, log_data, &key->base.tex, &prog_data->base,
-                  nir, mem_ctx, false, debug_enabled),
+   : vec4_visitor(compiler, params, &key->base.tex, &prog_data->base,
+                  nir, false, debug_enabled),
      key(key)
 {
 }
@@ -75,7 +74,7 @@ vec4_tcs_visitor::setup_payload()
 void
 vec4_tcs_visitor::emit_prolog()
 {
-   invocation_id = src_reg(this, glsl_type::uint_type);
+   invocation_id = src_reg(this, glsl_uint_type());
    emit(TCS_OPCODE_GET_INSTANCE_ID, dst_reg(invocation_id));
 
    /* HS threads are dispatched with the dispatch mask set to 0xFF.
@@ -114,7 +113,7 @@ vec4_tcs_visitor::emit_thread_end()
        * using the input URB handles.
        */
       if (tcs_prog_data->instances > 1) {
-         dst_reg header = dst_reg(this, glsl_type::uvec4_type);
+         dst_reg header = dst_reg(this, glsl_uvec4_type());
          emit(TCS_OPCODE_CREATE_BARRIER_HEADER, header);
          emit(SHADER_OPCODE_BARRIER, dst_null_ud(), src_reg(header));
       }
@@ -136,7 +135,7 @@ vec4_tcs_visitor::emit_thread_end()
           */
          const bool is_unpaired = i == key->input_vertices - 1;
 
-         dst_reg header(this, glsl_type::uvec4_type);
+         dst_reg header(this, glsl_uvec4_type());
          emit(TCS_OPCODE_RELEASE_INPUT, header, brw_imm_ud(i),
               brw_imm_ud(is_unpaired));
       }
@@ -157,11 +156,11 @@ vec4_tcs_visitor::emit_input_urb_read(const dst_reg &dst,
                                       const src_reg &indirect_offset)
 {
    vec4_instruction *inst;
-   dst_reg temp(this, glsl_type::ivec4_type);
+   dst_reg temp(this, glsl_ivec4_type());
    temp.type = dst.type;
 
    /* Set up the message header to reference the proper parts of the URB */
-   dst_reg header = dst_reg(this, glsl_type::uvec4_type);
+   dst_reg header = dst_reg(this, glsl_uvec4_type());
    inst = emit(VEC4_TCS_OPCODE_SET_INPUT_URB_OFFSETS, header, vertex_index,
                indirect_offset);
    inst->force_writemask_all = true;
@@ -194,7 +193,7 @@ vec4_tcs_visitor::emit_output_urb_read(const dst_reg &dst,
    vec4_instruction *inst;
 
    /* Set up the message header to reference the proper parts of the URB */
-   dst_reg header = dst_reg(this, glsl_type::uvec4_type);
+   dst_reg header = dst_reg(this, glsl_uvec4_type());
    inst = emit(VEC4_TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, header,
                brw_imm_ud(dst.writemask << first_component), indirect_offset);
    inst->force_writemask_all = true;
@@ -206,7 +205,7 @@ vec4_tcs_visitor::emit_output_urb_read(const dst_reg &dst,
 
    if (first_component) {
       /* Read into a temporary and copy with a swizzle and writemask. */
-      read->dst = retype(dst_reg(this, glsl_type::ivec4_type), dst.type);
+      read->dst = retype(dst_reg(this, glsl_ivec4_type()), dst.type);
       emit(MOV(dst, swizzle(src_reg(read->dst),
                             BRW_SWZ_COMP_INPUT(first_component))));
    }
@@ -221,7 +220,7 @@ vec4_tcs_visitor::emit_urb_write(const src_reg &value,
    if (writemask == 0)
       return;
 
-   src_reg message(this, glsl_type::uvec4_type, 2);
+   src_reg message(this, glsl_uvec4_type(), 2);
    vec4_instruction *inst;
 
    inst = emit(VEC4_TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, dst_reg(message),
@@ -242,19 +241,19 @@ vec4_tcs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
 {
    switch (instr->intrinsic) {
    case nir_intrinsic_load_invocation_id:
-      emit(MOV(get_nir_dest(instr->dest, BRW_REGISTER_TYPE_UD),
+      emit(MOV(get_nir_def(instr->def, BRW_REGISTER_TYPE_UD),
                invocation_id));
       break;
    case nir_intrinsic_load_primitive_id:
       emit(TCS_OPCODE_GET_PRIMITIVE_ID,
-           get_nir_dest(instr->dest, BRW_REGISTER_TYPE_UD));
+           get_nir_def(instr->def, BRW_REGISTER_TYPE_UD));
       break;
    case nir_intrinsic_load_patch_vertices_in:
-      emit(MOV(get_nir_dest(instr->dest, BRW_REGISTER_TYPE_D),
+      emit(MOV(get_nir_def(instr->def, BRW_REGISTER_TYPE_D),
                brw_imm_d(key->input_vertices)));
       break;
    case nir_intrinsic_load_per_vertex_input: {
-      assert(nir_dest_bit_size(instr->dest) == 32);
+      assert(instr->def.bit_size == 32);
       src_reg indirect_offset = get_indirect_offset(instr);
       unsigned imm_offset = nir_intrinsic_base(instr);
 
@@ -262,7 +261,7 @@ vec4_tcs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
                                     BRW_REGISTER_TYPE_UD);
 
       unsigned first_component = nir_intrinsic_component(instr);
-      dst_reg dst = get_nir_dest(instr->dest, BRW_REGISTER_TYPE_D);
+      dst_reg dst = get_nir_def(instr->def, BRW_REGISTER_TYPE_D);
       dst.writemask = brw_writemask_for_size(instr->num_components);
       emit_input_urb_read(dst, vertex_index, imm_offset,
                           first_component, indirect_offset);
@@ -276,7 +275,7 @@ vec4_tcs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
       src_reg indirect_offset = get_indirect_offset(instr);
       unsigned imm_offset = nir_intrinsic_base(instr);
 
-      dst_reg dst = get_nir_dest(instr->dest, BRW_REGISTER_TYPE_D);
+      dst_reg dst = get_nir_def(instr->def, BRW_REGISTER_TYPE_D);
       dst.writemask = brw_writemask_for_size(instr->num_components);
 
       emit_output_urb_read(dst, imm_offset, nir_intrinsic_component(instr),
@@ -305,11 +304,11 @@ vec4_tcs_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
       break;
    }
 
-   case nir_intrinsic_scoped_barrier:
+   case nir_intrinsic_barrier:
       if (nir_intrinsic_memory_scope(instr) != SCOPE_NONE)
          vec4_visitor::nir_emit_intrinsic(instr);
       if (nir_intrinsic_execution_scope(instr) == SCOPE_WORKGROUP) {
-         dst_reg header = dst_reg(this, glsl_type::uvec4_type);
+         dst_reg header = dst_reg(this, glsl_uvec4_type());
          emit(TCS_OPCODE_CREATE_BARRIER_HEADER, header);
          emit(SHADER_OPCODE_BARRIER, dst_null_ud(), src_reg(header));
       }
@@ -353,11 +352,10 @@ get_patch_count_threshold(int input_control_points)
 
 extern "C" const unsigned *
 brw_compile_tcs(const struct brw_compiler *compiler,
-                void *mem_ctx,
                 struct brw_compile_tcs_params *params)
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
-   nir_shader *nir = params->nir;
+   nir_shader *nir = params->base.nir;
    const struct brw_tcs_prog_key *key = params->key;
    struct brw_tcs_prog_data *prog_data = params->prog_data;
    struct brw_vue_prog_data *vue_prog_data = &prog_data->base;
@@ -390,7 +388,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
       brw_nir_lower_patch_vertices_in(nir, key->input_vertices);
 
    brw_postprocess_nir(nir, compiler, debug_enabled,
-                       key->base.robust_buffer_access);
+                       key->base.robust_flags);
 
    bool has_primitive_id =
       BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_PRIMITIVE_ID);
@@ -449,37 +447,41 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    }
 
    if (is_scalar) {
-      fs_visitor v(compiler, params->log_data, mem_ctx, &key->base,
-                   &prog_data->base.base, nir, 8, params->stats != NULL,
-                   debug_enabled);
+      const unsigned dispatch_width = devinfo->ver >= 20 ? 16 : 8;
+      fs_visitor v(compiler, &params->base, &key->base,
+                   &prog_data->base.base, nir, dispatch_width,
+                   params->base.stats != NULL, debug_enabled);
       if (!v.run_tcs()) {
-         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->base.error_str =
+            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
          return NULL;
       }
 
-      prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs;
+      assert(v.payload().num_regs % reg_unit(devinfo) == 0);
+      prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs / reg_unit(devinfo);
 
-      fs_generator g(compiler, params->log_data, mem_ctx,
+      fs_generator g(compiler, &params->base,
                      &prog_data->base.base, false, MESA_SHADER_TESS_CTRL);
       if (unlikely(debug_enabled)) {
-         g.enable_debug(ralloc_asprintf(mem_ctx,
+         g.enable_debug(ralloc_asprintf(params->base.mem_ctx,
                                         "%s tessellation control shader %s",
                                         nir->info.label ? nir->info.label
                                                         : "unnamed",
                                         nir->info.name));
       }
 
-      g.generate_code(v.cfg, 8, v.shader_stats,
-                      v.performance_analysis.require(), params->stats);
+      g.generate_code(v.cfg, dispatch_width, v.shader_stats,
+                      v.performance_analysis.require(), params->base.stats);
 
       g.add_const_data(nir->constant_data, nir->constant_data_size);
 
       assembly = g.get_assembly();
    } else {
-      brw::vec4_tcs_visitor v(compiler, params->log_data, key, prog_data,
-                              nir, mem_ctx, debug_enabled);
+      brw::vec4_tcs_visitor v(compiler, &params->base, key, prog_data,
+                              nir, debug_enabled);
       if (!v.run()) {
-         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->base.error_str =
+            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
          return NULL;
       }
 
@@ -487,10 +489,10 @@ brw_compile_tcs(const struct brw_compiler *compiler,
          v.dump_instructions();
 
 
-      assembly = brw_vec4_generate_assembly(compiler, params->log_data, mem_ctx, nir,
+      assembly = brw_vec4_generate_assembly(compiler, &params->base, nir,
                                             &prog_data->base, v.cfg,
                                             v.performance_analysis.require(),
-                                            params->stats, debug_enabled);
+                                            debug_enabled);
    }
 
    return assembly;

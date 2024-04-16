@@ -1,5 +1,5 @@
 /**********************************************************
- * Copyright 2009-2015 VMware, Inc.  All rights reserved.
+ * Copyright 2009-2023 VMware, Inc.  All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -218,7 +218,7 @@ vmw_swc_flush(struct svga_winsys_context *swc,
          struct vmw_buffer_relocation *reloc = &vswc->region.relocs[i];
          struct SVGAGuestPtr ptr;
 
-         if(!vmw_gmr_bufmgr_region_ptr(reloc->buffer, &ptr))
+         if(!vmw_dma_bufmgr_region_ptr(reloc->buffer, &ptr))
             assert(0);
 
          ptr.offset += reloc->offset;
@@ -407,7 +407,7 @@ vmw_swc_region_relocation(struct svga_winsys_context *swc,
    ++vswc->region.staged;
 
    if (vmw_swc_add_validate_buffer(vswc, reloc->buffer, flags)) {
-      vswc->seen_regions += reloc->buffer->size;
+      vswc->seen_regions += reloc->buffer->base.size;
       if ((swc->hints & SVGA_HINT_FLAG_CAN_PRE_FLUSH) &&
           vswc->seen_regions >= VMW_GMR_POOL_SIZE/5)
          vswc->preemptive_flush = true;
@@ -449,7 +449,7 @@ vmw_swc_mob_relocation(struct svga_winsys_context *swc,
    }
 
    if (vmw_swc_add_validate_buffer(vswc, pb_buffer, flags)) {
-      vswc->seen_mobs += pb_buffer->size;
+      vswc->seen_mobs += pb_buffer->base.size;
 
       if ((swc->hints & SVGA_HINT_FLAG_CAN_PRE_FLUSH) &&
           vswc->seen_mobs >=

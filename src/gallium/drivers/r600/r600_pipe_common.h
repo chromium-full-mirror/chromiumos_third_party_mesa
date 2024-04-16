@@ -113,12 +113,6 @@ enum r600_coherency {
 	R600_COHERENCY_CB_META,
 };
 
-#if UTIL_ARCH_BIG_ENDIAN
-#define R600_BIG_ENDIAN 1
-#else
-#define R600_BIG_ENDIAN 0
-#endif
-
 struct r600_common_context;
 struct r600_perfcounters;
 struct tgsi_shader_info;
@@ -131,7 +125,7 @@ struct r600_resource {
 	struct threaded_resource	b;
 
 	/* Winsys objects. */
-	struct pb_buffer		*buf;
+	struct pb_buffer_lean		*buf;
 	uint64_t			gpu_address;
 	/* Memory usage if the buffer placement is optimal. */
 	uint64_t			vram_usage;
@@ -320,7 +314,7 @@ union r600_mmio_counters {
 
 struct r600_memory_object {
 	struct pipe_memory_object	b;
-	struct pb_buffer		*buf;
+	struct pb_buffer_lean		*buf;
 	uint32_t			stride;
 	uint32_t			offset;
 };
@@ -622,7 +616,7 @@ struct r600_common_context {
 
 /* r600_buffer_common.c */
 bool r600_rings_is_buffer_referenced(struct r600_common_context *ctx,
-				     struct pb_buffer *buf,
+				     struct pb_buffer_lean *buf,
 				     unsigned usage);
 void *r600_buffer_map_sync_with_rings(struct r600_common_context *ctx,
                                       struct r600_resource *resource,

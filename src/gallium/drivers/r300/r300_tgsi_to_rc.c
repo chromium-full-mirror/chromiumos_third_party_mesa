@@ -52,7 +52,6 @@ static unsigned translate_opcode(unsigned opcode)
         case TGSI_OPCODE_SLT: return RC_OPCODE_SLT;
         case TGSI_OPCODE_SGE: return RC_OPCODE_SGE;
         case TGSI_OPCODE_MAD: return RC_OPCODE_MAD;
-        case TGSI_OPCODE_LRP: return RC_OPCODE_LRP;
         case TGSI_OPCODE_FRC: return RC_OPCODE_FRC;
         case TGSI_OPCODE_ROUND: return RC_OPCODE_ROUND;
         case TGSI_OPCODE_EX2: return RC_OPCODE_EX2;
@@ -81,7 +80,6 @@ static unsigned translate_opcode(unsigned opcode)
         case TGSI_OPCODE_ELSE: return RC_OPCODE_ELSE;
         case TGSI_OPCODE_ENDIF: return RC_OPCODE_ENDIF;
         case TGSI_OPCODE_ENDLOOP: return RC_OPCODE_ENDLOOP;
-        case TGSI_OPCODE_TRUNC: return RC_OPCODE_TRUNC;
         case TGSI_OPCODE_CONT: return RC_OPCODE_CONT;
         case TGSI_OPCODE_NOP: return RC_OPCODE_NOP;
         case TGSI_OPCODE_KILL_IF: return RC_OPCODE_KIL;
@@ -144,9 +142,15 @@ static void transform_srcreg(
     struct tgsi_full_src_register * src)
 {
     dst->File = translate_register_file(src->Register.File);
-    dst->Index = translate_register_index(ttr, src->Register.File, src->Register.Index);
+    int index = translate_register_index(ttr, src->Register.File, src->Register.Index);
     /* Negative offsets to relative addressing should have been lowered in NIR */
-    assert(dst->Index >= 0);
+    assert(index >= 0);
+    /* Also check for overflow */
+    if (index >= RC_REGISTER_MAX_INDEX) {
+        ttr->error = true;
+        fprintf(stderr, "r300: Register index too high.\n");
+    }
+    dst->Index = index;
     dst->RelAddr = src->Register.Indirect;
     dst->Swizzle = tgsi_util_get_full_src_register_swizzle(src, 0);
     dst->Swizzle |= tgsi_util_get_full_src_register_swizzle(src, 1) << 3;

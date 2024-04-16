@@ -7,6 +7,8 @@ use mesa_rust_gen::*;
 use rusticl_opencl_gen::*;
 
 use std::env;
+use std::ptr::addr_of;
+use std::ptr::addr_of_mut;
 use std::sync::Arc;
 use std::sync::Once;
 
@@ -20,6 +22,7 @@ pub struct PlatformDebug {
     pub allow_invalid_spirv: bool,
     pub clc: bool,
     pub program: bool,
+    pub sync_every_event: bool,
 }
 
 pub struct PlatformFeatures {
@@ -47,6 +50,7 @@ macro_rules! gen_cl_exts {
 gen_cl_exts!([
     (1, 0, 0, "cl_khr_byte_addressable_store"),
     (1, 0, 0, "cl_khr_create_command_queue"),
+    (1, 0, 0, "cl_khr_expect_assume"),
     (1, 0, 0, "cl_khr_extended_versioning"),
     (1, 0, 0, "cl_khr_icd"),
     (1, 0, 0, "cl_khr_il_program"),
@@ -61,6 +65,7 @@ static mut PLATFORM_DBG: PlatformDebug = PlatformDebug {
     allow_invalid_spirv: false,
     clc: false,
     program: false,
+    sync_every_event: false,
 };
 static mut PLATFORM_FEATURES: PlatformFeatures = PlatformFeatures {
     fp16: false,
@@ -68,24 +73,29 @@ static mut PLATFORM_FEATURES: PlatformFeatures = PlatformFeatures {
 };
 
 fn load_env() {
-    let debug = unsafe { &mut PLATFORM_DBG };
+    // SAFETY: no other references exist at this point
+    let debug = unsafe { &mut *addr_of_mut!(PLATFORM_DBG) };
     if let Ok(debug_flags) = env::var("RUSTICL_DEBUG") {
         for flag in debug_flags.split(',') {
             match flag {
                 "allow_invalid_spirv" => debug.allow_invalid_spirv = true,
                 "clc" => debug.clc = true,
                 "program" => debug.program = true,
+                "sync" => debug.sync_every_event = true,
+                "" => (),
                 _ => eprintln!("Unknown RUSTICL_DEBUG flag found: {}", flag),
             }
         }
     }
 
-    let features = unsafe { &mut PLATFORM_FEATURES };
+    // SAFETY: no other references exist at this point
+    let features = unsafe { &mut *addr_of_mut!(PLATFORM_FEATURES) };
     if let Ok(feature_flags) = env::var("RUSTICL_FEATURES") {
         for flag in feature_flags.split(',') {
             match flag {
                 "fp16" => features.fp16 = true,
                 "fp64" => features.fp64 = true,
+                "" => (),
                 _ => eprintln!("Unknown RUSTICL_FEATURES flag found: {}", flag),
             }
         }
@@ -100,17 +110,17 @@ impl Platform {
     pub fn get() -> &'static Self {
         debug_assert!(PLATFORM_ONCE.is_completed());
         // SAFETY: no mut references exist at this point
-        unsafe { &PLATFORM }
+        unsafe { &*addr_of!(PLATFORM) }
     }
 
     pub fn dbg() -> &'static PlatformDebug {
         debug_assert!(PLATFORM_ENV_ONCE.is_completed());
-        unsafe { &PLATFORM_DBG }
+        unsafe { &*addr_of!(PLATFORM_DBG) }
     }
 
     pub fn features() -> &'static PlatformFeatures {
         debug_assert!(PLATFORM_ENV_ONCE.is_completed());
-        unsafe { &PLATFORM_FEATURES }
+        unsafe { &*addr_of!(PLATFORM_FEATURES) }
     }
 
     fn init(&mut self) {
@@ -118,7 +128,7 @@ impl Platform {
             glsl_type_singleton_init_or_ref();
         }
 
-        self.devs.extend(Device::all());
+        self.devs = Device::all().collect();
     }
 
     pub fn init_once() {

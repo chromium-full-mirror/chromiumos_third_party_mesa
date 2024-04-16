@@ -28,8 +28,8 @@
 #include "brw_private.h"
 #include "brw_vec4_tes.h"
 #include "dev/intel_debug.h"
-#include "main/uniforms.h"
 #include "util/macros.h"
+#include "util/u_debug.h"
 
 enum brw_reg_type
 brw_type_for_base_type(const struct glsl_type *type)
@@ -75,7 +75,7 @@ brw_type_for_base_type(const struct glsl_type *type)
       return BRW_REGISTER_TYPE_Q;
    case GLSL_TYPE_VOID:
    case GLSL_TYPE_ERROR:
-   case GLSL_TYPE_FUNCTION:
+   case GLSL_TYPE_COOPERATIVE_MATRIX:
       unreachable("not reached");
    }
 
@@ -164,6 +164,13 @@ brw_instruction_name(const struct brw_isa_info *isa, enum opcode op)
 
       if (devinfo->ver > 7 && op == BRW_OPCODE_F16TO32)
          return "f16to32";
+
+      /* DPAS instructions may transiently exist on platforms that do not
+       * support DPAS. They will eventually be lowered, but in the meantime it
+       * must be possible to query the instruction name.
+       */
+      if (devinfo->verx10 < 125 && op == BRW_OPCODE_DPAS)
+         return "dpas";
 
       assert(brw_opcode_desc(isa, op)->name);
       return brw_opcode_desc(isa, op)->name;
@@ -685,23 +692,20 @@ brw_abs_immediate(enum brw_reg_type type, struct brw_reg *reg)
 }
 
 backend_shader::backend_shader(const struct brw_compiler *compiler,
-                               void *log_data,
-                               void *mem_ctx,
+                               const struct brw_compile_params *params,
                                const nir_shader *shader,
                                struct brw_stage_prog_data *stage_prog_data,
                                bool debug_enabled)
    : compiler(compiler),
-     log_data(log_data),
+     log_data(params->log_data),
      devinfo(compiler->devinfo),
      nir(shader),
      stage_prog_data(stage_prog_data),
-     mem_ctx(mem_ctx),
+     mem_ctx(params->mem_ctx),
      cfg(NULL), idom_analysis(this),
      stage(shader->info.stage),
      debug_enabled(debug_enabled)
 {
-   stage_name = _mesa_shader_stage_to_string(stage);
-   stage_abbrev = _mesa_shader_stage_to_abbrev(stage);
 }
 
 backend_shader::~backend_shader()
@@ -854,27 +858,6 @@ backend_instruction::is_3src(const struct brw_compiler *compiler) const
 }
 
 bool
-backend_instruction::is_tex() const
-{
-   return (opcode == SHADER_OPCODE_TEX ||
-           opcode == FS_OPCODE_TXB ||
-           opcode == SHADER_OPCODE_TXD ||
-           opcode == SHADER_OPCODE_TXF ||
-           opcode == SHADER_OPCODE_TXF_LZ ||
-           opcode == SHADER_OPCODE_TXF_CMS ||
-           opcode == SHADER_OPCODE_TXF_CMS_W ||
-           opcode == SHADER_OPCODE_TXF_UMS ||
-           opcode == SHADER_OPCODE_TXF_MCS ||
-           opcode == SHADER_OPCODE_TXL ||
-           opcode == SHADER_OPCODE_TXL_LZ ||
-           opcode == SHADER_OPCODE_TXS ||
-           opcode == SHADER_OPCODE_LOD ||
-           opcode == SHADER_OPCODE_TG4 ||
-           opcode == SHADER_OPCODE_TG4_OFFSET ||
-           opcode == SHADER_OPCODE_SAMPLEINFO);
-}
-
-bool
 backend_instruction::is_math() const
 {
    return (opcode == SHADER_OPCODE_RCP ||
@@ -961,6 +944,7 @@ backend_instruction::can_do_source_mods() const
    case BRW_OPCODE_ROR:
    case BRW_OPCODE_SUBB:
    case BRW_OPCODE_DP4A:
+   case BRW_OPCODE_DPAS:
    case SHADER_OPCODE_BROADCAST:
    case SHADER_OPCODE_CLUSTER_BROADCAST:
    case SHADER_OPCODE_MOV_INDIRECT:
@@ -1247,7 +1231,7 @@ void
 backend_shader::dump_instructions(const char *name) const
 {
    FILE *file = stderr;
-   if (name && geteuid() != 0) {
+   if (name && __normal_user()) {
       file = fopen(name, "w");
       if (!file)
          file = stderr;
@@ -1296,11 +1280,10 @@ backend_shader::invalidate_analysis(brw::analysis_dependency_class c)
 
 extern "C" const unsigned *
 brw_compile_tes(const struct brw_compiler *compiler,
-                void *mem_ctx,
                 brw_compile_tes_params *params)
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
-   nir_shader *nir = params->nir;
+   nir_shader *nir = params->base.nir;
    const struct brw_tes_prog_key *key = params->key;
    const struct brw_vue_map *input_vue_map = params->input_vue_map;
    struct brw_tes_prog_data *prog_data = params->prog_data;
@@ -1319,7 +1302,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
    brw_nir_lower_tes_inputs(nir, input_vue_map);
    brw_nir_lower_vue_outputs(nir);
    brw_postprocess_nir(nir, compiler, debug_enabled,
-                       key->base.robust_buffer_access);
+                       key->base.robust_flags);
 
    brw_compute_vue_map(devinfo, &prog_data->base.vue_map,
                        nir->info.outputs_written,
@@ -1329,7 +1312,8 @@ brw_compile_tes(const struct brw_compiler *compiler,
 
    assert(output_size_bytes >= 1);
    if (output_size_bytes > GFX7_MAX_DS_URB_ENTRY_SIZE_BYTES) {
-      params->error_str = ralloc_strdup(mem_ctx, "DS outputs exceed maximum size");
+      params->base.error_str = ralloc_strdup(params->base.mem_ctx,
+                                             "DS outputs exceed maximum size");
       return NULL;
    }
 
@@ -1390,48 +1374,53 @@ brw_compile_tes(const struct brw_compiler *compiler,
    }
 
    if (is_scalar) {
-      fs_visitor v(compiler, params->log_data, mem_ctx, &key->base,
-                   &prog_data->base.base, nir, 8,
-                   params->stats != NULL, debug_enabled);
+      const unsigned dispatch_width = devinfo->ver >= 20 ? 16 : 8;
+      fs_visitor v(compiler, &params->base, &key->base,
+                   &prog_data->base.base, nir, dispatch_width,
+                   params->base.stats != NULL, debug_enabled);
       if (!v.run_tes()) {
-         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->base.error_str =
+            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
          return NULL;
       }
 
-      prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs;
+      assert(v.payload().num_regs % reg_unit(devinfo) == 0);
+      prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs / reg_unit(devinfo);
+
       prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
 
-      fs_generator g(compiler, params->log_data, mem_ctx,
+      fs_generator g(compiler, &params->base,
                      &prog_data->base.base, false, MESA_SHADER_TESS_EVAL);
       if (unlikely(debug_enabled)) {
-         g.enable_debug(ralloc_asprintf(mem_ctx,
+         g.enable_debug(ralloc_asprintf(params->base.mem_ctx,
                                         "%s tessellation evaluation shader %s",
                                         nir->info.label ? nir->info.label
                                                         : "unnamed",
                                         nir->info.name));
       }
 
-      g.generate_code(v.cfg, 8, v.shader_stats,
-                      v.performance_analysis.require(), params->stats);
+      g.generate_code(v.cfg, dispatch_width, v.shader_stats,
+                      v.performance_analysis.require(), params->base.stats);
 
       g.add_const_data(nir->constant_data, nir->constant_data_size);
 
       assembly = g.get_assembly();
    } else {
-      brw::vec4_tes_visitor v(compiler, params->log_data, key, prog_data,
-                              nir, mem_ctx, debug_enabled);
+      brw::vec4_tes_visitor v(compiler, &params->base, key, prog_data,
+                              nir, debug_enabled);
       if (!v.run()) {
-         params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+         params->base.error_str =
+            ralloc_strdup(params->base.mem_ctx, v.fail_msg);
 	 return NULL;
       }
 
       if (unlikely(debug_enabled))
 	 v.dump_instructions();
 
-      assembly = brw_vec4_generate_assembly(compiler, params->log_data, mem_ctx, nir,
+      assembly = brw_vec4_generate_assembly(compiler, &params->base, nir,
                                             &prog_data->base, v.cfg,
                                             v.performance_analysis.require(),
-                                            params->stats, debug_enabled);
+                                            debug_enabled);
    }
 
    return assembly;

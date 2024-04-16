@@ -128,7 +128,29 @@ struct brw_compiler {
     */
    bool use_bindless_sampler_offset;
 
+   /**
+    * Should DPAS instructions be lowered?
+    *
+    * This will be set for all platforms before Gfx12.5. It may also be set
+    * platforms that support DPAS for testing purposes.
+    */
+   bool lower_dpas;
+
+   /**
+    * Calling the ra_allocate function after each register spill can take
+    * several minutes. This option speeds up shader compilation by spilling
+    * more registers after the ra_allocate failure. Required for
+    * Cyberpunk 2077, which uses a watchdog thread to terminate the process
+    * in case the render thread hasn't responded within 2 minutes.
+    */
+   int spilling_rate;
+
    struct nir_shader *clc_shader;
+
+   struct {
+      unsigned mue_header_packing;
+      bool mue_compaction;
+   } mesh;
 };
 
 #define brw_shader_debug_log(compiler, data, fmt, ... ) do {    \
@@ -204,6 +226,9 @@ PRAGMA_DIAGNOSTIC_ERROR(-Wpadded)
 struct brw_sampler_prog_key_data {
    /**
     * EXT_texture_swizzle and DEPTH_TEXTURE_MODE swizzles.
+    *
+    * This field is not consumed by the back-end compiler and is only relevant
+    * for the crocus OpenGL driver for Broadwell and earlier hardware.
     */
    uint16_t swizzles[BRW_MAX_SAMPLERS];
 
@@ -220,10 +245,17 @@ struct brw_sampler_prog_key_data {
    enum gfx6_gather_sampler_wa gfx6_gather_wa[BRW_MAX_SAMPLERS];
 };
 
+enum brw_robustness_flags {
+   BRW_ROBUSTNESS_UBO  = BITFIELD_BIT(0),
+   BRW_ROBUSTNESS_SSBO = BITFIELD_BIT(1),
+};
+
 struct brw_base_prog_key {
    unsigned program_string_id;
 
-   bool robust_buffer_access;
+   enum brw_robustness_flags robust_flags:2;
+
+   unsigned padding:22;
 
    /**
     * Apply workarounds for SIN and COS input range problems.
@@ -231,7 +263,6 @@ struct brw_base_prog_key {
     * avoid precision issues.
     */
    bool limit_trig_input_range;
-   unsigned padding:16;
 
    struct brw_sampler_prog_key_data tex;
 };
@@ -403,6 +434,9 @@ struct brw_task_prog_key
 struct brw_mesh_prog_key
 {
    struct brw_base_prog_key base;
+
+   bool compact_mue:1;
+   unsigned padding:31;
 };
 
 enum brw_sf_primitive {
@@ -531,11 +565,14 @@ struct brw_wm_prog_key {
 
    enum brw_sometimes line_aa:2;
 
+   /* Whether the preceding shader stage is mesh */
+   enum brw_sometimes mesh_input:2;
+
    bool coherent_fb_fetch:1;
    bool ignore_sample_mask_out:1;
    bool coarse_pixel:1;
 
-   uint64_t padding:55;
+   uint64_t padding:53;
 };
 
 struct brw_cs_prog_key {
@@ -939,8 +976,20 @@ struct brw_wm_prog_data {
 
    uint8_t color_outputs_written;
    uint8_t computed_depth_mode;
-   bool computed_stencil;
 
+   /**
+    * Number of polygons handled in parallel by the multi-polygon PS
+    * kernel.
+    */
+   uint8_t max_polygons;
+
+   /**
+    * Dispatch width of the multi-polygon PS kernel, or 0 if no
+    * multi-polygon kernel was built.
+    */
+   uint8_t dispatch_multi;
+
+   bool computed_stencil;
    bool early_fragment_tests;
    bool post_depth_coverage;
    bool inner_coverage;
@@ -1022,6 +1071,7 @@ struct brw_wm_prog_data {
     * For varying slots that are not used by the FS, the value is -1.
     */
    int urb_setup[VARYING_SLOT_MAX];
+   int urb_setup_channel[VARYING_SLOT_MAX];
 
    /**
     * Cache structure into the urb_setup array above that contains the
@@ -1031,6 +1081,41 @@ struct brw_wm_prog_data {
    uint8_t urb_setup_attribs[VARYING_SLOT_MAX];
    uint8_t urb_setup_attribs_count;
 };
+
+#ifdef GFX_VERx10
+
+#if GFX_VERx10 >= 200
+
+/** Returns the SIMD width corresponding to a given KSP index
+ *
+ * The "Variable Pixel Dispatch" table in the PRM (which can be found, for
+ * example in Vol. 7 of the SKL PRM) has a mapping from dispatch widths to
+ * kernel start pointer (KSP) indices that is based on what dispatch widths
+ * are enabled.  This function provides, effectively, the reverse mapping.
+ *
+ * If the given KSP is enabled, a SIMD width of 8, 16, or 32 is
+ * returned.  Note that for a multipolygon dispatch kernel 8 is always
+ * returned, since multipolygon kernels use the "_8" fields from
+ * brw_wm_prog_data regardless of their SIMD width.  If the KSP is
+ * invalid, 0 is returned.
+ */
+static inline unsigned
+brw_fs_simd_width_for_ksp(unsigned ksp_idx, bool enabled, unsigned width_sel)
+{
+   assert(ksp_idx < 2);
+   return !enabled ? 0 :
+          width_sel ? 32 :
+          16;
+}
+
+#define brw_wm_state_simd_width_for_ksp(wm_state, ksp_idx)              \
+        (ksp_idx == 0 && (wm_state).Kernel0MaximumPolysperThread ? 8 :  \
+         ksp_idx == 0 ? brw_fs_simd_width_for_ksp(ksp_idx, (wm_state).Kernel0Enable, \
+                                                  (wm_state).Kernel0SIMDWidth): \
+         brw_fs_simd_width_for_ksp(ksp_idx, (wm_state).Kernel1Enable,   \
+                                   (wm_state).Kernel1SIMDWidth))
+
+#else
 
 /** Returns the SIMD width corresponding to a given KSP index
  *
@@ -1061,10 +1146,14 @@ brw_fs_simd_width_for_ksp(unsigned ksp_idx, bool simd8_enabled,
    }
 }
 
-#define brw_wm_state_simd_width_for_ksp(wm_state, ksp_idx) \
+#define brw_wm_state_simd_width_for_ksp(wm_state, ksp_idx)              \
    brw_fs_simd_width_for_ksp((ksp_idx), (wm_state)._8PixelDispatchEnable, \
                              (wm_state)._16PixelDispatchEnable, \
                              (wm_state)._32PixelDispatchEnable)
+
+#endif
+
+#endif
 
 #define brw_wm_state_has_ksp(wm_state, ksp_idx) \
    (brw_wm_state_simd_width_for_ksp((wm_state), (ksp_idx)) != 0)
@@ -1148,9 +1237,13 @@ wm_prog_data_barycentric_modes(const struct brw_wm_prog_data *prog_data,
 {
    uint32_t modes = prog_data->barycentric_interp_modes;
 
-   if (pushed_msaa_flags & BRW_WM_MSAA_FLAG_PERSAMPLE_INTERP) {
-      assert(pushed_msaa_flags & BRW_WM_MSAA_FLAG_ENABLE_DYNAMIC);
+   /* In the non dynamic case, we can just return the computed modes from
+    * compilation time.
+    */
+   if (!(pushed_msaa_flags & BRW_WM_MSAA_FLAG_ENABLE_DYNAMIC))
+      return modes;
 
+   if (pushed_msaa_flags & BRW_WM_MSAA_FLAG_PERSAMPLE_INTERP) {
       assert(prog_data->persample_dispatch == BRW_ALWAYS ||
              (pushed_msaa_flags & BRW_WM_MSAA_FLAG_PERSAMPLE_DISPATCH));
 
@@ -1187,6 +1280,18 @@ wm_prog_data_barycentric_modes(const struct brw_wm_prog_data *prog_data,
          modes &= ~BITFIELD_BIT(sample_mode);
          modes |= BITFIELD_BIT(BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE);
       }
+   } else {
+      /* If we're not using per-sample interpolation, we need to disable the
+       * per-sample bits.
+       *
+       * SKL PRMs, Volume 2a: Command Reference: Instructions,
+       * 3DSTATE_WM:Barycentric Interpolation Mode:
+
+       *    "MSDISPMODE_PERSAMPLE is required in order to select Perspective
+       *     Sample or Non-perspective Sample barycentric coordinates."
+       */
+      modes &= ~(BITFIELD_BIT(BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE) |
+                 BITFIELD_BIT(BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE));
    }
 
    return modes;
@@ -1238,6 +1343,7 @@ struct brw_cs_prog_data {
    bool uses_num_work_groups;
    bool uses_inline_data;
    bool uses_btd_stack_ids;
+   bool uses_systolic;
 
    struct {
       struct brw_push_const_block cross_thread;
@@ -1625,6 +1731,7 @@ struct brw_tue_map {
 
 struct brw_mue_map {
    int32_t start_dw[VARYING_SLOT_MAX];
+   uint32_t len_dw[VARYING_SLOT_MAX];
    uint32_t per_primitive_indices_dw;
 
    uint32_t size_dw;
@@ -1634,12 +1741,14 @@ struct brw_mue_map {
    uint32_t per_primitive_header_size_dw;
    uint32_t per_primitive_data_size_dw;
    uint32_t per_primitive_pitch_dw;
+   bool user_data_in_primitive_header;
 
    uint32_t max_vertices;
    uint32_t per_vertex_start_dw;
    uint32_t per_vertex_header_size_dw;
    uint32_t per_vertex_data_size_dw;
    uint32_t per_vertex_pitch_dw;
+   bool user_data_in_vertex_header;
 };
 
 struct brw_task_prog_data {
@@ -1721,6 +1830,7 @@ DEFINE_PROG_DATA_DOWNCAST(sf,    true)
 
 struct brw_compile_stats {
    uint32_t dispatch_width; /**< 0 for vec4 */
+   uint32_t max_polygons;
    uint32_t max_dispatch_width;
    uint32_t instructions;
    uint32_t sends;
@@ -1754,18 +1864,10 @@ brw_prog_data_size(gl_shader_stage stage);
 unsigned
 brw_prog_key_size(gl_shader_stage stage);
 
-/**
- * Parameters for compiling a vertex shader.
- *
- * Some of these will be modified during the shader compilation.
- */
-struct brw_compile_vs_params {
+struct brw_compile_params {
+   void *mem_ctx;
+
    nir_shader *nir;
-
-   const struct brw_vs_prog_key *key;
-   struct brw_vs_prog_data *prog_data;
-
-   bool edgeflag_is_last; /* true for gallium */
 
    struct brw_compile_stats *stats;
 
@@ -1773,8 +1875,23 @@ struct brw_compile_vs_params {
 
    char *error_str;
 
-   /* If unset, DEBUG_VS is used. */
    uint64_t debug_flag;
+
+   uint32_t source_hash;
+};
+
+/**
+ * Parameters for compiling a vertex shader.
+ *
+ * Some of these will be modified during the shader compilation.
+ */
+struct brw_compile_vs_params {
+   struct brw_compile_params base;
+
+   const struct brw_vs_prog_key *key;
+   struct brw_vs_prog_data *prog_data;
+
+   bool edgeflag_is_last; /* true for gallium */
 };
 
 /**
@@ -1784,7 +1901,6 @@ struct brw_compile_vs_params {
  */
 const unsigned *
 brw_compile_vs(const struct brw_compiler *compiler,
-               void *mem_ctx,
                struct brw_compile_vs_params *params);
 
 /**
@@ -1793,16 +1909,10 @@ brw_compile_vs(const struct brw_compiler *compiler,
  * Some of these will be modified during the shader compilation.
  */
 struct brw_compile_tcs_params {
-   nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_tcs_prog_key *key;
    struct brw_tcs_prog_data *prog_data;
-
-   struct brw_compile_stats *stats;
-
-   void *log_data;
-
-   char *error_str;
 };
 
 /**
@@ -1812,7 +1922,6 @@ struct brw_compile_tcs_params {
  */
 const unsigned *
 brw_compile_tcs(const struct brw_compiler *compiler,
-                void *mem_ctx,
                 struct brw_compile_tcs_params *params);
 
 /**
@@ -1821,17 +1930,11 @@ brw_compile_tcs(const struct brw_compiler *compiler,
  * Some of these will be modified during the shader compilation.
  */
 struct brw_compile_tes_params {
-   nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_tes_prog_key *key;
    struct brw_tes_prog_data *prog_data;
    const struct brw_vue_map *input_vue_map;
-
-   struct brw_compile_stats *stats;
-
-   void *log_data;
-
-   char *error_str;
 };
 
 /**
@@ -1841,7 +1944,6 @@ struct brw_compile_tes_params {
  */
 const unsigned *
 brw_compile_tes(const struct brw_compiler *compiler,
-                void *mem_ctx,
                 struct brw_compile_tes_params *params);
 
 /**
@@ -1850,16 +1952,10 @@ brw_compile_tes(const struct brw_compiler *compiler,
  * Some of these will be modified during the shader compilation.
  */
 struct brw_compile_gs_params {
-   nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_gs_prog_key *key;
    struct brw_gs_prog_data *prog_data;
-
-   struct brw_compile_stats *stats;
-
-   void *log_data;
-
-   char *error_str;
 };
 
 /**
@@ -1869,7 +1965,6 @@ struct brw_compile_gs_params {
  */
 const unsigned *
 brw_compile_gs(const struct brw_compiler *compiler,
-               void *mem_ctx,
                struct brw_compile_gs_params *params);
 
 /**
@@ -1905,38 +2000,26 @@ brw_compile_clip(const struct brw_compiler *compiler,
                  unsigned *final_assembly_size);
 
 struct brw_compile_task_params {
-   struct nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_task_prog_key *key;
    struct brw_task_prog_data *prog_data;
-
-   struct brw_compile_stats *stats;
-
-   char *error_str;
-   void *log_data;
 };
 
 const unsigned *
 brw_compile_task(const struct brw_compiler *compiler,
-                 void *mem_ctx,
                  struct brw_compile_task_params *params);
 
 struct brw_compile_mesh_params {
-   struct nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_mesh_prog_key *key;
    struct brw_mesh_prog_data *prog_data;
    const struct brw_tue_map *tue_map;
-
-   struct brw_compile_stats *stats;
-
-   char *error_str;
-   void *log_data;
 };
 
 const unsigned *
 brw_compile_mesh(const struct brw_compiler *compiler,
-                 void *mem_ctx,
                  struct brw_compile_mesh_params *params);
 
 /**
@@ -1945,7 +2028,7 @@ brw_compile_mesh(const struct brw_compiler *compiler,
  * Some of these will be modified during the shader compilation.
  */
 struct brw_compile_fs_params {
-   nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_wm_prog_key *key;
    struct brw_wm_prog_data *prog_data;
@@ -1955,15 +2038,7 @@ struct brw_compile_fs_params {
 
    bool allow_spilling;
    bool use_rep_send;
-
-   struct brw_compile_stats *stats;
-
-   void *log_data;
-
-   char *error_str;
-
-   /* If unset, DEBUG_WM is used. */
-   uint64_t debug_flag;
+   uint8_t max_polygons;
 };
 
 /**
@@ -1973,7 +2048,6 @@ struct brw_compile_fs_params {
  */
 const unsigned *
 brw_compile_fs(const struct brw_compiler *compiler,
-               void *mem_ctx,
                struct brw_compile_fs_params *params);
 
 /**
@@ -1982,19 +2056,10 @@ brw_compile_fs(const struct brw_compiler *compiler,
  * Some of these will be modified during the shader compilation.
  */
 struct brw_compile_cs_params {
-   nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_cs_prog_key *key;
    struct brw_cs_prog_data *prog_data;
-
-   struct brw_compile_stats *stats;
-
-   void *log_data;
-
-   char *error_str;
-
-   /* If unset, DEBUG_CS is used. */
-   uint64_t debug_flag;
 };
 
 /**
@@ -2004,7 +2069,6 @@ struct brw_compile_cs_params {
  */
 const unsigned *
 brw_compile_cs(const struct brw_compiler *compiler,
-               void *mem_ctx,
                struct brw_compile_cs_params *params);
 
 /**
@@ -2013,19 +2077,13 @@ brw_compile_cs(const struct brw_compiler *compiler,
  * Some of these will be modified during the shader compilation.
  */
 struct brw_compile_bs_params {
-   nir_shader *nir;
+   struct brw_compile_params base;
 
    const struct brw_bs_prog_key *key;
    struct brw_bs_prog_data *prog_data;
 
    unsigned num_resume_shaders;
    struct nir_shader **resume_shaders;
-
-   struct brw_compile_stats *stats;
-
-   void *log_data;
-
-   char *error_str;
 };
 
 /**
@@ -2035,7 +2093,6 @@ struct brw_compile_bs_params {
  */
 const unsigned *
 brw_compile_bs(const struct brw_compiler *compiler,
-               void *mem_ctx,
                struct brw_compile_bs_params *params);
 
 /**
@@ -2144,7 +2201,7 @@ brw_cs_get_dispatch_info(const struct intel_device_info *devinfo,
  */
 static inline bool
 brw_stage_has_packed_dispatch(ASSERTED const struct intel_device_info *devinfo,
-                              gl_shader_stage stage,
+                              gl_shader_stage stage, unsigned max_polygons,
                               const struct brw_stage_prog_data *prog_data)
 {
    /* The code below makes assumptions about the hardware's thread dispatch
@@ -2168,7 +2225,8 @@ brw_stage_has_packed_dispatch(ASSERTED const struct intel_device_info *devinfo,
          (const struct brw_wm_prog_data *)prog_data;
       return devinfo->verx10 < 125 &&
              !wm_prog_data->persample_dispatch &&
-             wm_prog_data->uses_vmask;
+             wm_prog_data->uses_vmask &&
+             max_polygons < 2;
    }
    case MESA_SHADER_COMPUTE:
       /* Compute shaders will be spawned with either a fully enabled dispatch

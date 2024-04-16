@@ -100,12 +100,15 @@ void ac_llvm_context_init(struct ac_llvm_context *ctx, struct ac_llvm_compiler *
    ctx->i1true = LLVMConstInt(ctx->i1, 1, false);
 
    ctx->range_md_kind = LLVMGetMDKindIDInContext(ctx->context, "range", 5);
-
    ctx->invariant_load_md_kind = LLVMGetMDKindIDInContext(ctx->context, "invariant.load", 14);
-
    ctx->uniform_md_kind = LLVMGetMDKindIDInContext(ctx->context, "amdgpu.uniform", 14);
+   ctx->fpmath_md_kind = LLVMGetMDKindIDInContext(ctx->context, "fpmath", 6);
 
    ctx->empty_md = LLVMMDNodeInContext(ctx->context, NULL, 0);
+
+   LLVMValueRef three = LLVMConstReal(ctx->f32, 3);
+   ctx->three_md = LLVMMDNodeInContext(ctx->context, &three, 1);
+
    ctx->flow = calloc(1, sizeof(*ctx->flow));
 
    ctx->ring_offsets_index = INT32_MAX;
@@ -116,6 +119,8 @@ void ac_llvm_context_dispose(struct ac_llvm_context *ctx)
    free(ctx->flow->stack);
    free(ctx->flow);
    ctx->flow = NULL;
+
+   LLVMDisposeBuilder(ctx->builder);
 }
 
 int ac_get_llvm_num_components(LLVMValueRef value)
@@ -873,6 +878,7 @@ LLVMValueRef ac_build_fs_interp_mov(struct ac_llvm_context *ctx, unsigned parame
 
       p = ac_build_intrinsic(ctx, "llvm.amdgcn.lds.param.load",
                              ctx->f32, args, 3, 0);
+      p = ac_build_intrinsic(ctx, "llvm.amdgcn.wqm.f32", ctx->f32, &p, 1, 0);
       p = ac_build_quad_swizzle(ctx, p, parameter, parameter, parameter, parameter);
       return ac_build_intrinsic(ctx, "llvm.amdgcn.wqm.f32", ctx->f32, &p, 1, 0);
    } else {
@@ -1247,8 +1253,9 @@ static LLVMValueRef ac_build_tbuffer_load(struct ac_llvm_context *ctx, LLVMValue
 
 LLVMValueRef ac_build_safe_tbuffer_load(struct ac_llvm_context *ctx, LLVMValueRef rsrc,
                                         LLVMValueRef vidx, LLVMValueRef base_voffset,
-                                        LLVMValueRef soffset, LLVMTypeRef channel_type,
-                                        const struct ac_vtx_format_info *vtx_info,
+                                        LLVMValueRef soffset,
+                                        const enum pipe_format format,
+                                        unsigned channel_bit_size,
                                         unsigned const_offset,
                                         unsigned align_offset,
                                         unsigned align_mul,
@@ -1256,6 +1263,7 @@ LLVMValueRef ac_build_safe_tbuffer_load(struct ac_llvm_context *ctx, LLVMValueRe
                                         enum gl_access_qualifier access,
                                         bool can_speculate)
 {
+   const struct ac_vtx_format_info *vtx_info = ac_get_vtx_format_info(ctx->gfx_level, ctx->info->family, format);
    const unsigned max_channels = vtx_info->num_channels;
    LLVMValueRef voffset_plus_const =
       LLVMBuildAdd(ctx->builder, base_voffset, LLVMConstInt(ctx->i32, const_offset, 0), "");
@@ -1281,9 +1289,36 @@ LLVMValueRef ac_build_safe_tbuffer_load(struct ac_llvm_context *ctx, LLVMValueRe
                          LLVMConstInt(ctx->i32, i * vtx_info->chan_byte_size, 0), "");
       LLVMValueRef item =
          ac_build_tbuffer_load(ctx, rsrc, vidx, fetch_voffset, soffset,
-                               fetch_num_channels, fetch_format, channel_type,
+                               fetch_num_channels, fetch_format, ctx->i32,
                                access, can_speculate);
       result = ac_build_concat(ctx, result, item);
+   }
+
+   /* 
+    * LLVM is not able to select 16-bit typed loads. Load 32-bit values instead and
+    * manually truncate them to the required size.
+    * TODO: Do this in NIR instead.
+    */
+   const struct util_format_description *desc = util_format_description(format);
+   bool is_float = !desc->channel[0].pure_integer;
+
+   if (channel_bit_size == 16) {
+      LLVMValueRef channels[4];
+      for (unsigned i = 0; i < num_channels; i++) {
+         LLVMValueRef channel = result;
+         if (num_channels > 1)
+            channel = LLVMBuildExtractElement(ctx->builder, result, LLVMConstInt(ctx->i32, i, false), "");
+
+         if (is_float) {
+            channel = LLVMBuildBitCast(ctx->builder, channel, ctx->f32, "");
+            channel = LLVMBuildFPTrunc(ctx->builder, channel, ctx->f16, "");
+            channel = LLVMBuildBitCast(ctx->builder, channel, ctx->i16, "");
+         } else {
+            channel = LLVMBuildTrunc(ctx->builder, channel, ctx->i16, "");
+         }
+         channels[i] = channel;
+      }
+      result = ac_build_gather_values(ctx, channels, num_channels);
    }
 
    return result;
@@ -2956,7 +2991,7 @@ LLVMValueRef ac_build_ds_swizzle(struct ac_llvm_context *ctx, LLVMValueRef src, 
    return LLVMBuildBitCast(ctx->builder, ret, src_type, "");
 }
 
-static LLVMValueRef ac_build_wwm(struct ac_llvm_context *ctx, LLVMValueRef src)
+static LLVMValueRef ac_build_mode(struct ac_llvm_context *ctx, LLVMValueRef src, const char *mode)
 {
    LLVMTypeRef src_type = LLVMTypeOf(src);
    unsigned bitsize = ac_get_elem_bits(ctx, src_type);
@@ -2969,13 +3004,23 @@ static LLVMValueRef ac_build_wwm(struct ac_llvm_context *ctx, LLVMValueRef src)
       src = LLVMBuildZExt(ctx->builder, src, ctx->i32, "");
 
    ac_build_type_name_for_intr(LLVMTypeOf(src), type, sizeof(type));
-   snprintf(name, sizeof(name), "llvm.amdgcn.wwm.%s", type);
+   snprintf(name, sizeof(name), "llvm.amdgcn.%s.%s", mode, type);
    ret = ac_build_intrinsic(ctx, name, LLVMTypeOf(src), (LLVMValueRef[]){src}, 1, 0);
 
    if (bitsize < 32)
       ret = LLVMBuildTrunc(ctx->builder, ret, ac_to_integer_type(ctx, src_type), "");
 
    return LLVMBuildBitCast(ctx->builder, ret, src_type, "");
+}
+
+static LLVMValueRef ac_build_wwm(struct ac_llvm_context *ctx, LLVMValueRef src)
+{
+   return ac_build_mode(ctx, src, "wwm");
+}
+
+LLVMValueRef ac_build_wqm(struct ac_llvm_context *ctx, LLVMValueRef src)
+{
+   return ac_build_mode(ctx, src, "wqm");
 }
 
 static LLVMValueRef ac_build_set_inactive(struct ac_llvm_context *ctx, LLVMValueRef src,

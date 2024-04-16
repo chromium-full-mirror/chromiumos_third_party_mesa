@@ -31,7 +31,7 @@
 #include <vector>
 
 /*
- * Implements an algorithm to lower to Concentional SSA Form (CSSA).
+ * Implements an algorithm to lower to Conventional SSA Form (CSSA).
  * After "Revisiting Out-of-SSA Translation for Correctness, CodeQuality, and Efficiency"
  * by B. Boissinot, A. Darte, F. Rastello, B. Dupont de Dinechin, C. Guillon,
  *
@@ -305,8 +305,11 @@ try_merge_merge_set(cssa_ctx& ctx, Temp dst, merge_set& set_b)
       while (!dom.empty() && !dominates(ctx, dom.back(), current))
          dom.pop_back(); /* not the desired parent, remove */
 
-      if (!dom.empty() && interference(ctx, current, dom.back()))
+      if (!dom.empty() && interference(ctx, current, dom.back())) {
+         for (Temp t : union_set)
+            ctx.merge_node_table[t.id()].equal_anc_out = Temp();
          return false; /* intersection detected */
+      }
 
       dom.emplace_back(current); /* otherwise, keep checking */
       if (current != dst)

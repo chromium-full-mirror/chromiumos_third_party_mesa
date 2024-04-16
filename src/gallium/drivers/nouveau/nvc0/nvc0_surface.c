@@ -25,6 +25,7 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
+#include "nir/pipe_nir.h"
 #include "pipe/p_defines.h"
 
 #include "util/u_inlines.h"
@@ -888,9 +889,7 @@ nvc0_blitter_make_vp(struct pipe_context *pipe)
 
    NIR_PASS_V(b.shader, nir_lower_var_copies);
 
-   struct pipe_shader_state state;
-   pipe_shader_state_from_nir(&state, b.shader);
-   return pipe->create_vs_state(pipe, &state);
+   return pipe_shader_from_nir(pipe, b.shader);
 }
 
 static void
@@ -1767,7 +1766,7 @@ nvc0_blitter_destroy(struct nvc0_screen *screen)
          struct nvc0_program *prog = blitter->fp[i][m];
          if (prog) {
             nvc0_program_destroy(NULL, prog);
-            ralloc_free((void *)prog->pipe.ir.nir);
+            ralloc_free((void *)prog->nir);
             FREE(prog);
          }
       }
@@ -1775,7 +1774,7 @@ nvc0_blitter_destroy(struct nvc0_screen *screen)
    if (blitter->vp) {
       struct nvc0_program *prog = blitter->vp;
       nvc0_program_destroy(NULL, prog);
-      ralloc_free((void *)prog->pipe.ir.nir);
+      ralloc_free((void *)prog->nir);
       FREE(prog);
    }
 

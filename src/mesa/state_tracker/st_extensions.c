@@ -846,6 +846,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
       { o(AMD_depth_clamp_separate),         PIPE_CAP_DEPTH_CLIP_DISABLE_SEPARATE      },
       { o(AMD_framebuffer_multisample_advanced), PIPE_CAP_FRAMEBUFFER_MSAA_CONSTRAINTS },
+      { o(AMD_performance_monitor),          PIPE_CAP_PERFORMANCE_MONITOR              },
       { o(AMD_pinned_memory),                PIPE_CAP_RESOURCE_FROM_USER_MEMORY        },
       { o(ATI_meminfo),                      PIPE_CAP_QUERY_MEMORY_INFO                },
       { o(AMD_seamless_cubemap_per_texture), PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE    },
@@ -871,16 +872,11 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(OES_texture_view),                 PIPE_CAP_SAMPLER_VIEW_TARGET              },
       { o(INTEL_blackhole_render),           PIPE_CAP_FRONTEND_NOOP                    },
       { o(ARM_shader_framebuffer_fetch_depth_stencil), PIPE_CAP_FBFETCH_ZS             },
+      { o(MESA_texture_const_bandwidth),     PIPE_CAP_HAS_CONST_BW                     },
    };
 
    /* Required: render target and sampler support */
    static const struct st_extension_format_mapping rendertarget_mapping[] = {
-      { { o(OES_texture_float) },
-        { PIPE_FORMAT_R32G32B32A32_FLOAT } },
-
-      { { o(OES_texture_half_float) },
-        { PIPE_FORMAT_R16G16B16A16_FLOAT } },
-
       { { o(ARB_texture_rgb10_a2ui) },
         { PIPE_FORMAT_R10G10B10A2_UINT,
           PIPE_FORMAT_B10G10R10A2_UINT },
@@ -919,8 +915,15 @@ void st_init_extensions(struct pipe_screen *screen,
       { { o(EXT_color_buffer_half_float) },
         { PIPE_FORMAT_R16_FLOAT,
           PIPE_FORMAT_R16G16_FLOAT,
-          PIPE_FORMAT_R16G16B16X16_FLOAT,
           PIPE_FORMAT_R16G16B16A16_FLOAT } },
+
+      { { o(EXT_color_buffer_float) },
+        { PIPE_FORMAT_R16_FLOAT,
+          PIPE_FORMAT_R16G16_FLOAT,
+          PIPE_FORMAT_R16G16B16A16_FLOAT,
+          PIPE_FORMAT_R32_FLOAT,
+          PIPE_FORMAT_R32G32_FLOAT,
+          PIPE_FORMAT_R32G32B32A32_FLOAT } },
    };
 
    /* Required: render target, sampler, and blending */
@@ -938,6 +941,12 @@ void st_init_extensions(struct pipe_screen *screen,
 
    /* Required: sampler support */
    static const struct st_extension_format_mapping texture_mapping[] = {
+      { { o(OES_texture_float) },
+        { PIPE_FORMAT_R32G32B32A32_FLOAT } },
+
+      { { o(OES_texture_half_float) },
+        { PIPE_FORMAT_R16G16B16A16_FLOAT } },
+
       { { o(ARB_texture_compression_rgtc) },
         { PIPE_FORMAT_RGTC1_UNORM,
           PIPE_FORMAT_RGTC1_SNORM,
@@ -1467,6 +1476,11 @@ void st_init_extensions(struct pipe_screen *screen,
 
    if (options->disable_uniform_array_resize)
       consts->DisableUniformArrayResize = 1;
+
+   consts->AliasShaderExtension = options->alias_shader_extension;
+
+   if (options->allow_vertex_texture_bias)
+      consts->AllowVertexTextureBias = GL_TRUE;
 
    if (options->allow_glsl_extension_directive_midshader)
       consts->AllowGLSLExtensionDirectiveMidShader = GL_TRUE;

@@ -291,14 +291,13 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    void *data;
    union nouveau_bo_config mm_config;
 
+   glsl_type_singleton_init_or_ref();
+
    char *nv_dbg = getenv("NOUVEAU_MESA_DEBUG");
    if (nv_dbg)
       nouveau_mesa_debug = atoi(nv_dbg);
 
    screen->force_enable_cl = debug_get_bool_option("NOUVEAU_ENABLE_CL", false);
-   if (screen->force_enable_cl)
-      glsl_type_singleton_init_or_ref();
-
    screen->disable_fences = debug_get_bool_option("NOUVEAU_DISABLE_FENCES", false);
 
    /* These must be set before any failure is possible, as the cleanup
@@ -444,6 +443,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
                                        NOUVEAU_BO_GART | NOUVEAU_BO_MAP,
                                        &mm_config);
    screen->mm_VRAM = nouveau_mm_create(dev, NOUVEAU_BO_VRAM, &mm_config);
+
    return 0;
 
 err:
@@ -457,8 +457,7 @@ nouveau_screen_fini(struct nouveau_screen *screen)
 {
    int fd = screen->drm->fd;
 
-   if (screen->force_enable_cl)
-      glsl_type_singleton_decref();
+   glsl_type_singleton_decref();
    if (screen->has_svm)
       os_munmap(screen->svm_cutout, screen->svm_cutout_size);
 

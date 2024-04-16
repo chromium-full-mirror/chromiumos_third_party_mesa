@@ -29,6 +29,7 @@
 
 #include "util/format/u_format.h"
 #include "pan_context.h"
+#include "pan_resource.h"
 #include "pan_util.h"
 
 void
@@ -80,6 +81,18 @@ panfrost_blitter_save(struct panfrost_context *ctx,
 }
 
 void
+panfrost_blit_no_afbc_legalization(struct pipe_context *pipe,
+                                   const struct pipe_blit_info *info)
+{
+   struct panfrost_context *ctx = pan_context(pipe);
+
+   panfrost_blitter_save(ctx, info->render_condition_enable
+                                 ? PAN_RENDER_BLIT_COND
+                                 : PAN_RENDER_BLIT);
+   util_blitter_blit(ctx->blitter, info);
+}
+
+void
 panfrost_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
 {
    struct panfrost_context *ctx = pan_context(pipe);
@@ -90,8 +103,14 @@ panfrost_blit(struct pipe_context *pipe, const struct pipe_blit_info *info)
    if (!util_blitter_is_blit_supported(ctx->blitter, info))
       unreachable("Unsupported blit\n");
 
-   panfrost_blitter_save(ctx, info->render_condition_enable
-                                 ? PAN_RENDER_BLIT_COND
-                                 : PAN_RENDER_BLIT);
-   util_blitter_blit(ctx->blitter, info);
+   /* Legalize here because it could trigger a recursive blit otherwise */
+   struct panfrost_resource *src = pan_resource(info->src.resource);
+   enum pipe_format src_view_format = util_format_linear(info->src.format);
+   pan_legalize_afbc_format(ctx, src, src_view_format, false, false);
+
+   struct panfrost_resource *dst = pan_resource(info->dst.resource);
+   enum pipe_format dst_view_format = util_format_linear(info->dst.format);
+   pan_legalize_afbc_format(ctx, dst, dst_view_format, true, false);
+
+   panfrost_blit_no_afbc_legalization(pipe, info);
 }

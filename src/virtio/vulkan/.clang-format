@@ -1,5 +1,6 @@
 
 BasedOnStyle: InheritParentConfig
+DisableFormat: false
 
 AlwaysBreakAfterReturnType: TopLevel
 BinPackParameters: false
@@ -20,5 +21,8 @@ IncludeCategories:
     Priority:        2
   - Regex:           '.*'
     Priority:        1
+
+ForEachMacros:
+  - vk_outarray_append_typed
 
 SpaceBeforeParens: ControlStatementsExceptForEachMacros

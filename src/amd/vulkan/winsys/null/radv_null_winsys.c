@@ -69,7 +69,7 @@ static const struct {
    [CHIP_VANGOGH] = {0x163F, 8, false},
    [CHIP_NAVI22] = {0x73C0, 8, true},
    [CHIP_NAVI23] = {0x73E0, 8, true},
-   [CHIP_GFX1100] = {0x744C, 24, true},
+   [CHIP_NAVI31] = {0x744C, 24, true},
    /* clang-format on */
 };
 
@@ -88,7 +88,7 @@ radv_null_winsys_query_info(struct radeon_winsys *rws, struct radeon_info *info)
          info->family = i;
          info->name = ac_get_family_name(i);
 
-         if (info->family >= CHIP_GFX1100)
+         if (info->family >= CHIP_NAVI31)
             info->gfx_level = GFX11;
          else if (i >= CHIP_NAVI21)
             info->gfx_level = GFX10_3;
@@ -114,16 +114,16 @@ radv_null_winsys_query_info(struct radeon_winsys *rws, struct radeon_info *info)
    info->max_se = 4;
    info->num_se = 4;
    if (info->gfx_level >= GFX10_3)
-      info->max_wave64_per_simd = 16;
+      info->max_waves_per_simd = 16;
    else if (info->gfx_level >= GFX10)
-      info->max_wave64_per_simd = 20;
+      info->max_waves_per_simd = 20;
    else if (info->family >= CHIP_POLARIS10 && info->family <= CHIP_VEGAM)
-      info->max_wave64_per_simd = 8;
+      info->max_waves_per_simd = 8;
    else
-      info->max_wave64_per_simd = 10;
+      info->max_waves_per_simd = 10;
 
    if (info->gfx_level >= GFX10)
-      info->num_physical_sgprs_per_simd = 128 * info->max_wave64_per_simd * 2;
+      info->num_physical_sgprs_per_simd = 128 * info->max_waves_per_simd;
    else if (info->gfx_level >= GFX8)
       info->num_physical_sgprs_per_simd = 800;
    else
@@ -132,7 +132,7 @@ radv_null_winsys_query_info(struct radeon_winsys *rws, struct radeon_info *info)
    info->has_3d_cube_border_color_mipmap = true;
    info->has_image_opcodes = true;
 
-   if (info->family == CHIP_GFX1100 || info->family == CHIP_GFX1101)
+   if (info->family == CHIP_NAVI31 || info->family == CHIP_NAVI32)
       info->num_physical_wave64_vgprs_per_simd = 768;
    else if (info->gfx_level >= GFX10)
       info->num_physical_wave64_vgprs_per_simd = 512;

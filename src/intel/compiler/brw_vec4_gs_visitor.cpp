@@ -29,6 +29,7 @@
 
 #include "brw_vec4_gs_visitor.h"
 #include "gfx6_gs_visitor.h"
+#include "brw_eu.h"
 #include "brw_cfg.h"
 #include "brw_fs.h"
 #include "brw_nir.h"
@@ -39,15 +40,14 @@
 namespace brw {
 
 vec4_gs_visitor::vec4_gs_visitor(const struct brw_compiler *compiler,
-                                 void *log_data,
+                                 const struct brw_compile_params *params,
                                  struct brw_gs_compile *c,
                                  struct brw_gs_prog_data *prog_data,
                                  const nir_shader *shader,
-                                 void *mem_ctx,
                                  bool no_spills,
                                  bool debug_enabled)
-   : vec4_visitor(compiler, log_data, &c->key.base.tex,
-                  &prog_data->base, shader,  mem_ctx,
+   : vec4_visitor(compiler, params, &c->key.base.tex,
+                  &prog_data->base, shader,
                   no_spills, debug_enabled),
      c(c),
      gs_prog_data(prog_data)
@@ -171,7 +171,7 @@ vec4_gs_visitor::emit_prolog()
    inst->force_writemask_all = true;
 
    /* Create a virtual register to hold the vertex count */
-   this->vertex_count = src_reg(this, glsl_type::uint_type);
+   this->vertex_count = src_reg(this, glsl_uint_type());
 
    /* Initialize the vertex_count register to 0 */
    this->current_annotation = "initialize vertex_count";
@@ -182,7 +182,7 @@ vec4_gs_visitor::emit_prolog()
       /* Create a virtual register to hold the current set of control data
        * bits.
        */
-      this->control_data_bits = src_reg(this, glsl_type::uint_type);
+      this->control_data_bits = src_reg(this, glsl_uint_type());
 
       /* If we're outputting more than 32 control data bits, then EmitVertex()
        * will set control_data_bits to 0 after emitting the first vertex.
@@ -316,9 +316,9 @@ vec4_gs_visitor::emit_control_data_bits()
     *
     *     dword_index = (vertex_count - 1) >> (6 - log2(bits_per_vertex))
     */
-   src_reg dword_index(this, glsl_type::uint_type);
+   src_reg dword_index(this, glsl_uint_type());
    if (urb_write_flags) {
-      src_reg prev_count(this, glsl_type::uint_type);
+      src_reg prev_count(this, glsl_uint_type());
       emit(ADD(dst_reg(prev_count), this->vertex_count,
                brw_imm_ud(0xffffffffu)));
       unsigned log2_bits_per_vertex =
@@ -340,7 +340,7 @@ vec4_gs_visitor::emit_control_data_bits()
       /* Set the per-slot offset to dword_index / 4, to that we'll write to
        * the appropriate OWORD within the control data header.
        */
-      src_reg per_slot_offset(this, glsl_type::uint_type);
+      src_reg per_slot_offset(this, glsl_uint_type());
       emit(SHR(dst_reg(per_slot_offset), dword_index, brw_imm_ud(2u)));
       emit(GS_OPCODE_SET_WRITE_OFFSET, mrf_reg, per_slot_offset,
            brw_imm_ud(1u));
@@ -354,13 +354,13 @@ vec4_gs_visitor::emit_control_data_bits()
        * GS_OPCODE_PREPARE_CHANNEL_MASKS tries to OR the two masks
        * together.
        */
-      src_reg channel(this, glsl_type::uint_type);
+      src_reg channel(this, glsl_uint_type());
       inst = emit(AND(dst_reg(channel), dword_index, brw_imm_ud(3u)));
       inst->force_writemask_all = true;
-      src_reg one(this, glsl_type::uint_type);
+      src_reg one(this, glsl_uint_type());
       inst = emit(MOV(dst_reg(one), brw_imm_ud(1u)));
       inst->force_writemask_all = true;
-      src_reg channel_mask(this, glsl_type::uint_type);
+      src_reg channel_mask(this, glsl_uint_type());
       inst = emit(SHL(dst_reg(channel_mask), one, channel));
       inst->force_writemask_all = true;
       emit(GS_OPCODE_PREPARE_CHANNEL_MASKS, dst_reg(channel_mask),
@@ -391,7 +391,7 @@ vec4_gs_visitor::set_stream_control_data_bits(unsigned stream_id)
    assert(c->control_data_bits_per_vertex == 2);
 
    /* Must be a valid stream */
-   assert(stream_id < MAX_VERTEX_STREAMS);
+   assert(stream_id < 4); /* MAX_VERTEX_STREAMS */
 
    /* Control data bits are initialized to 0 so we don't have to set any
     * bits when sending vertices to stream 0.
@@ -400,11 +400,11 @@ vec4_gs_visitor::set_stream_control_data_bits(unsigned stream_id)
       return;
 
    /* reg::sid = stream_id */
-   src_reg sid(this, glsl_type::uint_type);
+   src_reg sid(this, glsl_uint_type());
    emit(MOV(dst_reg(sid), brw_imm_ud(stream_id)));
 
    /* reg:shift_count = 2 * (vertex_count - 1) */
-   src_reg shift_count(this, glsl_type::uint_type);
+   src_reg shift_count(this, glsl_uint_type());
    emit(SHL(dst_reg(shift_count), this->vertex_count, brw_imm_ud(1u)));
 
    /* Note: we're relying on the fact that the GEN SHL instruction only pays
@@ -412,7 +412,7 @@ vec4_gs_visitor::set_stream_control_data_bits(unsigned stream_id)
     * architecture, stream_id << 2 * (vertex_count - 1) is equivalent to
     * stream_id << ((2 * (vertex_count - 1)) % 32).
     */
-   src_reg mask(this, glsl_type::uint_type);
+   src_reg mask(this, glsl_uint_type());
    emit(SHL(dst_reg(mask), sid, shift_count));
    emit(OR(dst_reg(this->control_data_bits), this->control_data_bits, mask));
 }
@@ -496,7 +496,7 @@ vec4_gs_visitor::gs_emit_vertex(int stream_id)
 
    /* In stream mode we have to set control data bits for all vertices
     * unless we have disabled control data bits completely (which we do
-    * do for GL_POINTS outputs that don't use streams).
+    * do for MESA_PRIM_POINTS outputs that don't use streams).
     */
    if (c->control_data_header_size_bits > 0 &&
        gs_prog_data->control_data_format ==
@@ -548,11 +548,11 @@ vec4_gs_visitor::gs_end_primitive()
     */
 
    /* control_data_bits |= 1 << ((vertex_count - 1) % 32) */
-   src_reg one(this, glsl_type::uint_type);
+   src_reg one(this, glsl_uint_type());
    emit(MOV(dst_reg(one), brw_imm_ud(1u)));
-   src_reg prev_count(this, glsl_type::uint_type);
+   src_reg prev_count(this, glsl_uint_type());
    emit(ADD(dst_reg(prev_count), this->vertex_count, brw_imm_ud(0xffffffffu)));
-   src_reg mask(this, glsl_type::uint_type);
+   src_reg mask(this, glsl_uint_type());
    /* Note: we're relying on the fact that the GEN SHL instruction only pays
     * attention to the lower 5 bits of its second source argument, so on this
     * architecture, 1 << (vertex_count - 1) is equivalent to 1 <<
@@ -583,10 +583,9 @@ static const GLuint gl_prim_to_hw_prim[MESA_PRIM_TRIANGLE_STRIP_ADJACENCY+1] = {
 
 extern "C" const unsigned *
 brw_compile_gs(const struct brw_compiler *compiler,
-               void *mem_ctx,
                struct brw_compile_gs_params *params)
 {
-   nir_shader *nir = params->nir;
+   nir_shader *nir = params->base.nir;
    const struct brw_gs_prog_key *key = params->key;
    struct brw_gs_prog_data *prog_data = params->prog_data;
 
@@ -618,7 +617,7 @@ brw_compile_gs(const struct brw_compiler *compiler,
    brw_nir_lower_vue_inputs(nir, &c.input_vue_map);
    brw_nir_lower_vue_outputs(nir);
    brw_postprocess_nir(nir, compiler, debug_enabled,
-                       key->base.robust_buffer_access);
+                       key->base.robust_flags);
 
    prog_data->base.clip_distance_mask =
       ((1 << nir->info.clip_distance_array_size) - 1);
@@ -633,7 +632,7 @@ brw_compile_gs(const struct brw_compiler *compiler,
 
    if (compiler->devinfo->ver >= 8)
       nir_gs_count_vertices_and_primitives(
-         nir, &prog_data->static_vertex_count, nullptr, 1u);
+         nir, &prog_data->static_vertex_count, nullptr, nullptr, 1u);
 
    if (compiler->devinfo->ver >= 7) {
       if (nir->info.gs.output_primitive == MESA_PRIM_POINTS) {
@@ -820,28 +819,32 @@ brw_compile_gs(const struct brw_compiler *compiler,
    }
 
    if (is_scalar) {
-      fs_visitor v(compiler, params->log_data, mem_ctx, &c, prog_data, nir,
-                   params->stats != NULL, debug_enabled);
+      fs_visitor v(compiler, &params->base, &c, prog_data, nir,
+                   params->base.stats != NULL, debug_enabled);
       if (v.run_gs()) {
          prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
-         prog_data->base.base.dispatch_grf_start_reg = v.payload().num_regs;
 
-         fs_generator g(compiler, params->log_data, mem_ctx,
+         assert(v.payload().num_regs % reg_unit(compiler->devinfo) == 0);
+         prog_data->base.base.dispatch_grf_start_reg =
+            v.payload().num_regs / reg_unit(compiler->devinfo);
+
+         fs_generator g(compiler, &params->base,
                         &prog_data->base.base, false, MESA_SHADER_GEOMETRY);
          if (unlikely(debug_enabled)) {
             const char *label =
                nir->info.label ? nir->info.label : "unnamed";
-            char *name = ralloc_asprintf(mem_ctx, "%s geometry shader %s",
+            char *name = ralloc_asprintf(params->base.mem_ctx,
+                                         "%s geometry shader %s",
                                          label, nir->info.name);
             g.enable_debug(name);
          }
-         g.generate_code(v.cfg, 8, v.shader_stats,
-                         v.performance_analysis.require(), params->stats);
+         g.generate_code(v.cfg, v.dispatch_width, v.shader_stats,
+                         v.performance_analysis.require(), params->base.stats);
          g.add_const_data(nir->constant_data, nir->constant_data_size);
          return g.get_assembly();
       }
 
-      params->error_str = ralloc_strdup(mem_ctx, v.fail_msg);
+      params->base.error_str = ralloc_strdup(params->base.mem_ctx, v.fail_msg);
 
       return NULL;
    }
@@ -855,8 +858,8 @@ brw_compile_gs(const struct brw_compiler *compiler,
           !INTEL_DEBUG(DEBUG_NO_DUAL_OBJECT_GS)) {
          prog_data->base.dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
 
-         brw::vec4_gs_visitor v(compiler, params->log_data, &c, prog_data, nir,
-                                mem_ctx, true /* no_spills */,
+         brw::vec4_gs_visitor v(compiler, &params->base, &c, prog_data, nir,
+                                true /* no_spills */,
                                 debug_enabled);
 
          /* Backup 'nr_params' and 'param' as they can be modified by the
@@ -872,11 +875,11 @@ brw_compile_gs(const struct brw_compiler *compiler,
          if (v.run()) {
             /* Success! Backup is not needed */
             ralloc_free(param);
-            return brw_vec4_generate_assembly(compiler, params->log_data, mem_ctx,
+            return brw_vec4_generate_assembly(compiler, &params->base,
                                               nir, &prog_data->base,
                                               v.cfg,
                                               v.performance_analysis.require(),
-                                              params->stats, debug_enabled);
+                                              debug_enabled);
          } else {
             /* These variables could be modified by the execution of the GS
              * visitor if it packed the uniforms in the push constant buffer.
@@ -925,21 +928,22 @@ brw_compile_gs(const struct brw_compiler *compiler,
    const unsigned *ret = NULL;
 
    if (compiler->devinfo->ver >= 7)
-      gs = new brw::vec4_gs_visitor(compiler, params->log_data, &c, prog_data,
-                                    nir, mem_ctx, false /* no_spills */,
+      gs = new brw::vec4_gs_visitor(compiler, &params->base, &c, prog_data,
+                                    nir, false /* no_spills */,
                                     debug_enabled);
    else
-      gs = new brw::gfx6_gs_visitor(compiler, params->log_data, &c, prog_data,
-                                    nir, mem_ctx, false /* no_spills */,
+      gs = new brw::gfx6_gs_visitor(compiler, &params->base, &c, prog_data,
+                                    nir, false /* no_spills */,
                                     debug_enabled);
 
    if (!gs->run()) {
-      params->error_str = ralloc_strdup(mem_ctx, gs->fail_msg);
+      params->base.error_str =
+         ralloc_strdup(params->base.mem_ctx, gs->fail_msg);
    } else {
-      ret = brw_vec4_generate_assembly(compiler, params->log_data, mem_ctx, nir,
+      ret = brw_vec4_generate_assembly(compiler, &params->base, nir,
                                        &prog_data->base, gs->cfg,
                                        gs->performance_analysis.require(),
-                                       params->stats, debug_enabled);
+                                       debug_enabled);
    }
 
    delete gs;

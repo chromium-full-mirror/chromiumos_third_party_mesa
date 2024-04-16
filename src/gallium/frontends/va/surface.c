@@ -35,6 +35,7 @@
 #include "util/u_sampler.h"
 #include "util/u_surface.h"
 #include "util/u_video.h"
+#include "util/set.h"
 
 #include "vl/vl_compositor.h"
 #include "vl/vl_video_buffer.h"
@@ -83,6 +84,12 @@ vlVaDestroySurfaces(VADriverContextP ctx, VASurfaceID *surface_list, int num_sur
       }
       if (surf->buffer)
          surf->buffer->destroy(surf->buffer);
+      if (surf->ctx) {
+         assert(_mesa_set_search(surf->ctx->surfaces, surf));
+         _mesa_set_remove_key(surf->ctx->surfaces, surf);
+         if (surf->fence && surf->ctx->decoder && surf->ctx->decoder->destroy_fence)
+            surf->ctx->decoder->destroy_fence(surf->ctx->decoder, surf->fence);
+      }
       util_dynarray_fini(&surf->subpics);
       FREE(surf);
       handle_table_remove(drv->htab, surface_list[i]);
@@ -126,7 +133,7 @@ vlVaSyncSurface(VADriverContextP ctx, VASurfaceID render_target)
       return VA_STATUS_SUCCESS;
    }
 
-   context = handle_table_get(drv->htab, surf->ctx);
+   context = surf->ctx;
    if (!context) {
       mtx_unlock(&drv->mutex);
       return VA_STATUS_ERROR_INVALID_CONTEXT;
@@ -181,7 +188,7 @@ vlVaSyncSurface(VADriverContextP ctx, VASurfaceID render_target)
             }
          }
       }
-      context->decoder->get_feedback(context->decoder, surf->feedback, &(surf->coded_buf->coded_size));
+      context->decoder->get_feedback(context->decoder, surf->feedback, &(surf->coded_buf->coded_size), &(surf->coded_buf->extended_metadata));
       surf->feedback = NULL;
       surf->coded_buf->feedback = NULL;
       surf->coded_buf->associated_encode_input_surf = VA_INVALID_ID;
@@ -225,7 +232,7 @@ vlVaQuerySurfaceStatus(VADriverContextP ctx, VASurfaceID render_target, VASurfac
       return VA_STATUS_SUCCESS;
    }
 
-   context = handle_table_get(drv->htab, surf->ctx);
+   context = surf->ctx;
    if (!context) {
       mtx_unlock(&drv->mutex);
       return VA_STATUS_ERROR_INVALID_CONTEXT;
@@ -706,6 +713,16 @@ vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config_id,
                                   config->profile, config->entrypoint,
                                   PIPE_VIDEO_CAP_MAX_HEIGHT);
       i++;
+#if VA_CHECK_VERSION(1, 21, 0)
+      attribs[i].type = VASurfaceAttribAlignmentSize;
+      attribs[i].value.type = VAGenericValueTypeInteger;
+      attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE;
+      attribs[i].value.value.i =
+         pscreen->get_video_param(pscreen,
+                                  config->profile, config->entrypoint,
+                                  PIPE_VIDEO_CAP_ENC_SURFACE_ALIGNMENT);
+      i++;
+#endif
    } else {
       attribs[i].type = VASurfaceAttribMaxWidth;
       attribs[i].value.type = VAGenericValueTypeInteger;
@@ -1365,11 +1382,13 @@ vlVaQueryVideoProcFilterCaps(VADriverContextP ctx, VAContextID context,
 }
 
 static VAProcColorStandardType vpp_input_color_standards[] = {
-   VAProcColorStandardBT601
+   VAProcColorStandardBT601,
+   VAProcColorStandardBT709
 };
 
 static VAProcColorStandardType vpp_output_color_standards[] = {
-   VAProcColorStandardBT601
+   VAProcColorStandardBT601,
+   VAProcColorStandardBT709
 };
 
 VAStatus

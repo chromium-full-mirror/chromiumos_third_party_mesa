@@ -76,7 +76,7 @@ gl_nir_opts(nir_shader *nir)
       NIR_PASS(progress, nir, nir_copy_prop);
       NIR_PASS(progress, nir, nir_opt_remove_phis);
       NIR_PASS(progress, nir, nir_opt_dce);
-      if (nir_opt_trivial_continues(nir)) {
+      if (nir_opt_loop(nir)) {
          progress = true;
          NIR_PASS(progress, nir, nir_copy_prop);
          NIR_PASS(progress, nir, nir_opt_dce);
@@ -297,15 +297,6 @@ disable_varying_optimizations_for_sso(struct gl_shader_program *prog)
                               nir_var_shader_out);
       }
    }
-}
-
-/**
- * Built-in / reserved GL variables names start with "gl_"
- */
-static inline bool
-is_gl_identifier(const char *s)
-{
-   return s && s[0] == 'g' && s[1] == 'l' && s[2] == '_';
 }
 
 static bool
@@ -926,17 +917,19 @@ gl_nir_add_point_size(nir_shader *nir)
       }
    }
    if (!found) {
-      b.cursor = nir_before_cf_list(&impl->body);
+      b.cursor = nir_before_impl(impl);
       nir_deref_instr *deref = nir_build_deref_var(&b, psiz);
       nir_store_deref(&b, deref, nir_imm_float(&b, 1.0), BITFIELD_BIT(0));
    }
+
+   nir->info.outputs_written |= VARYING_BIT_PSIZ;
 }
 
 static void
 zero_array_members(nir_builder *b, nir_variable *var)
 {
    nir_deref_instr *deref = nir_build_deref_var(b, var);
-   nir_ssa_def *zero = nir_imm_zero(b, 4, 32);
+   nir_def *zero = nir_imm_zero(b, 4, 32);
    for (int i = 0; i < glsl_array_size(var->type); i++) {
       nir_deref_instr *arr = nir_build_deref_array_imm(b, deref, i);
       uint32_t mask = BITFIELD_MASK(glsl_get_vector_elements(arr->type));
@@ -957,7 +950,7 @@ gl_nir_zero_initialize_clip_distance(nir_shader *nir)
       return false;
 
    nir_function_impl *impl = nir_shader_get_entrypoint(nir);
-   nir_builder b = nir_builder_at(nir_before_block(nir_start_block(impl)));
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
    if (clip_dist0)
       zero_array_members(&b, clip_dist0);
 
@@ -1066,6 +1059,8 @@ preprocess_shader(const struct gl_constants *consts,
                  options->lower_to_scalar_filter, NULL);
    }
 
+   NIR_PASS_V(nir, nir_opt_barrier_modes);
+
    /* before buffers and vars_to_ssa */
    NIR_PASS_V(nir, gl_nir_lower_images, true);
 
@@ -1132,6 +1127,10 @@ prelink_lowering(const struct gl_constants *consts,
       opt_access_options.is_vulkan = false;
       NIR_PASS_V(nir, nir_opt_access, &opt_access_options);
 
+      if (consts->ShaderCompilerOptions[i].LowerCombinedClipCullDistance) {
+         NIR_PASS_V(nir, nir_lower_clip_cull_distance_to_vec4s);
+      }
+
       /* Combine clip and cull outputs into one array and set:
        * - shader_info::clip_distance_array_size
        * - shader_info::cull_distance_array_size
@@ -1165,6 +1164,8 @@ gl_nir_link_spirv(const struct gl_constants *consts,
    if (!prelink_lowering(consts, exts, prog, linked_shader, num_shaders))
       return false;
 
+   gl_nir_link_assign_xfb_resources(consts, prog);
+
    /* Linking the stages in the opposite order (from fragment to vertex)
     * ensures that inter-shader outputs written to in an earlier stage
     * are eliminated if they are (transitively) not used in a later
@@ -1187,14 +1188,13 @@ gl_nir_link_spirv(const struct gl_constants *consts,
       }
    }
 
-   if (!gl_nir_link_uniform_blocks(prog))
+   if (!gl_nir_link_uniform_blocks(consts, prog))
       return false;
 
    if (!gl_nir_link_uniforms(consts, prog, options->fill_parameters))
       return false;
 
    gl_nir_link_assign_atomic_counter_resources(consts, prog);
-   gl_nir_link_assign_xfb_resources(consts, prog);
 
    return true;
 }
@@ -1335,6 +1335,46 @@ gl_nir_link_glsl(const struct gl_constants *consts,
       break;
    }
 
+   unsigned first = MESA_SHADER_STAGES;
+   unsigned last = 0;
+
+   /* Determine first and last stage. */
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      if (!prog->_LinkedShaders[i])
+         continue;
+      if (first == MESA_SHADER_STAGES)
+         first = i;
+      last = i;
+   }
+
+   gl_nir_lower_named_interface_blocks(prog);
+
+   /* Validate the inputs of each stage with the output of the preceding
+    * stage.
+    */
+   unsigned prev = first;
+   for (unsigned i = prev + 1; i <= MESA_SHADER_FRAGMENT; i++) {
+      if (prog->_LinkedShaders[i] == NULL)
+         continue;
+
+      gl_nir_cross_validate_outputs_to_inputs(consts, prog,
+                                              prog->_LinkedShaders[prev],
+                                              prog->_LinkedShaders[i]);
+      if (!prog->data->LinkStatus)
+         return false;
+
+      prev = i;
+   }
+
+   /* The cross validation of outputs/inputs above validates interstage
+    * explicit locations. We need to do this also for the inputs in the first
+    * stage and outputs of the last stage included in the program, since there
+    * is no cross validation for these.
+    */
+   gl_nir_validate_first_and_last_interface_explicit_locations(consts, prog,
+                                                               (gl_shader_stage) first,
+                                                               (gl_shader_stage) last);
+
    if (prog->SeparateShader)
       disable_varying_optimizations_for_sso(prog);
 
@@ -1419,8 +1459,28 @@ gl_nir_link_glsl(const struct gl_constants *consts,
                                    nir_var_mem_ubo | nir_var_mem_ssbo |
                                    nir_var_system_value,
                                    &opts);
+
+         if (shader->Program->info.stage == MESA_SHADER_FRAGMENT) {
+            nir_shader *nir = shader->Program->nir;
+            nir_foreach_variable_in_shader(var, nir) {
+               if (var->data.mode == nir_var_system_value &&
+                   (var->data.location == SYSTEM_VALUE_SAMPLE_ID ||
+                    var->data.location == SYSTEM_VALUE_SAMPLE_POS))
+                  nir->info.fs.uses_sample_shading = true;
+
+               if (var->data.mode == nir_var_shader_in && var->data.sample)
+                  nir->info.fs.uses_sample_shading = true;
+
+               if (var->data.mode == nir_var_shader_out &&
+                   var->data.fb_fetch_output)
+                  nir->info.fs.uses_sample_shading = true;
+            }
+         }
       }
    }
+
+   if (!gl_nir_link_uniform_blocks(consts, prog))
+      return false;
 
    if (!gl_nir_link_uniforms(consts, prog, true))
       return false;

@@ -26,7 +26,7 @@
 
 #include "util/u_debug.h"
 
-#ifdef LLVM_AVAILABLE
+#if LLVM_AVAILABLE
 #if defined(_MSC_VER) && defined(restrict)
 #undef restrict
 #endif
@@ -148,9 +148,7 @@ to_clrx_device_name(amd_gfx_level gfx_level, radeon_family family)
       case CHIP_NAVI12: return "gfx1011";
       default: return nullptr;
       }
-   case GFX10_3:
-   case GFX11: return nullptr;
-   default: unreachable("Invalid chip class!"); return nullptr;
+   default: return nullptr;
    }
 }
 
@@ -268,7 +266,7 @@ fail:
 #endif
 }
 
-#ifdef LLVM_AVAILABLE
+#if LLVM_AVAILABLE
 std::pair<bool, size_t>
 disasm_instr(amd_gfx_level gfx_level, LLVMDisasmContextRef disasm, uint32_t* binary,
              unsigned exec_size, size_t pos, char* outline, unsigned outline_size)
@@ -347,7 +345,7 @@ print_asm_llvm(Program* program, std::vector<uint32_t>& binary, unsigned exec_si
    unsigned prev_size = 0;
    unsigned prev_pos = 0;
    unsigned repeat_count = 0;
-   while (pos < exec_size) {
+   while (pos <= exec_size) {
       bool new_block =
          next_block < program->blocks.size() && pos == program->blocks[next_block].offset;
       if (pos + prev_size <= exec_size && prev_pos != pos && !new_block &&
@@ -362,6 +360,10 @@ print_asm_llvm(Program* program, std::vector<uint32_t>& binary, unsigned exec_si
       }
 
       print_block_markers(output, program, referenced_blocks, &next_block, pos);
+
+      /* For empty last block, only print block marker. */
+      if (pos == exec_size)
+         break;
 
       char outline[1024];
       std::pair<bool, size_t> res = disasm_instr(program->gfx_level, disasm, binary.data(),
@@ -389,7 +391,7 @@ print_asm_llvm(Program* program, std::vector<uint32_t>& binary, unsigned exec_si
 bool
 check_print_asm_support(Program* program)
 {
-#ifdef LLVM_AVAILABLE
+#if LLVM_AVAILABLE
    if (program->gfx_level >= GFX8) {
       /* LLVM disassembler only supports GFX8+ */
       const char* name = ac_get_llvm_processor_name(program->family);
@@ -420,7 +422,7 @@ check_print_asm_support(Program* program)
 bool
 print_asm(Program* program, std::vector<uint32_t>& binary, unsigned exec_size, FILE* output)
 {
-#ifdef LLVM_AVAILABLE
+#if LLVM_AVAILABLE
    if (program->gfx_level >= GFX8) {
       return print_asm_llvm(program, binary, exec_size, output);
    }

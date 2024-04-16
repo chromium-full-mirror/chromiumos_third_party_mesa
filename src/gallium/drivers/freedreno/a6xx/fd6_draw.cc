@@ -224,7 +224,7 @@ get_program_state(struct fd_context *ctx, const struct pipe_draw_info *info)
          .gs = (struct ir3_shader_state *)ctx->prog.gs,
          .fs = (struct ir3_shader_state *)ctx->prog.fs,
          .clip_plane_enable = ctx->rasterizer->clip_plane_enable,
-         .patch_vertices = ctx->patch_vertices,
+         .patch_vertices = HAS_TESS_GS ? ctx->patch_vertices : 0,
    };
 
    /* Some gcc versions get confused about designated order, so workaround
@@ -364,9 +364,11 @@ draw_vbos(struct fd_context *ctx, const struct pipe_draw_info *info,
 
    if (unlikely(ctx->stats_users > 0)) {
       ctx->stats.vs_regs += ir3_shader_halfregs(emit.vs);
-      ctx->stats.hs_regs += COND(emit.hs, ir3_shader_halfregs(emit.hs));
-      ctx->stats.ds_regs += COND(emit.ds, ir3_shader_halfregs(emit.ds));
-      ctx->stats.gs_regs += COND(emit.gs, ir3_shader_halfregs(emit.gs));
+      if (PIPELINE == HAS_TESS_GS) {
+         ctx->stats.hs_regs += COND(emit.hs, ir3_shader_halfregs(emit.hs));
+         ctx->stats.ds_regs += COND(emit.ds, ir3_shader_halfregs(emit.ds));
+         ctx->stats.gs_regs += COND(emit.gs, ir3_shader_halfregs(emit.gs));
+      }
       ctx->stats.fs_regs += ir3_shader_halfregs(emit.fs);
    }
 

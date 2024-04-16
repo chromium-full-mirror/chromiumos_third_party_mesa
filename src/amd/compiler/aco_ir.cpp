@@ -36,18 +36,20 @@ thread_local aco::monotonic_buffer_resource* instruction_buffer = nullptr;
 
 uint64_t debug_flags = 0;
 
-static const struct debug_control aco_debug_options[] = {{"validateir", DEBUG_VALIDATE_IR},
-                                                         {"validatera", DEBUG_VALIDATE_RA},
-                                                         {"novalidateir", DEBUG_NO_VALIDATE_IR},
-                                                         {"perfwarn", DEBUG_PERFWARN},
-                                                         {"force-waitcnt", DEBUG_FORCE_WAITCNT},
-                                                         {"force-waitdeps", DEBUG_FORCE_WAITDEPS},
-                                                         {"novn", DEBUG_NO_VN},
-                                                         {"noopt", DEBUG_NO_OPT},
-                                                         {"nosched", DEBUG_NO_SCHED},
-                                                         {"perfinfo", DEBUG_PERF_INFO},
-                                                         {"liveinfo", DEBUG_LIVE_INFO},
-                                                         {NULL, 0}};
+static const struct debug_control aco_debug_options[] = {
+   {"validateir", DEBUG_VALIDATE_IR},
+   {"validatera", DEBUG_VALIDATE_RA},
+   {"novalidateir", DEBUG_NO_VALIDATE_IR},
+   {"perfwarn", DEBUG_PERFWARN},
+   {"force-waitcnt", DEBUG_FORCE_WAITCNT},
+   {"force-waitdeps", DEBUG_FORCE_WAITDEPS},
+   {"novn", DEBUG_NO_VN},
+   {"noopt", DEBUG_NO_OPT},
+   {"nosched", DEBUG_NO_SCHED | DEBUG_NO_SCHED_ILP},
+   {"nosched-ilp", DEBUG_NO_SCHED_ILP},
+   {"perfinfo", DEBUG_PERF_INFO},
+   {"liveinfo", DEBUG_LIVE_INFO},
+   {NULL, 0}};
 
 static once_flag init_once_flag = ONCE_FLAG_INIT;
 
@@ -89,7 +91,7 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
       case GFX9: program->family = CHIP_VEGA10; break;
       case GFX10: program->family = CHIP_NAVI10; break;
       case GFX10_3: program->family = CHIP_NAVI21; break;
-      case GFX11: program->family = CHIP_GFX1100; break;
+      case GFX11: program->family = CHIP_NAVI31; break;
       default: program->family = CHIP_UNKNOWN; break;
       }
    } else {
@@ -114,12 +116,12 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
    program->dev.vgpr_alloc_granule = 4;
 
    if (gfx_level >= GFX10) {
-      program->dev.physical_sgprs = 5120; /* doesn't matter as long as it's at least 128 * 40 */
+      program->dev.physical_sgprs = 128 * 20; /* enough for max waves */
       program->dev.sgpr_alloc_granule = 128;
       program->dev.sgpr_limit =
          108; /* includes VCC, which can be treated as s[106-107] on GFX10+ */
 
-      if (family == CHIP_GFX1100 || family == CHIP_GFX1101) {
+      if (family == CHIP_NAVI31 || family == CHIP_NAVI32) {
          program->dev.physical_vgprs = program->wave_size == 32 ? 1536 : 768;
          program->dev.vgpr_alloc_granule = program->wave_size == 32 ? 24 : 12;
       } else {
@@ -143,13 +145,13 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
 
    program->dev.scratch_alloc_granule = gfx_level >= GFX11 ? 256 : 1024;
 
-   program->dev.max_wave64_per_simd = 10;
+   program->dev.max_waves_per_simd = 10;
    if (program->gfx_level >= GFX10_3)
-      program->dev.max_wave64_per_simd = 16;
+      program->dev.max_waves_per_simd = 16;
    else if (program->gfx_level == GFX10)
-      program->dev.max_wave64_per_simd = 20;
+      program->dev.max_waves_per_simd = 20;
    else if (program->family >= CHIP_POLARIS10 && program->family <= CHIP_VEGAM)
-      program->dev.max_wave64_per_simd = 8;
+      program->dev.max_waves_per_simd = 8;
 
    program->dev.simd_per_cu = program->gfx_level >= GFX10 ? 2 : 4;
 
@@ -399,6 +401,10 @@ can_use_DPP(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool dpp
          return false;
    }
 
+   /* According to LLVM, it's unsafe to combine DPP into v_cmpx. */
+   if (instr->writes_exec())
+      return false;
+
    /* simpler than listing all VOP3P opcodes which do not support DPP */
    if (instr->isVOP3P()) {
       return instr->opcode == aco_opcode::v_fma_mix_f32 ||
@@ -407,6 +413,9 @@ can_use_DPP(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool dpp
              instr->opcode == aco_opcode::v_dot2_f32_f16 ||
              instr->opcode == aco_opcode::v_dot2_f32_bf16;
    }
+
+   if (instr->opcode == aco_opcode::v_pk_fmac_f16)
+      return gfx_level < GFX11;
 
    /* there are more cases but those all take 64-bit inputs */
    return instr->opcode != aco_opcode::v_madmk_f32 && instr->opcode != aco_opcode::v_madak_f32 &&
@@ -451,13 +460,14 @@ convert_to_DPP(amd_gfx_level gfx_level, aco_ptr<Instruction>& instr, bool dpp8)
 
    if (dpp8) {
       DPP8_instruction* dpp = &instr->dpp8();
-      for (unsigned i = 0; i < 8; i++)
-         dpp->lane_sel[i] = i;
+      dpp->lane_sel = 0xfac688; /* [0,1,2,3,4,5,6,7] */
+      dpp->fetch_inactive = gfx_level >= GFX10;
    } else {
       DPP16_instruction* dpp = &instr->dpp16();
       dpp->dpp_ctrl = dpp_quad_perm(0, 1, 2, 3);
       dpp->row_mask = 0xf;
       dpp->bank_mask = 0xf;
+      dpp->fetch_inactive = gfx_level >= GFX10;
    }
 
    instr->valu().neg = tmp->valu().neg;
@@ -648,6 +658,7 @@ instr_is_16bit(amd_gfx_level gfx_level, aco_opcode op)
 
 /* On GFX11, for some instructions, bit 7 of the destination/operand vgpr is opsel and the field
  * only supports v0-v127.
+ * The first three bits are used for operands 0-2, and the 4th bit is used for the destination.
  */
 uint8_t
 get_gfx11_true16_mask(aco_opcode op)
@@ -860,6 +871,7 @@ needs_exec_mask(const Instruction* instr)
       case aco_opcode::p_logical_start:
       case aco_opcode::p_logical_end:
       case aco_opcode::p_startpgm:
+      case aco_opcode::p_end_wqm:
       case aco_opcode::p_init_scratch: return instr->reads_exec();
       case aco_opcode::p_start_linear_vgpr: return instr->operands.size();
       default: break;
@@ -1206,7 +1218,7 @@ wait_imm::wait_imm(uint16_t vm_, uint16_t exp_, uint16_t lgkm_, uint16_t vs_)
 
 wait_imm::wait_imm(enum amd_gfx_level gfx_level, uint16_t packed) : vs(unset_counter)
 {
-   if (gfx_level == GFX11) {
+   if (gfx_level >= GFX11) {
       vm = (packed >> 10) & 0x3f;
       lgkm = (packed >> 4) & 0x3f;
       exp = packed & 0x7;
@@ -1235,28 +1247,22 @@ wait_imm::pack(enum amd_gfx_level gfx_level) const
 {
    uint16_t imm = 0;
    assert(exp == unset_counter || exp <= 0x7);
-   switch (gfx_level) {
-   case GFX11:
+   if (gfx_level >= GFX11) {
       assert(lgkm == unset_counter || lgkm <= 0x3f);
       assert(vm == unset_counter || vm <= 0x3f);
       imm = ((vm & 0x3f) << 10) | ((lgkm & 0x3f) << 4) | (exp & 0x7);
-      break;
-   case GFX10:
-   case GFX10_3:
+   } else if (gfx_level >= GFX10) {
       assert(lgkm == unset_counter || lgkm <= 0x3f);
       assert(vm == unset_counter || vm <= 0x3f);
       imm = ((vm & 0x30) << 10) | ((lgkm & 0x3f) << 8) | ((exp & 0x7) << 4) | (vm & 0xf);
-      break;
-   case GFX9:
+   } else if (gfx_level >= GFX9) {
       assert(lgkm == unset_counter || lgkm <= 0xf);
       assert(vm == unset_counter || vm <= 0x3f);
       imm = ((vm & 0x30) << 10) | ((lgkm & 0xf) << 8) | ((exp & 0x7) << 4) | (vm & 0xf);
-      break;
-   default:
+   } else {
       assert(lgkm == unset_counter || lgkm <= 0xf);
       assert(vm == unset_counter || vm <= 0xf);
       imm = ((lgkm & 0xf) << 8) | ((exp & 0x7) << 4) | (vm & 0xf);
-      break;
    }
    if (gfx_level < GFX9 && vm == wait_imm::unset_counter)
       imm |= 0xc000; /* should have no effect on pre-GFX9 and now we won't have to worry about the
@@ -1285,6 +1291,19 @@ wait_imm::empty() const
           vs == unset_counter;
 }
 
+void
+wait_imm::print(FILE* output) const
+{
+   if (exp != unset_counter)
+      fprintf(output, "exp: %u\n", exp);
+   if (vm != unset_counter)
+      fprintf(output, "vm: %u\n", vm);
+   if (lgkm != unset_counter)
+      fprintf(output, "lgkm: %u\n", lgkm);
+   if (vs != unset_counter)
+      fprintf(output, "vs: %u\n", vs);
+}
+
 bool
 should_form_clause(const Instruction* a, const Instruction* b)
 {
@@ -1294,8 +1313,11 @@ should_form_clause(const Instruction* a, const Instruction* b)
    if (a->format != b->format)
       return false;
 
+   if (a->operands.empty() || b->operands.empty())
+      return false;
+
    /* Assume loads which don't use descriptors might load from similar addresses. */
-   if (a->isFlatLike())
+   if (a->isFlatLike() || a->accessesLDS())
       return true;
    if (a->isSMEM() && a->operands[0].bytes() == 8 && b->operands[0].bytes() == 8)
       return true;
@@ -1339,8 +1361,7 @@ dealloc_vgprs(Program* program)
       return false;
 
    /* skip if deallocating VGPRs won't increase occupancy */
-   uint16_t max_waves = program->dev.max_wave64_per_simd * (64 / program->wave_size);
-   max_waves = max_suitable_waves(program, max_waves);
+   uint16_t max_waves = max_suitable_waves(program, program->dev.max_waves_per_simd);
    if (program->max_reg_demand.vgpr <= get_addr_vgpr_from_waves(program, max_waves))
       return false;
 

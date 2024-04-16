@@ -61,8 +61,21 @@ v3d_pipe_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
         v3d_flush(pctx);
 
         if (fence) {
+                int fd = -1;
+                /* Snapshot the last V3D rendering's out fence.  We'd rather
+                 * have another syncobj instead of a sync file, but this is all
+                 * we get. (HandleToFD/FDToHandle just gives you another syncobj
+                 * ID for the same syncobj).
+                 */
+                drmSyncobjExportSyncFile(v3d->fd, v3d->out_sync, &fd);
+                if (fd == -1) {
+                        fprintf(stderr, "export failed\n");
+                        *fence = NULL;
+                        return;
+                }
+
                 struct pipe_screen *screen = pctx->screen;
-                struct v3d_fence *f = v3d_fence_create(v3d);
+                struct v3d_fence *f = v3d_fence_create(v3d, fd);
                 screen->fence_reference(screen, fence, NULL);
                 *fence = (struct pipe_fence_handle *)f;
         }
@@ -220,7 +233,8 @@ v3d_flag_dirty_sampler_state(struct v3d_context *v3d,
 }
 
 void
-v3d_get_tile_buffer_size(bool is_msaa,
+v3d_get_tile_buffer_size(const struct v3d_device_info *devinfo,
+                         bool is_msaa,
                          bool double_buffer,
                          uint32_t nr_cbufs,
                          struct pipe_surface **cbufs,
@@ -232,11 +246,13 @@ v3d_get_tile_buffer_size(bool is_msaa,
         assert(!is_msaa || !double_buffer);
 
         uint32_t max_cbuf_idx = 0;
+        uint32_t total_bpp = 0;
         *max_bpp = 0;
         for (int i = 0; i < nr_cbufs; i++) {
                 if (cbufs[i]) {
                         struct v3d_surface *surf = v3d_surface(cbufs[i]);
                         *max_bpp = MAX2(*max_bpp, surf->internal_bpp);
+                        total_bpp += 4 * v3d_internal_bpp_words(surf->internal_bpp);
                         max_cbuf_idx = MAX2(i, max_cbuf_idx);
                 }
         }
@@ -245,9 +261,11 @@ v3d_get_tile_buffer_size(bool is_msaa,
                 struct v3d_surface *bsurf = v3d_surface(bbuf);
                 assert(bbuf->texture->nr_samples <= 1 || is_msaa);
                 *max_bpp = MAX2(*max_bpp, bsurf->internal_bpp);
+                total_bpp += 4 * v3d_internal_bpp_words(bsurf->internal_bpp);
         }
 
-        v3d_choose_tile_size(max_cbuf_idx + 1, *max_bpp,
+        v3d_choose_tile_size(devinfo, max_cbuf_idx + 1,
+                             *max_bpp, total_bpp,
                              is_msaa, double_buffer,
                              tile_width, tile_height);
 }
@@ -287,6 +305,8 @@ v3d_context_destroy(struct pipe_context *pctx)
 
         v3d_program_fini(pctx);
 
+        v3d_fence_context_finish(v3d);
+
         ralloc_free(v3d);
 }
 
@@ -295,16 +315,11 @@ v3d_get_sample_position(struct pipe_context *pctx,
                         unsigned sample_count, unsigned sample_index,
                         float *xy)
 {
-        struct v3d_context *v3d = v3d_context(pctx);
-
         if (sample_count <= 1) {
                 xy[0] = 0.5;
                 xy[1] = 0.5;
         } else {
-                static const int xoffsets_v33[] = { 1, -3, 3, -1 };
-                static const int xoffsets_v42[] = { -1, 3, -3, 1 };
-                const int *xoffsets = (v3d->screen->devinfo.ver >= 42 ?
-                                       xoffsets_v42 : xoffsets_v33);
+                static const int xoffsets[] = { -1, 3, -3, 1 };
 
                 xy[0] = 0.5 + xoffsets[sample_index] * .125;
                 xy[1] = .125 + sample_index * .25;
@@ -384,6 +399,10 @@ v3d_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
                                               4096,
                                               PIPE_BIND_CONSTANT_BUFFER,
                                               PIPE_USAGE_STREAM, 0);
+
+        ret = v3d_fence_context_init(v3d);
+        if (ret)
+                goto fail;
 
         v3d->blitter = util_blitter_create(pctx);
         if (!v3d->blitter)

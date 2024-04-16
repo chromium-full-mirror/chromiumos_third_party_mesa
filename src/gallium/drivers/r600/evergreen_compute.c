@@ -49,7 +49,6 @@
 #include "evergreen_compute.h"
 #include "evergreen_compute_internal.h"
 #include "compute_memory_pool.h"
-#include "sb/sb_public.h"
 #include <inttypes.h>
 
 /**
@@ -167,7 +166,6 @@ static void evergreen_cs_set_vertex_buffer(struct r600_context *rctx,
 {
 	struct r600_vertexbuf_state *state = &rctx->cs_vertex_buffer_state;
 	struct pipe_vertex_buffer *vb = &state->vb[vb_index];
-	vb->stride = 1;
 	vb->buffer_offset = offset;
 	vb->buffer.resource = buffer;
 	vb->is_user_buffer = false;
@@ -1217,6 +1215,22 @@ void evergreen_init_atom_start_compute_cs(struct r600_context *rctx)
 	eg_store_loop_const(cb, R_03A200_SQ_LOOP_CONST_0 + (160 * 4), 0x1000FFF);
 }
 
+
+static void evergreen_get_compute_state_info(struct pipe_context *ctx, void *state,
+                                             struct pipe_compute_state_object_info *info)
+{
+	struct r600_context *rctx = (struct r600_context*)ctx;
+	struct r600_pipe_compute *shader = state;
+	
+	/* This is somehow copied from RadeonSI, but in thruth this not more
+	 * than an educated guess. */
+	uint8_t wave_size = r600_wavefront_size(rctx->b.screen->family);
+	info->private_memory = shader->sel->current->scratch_space_needed;
+	info->preferred_simd_size = wave_size;
+	info->simd_sizes = wave_size;
+	info->max_threads = 128;
+}
+
 void evergreen_init_compute_state_functions(struct r600_context *rctx)
 {
 	rctx->b.b.create_compute_state = evergreen_create_compute_state;
@@ -1226,7 +1240,7 @@ void evergreen_init_compute_state_functions(struct r600_context *rctx)
 	rctx->b.b.set_compute_resources = evergreen_set_compute_resources;
 	rctx->b.b.set_global_binding = evergreen_set_global_binding;
 	rctx->b.b.launch_grid = evergreen_launch_grid;
-
+	rctx->b.b.get_compute_state_info = evergreen_get_compute_state_info;
 }
 
 void *r600_compute_global_transfer_map(struct pipe_context *ctx,

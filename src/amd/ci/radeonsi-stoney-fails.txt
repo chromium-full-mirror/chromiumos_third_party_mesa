@@ -3,15 +3,6 @@ glx@glx-swap-pixmap-bad,Fail
 glx@glx_arb_create_context_es2_profile@invalid opengl es version,Fail
 glx@glx_arb_create_context_no_error@no error,Fail
 glx@glx_arb_create_context_robustness@invalid reset notification strategy,Fail
-glx@glx_ext_import_context@free context,Fail
-glx@glx_ext_import_context@get context id,Fail
-glx@glx_ext_import_context@get current display,Fail
-glx@glx_ext_import_context@import context- multi process,Fail
-glx@glx_ext_import_context@import context- single process,Fail
-glx@glx_ext_import_context@imported context has same context id,Fail
-glx@glx_ext_import_context@make current- multi process,Fail
-glx@glx_ext_import_context@make current- single process,Fail
-glx@glx_ext_import_context@query context info,Fail
 spec@!opengl 1.0@gl-1.0-user-clip-all-planes,Fail
 spec@!opengl 1.0@rasterpos,Fail
 spec@!opengl 1.0@rasterpos@glsl_vs_gs_linked,Fail
@@ -120,7 +111,6 @@ spec@arb_texture_rg@texwrap formats-int bordercolor-swizzled@GL_RG8I- swizzled- 
 spec@arb_texture_rg@texwrap formats-int bordercolor-swizzled@GL_RG8UI- swizzled- border color only,Fail
 spec@arb_texture_rgb10_a2ui@texwrap formats bordercolor-swizzled,Fail
 spec@arb_texture_rgb10_a2ui@texwrap formats bordercolor-swizzled@GL_RGB10_A2UI- swizzled- border color only,Fail
-spec@arb_timer_query@timestamp-get,Fail
 spec@egl 1.4@eglterminate then unbind context,Fail
 spec@egl_chromium_sync_control@conformance,Fail
 spec@egl_chromium_sync_control@conformance@eglGetSyncValuesCHROMIUM_msc_and_sbc_test,Fail
@@ -234,3 +224,9 @@ spec@!opengl 1.1@line-smooth-stipple,Fail
 spec@arb_viewport_array@display-list,Fail
 # since transition XORG -> WESTON
 glx@glx_arb_sync_control@waitformsc,Fail
+
+# remove these after updating piglit:
+spec@arb_fragment_layer_viewport@layer-gs-writes-out-of-range,Fail
+spec@arb_fragment_layer_viewport@layer-vs-write-simple,Fail
+spec@arb_fragment_layer_viewport@layer-gs-write-simple,Fail
+spec@arb_fragment_layer_viewport@layer-vs-gs-write-simple,Fail

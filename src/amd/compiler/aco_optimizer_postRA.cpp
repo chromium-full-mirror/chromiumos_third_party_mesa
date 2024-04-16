@@ -57,8 +57,8 @@ Idx const_or_undef{UINT32_MAX, 2};
 /** Indicates that a register was overwritten by different instructions in previous blocks. */
 Idx overwritten_untrackable{UINT32_MAX, 3};
 
-/** Indicates that a register was written by subdword operations. */
-Idx overwritten_subdword{UINT32_MAX, 4};
+/** Indicates that there isn't a clear single writer, for example due to subdword operations. */
+Idx overwritten_unknown_instr{UINT32_MAX, 4};
 
 struct pr_opt_ctx {
    using Idx_array = std::array<Idx, max_reg_cnt>;
@@ -150,12 +150,18 @@ save_reg_writes(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
       Idx idx{ctx.current_block->index, ctx.current_instr_idx};
 
       if (def.regClass().is_subdword())
-         idx = overwritten_subdword;
+         idx = overwritten_unknown_instr;
 
       assert((r + dw_size) <= max_reg_cnt);
       assert(def.size() == dw_size || def.regClass().is_subdword());
       std::fill(ctx.instr_idx_by_regs[ctx.current_block->index].begin() + r,
                 ctx.instr_idx_by_regs[ctx.current_block->index].begin() + r + dw_size, idx);
+   }
+   if (instr->isPseudo() && instr->pseudo().needs_scratch_reg) {
+      if (!instr->pseudo().tmp_in_scc)
+         ctx.instr_idx_by_regs[ctx.current_block->index][scc] = overwritten_unknown_instr;
+      ctx.instr_idx_by_regs[ctx.current_block->index][instr->pseudo().scratch_sgpr] =
+         overwritten_unknown_instr;
    }
 }
 
@@ -211,6 +217,8 @@ is_overwritten_since(pr_opt_ctx& ctx, PhysReg reg, RegClass rc, const Idx& since
          return true;
       else if (i == overwritten_untrackable || i == not_written_yet)
          continue;
+      else if (i == overwritten_unknown_instr)
+         return true;
 
       assert(i.found());
 
@@ -490,6 +498,13 @@ try_combine_dpp(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
       if (!op_instr_idx.found())
          continue;
 
+      /* is_overwritten_since only considers active lanes when the register could possibly
+       * have been overwritten from inactive lanes. Restrict this optimization to at most
+       * one block so that there is no possibility for clobbered inactive lanes.
+       */
+      if (ctx.current_block->index - op_instr_idx.block > 1)
+         continue;
+
       const Instruction* mov = ctx.get(op_instr_idx);
       if (mov->opcode != aco_opcode::v_mov_b32 || !mov->isDPP())
          continue;
@@ -505,6 +520,13 @@ try_combine_dpp(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
       if (is_overwritten_since(ctx, mov->operands[0], op_instr_idx))
          continue;
 
+      bool dpp8 = mov->isDPP8();
+
+      /* Fetch-inactive means exec is ignored, which allows us to combine across exec changes. */
+      if (!(dpp8 ? mov->dpp8().fetch_inactive : mov->dpp16().fetch_inactive) &&
+          is_overwritten_since(ctx, Operand(exec, ctx.program->lane_mask), op_instr_idx))
+         continue;
+
       /* We won't eliminate the DPP mov if the operand is used twice */
       bool op_used_twice = false;
       for (unsigned j = 0; j < instr->operands.size(); j++)
@@ -512,7 +534,6 @@ try_combine_dpp(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
       if (op_used_twice)
          continue;
 
-      bool dpp8 = mov->isDPP8();
       bool input_mods = can_use_input_modifiers(ctx.program->gfx_level, instr->opcode, i) &&
                         get_operand_size(instr, i) == 32;
       bool mov_uses_mods = mov->valu().neg[0] || mov->valu().abs[0];
@@ -540,13 +561,15 @@ try_combine_dpp(pr_opt_ctx& ctx, aco_ptr<Instruction>& instr)
 
       if (dpp8) {
          DPP8_instruction* dpp = &instr->dpp8();
-         memcpy(dpp->lane_sel, mov->dpp8().lane_sel, sizeof(dpp->lane_sel));
+         dpp->lane_sel = mov->dpp8().lane_sel;
+         dpp->fetch_inactive = mov->dpp8().fetch_inactive;
          if (mov_uses_mods)
             instr->format = asVOP3(instr->format);
       } else {
          DPP16_instruction* dpp = &instr->dpp16();
          dpp->dpp_ctrl = mov->dpp16().dpp_ctrl;
          dpp->bound_ctrl = true;
+         dpp->fetch_inactive = mov->dpp16().fetch_inactive;
       }
       instr->valu().neg[0] ^= mov->valu().neg[0] && !instr->valu().abs[0];
       instr->valu().abs[0] |= mov->valu().abs[0];
@@ -731,6 +754,12 @@ optimize_postRA(Program* program)
 
       for (aco_ptr<Instruction>& instr : block.instructions)
          process_instruction(ctx, instr);
+
+      /* SCC might get overwritten by copies or swaps from parallelcopies
+       * inserted by SSA-elimination for linear phis.
+       */
+      if (!block.scc_live_out)
+         ctx.instr_idx_by_regs[block.index][scc] = overwritten_unknown_instr;
    }
 
    /* Cleanup pass

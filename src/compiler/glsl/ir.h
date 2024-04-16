@@ -38,6 +38,18 @@
 #include "util/glheader.h"
 
 #ifdef __cplusplus
+extern "C" {
+#endif
+
+struct _mesa_glsl_parse_state;
+struct gl_shader_program;
+struct gl_builtin_uniform_desc;
+
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
 
 /**
  * \defgroup IR Intermediate representation nodes
@@ -398,21 +410,6 @@ struct ir_state_slot {
 };
 
 
-/**
- * Get the string value for an interpolation qualifier
- *
- * \return The string that would be used in a shader to specify \c
- * mode will be returned.
- *
- * This function is used to generate error messages of the form "shader
- * uses %s interpolation qualifier", so in the case where there is no
- * interpolation qualifier, it returns "no".
- *
- * This function should only be used on a shader input or output variable.
- */
-const char *interpolation_string(unsigned interpolation);
-
-
 class ir_variable : public ir_instruction {
 public:
    ir_variable(const struct glsl_type *, const char *, ir_variable_mode);
@@ -468,7 +465,7 @@ public:
     */
    inline bool is_interface_instance() const
    {
-      return this->type->without_array() == this->interface_type;
+      return glsl_without_array(this->type) == this->interface_type;
    }
 
    /**
@@ -476,7 +473,7 @@ public:
     */
    inline bool contains_bindless() const
    {
-      if (!this->type->contains_sampler() && !this->type->contains_image())
+      if (!glsl_contains_sampler(this->type) && !glsl_type_contains_image(this->type))
          return false;
 
       return this->data.bindless || this->data.mode != ir_var_uniform;
@@ -546,7 +543,7 @@ public:
 
    enum glsl_interface_packing get_interface_type_packing() const
    {
-     return this->interface_type->get_interface_packing();
+     return glsl_get_ifc_packing(this->interface_type);
    }
    /**
     * Get the max_ifc_array_access pointer
@@ -600,8 +597,8 @@ public:
    inline bool is_interpolation_flat() const
    {
       return this->data.interpolation == INTERP_MODE_FLAT ||
-             this->type->contains_integer() ||
-             this->type->contains_double();
+             glsl_contains_integer(this->type) ||
+             glsl_contains_double(this->type);
    }
 
    inline bool is_name_ralloced() const
@@ -840,7 +837,7 @@ public:
        * This is not equal to \c ir_depth_layout_none if and only if this
        * variable is \c gl_FragDepth and a layout qualifier is specified.
        */
-      ir_depth_layout depth_layout:3;
+      unsigned depth_layout:3; /*ir_depth_layout*/
 
       /**
        * Memory qualifiers.
@@ -1553,7 +1550,6 @@ public:
              operation == ir_binop_dot ||
              operation == ir_binop_vector_extract ||
              operation == ir_triop_vector_insert ||
-             operation == ir_binop_ubo_load ||
              operation == ir_quadop_vector;
    }
 
@@ -2154,7 +2150,7 @@ public:
 
    virtual int precision() const
    {
-      glsl_struct_field *field = record->type->fields.structure + field_idx;
+      const glsl_struct_field *field = record->type->fields.structure + field_idx;
 
       return field->precision;
    }
@@ -2434,9 +2430,6 @@ visit_exec_list(exec_list *list, ir_visitor *visitor);
  */
 void validate_ir_tree(exec_list *instructions);
 
-struct _mesa_glsl_parse_state;
-struct gl_shader_program;
-
 /**
  * Detect whether an unlinked shader contains static recursion
  *
@@ -2470,10 +2463,6 @@ void
 clone_ir_list(void *mem_ctx, exec_list *out, const exec_list *in);
 
 extern void
-_mesa_glsl_initialize_variables(exec_list *instructions,
-				struct _mesa_glsl_parse_state *state);
-
-extern void
 reparent_ir(exec_list *list, void *mem_ctx);
 
 extern char *
@@ -2483,17 +2472,15 @@ prototype_string(const glsl_type *return_type, const char *name,
 const char *
 mode_string(const ir_variable *var);
 
-/**
- * Built-in / reserved GL variables names start with "gl_"
- */
-static inline bool
-is_gl_identifier(const char *s)
-{
-   return s && s[0] == 'g' && s[1] == 'l' && s[2] == '_';
-}
-
 extern "C" {
 #endif /* __cplusplus */
+
+extern void
+_mesa_glsl_initialize_types(struct _mesa_glsl_parse_state *state);
+
+extern void
+_mesa_glsl_initialize_variables(struct exec_list *instructions,
+                                struct _mesa_glsl_parse_state *state);
 
 extern void _mesa_print_ir(FILE *f, struct exec_list *instructions,
                            struct _mesa_glsl_parse_state *state);
@@ -2508,7 +2495,7 @@ _mesa_glsl_get_builtin_uniform_desc(const char *name);
 } /* extern "C" */
 #endif
 
-unsigned
-vertices_per_prim(GLenum prim);
+enum mesa_prim
+gl_to_mesa_prim(GLenum prim);
 
 #endif /* IR_H */

@@ -169,6 +169,11 @@ create_dst_texture(struct gl_context *ctx,
    struct pipe_screen *screen = st->screen;
    struct pipe_resource dst_templ;
 
+   if (pipe_target == PIPE_TEXTURE_CUBE || pipe_target == PIPE_TEXTURE_CUBE_ARRAY) {
+      width = MAX2(width, height);
+      height = MAX2(width, height);
+   }
+
    /* create the destination texture of size (width X height X depth) */
    memset(&dst_templ, 0, sizeof(dst_templ));
    dst_templ.target = pipe_target;
@@ -2009,7 +2014,7 @@ try_pbo_download(struct st_context *st,
    memset(&fb, 0, sizeof(fb));
    fb.width = texture->width0;
    fb.height = texture->height0;
-   fb.layers = 1;
+   fb.layers = addr.depth;
    fb.samples = 1;
    cso_set_framebuffer(cso, &fb);
 
@@ -2081,7 +2086,7 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
    GLubyte *map;
    unsigned dstz = texImage->Face + texImage->TexObject->Attrib.MinLayer;
    unsigned dst_level = 0;
-   bool is_ms = dst->nr_samples > 1;
+   bool is_ms;
    bool throttled = false;
 
    st_flush_bitmap_cache(st);
@@ -2096,6 +2101,8 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
 
    if (!dst)
       goto fallback;
+
+   is_ms = dst->nr_samples > 1;
 
    /* Try texture_subdata, which should be the fastest memcpy path. */
    if (pixels &&
@@ -2348,7 +2355,7 @@ st_TexImage(struct gl_context * ctx, GLuint dims,
 
    prep_teximage(ctx, texImage, format, type);
 
-   if (texImage->Width == 0 || texImage->Height == 0 || texImage->Depth == 0)
+   if (_mesa_is_zero_size_texture(texImage))
       return;
 
    /* allocate storage for texture data */
@@ -3338,8 +3345,11 @@ st_texture_create_from_memory(struct st_context *st,
    pt.bind = bind;
    /* only set this for OpenGL textures, not renderbuffers */
    pt.flags = PIPE_RESOURCE_FLAG_TEXTURING_MORE_LIKELY;
-   if (memObj->TextureTiling == GL_LINEAR_TILING_EXT)
+   if (memObj->TextureTiling == GL_LINEAR_TILING_EXT) {
       pt.bind |= PIPE_BIND_LINEAR;
+   } else if (memObj->TextureTiling == GL_CONST_BW_TILING_MESA) {
+      pt.bind |= PIPE_BIND_CONST_BW;
+   }
 
    pt.nr_samples = nr_samples;
    pt.nr_storage_samples = nr_samples;
@@ -3363,7 +3373,7 @@ st_texture_storage(struct gl_context *ctx,
                    GLsizei levels, GLsizei width,
                    GLsizei height, GLsizei depth,
                    struct gl_memory_object *memObj,
-                   GLuint64 offset)
+                   GLuint64 offset, const char *func)
 {
    const GLuint numFaces = _mesa_num_tex_faces(texObj->Target);
    struct gl_texture_image *texImage = texObj->Image[0][0];
@@ -3413,6 +3423,7 @@ st_texture_storage(struct gl_context *ctx,
       }
 
       if (!found) {
+         _mesa_error(st->ctx, GL_INVALID_OPERATION, "%s(format/samplecount not supported)", func);
          return GL_FALSE;
       }
    }
@@ -3449,8 +3460,10 @@ st_texture_storage(struct gl_context *ctx,
                                     texObj->IsSparse);
    }
 
-   if (!texObj->pt)
+   if (!texObj->pt) {
+      _mesa_error(st->ctx, GL_OUT_OF_MEMORY, "%s", func);
       return GL_FALSE;
+   }
 
    /* Set image resource pointers */
    for (level = 0; level < levels; level++) {
@@ -3483,11 +3496,12 @@ GLboolean
 st_AllocTextureStorage(struct gl_context *ctx,
                        struct gl_texture_object *texObj,
                        GLsizei levels, GLsizei width,
-                       GLsizei height, GLsizei depth)
+                       GLsizei height, GLsizei depth,
+                       const char *func)
 {
    return st_texture_storage(ctx, texObj, levels,
                              width, height, depth,
-                             NULL, 0);
+                             NULL, 0, func);
 }
 
 
@@ -3705,11 +3719,11 @@ st_SetTextureStorageForMemoryObject(struct gl_context *ctx,
                                     struct gl_memory_object *memObj,
                                     GLsizei levels, GLsizei width,
                                     GLsizei height, GLsizei depth,
-                                    GLuint64 offset)
+                                    GLuint64 offset, const char *func)
 {
    return st_texture_storage(ctx, texObj, levels,
                              width, height, depth,
-                             memObj, offset);
+                             memObj, offset, func);
 }
 
 GLboolean

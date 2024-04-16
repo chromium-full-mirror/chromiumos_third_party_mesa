@@ -52,6 +52,23 @@ ClampedUAdd(unsigned a,
 }
 
 
+/* stride is required in order to set the element data */
+static void
+update_velems(Device *pDevice)
+{
+   if (!pDevice->velems_changed)
+      return;
+
+   if(pDevice->element_layout) {
+      struct cso_velems_state *state = &pDevice->element_layout->state;
+      for (unsigned i = 0; i < state->count; i++)
+         state->velems[i].src_stride = pDevice->vertex_strides[state->velems[i].vertex_buffer_index];
+      cso_set_vertex_elements(pDevice->cso, state);
+   }
+
+   pDevice->velems_changed = false;
+}
+
 /*
  * We have to resolve the stream output state for empty geometry shaders.
  * In particular we've remapped the output indices when translating the
@@ -85,6 +102,7 @@ ResolveState(Device *pDevice)
       }
       pipe->bind_gs_state(pipe, gs->handle);
    }
+   update_velems(pDevice);
 }
 
 

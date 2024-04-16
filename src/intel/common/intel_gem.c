@@ -79,10 +79,11 @@ intel_gem_create_context_engines(int fd,
                                  enum intel_gem_create_context_flags flags,
                                  const struct intel_query_engine_info *info,
                                  int num_engines, enum intel_engine_class *engine_classes,
+                                 uint32_t vm_id,
                                  uint32_t *context_id)
 {
    return i915_gem_create_context_engines(fd, flags, info, num_engines,
-                                          engine_classes, context_id);
+                                          engine_classes, vm_id, context_id);
 }
 
 bool
@@ -109,6 +110,32 @@ intel_gem_read_render_timestamp(int fd,
       return i915_gem_read_render_timestamp(fd, value);
    case INTEL_KMD_TYPE_XE:
       return xe_gem_read_render_timestamp(fd, value);
+   default:
+      unreachable("Missing");
+      return false;
+   }
+}
+
+bool
+intel_gem_read_correlate_cpu_gpu_timestamp(int fd,
+                                           enum intel_kmd_type kmd_type,
+                                           enum intel_engine_class engine_class,
+                                           uint16_t engine_instance,
+                                           clockid_t cpu_clock_id,
+                                           uint64_t *cpu_timestamp,
+                                           uint64_t *gpu_timestamp,
+                                           uint64_t *cpu_delta)
+{
+   switch (kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      return false;
+   case INTEL_KMD_TYPE_XE:
+      return xe_gem_read_correlate_cpu_gpu_timestamp(fd, engine_class,
+                                                     engine_instance,
+                                                     cpu_clock_id,
+                                                     cpu_timestamp,
+                                                     gpu_timestamp,
+                                                     cpu_delta);
    default:
       unreachable("Missing");
       return false;

@@ -273,7 +273,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    if (screen->info.have_EXT_color_write_enable)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT;
 
-   assert(state->rast_prim != MESA_PRIM_COUNT);
+   assert(state->rast_prim != MESA_PRIM_COUNT || zink_debug & ZINK_DEBUG_SHADERDB);
 
    VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
    if (screen->info.have_EXT_line_rasterization &&
@@ -371,7 +371,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
 
    VkPipelineTessellationStateCreateInfo tci = {0};
    VkPipelineTessellationDomainOriginStateCreateInfo tdci = {0};
-   if (objs[MESA_SHADER_TESS_CTRL].mod && objs[MESA_SHADER_TESS_EVAL].mod) {
+   unsigned tess_bits = BITFIELD_BIT(MESA_SHADER_TESS_CTRL) | BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
+   if ((prog->stages_present & tess_bits) == tess_bits) {
       tci.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
       tci.patchControlPoints = state->dyn_state2.vertices_per_patch;
       pci.pTessellationState = &tci;
@@ -384,7 +385,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    VkShaderModuleCreateInfo smci[ZINK_GFX_SHADER_COUNT] = {0};
    uint32_t num_stages = 0;
    for (int i = 0; i < ZINK_GFX_SHADER_COUNT; ++i) {
-      if (!objs[i].obj)
+      if (!(prog->stages_present & BITFIELD_BIT(i)))
          continue;
 
       VkPipelineShaderStageCreateInfo stage = {0};
@@ -429,13 +430,15 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
 
    VkPipeline pipeline;
    u_rwlock_wrlock(&prog->base.pipeline_cache_lock);
-   VkResult result = VKSCR(CreateGraphicsPipelines)(screen->dev, prog->base.pipeline_cache,
-                                                    1, &pci, NULL, &pipeline);
-   u_rwlock_wrunlock(&prog->base.pipeline_cache_lock);
-   if (result != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateGraphicsPipelines failed (%s)", vk_Result_to_str(result));
-      return VK_NULL_HANDLE;
-   }
+   VkResult result;
+   VRAM_ALLOC_LOOP(result,
+      VKSCR(CreateGraphicsPipelines)(screen->dev, prog->base.pipeline_cache, 1, &pci, NULL, &pipeline),
+      u_rwlock_wrunlock(&prog->base.pipeline_cache_lock);
+      if (result != VK_SUCCESS) {
+         mesa_loge("ZINK: vkCreateGraphicsPipelines failed (%s)", vk_Result_to_str(result));
+         return VK_NULL_HANDLE;
+      }
+   );
 
    return pipeline;
 }
@@ -456,32 +459,57 @@ zink_create_compute_pipeline(struct zink_screen *screen, struct zink_compute_pro
    stage.pName = "main";
 
    VkSpecializationInfo sinfo = {0};
-   VkSpecializationMapEntry me[3];
-   if (comp->use_local_size) {
-      stage.pSpecializationInfo = &sinfo;
-      sinfo.mapEntryCount = 3;
-      sinfo.pMapEntries = &me[0];
-      sinfo.dataSize = sizeof(state->local_size);
-      sinfo.pData = &state->local_size[0];
-      uint32_t ids[] = {ZINK_WORKGROUP_SIZE_X, ZINK_WORKGROUP_SIZE_Y, ZINK_WORKGROUP_SIZE_Z};
-      for (int i = 0; i < 3; i++) {
-         me[i].size = sizeof(uint32_t);
-         me[i].constantID = ids[i];
-         me[i].offset = i * sizeof(uint32_t);
+   VkSpecializationMapEntry me[4];
+   uint32_t data[4];
+   if (state)  {
+      int i = 0;
+
+      if (comp->use_local_size) {
+         sinfo.mapEntryCount += 3;
+         sinfo.dataSize += sizeof(state->local_size);
+
+         uint32_t ids[] = {ZINK_WORKGROUP_SIZE_X, ZINK_WORKGROUP_SIZE_Y, ZINK_WORKGROUP_SIZE_Z};
+         for (int l = 0; l < 3; l++, i++) {
+            data[i] = state->local_size[l];
+            me[i].size = sizeof(uint32_t);
+            me[i].constantID = ids[l];
+            me[i].offset = i * sizeof(uint32_t);
+         }
       }
+
+      if (comp->has_variable_shared_mem) {
+         sinfo.mapEntryCount += 1;
+         sinfo.dataSize += sizeof(uint32_t);
+         data[i] = state->variable_shared_mem;
+         me[i].size = sizeof(uint32_t);
+         me[i].constantID = ZINK_VARIABLE_SHARED_MEM;
+         me[i].offset = i * sizeof(uint32_t);
+         i++;
+      }
+
+      if (sinfo.dataSize) {
+         stage.pSpecializationInfo = &sinfo;
+         sinfo.pData = data;
+         sinfo.pMapEntries = me;
+      }
+
+      assert(i <= ARRAY_SIZE(data));
+      STATIC_ASSERT(ARRAY_SIZE(data) == ARRAY_SIZE(me));
    }
 
    pci.stage = stage;
 
    VkPipeline pipeline;
+   VkResult result;
    u_rwlock_wrlock(&comp->base.pipeline_cache_lock);
-   VkResult result = VKSCR(CreateComputePipelines)(screen->dev, comp->base.pipeline_cache,
-                                                   1, &pci, NULL, &pipeline);
-   u_rwlock_wrunlock(&comp->base.pipeline_cache_lock);
-   if (result != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateComputePipelines failed (%s)", vk_Result_to_str(result));
-      return VK_NULL_HANDLE;
-   }
+   VRAM_ALLOC_LOOP(result,
+      VKSCR(CreateComputePipelines)(screen->dev, comp->base.pipeline_cache, 1, &pci, NULL, &pipeline),
+      u_rwlock_wrunlock(&comp->base.pipeline_cache_lock);
+      if (result != VK_SUCCESS) {
+         mesa_loge("ZINK: vkCreateComputePipelines failed (%s)", vk_Result_to_str(result));
+         return VK_NULL_HANDLE;
+      }
+   );
 
    return pipeline;
 }
@@ -589,16 +617,20 @@ zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipe
    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
       pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pipelineDynamicStateCreateInfo.dynamicStateCount = state_count;
-   pci.pColorBlendState = &blend_state;
+   if (!screen->have_full_ds3)
+      pci.pColorBlendState = &blend_state;
    pci.pMultisampleState = &ms_state;
    pci.pDynamicState = &pipelineDynamicStateCreateInfo;
 
    VkPipeline pipeline;
-   if (VKSCR(CreateGraphicsPipelines)(screen->dev, VK_NULL_HANDLE, 1, &pci,
-                                      NULL, &pipeline) != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateGraphicsPipelines failed");
-      return VK_NULL_HANDLE;
-   }
+   VkResult result;
+   VRAM_ALLOC_LOOP(result,
+      VKSCR(CreateGraphicsPipelines)(screen->dev, VK_NULL_HANDLE, 1, &pci, NULL, &pipeline),
+      if (result != VK_SUCCESS) {
+         mesa_loge("ZINK: vkCreateGraphicsPipelines failed (%s)", vk_Result_to_str(result));
+         return VK_NULL_HANDLE;
+      }
+   );
 
    return pipeline;
 }
@@ -651,7 +683,7 @@ zink_create_gfx_pipeline_input(struct zink_screen *screen,
    if (screen->info.have_EXT_vertex_input_dynamic_state)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
    else if (state->uses_dynamic_stride && state->element_state->num_attribs)
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
    dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY;
    dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE;
    assert(state_count < ARRAY_SIZE(dynamicStateEnables));
@@ -672,17 +704,20 @@ zink_create_gfx_pipeline_input(struct zink_screen *screen,
    pci.pDynamicState = &pipelineDynamicStateCreateInfo;
 
    VkPipeline pipeline;
-   if (VKSCR(CreateGraphicsPipelines)(screen->dev, VK_NULL_HANDLE, 1, &pci,
-                                      NULL, &pipeline) != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateGraphicsPipelines failed");
-      return VK_NULL_HANDLE;
-   }
+   VkResult result;
+   VRAM_ALLOC_LOOP(result,
+      VKSCR(CreateGraphicsPipelines)(screen->dev, VK_NULL_HANDLE, 1, &pci, NULL, &pipeline),
+      if (result != VK_SUCCESS) {
+         mesa_loge("ZINK: vkCreateGraphicsPipelines failed (%s)", vk_Result_to_str(result));
+         return VK_NULL_HANDLE;
+      }
+   );
 
    return pipeline;
 }
 
 static VkPipeline
-create_gfx_pipeline_library(struct zink_screen *screen, struct zink_shader_object *objs, VkPipelineLayout layout, VkPipelineCache pipeline_cache)
+create_gfx_pipeline_library(struct zink_screen *screen, struct zink_shader_object *objs, unsigned stage_mask, VkPipelineLayout layout, VkPipelineCache pipeline_cache)
 {
    assert(screen->info.have_EXT_extended_dynamic_state && screen->info.have_EXT_extended_dynamic_state2);
    VkPipelineRenderingCreateInfo rendering_info;
@@ -694,9 +729,9 @@ create_gfx_pipeline_library(struct zink_screen *screen, struct zink_shader_objec
       &rendering_info,
       0
    };
-   if (objs[MESA_SHADER_VERTEX].mod)
+   if (stage_mask & BITFIELD_BIT(MESA_SHADER_VERTEX))
       gplci.flags |= VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT;
-   if (objs[MESA_SHADER_FRAGMENT].mod)
+   if (stage_mask & BITFIELD_BIT(MESA_SHADER_FRAGMENT))
       gplci.flags |= VK_GRAPHICS_PIPELINE_LIBRARY_FRAGMENT_SHADER_BIT_EXT;
 
    VkPipelineViewportStateCreateInfo viewport_state = {0};
@@ -767,7 +802,8 @@ create_gfx_pipeline_library(struct zink_screen *screen, struct zink_shader_objec
 
    VkPipelineTessellationStateCreateInfo tci = {0};
    VkPipelineTessellationDomainOriginStateCreateInfo tdci = {0};
-   if (objs[MESA_SHADER_TESS_CTRL].mod && objs[MESA_SHADER_TESS_EVAL].mod) {
+   unsigned tess_bits = BITFIELD_BIT(MESA_SHADER_TESS_CTRL) | BITFIELD_BIT(MESA_SHADER_TESS_EVAL);
+   if ((stage_mask & tess_bits) == tess_bits) {
       tci.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
       //this is a wild guess; pray for extendedDynamicState2PatchControlPoints
       if (!screen->info.dynamic_state2_feats.extendedDynamicState2PatchControlPoints) {
@@ -784,7 +820,7 @@ create_gfx_pipeline_library(struct zink_screen *screen, struct zink_shader_objec
    VkPipelineShaderStageCreateInfo shader_stages[ZINK_GFX_SHADER_COUNT];
    uint32_t num_stages = 0;
    for (int i = 0; i < ZINK_GFX_SHADER_COUNT; ++i) {
-      if (!objs[i].mod)
+      if (!(stage_mask & BITFIELD_BIT(i)))
          continue;
 
       VkPipelineShaderStageCreateInfo stage = {0};
@@ -806,10 +842,14 @@ create_gfx_pipeline_library(struct zink_screen *screen, struct zink_shader_objec
       pci.flags |= VK_PIPELINE_CREATE_RETAIN_LINK_TIME_OPTIMIZATION_INFO_BIT_EXT;
 
    VkPipeline pipeline;
-   if (VKSCR(CreateGraphicsPipelines)(screen->dev, pipeline_cache, 1, &pci, NULL, &pipeline) != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateGraphicsPipelines failed");
-      return VK_NULL_HANDLE;
-   }
+   VkResult result;
+   VRAM_ALLOC_LOOP(result,
+      VKSCR(CreateGraphicsPipelines)(screen->dev, pipeline_cache, 1, &pci, NULL, &pipeline),
+      if (result != VK_SUCCESS) {
+         mesa_loge("ZINK: vkCreateGraphicsPipelines failed");
+         return VK_NULL_HANDLE;
+      }
+   );
 
    return pipeline;
 }
@@ -818,19 +858,19 @@ VkPipeline
 zink_create_gfx_pipeline_library(struct zink_screen *screen, struct zink_gfx_program *prog)
 {
    u_rwlock_wrlock(&prog->base.pipeline_cache_lock);
-   VkPipeline pipeline = create_gfx_pipeline_library(screen, prog->objs, prog->base.layout, prog->base.pipeline_cache);
+   VkPipeline pipeline = create_gfx_pipeline_library(screen, prog->objs, prog->stages_present, prog->base.layout, prog->base.pipeline_cache);
    u_rwlock_wrunlock(&prog->base.pipeline_cache_lock);
    return pipeline;
 }
 
 VkPipeline
-zink_create_gfx_pipeline_separate(struct zink_screen *screen, struct zink_shader_object *objs, VkPipelineLayout layout)
+zink_create_gfx_pipeline_separate(struct zink_screen *screen, struct zink_shader_object *objs, VkPipelineLayout layout, gl_shader_stage stage)
 {
-   return create_gfx_pipeline_library(screen, objs, layout, VK_NULL_HANDLE);
+   return create_gfx_pipeline_library(screen, objs, BITFIELD_BIT(stage), layout, VK_NULL_HANDLE);
 }
 
 VkPipeline
-zink_create_gfx_pipeline_combined(struct zink_screen *screen, struct zink_gfx_program *prog, VkPipeline input, VkPipeline *library, unsigned libcount, VkPipeline output, bool optimized)
+zink_create_gfx_pipeline_combined(struct zink_screen *screen, struct zink_gfx_program *prog, VkPipeline input, VkPipeline *library, unsigned libcount, VkPipeline output, bool optimized, bool testonly)
 {
    VkPipeline libraries[4];
    VkPipelineLibraryCreateInfoKHR libstate = {0};
@@ -850,6 +890,8 @@ zink_create_gfx_pipeline_combined(struct zink_screen *screen, struct zink_gfx_pr
       pci.flags = VK_PIPELINE_CREATE_LINK_TIME_OPTIMIZATION_BIT_EXT;
    else
       pci.flags = VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
+   if (testonly)
+      pci.flags |= VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
       pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pci.pNext = &libstate;
@@ -859,13 +901,15 @@ zink_create_gfx_pipeline_combined(struct zink_screen *screen, struct zink_gfx_pr
 
    VkPipeline pipeline;
    u_rwlock_wrlock(&prog->base.pipeline_cache_lock);
-   if (VKSCR(CreateGraphicsPipelines)(screen->dev, prog->base.pipeline_cache, 1, &pci,
-                                      NULL, &pipeline) != VK_SUCCESS) {
-      mesa_loge("ZINK: vkCreateGraphicsPipelines failed");
+   VkResult result;
+   VRAM_ALLOC_LOOP(result,
+      VKSCR(CreateGraphicsPipelines)(screen->dev, prog->base.pipeline_cache, 1, &pci, NULL, &pipeline),
       u_rwlock_wrunlock(&prog->base.pipeline_cache_lock);
-      return VK_NULL_HANDLE;
-   }
-   u_rwlock_wrunlock(&prog->base.pipeline_cache_lock);
+      if (result != VK_SUCCESS && result != VK_PIPELINE_COMPILE_REQUIRED) {
+         mesa_loge("ZINK: vkCreateGraphicsPipelines failed");
+         return VK_NULL_HANDLE;
+      }
+   );
 
    return pipeline;
 }

@@ -98,6 +98,7 @@ struct fd_screen {
       bool enable_throttling;
    } driconf;
 
+   struct fd_dev_info dev_info;
    const struct fd_dev_info *info;
    uint32_t ccu_offset_gmem;
    uint32_t ccu_offset_bypass;
@@ -129,6 +130,8 @@ struct fd_screen {
    unsigned (*tile_mode)(const struct pipe_resource *prsc);
    int (*layout_resource_for_modifier)(struct fd_resource *rsc,
                                        uint64_t modifier);
+   bool (*is_format_supported)(struct pipe_screen *pscreen,
+                               enum pipe_format fmt, uint64_t modifier);
 
    /* indirect-branch emit: */
    void (*emit_ib)(struct fd_ringbuffer *ring, struct fd_ringbuffer *target);

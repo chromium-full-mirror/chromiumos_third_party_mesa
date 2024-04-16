@@ -133,20 +133,19 @@ if with_dri2
     incs_for_egl += include_directories('wayland/wayland-drm')
   endif
   if with_platform_android
-    deps_for_egl += dep_android
+    deps_for_egl += [dep_android, idep_u_gralloc]
     files_egl += files('drivers/dri2/platform_android.c')
-    if dep_android_mapper4.found()
-      files_egl += files('drivers/dri2/platform_android_mapper.cpp')
-      c_args_for_egl += '-DUSE_IMAPPER4_METADATA_API'
-      cpp_args_for_egl += '-DUSE_IMAPPER4_METADATA_API'
-    endif
   endif
 elif with_platform_haiku
   c_args_for_egl += [
     '-D_EGL_BUILT_IN_DRIVER_HAIKU',
   ]
   files_egl += files('drivers/haiku/egl_haiku.cpp')
-  incs_for_egl += [include_directories('../mapi', '../mesa', '../gallium/auxiliary', '../gallium/drivers', '../gallium/winsys', '../gallium/frontends/hgl', '../gallium/winsys/sw/hgl')]
+
+  incs_for_egl += [inc_gallium, inc_gallium_aux, inc_gallium_drivers, inc_gallium_winsys, inc_gallium_winsys_sw]
+  incs_for_egl += [inc_mesa, inc_mapi]
+  incs_for_egl += [include_directories('../gallium/frontends/hgl')]
+
   link_for_egl += [libmesa, libgallium, libswhgl, libsthgl]
   deps_for_egl += [cpp.find_library('be'), driver_swrast]
 elif with_platform_windows
@@ -180,6 +179,7 @@ else
     input : 'main/50_mesa.json',
     output: '50_@0@.json'.format(glvnd_vendor_name),
     install : true,
+    install_tag : 'runtime',
     install_dir : join_paths(get_option('datadir'), 'glvnd', 'egl_vendor.d')
   )
 endif

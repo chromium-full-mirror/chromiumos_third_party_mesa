@@ -86,7 +86,7 @@
 static inline bool
 lp_has_fp16(void)
 {
-   return util_get_cpu_caps()->has_f16c;
+   return util_get_cpu_caps()->has_f16c || DETECT_ARCH_AARCH64;
 }
 
 /**
@@ -147,7 +147,6 @@ gallivm_get_shader_param(enum pipe_shader_cap param)
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return 1;
-   case PIPE_SHADER_CAP_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
    case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
       return 0;

@@ -16,10 +16,10 @@ Compiling and Installing
 Build system
 ^^^^^^^^^^^^
 
--  `Meson <https://mesonbuild.com>`__ is required when building on \*nix
-   platforms and on Windows.
--  Android Build system when building as native Android component. Meson
-   is used when building ARC.
+- `Meson <https://mesonbuild.com>`__ is required when building on \*nix
+  platforms and on Windows.
+- Android Build system when building as native Android component. Meson
+  is used when building ARC.
 
 Compiler
 ^^^^^^^^
@@ -27,18 +27,20 @@ Compiler
 The following compilers are known to work, if you know of others or
 you're willing to maintain support for other compiler get in touch.
 
--  GCC 8.0.0 or later (some parts of Mesa may require later versions)
--  Clang 5.0 or later (some parts of Mesa may require later versions)
--  Microsoft Visual Studio 2019 Version 16.11 or later and
-   Windows SDK of at least 20348 is required, for building on Windows.
+- GCC 8.0.0 or later (some parts of Mesa may require later versions)
+- Clang 5.0 or later (some parts of Mesa may require later versions)
+- Microsoft Visual Studio 2019 Version 16.11 or later and
+  Windows SDK of at least 20348 is required, for building on Windows.
 
 Third party/extra tools.
 ^^^^^^^^^^^^^^^^^^^^^^^^
 
--  `Python <https://www.python.org/>`__ - Python 3.6 or newer is required.
--  `Python Mako module <https://www.makotemplates.org/>`__ - Python Mako
-   module is required. Version 0.8.0 or later should work.
--  Lex / Yacc - for building the Mesa IR and GLSL compiler.
+- `Python <https://www.python.org/>`__ - Python 3.6 or newer is required.
+- Python package ``packaging`` is required on Python 3.12+:
+  ``pip install packaging``
+- `Python Mako module <https://www.makotemplates.org/>`__ - Python Mako
+  module is required. Version 0.8.0 or later should work.
+- Lex / Yacc - for building the Mesa IR and GLSL compiler.
 
    On Linux systems, Flex and Bison versions 2.5.35 and 2.4.1,
    respectively, (or later) should work. On Windows with MinGW, install
@@ -74,10 +76,8 @@ on the packaging tool used by your distro.
      apt-get build-dep mesa # Debian and derivatives
      ... # others
 
-2. Building with meson
+1. Building with meson
 ----------------------
-
-**Meson >= 0.46.0 is required**
 
 Meson is the latest build system in mesa, it is currently able to build
 for \*nix systems like Linux and BSD, macOS, Haiku, and Windows.
@@ -101,15 +101,28 @@ On Windows you can also use the Visual Studio backend
 Please read the :doc:`detailed meson instructions <meson>` for more
 information
 
-3. Running against a local build
---------------------------------
+1. Running against a local build (easy way)
+-------------------------------------------
 
 It's often necessary or useful when debugging driver issues or testing new
 branches to run against a local build of Mesa without doing a system-wide
-install.  To do this, choose a temporary location for the install.  A directory
-called ``installdir`` inside your mesa tree is as good as anything.  All of the
-commands below will assume ``$MESA_INSTALLDIR`` is an absolute path to this
-location.
+install. Meson has built-in support for this with its ``devenv`` subcommand:
+
+.. code-block:: console
+
+     meson devenv -C builddir glxinfo
+
+This will run the given command against the build in ``builddir``. Note that meson
+will ``chdir`` into the directory first, so any relative paths in the command line
+will be relative to ``builddir`` which may not be what you expect.
+
+1. Running against a local build (hard way)
+-------------------------------------------
+
+If you prefer you can configure your test environment manually. To do this,
+choose a temporary location for the install.  A directory called ``installdir``
+inside your mesa tree is as good as anything.  All of the commands below will
+assume ``$MESA_INSTALLDIR`` is an absolute path to this location.
 
 First, configure Mesa and install in the temporary location:
 
@@ -187,12 +200,12 @@ here are a few things to check:
     recently built 64-bit and are now building 32-bit, throw away the install
     directory first to prevent conflicts.
 
-4. Building with AOSP (Android)
+1. Building with AOSP (Android)
 -------------------------------
 
 <TODO>
 
-5. Library Information
+1. Library Information
 ----------------------
 
 When compilation has finished, look in the top-level ``lib/`` (or
@@ -223,7 +236,7 @@ If you built the DRI hardware drivers, you'll also see the DRI drivers:
 If you built with Gallium support, look in lib/gallium/ for
 Gallium-based versions of libGL and device drivers.
 
-6. Building OpenGL programs with pkg-config
+1. Building OpenGL programs with pkg-config
 -------------------------------------------
 
 Running ``meson install`` will install package configuration files for

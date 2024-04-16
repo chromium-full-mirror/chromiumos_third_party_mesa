@@ -311,7 +311,6 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
         case PIPE_SHADER_CAP_INT16:
         case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
-        case PIPE_SHADER_CAP_DROUND_SUPPORTED:
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -400,7 +399,6 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_INT64_ATOMICS:
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
         case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
-        case PIPE_SHADER_CAP_DROUND_SUPPORTED:
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
@@ -501,10 +499,10 @@ static int r300_get_video_param(struct pipe_screen *screen,
    .lower_flrp64 = true,                      \
    .lower_fmod = true,                        \
    .lower_fsign = true,                       \
+   .lower_fsqrt = true,                       \
    .lower_ftrunc = true,                      \
    .lower_insert_byte = true,                 \
    .lower_insert_word = true,                 \
-   .lower_rotate = true,                      \
    .lower_uniforms_to_ubo = true,             \
    .lower_vector_cmp = true,                  \
    .no_integers = true,                       \
@@ -797,7 +795,7 @@ static void r300_fence_reference(struct pipe_screen *screen,
 {
     struct radeon_winsys *rws = r300_screen(screen)->rws;
 
-    rws->fence_reference(ptr, fence);
+    rws->fence_reference(rws, ptr, fence);
 }
 
 static bool r300_fence_finish(struct pipe_screen *screen,

@@ -57,83 +57,7 @@ enum {
    DEBUG_LIVE_INFO = 0x100,
    DEBUG_FORCE_WAITDEPS = 0x200,
    DEBUG_NO_VALIDATE_IR = 0x400,
-};
-
-/**
- * Representation of the instruction's microcode encoding format
- * Note: Some Vector ALU Formats can be combined, such that:
- * - VOP2* | VOP3 represents a VOP2 instruction in VOP3 encoding
- * - VOP2* | DPP represents a VOP2 instruction with data parallel primitive.
- * - VOP2* | SDWA represents a VOP2 instruction with sub-dword addressing.
- *
- * (*) The same is applicable for VOP1 and VOPC instructions.
- */
-enum class Format : std::uint16_t {
-   /* Pseudo Instruction Format */
-   PSEUDO = 0,
-   /* Scalar ALU & Control Formats */
-   SOP1 = 1,
-   SOP2 = 2,
-   SOPK = 3,
-   SOPP = 4,
-   SOPC = 5,
-   /* Scalar Memory Format */
-   SMEM = 6,
-   /* LDS/GDS Format */
-   DS = 8,
-   LDSDIR = 9,
-   /* Vector Memory Buffer Formats */
-   MTBUF = 10,
-   MUBUF = 11,
-   /* Vector Memory Image Format */
-   MIMG = 12,
-   /* Export Format */
-   EXP = 13,
-   /* Flat Formats */
-   FLAT = 14,
-   GLOBAL = 15,
-   SCRATCH = 16,
-
-   PSEUDO_BRANCH = 17,
-   PSEUDO_BARRIER = 18,
-   PSEUDO_REDUCTION = 19,
-
-   /* Vector ALU Formats */
-   VINTERP_INREG = 21,
-   VOP3P = 1 << 7,
-   VOP1 = 1 << 8,
-   VOP2 = 1 << 9,
-   VOPC = 1 << 10,
-   VOP3 = 1 << 11,
-   /* Vector Parameter Interpolation Format */
-   VINTRP = 1 << 12,
-   DPP16 = 1 << 13,
-   SDWA = 1 << 14,
-   DPP8 = 1 << 15,
-};
-
-enum class instr_class : uint8_t {
-   valu32 = 0,
-   valu_convert32 = 1,
-   valu64 = 2,
-   valu_quarter_rate32 = 3,
-   valu_fma = 4,
-   valu_transcendental32 = 5,
-   valu_double = 6,
-   valu_double_add = 7,
-   valu_double_convert = 8,
-   valu_double_transcendental = 9,
-   salu = 10,
-   smem = 11,
-   barrier = 12,
-   branch = 13,
-   sendmsg = 14,
-   ds = 15,
-   exp = 16,
-   vmem = 17,
-   waitcnt = 18,
-   other = 19,
-   count,
+   DEBUG_NO_SCHED_ILP = 0x800,
 };
 
 enum storage_class : uint8_t {
@@ -283,6 +207,8 @@ struct wait_imm {
    bool combine(const wait_imm& other);
 
    bool empty() const;
+
+   void print(FILE* output) const;
 };
 
 /* s_wait_event immediate bits. */
@@ -494,8 +420,6 @@ static constexpr PhysReg exec{126};
 static constexpr PhysReg exec_lo{126};
 static constexpr PhysReg exec_hi{127};
 static constexpr PhysReg pops_exiting_wave_id{239}; /* GFX9-GFX10.3 */
-static constexpr PhysReg vccz{251};
-static constexpr PhysReg execz{252};
 static constexpr PhysReg scc{253};
 
 /**
@@ -1050,7 +974,16 @@ struct Instruction {
    constexpr bool reads_exec() const noexcept
    {
       for (const Operand& op : operands) {
-         if (op.isFixed() && op.physReg() == exec)
+         if (op.isFixed() && (op.physReg() == exec_lo || op.physReg() == exec_hi))
+            return true;
+      }
+      return false;
+   }
+
+   constexpr bool writes_exec() const noexcept
+   {
+      for (const Definition& def : definitions) {
+         if (def.isFixed() && (def.physReg() == exec_lo || def.physReg() == exec_hi))
             return true;
       }
       return false;
@@ -1291,7 +1224,7 @@ struct Instruction {
       assert(isVINTRP());
       return *(VINTRP_instruction*)this;
    }
-   constexpr bool isVINTRP() const noexcept { return (uint16_t)format & (uint16_t)Format::VINTRP; }
+   constexpr bool isVINTRP() const noexcept { return format == Format::VINTRP; }
    DPP16_instruction& dpp16() noexcept
    {
       assert(isDPP16());
@@ -1355,6 +1288,7 @@ struct Instruction {
 
    constexpr bool isVMEM() const noexcept { return isMTBUF() || isMUBUF() || isMIMG(); }
 
+   bool accessesLDS() const noexcept;
    bool isTrans() const noexcept;
 };
 static_assert(sizeof(Instruction) == 16, "Unexpected padding");
@@ -1445,14 +1379,17 @@ struct DPP16_instruction : public VALU_instruction {
    uint8_t row_mask : 4;
    uint8_t bank_mask : 4;
    bool bound_ctrl : 1;
-   uint8_t padding3 : 7;
+   uint8_t fetch_inactive : 1;
+   uint8_t padding3 : 6;
 };
 static_assert(sizeof(DPP16_instruction) == sizeof(VALU_instruction) + 4, "Unexpected padding");
 
 struct DPP8_instruction : public VALU_instruction {
-   uint8_t lane_sel[8];
+   uint32_t lane_sel : 24;
+   uint32_t fetch_inactive : 1;
+   uint32_t padding : 7;
 };
-static_assert(sizeof(DPP8_instruction) == sizeof(VALU_instruction) + 8, "Unexpected padding");
+static_assert(sizeof(DPP8_instruction) == sizeof(VALU_instruction) + 4, "Unexpected padding");
 
 struct SubdwordSel {
    enum sdwa_sel : uint8_t {
@@ -1676,7 +1613,7 @@ static_assert(sizeof(Export_instruction) == sizeof(Instruction) + 4, "Unexpected
 struct Pseudo_instruction : public Instruction {
    PhysReg scratch_sgpr; /* might not be valid if it's not needed */
    bool tmp_in_scc;
-   uint8_t padding;
+   bool needs_scratch_reg; /* if scratch_sgpr/scc can be written, initialized by RA. */
 };
 static_assert(sizeof(Pseudo_instruction) == sizeof(Instruction) + 4, "Unexpected padding");
 
@@ -1738,6 +1675,12 @@ struct Pseudo_reduction_instruction : public Instruction {
 };
 static_assert(sizeof(Pseudo_reduction_instruction) == sizeof(Instruction) + 4,
               "Unexpected padding");
+
+inline bool
+Instruction::accessesLDS() const noexcept
+{
+   return (isDS() && !ds().gds) || isLDSDIR() || isVINTRP();
+}
 
 inline void
 VALU_instruction::swapOperands(unsigned idx0, unsigned idx1)
@@ -1885,9 +1828,9 @@ enum block_kind {
    block_kind_invert = 1 << 10,
    block_kind_discard_early_exit = 1 << 11,
    block_kind_uses_discard = 1 << 12,
-   block_kind_needs_lowering = 1 << 13,
-   block_kind_resume = 1 << 14,
-   block_kind_export_end = 1 << 15,
+   block_kind_resume = 1 << 13,
+   block_kind_export_end = 1 << 14,
+   block_kind_end_with_regs = 1 << 15,
 };
 
 struct RegisterDemand {
@@ -2083,7 +2026,7 @@ struct DeviceInfo {
    uint16_t sgpr_alloc_granule;
    uint16_t vgpr_alloc_granule;
    unsigned scratch_alloc_granule;
-   unsigned max_wave64_per_simd;
+   uint16_t max_waves_per_simd;
    unsigned simd_per_cu;
    bool has_fast_fma32 = false;
    bool has_mac_legacy32 = false;
@@ -2121,6 +2064,7 @@ public:
    bool has_smem_buffer_or_global_loads = false;
    bool has_pops_overlapped_waves_wait = false;
    bool has_color_exports = false;
+   bool is_prolog = false;
 
    std::vector<uint8_t> constant_data;
    Temp private_segment_buffer;
@@ -2144,6 +2088,9 @@ public:
    unsigned next_uniform_if_depth = 0;
 
    std::vector<Definition> args_pending_vmem;
+
+   /* For shader part with previous shader part that has lds access. */
+   bool pending_lds_access = false;
 
    struct {
       FILE* output = stderr;
@@ -2228,8 +2175,20 @@ void select_vs_prolog(Program* program, const struct aco_vs_prolog_info* pinfo,
                       ac_shader_config* config, const struct aco_compiler_options* options,
                       const struct aco_shader_info* info, const struct ac_shader_args* args);
 
-void select_ps_epilog(Program* program, const struct aco_ps_epilog_info* epilog_info,
-                      ac_shader_config* config, const struct aco_compiler_options* options,
+void select_ps_epilog(Program* program, void* pinfo, ac_shader_config* config,
+                      const struct aco_compiler_options* options,
+                      const struct aco_shader_info* info, const struct ac_shader_args* args);
+
+void select_tcs_epilog(Program* program, void* pinfo, ac_shader_config* config,
+                       const struct aco_compiler_options* options,
+                       const struct aco_shader_info* info, const struct ac_shader_args* args);
+
+void select_gl_vs_prolog(Program* program, void* pinfo, ac_shader_config* config,
+                         const struct aco_compiler_options* options,
+                         const struct aco_shader_info* info, const struct ac_shader_args* args);
+
+void select_ps_prolog(Program* program, void* pinfo, ac_shader_config* config,
+                      const struct aco_compiler_options* options,
                       const struct aco_shader_info* info, const struct ac_shader_args* args);
 
 void lower_phis(Program* program);
@@ -2249,13 +2208,14 @@ void register_allocation(Program* program, std::vector<IDSet>& live_out_per_bloc
 void ssa_elimination(Program* program);
 void lower_to_hw_instr(Program* program);
 void schedule_program(Program* program, live& live_vars);
+void schedule_ilp(Program* program);
 void spill(Program* program, live& live_vars);
 void insert_wait_states(Program* program);
 bool dealloc_vgprs(Program* program);
 void insert_NOPs(Program* program);
 void form_hard_clauses(Program* program);
 unsigned emit_program(Program* program, std::vector<uint32_t>& code,
-                      std::vector<struct aco_symbol>* symbols);
+                      std::vector<struct aco_symbol>* symbols = NULL, bool append_endpgm = true);
 /**
  * Returns true if print_asm can disassemble the given program for the current build/runtime
  * configuration
@@ -2345,6 +2305,8 @@ typedef struct {
    /* sizes used for input/output modifiers and constants */
    const unsigned operand_size[static_cast<int>(aco_opcode::num_opcodes)];
    const instr_class classes[static_cast<int>(aco_opcode::num_opcodes)];
+   const uint32_t definitions[static_cast<int>(aco_opcode::num_opcodes)];
+   const uint32_t operands[static_cast<int>(aco_opcode::num_opcodes)];
 } Info;
 
 extern const Info instr_info;

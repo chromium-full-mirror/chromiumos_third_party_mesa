@@ -57,6 +57,7 @@ struct blorp_params;
 
 struct blorp_config {
    bool use_mesh_shading;
+   bool use_unrestricted_depth_range;
 };
 
 struct blorp_context {
@@ -65,6 +66,8 @@ struct blorp_context {
    const struct isl_device *isl_dev;
 
    const struct brw_compiler *compiler;
+
+   bool enable_tbimr;
 
    bool (*lookup_shader)(struct blorp_batch *batch,
                          const void *key, uint32_t key_size,
@@ -121,6 +124,17 @@ void blorp_batch_init(struct blorp_context *blorp, struct blorp_batch *batch,
                       void *driver_batch, enum blorp_batch_flags flags);
 void blorp_batch_finish(struct blorp_batch *batch);
 
+static inline isl_surf_usage_flags_t
+blorp_batch_isl_copy_usage(const struct blorp_batch *batch, bool is_dest)
+{
+   if (batch->flags & BLORP_BATCH_USE_COMPUTE)
+      return is_dest ? ISL_SURF_USAGE_STORAGE_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
+   else if (batch->flags & BLORP_BATCH_USE_BLITTER)
+      return is_dest ? ISL_SURF_USAGE_BLITTER_DST_BIT : ISL_SURF_USAGE_BLITTER_SRC_BIT;
+   else
+      return is_dest ? ISL_SURF_USAGE_RENDER_TARGET_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
+}
+
 struct blorp_address {
    void *buffer;
    int64_t offset;
@@ -134,6 +148,12 @@ struct blorp_address {
     */
    bool local_hint;
 };
+
+static inline bool
+blorp_address_is_null(struct blorp_address address)
+{
+   return address.buffer == NULL && address.offset == 0;
+}
 
 struct blorp_surf
 {

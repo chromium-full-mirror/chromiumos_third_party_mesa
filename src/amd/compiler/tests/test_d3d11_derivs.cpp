@@ -398,10 +398,10 @@ BEGIN_TEST(d3d11_derivs._1d_array_gfx9)
    pbld.print_ir(VK_SHADER_STAGE_FRAGMENT_BIT, "ACO IR");
 
    //>> v_interp_p2_f32_e32 v#rl_tmp, v#_, attr0.y                   ; $_
-   //>> v_rndne_f32_e32 v#rl, v#rl_tmp                               ; $_
    //>> v_interp_p2_f32_e32 v#rx_tmp, v#_, attr0.x                   ; $_
-   //>> v_mov_b32_e32 v#rx, v#rx_tmp                                 ; $_
+   //>> v_rndne_f32_e32 v#rl, v#rl_tmp                               ; $_
    //>> v_mov_b32_e32 v#ry, 0.5                                      ; $_
+   //>> v_mov_b32_e32 v#rx, v#rx_tmp                                 ; $_
    //>> BB1:
    //; success = rx+1 == ry and rx+2 == rl
    //>> image_sample v[#_:#_], v#rx, s[#_:#_], s[#_:#_] dmask:0xf da ; $_ $_
@@ -526,8 +526,8 @@ BEGIN_TEST(d3d11_derivs.fddxy)
    pbld.add_vsfs(vs, fs);
 
    /* Must be before BB1 */
-   //>> v1: %_ = v_sub_f32 (kill)%_, (kill)%_ quad_perm:[1,1,3,3] bound_ctrl:1
-   //>> v1: %_ = v_sub_f32 (kill)%_, (kill)%_ quad_perm:[2,2,2,2] bound_ctrl:1
+   //>> v1: %_ = v_sub_f32 (kill)%_, (kill)%_ quad_perm:[1,1,3,3] bound_ctrl:1 fi
+   //>> v1: %_ = v_sub_f32 (kill)%_, (kill)%_ quad_perm:[2,2,2,2] bound_ctrl:1 fi
    //>> BB1
    pbld.print_ir(VK_SHADER_STAGE_FRAGMENT_BIT, "ACO IR");
 END_TEST
@@ -598,12 +598,12 @@ BEGIN_TEST(d3d11_derivs.get_lod)
    //>> v1: %y = v_interp_p2_f32 (kill)%_, (kill)%_:m0, (kill)%_ attr0.y
    //>> v2: %vec = p_create_vector %x, %y
    //>> lv2: %wqm = p_start_linear_vgpr (kill)%vec
-   //>> v1: %x0 = v_mov_b32 %x quad_perm:[0,0,0,0] bound_ctrl:1
-   //>> v1: %x1_m_x0 = v_sub_f32 %x, %x0 quad_perm:[1,1,1,1] bound_ctrl:1
-   //>> v1: %x2_m_x0 = v_sub_f32 (kill)%x, (kill)%x0 quad_perm:[2,2,2,2] bound_ctrl:1
-   //>> v1: %y0 = v_mov_b32 %y quad_perm:[0,0,0,0] bound_ctrl:1
-   //>> v1: %y1_m_y0 = v_sub_f32 %y, %y0 quad_perm:[1,1,1,1] bound_ctrl:1
-   //>> v1: %y2_m_y0 = v_sub_f32 (kill)%y, (kill)%y0 quad_perm:[2,2,2,2] bound_ctrl:1
+   //>> v1: %x0 = v_mov_b32 %x quad_perm:[0,0,0,0] bound_ctrl:1 fi
+   //>> v1: %x1_m_x0 = v_sub_f32 %x, %x0 quad_perm:[1,1,1,1] bound_ctrl:1 fi
+   //>> v1: %x2_m_x0 = v_sub_f32 (kill)%x, (kill)%x0 quad_perm:[2,2,2,2] bound_ctrl:1 fi
+   //>> v1: %y0 = v_mov_b32 %y quad_perm:[0,0,0,0] bound_ctrl:1 fi
+   //>> v1: %y1_m_y0 = v_sub_f32 %y, %y0 quad_perm:[1,1,1,1] bound_ctrl:1 fi
+   //>> v1: %y2_m_y0 = v_sub_f32 (kill)%y, (kill)%y0 quad_perm:[2,2,2,2] bound_ctrl:1 fi
    //>> BB1
    //>> v2: %_ = image_get_lod (kill)%_, (kill)%_, v1: undef, %wqm 2d
    //>> BB2

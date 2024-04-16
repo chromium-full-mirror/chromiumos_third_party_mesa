@@ -35,9 +35,20 @@ b = 'b'
 c = 'c'
 d = 'd'
 e = 'e'
+NAN = math.nan
 
+signed_zero_preserve_16 = 'nir_is_float_control_signed_zero_preserve(info->float_controls_execution_mode, 16)'
+signed_zero_preserve_32 = 'nir_is_float_control_signed_zero_preserve(info->float_controls_execution_mode, 32)'
+signed_zero_nan_preserve_16 = ('(nir_is_float_control_signed_zero_preserve(info->float_controls_execution_mode, 16) ||'
+                               ' nir_is_float_control_nan_preserve(info->float_controls_execution_mode, 16))')
+signed_zero_nan_preserve_32 = ('(nir_is_float_control_signed_zero_preserve(info->float_controls_execution_mode, 32) ||'
+                               ' nir_is_float_control_nan_preserve(info->float_controls_execution_mode, 32))')
 signed_zero_inf_nan_preserve_16 = 'nir_is_float_control_signed_zero_inf_nan_preserve(info->float_controls_execution_mode, 16)'
 signed_zero_inf_nan_preserve_32 = 'nir_is_float_control_signed_zero_inf_nan_preserve(info->float_controls_execution_mode, 32)'
+
+has_fmulz = '(options->has_fmulz || \
+              (options->has_fmulz_no_denorms && \
+               !nir_is_denorm_preserve(info->float_controls_execution_mode, 32)))'
 
 ignore_exact = nir_algebraic.ignore_exact
 
@@ -138,8 +149,8 @@ optimizations = [
    # a+0.0 is 'a' unless 'a' is denormal or -0.0. If it's only used by a
    # floating point instruction, they should flush any input denormals and we
    # can replace -0.0 with 0.0 if the float execution mode allows it.
-   (('fadd(is_only_used_as_float)', 'a@16', 0.0), a, '!'+signed_zero_inf_nan_preserve_16),
-   (('fadd(is_only_used_as_float)', 'a@32', 0.0), a, '!'+signed_zero_inf_nan_preserve_32),
+   (('fadd(is_only_used_as_float)', 'a@16', 0.0), a, '!'+signed_zero_preserve_16),
+   (('fadd(is_only_used_as_float)', 'a@32', 0.0), a, '!'+signed_zero_preserve_32),
    (('iadd', a, 0), a),
    (('iadd_sat', a, 0), a),
    (('isub_sat', a, 0), a),
@@ -174,13 +185,13 @@ optimizations = [
    (('fadd', ('fsat', a), ('fsat', ('fneg', a))), ('fsat', ('fabs', a))),
    (('~fmul', a, 0.0), 0.0),
    # The only effect a*0.0 should have is when 'a' is infinity, -0.0 or NaN
-   (('fmul', 'a@16', 0.0), 0.0, '!'+signed_zero_inf_nan_preserve_16),
-   (('fmul', 'a@32', 0.0), 0.0, '!'+signed_zero_inf_nan_preserve_32),
+   (('fmul', 'a@16', 0.0), 0.0, '!'+signed_zero_nan_preserve_16),
+   (('fmul', 'a@32', 0.0), 0.0, '!'+signed_zero_nan_preserve_32),
    (('fmulz', a, 0.0), 0.0),
-   (('fmulz', a, 'b(is_finite_not_zero)'), ('fmul', a, b), '!'+signed_zero_inf_nan_preserve_32),
+   (('fmulz', a, 'b(is_finite_not_zero)'), ('fmul', a, b), '!'+signed_zero_preserve_32),
    (('fmulz', 'a(is_finite)', 'b(is_finite)'), ('fmul', a, b)),
    (('fmulz', a, a), ('fmul', a, a)),
-   (('ffmaz', a, 'b(is_finite_not_zero)', c), ('ffma', a, b, c), '!'+signed_zero_inf_nan_preserve_32),
+   (('ffmaz', a, 'b(is_finite_not_zero)', c), ('ffma', a, b, c), '!'+signed_zero_preserve_32),
    (('ffmaz', 'a(is_finite)', 'b(is_finite)', c), ('ffma', a, b, c)),
    (('ffmaz', a, a, b), ('ffma', a, a, b)),
    (('imul', a, 0), 0),
@@ -206,13 +217,13 @@ optimizations = [
    (('ffma@32(is_only_used_as_float)', 0.0, a, b), b, '!'+signed_zero_inf_nan_preserve_32),
    (('ffmaz', 0.0, a, b), ('fadd', 0.0, b)),
    (('~ffma', a, b, 0.0), ('fmul', a, b)),
-   (('ffma@16', a, b, 0.0), ('fmul', a, b), '!'+signed_zero_inf_nan_preserve_16),
-   (('ffma@32', a, b, 0.0), ('fmul', a, b), '!'+signed_zero_inf_nan_preserve_32),
-   (('ffmaz', a, b, 0.0), ('fmulz', a, b), '!'+signed_zero_inf_nan_preserve_32),
+   (('ffma@16', a, b, 0.0), ('fmul', a, b), '!'+signed_zero_preserve_16),
+   (('ffma@32', a, b, 0.0), ('fmul', a, b), '!'+signed_zero_preserve_32),
+   (('ffmaz', a, b, 0.0), ('fmulz', a, b), '!'+signed_zero_preserve_32),
    (('ffma', 1.0, a, b), ('fadd', a, b)),
-   (('ffmaz', 1.0, a, b), ('fadd', a, b), '!'+signed_zero_inf_nan_preserve_32),
+   (('ffmaz', 1.0, a, b), ('fadd', a, b), '!'+signed_zero_preserve_32),
    (('ffma', -1.0, a, b), ('fadd', ('fneg', a), b)),
-   (('ffmaz', -1.0, a, b), ('fadd', ('fneg', a), b), '!'+signed_zero_inf_nan_preserve_32),
+   (('ffmaz', -1.0, a, b), ('fadd', ('fneg', a), b), '!'+signed_zero_preserve_32),
    (('~ffma', '#a', '#b', c), ('fadd', ('fmul', a, b), c)),
    (('~ffmaz', '#a', '#b', c), ('fadd', ('fmulz', a, b), c)),
    (('~flrp', a, b, 0.0), a),
@@ -267,20 +278,20 @@ optimizations = [
    # Optimize open-coded fmulz.
    # (b==0.0 ? 0.0 : a) * (a==0.0 ? 0.0 : b) -> fmulz(a, b)
    (('fmul@32', ('bcsel', ignore_exact('feq', b, 0.0), 0.0, a), ('bcsel', ignore_exact('feq', a, 0.0), 0.0, b)),
-    ('fmulz', a, b), 'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
+    ('fmulz', a, b), has_fmulz+' && !'+signed_zero_preserve_32),
    (('fmul@32', a, ('bcsel', ignore_exact('feq', a, 0.0), 0.0, '#b(is_not_const_zero)')),
-    ('fmulz', a, b), 'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
+    ('fmulz', a, b), has_fmulz+' && !'+signed_zero_preserve_32),
 
    # ffma(b==0.0 ? 0.0 : a, a==0.0 ? 0.0 : b, c) -> ffmaz(a, b, c)
    (('ffma@32', ('bcsel', ignore_exact('feq', b, 0.0), 0.0, a), ('bcsel', ignore_exact('feq', a, 0.0), 0.0, b), c),
-    ('ffmaz', a, b, c), 'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
+    ('ffmaz', a, b, c), has_fmulz+' && !'+signed_zero_preserve_32),
    (('ffma@32', a, ('bcsel', ignore_exact('feq', a, 0.0), 0.0, '#b(is_not_const_zero)'), c),
-    ('ffmaz', a, b, c), 'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
+    ('ffmaz', a, b, c), has_fmulz+' && !'+signed_zero_preserve_32),
 
    # b == 0.0 ? 1.0 : fexp2(fmul(a, b)) -> fexp2(fmulz(a, b))
    (('bcsel', ignore_exact('feq', b, 0.0), 1.0, ('fexp2', ('fmul@32', a, b))),
     ('fexp2', ('fmulz', a, b)),
-    'options->has_fmulz && !'+signed_zero_inf_nan_preserve_32),
+    has_fmulz+' && !'+signed_zero_inf_nan_preserve_32),
 ]
 
 # Shorthand for the expansion of just the dot product part of the [iu]dp4a
@@ -314,15 +325,15 @@ optimizations.extend([
    # overflowing.  0x100000000 - 0x3f804 = 0xfffc07fc.  If c is a constant
    # that is less than 0xfffc07fc, then the result cannot overflow ever.
    (('udot_4x8_uadd_sat', a, b, '#c(is_ult_0xfffc07fc)'), ('udot_4x8_uadd', a, b, c)),
-   (('udot_4x8_uadd_sat', a, b, c), ('uadd_sat', udot_4x8_a_b, c), '!options->has_udot_4x8'),
+   (('udot_4x8_uadd_sat', a, b, c), ('uadd_sat', ('udot_4x8_uadd', a, b, 0), c), '!options->has_udot_4x8_sat'),
 
    # For the signed dot-product, the largest positive value is 4*(-128*-128) =
    # 0x10000, and the largest negative value is 4*(-128*127) = -0xfe00.  We
    # don't have to worry about that intermediate result overflowing or
    # underflowing.
-   (('sdot_4x8_iadd_sat', a, b, c), ('iadd_sat', sdot_4x8_a_b, c), '!options->has_sdot_4x8'),
+   (('sdot_4x8_iadd_sat', a, b, c), ('iadd_sat', ('sdot_4x8_iadd', a, b, 0), c), '!options->has_sdot_4x8_sat'),
 
-   (('sudot_4x8_iadd_sat', a, b, c), ('iadd_sat', sudot_4x8_a_b, c), '!options->has_sudot_4x8'),
+   (('sudot_4x8_iadd_sat', a, b, c), ('iadd_sat', ('sudot_4x8_iadd', a, b, 0), c), '!options->has_sudot_4x8_sat'),
 
    (('udot_2x16_uadd_sat', a, b, c), ('uadd_sat', udot_2x16_a_b, c), '!options->has_dot_2x16'),
    (('sdot_2x16_iadd_sat', a, b, c), ('iadd_sat', sdot_2x16_a_b, c), '!options->has_dot_2x16'),
@@ -649,6 +660,10 @@ optimizations.extend([
    (('fneu', ('b2f', 'a@1'), 0.0), a),
    (('ieq', ('b2i', 'a@1'), 0),   ('inot', a)),
    (('ine', ('b2i', 'a@1'), 0),   a),
+   (('ieq', 'a@1', False), ('inot', a)),
+   (('ieq', 'a@1', True), a),
+   (('ine', 'a@1', False), a),
+   (('ine', 'a@1', True), ('inot', a)),
 
    (('fneu', ('u2f', a), 0.0), ('ine', a, 0)),
    (('feq', ('u2f', a), 0.0), ('ieq', a, 0)),
@@ -826,7 +841,7 @@ optimizations.extend([
    (('fsat', ('fsat', a)), ('fsat', a)),
    (('fsat', ('fneg(is_used_once)', ('fadd(is_used_once)', a, b))), ('fsat', ('fadd', ('fneg', a), ('fneg', b))), '!options->lower_fsat'),
    (('fsat', ('fneg(is_used_once)', ('fmul(is_used_once)', a, b))), ('fsat', ('fmul', ('fneg', a), b)), '!options->lower_fsat'),
-   (('fsat', ('fneg(is_used_once)', ('fmulz(is_used_once)', a, b))), ('fsat', ('fmulz', ('fneg', a), b)), '!options->lower_fsat && !'+signed_zero_inf_nan_preserve_32),
+   (('fsat', ('fneg(is_used_once)', ('fmulz(is_used_once)', a, b))), ('fsat', ('fmulz', ('fneg', a), b)), '!options->lower_fsat && !'+signed_zero_preserve_32),
    (('fsat', ('fabs(is_used_once)', ('fmul(is_used_once)', a, b))), ('fsat', ('fmul', ('fabs', a), ('fabs', b))), '!options->lower_fsat'),
    (('fmin', ('fmax', ('fmin', ('fmax', a, b), c), b), c), ('fmin', ('fmax', a, b), c)),
    (('imin', ('imax', ('imin', ('imax', a, b), c), b), c), ('imin', ('imax', a, b), c)),
@@ -914,6 +929,10 @@ optimizations.extend([
 
 # Float sizes
 for s in [16, 32, 64]:
+    if s == 64:
+        match_fsign_cond = "!options->lower_fsign & !(options->lower_doubles_options & nir_lower_dsign)"
+    else:
+        match_fsign_cond = "!options->lower_fsign"
     optimizations.extend([
        # These derive from the previous patterns with the application of b < 0 <=>
        # 0 < -b.  The transformation should be applied if either comparison is
@@ -972,8 +991,8 @@ for s in [16, 32, 64]:
        (('~f2u{}'.format(s), ('i2f', 'a@{}'.format(s))), a),
        (('~f2u{}'.format(s), ('u2f', 'a@{}'.format(s))), a),
 
-       (('fadd', ('b2f{}'.format(s), ('flt', 0.0, 'a@{}'.format(s))), ('fneg', ('b2f{}'.format(s), ('flt', 'a@{}'.format(s), 0.0)))), ('fsign', a), '!options->lower_fsign'),
-       (('iadd', ('b2i{}'.format(s), ('flt', 0, 'a@{}'.format(s))), ('ineg', ('b2i{}'.format(s), ('flt', 'a@{}'.format(s), 0)))), ('f2i{}'.format(s), ('fsign', a)), '!options->lower_fsign'),
+       (('fadd', ('b2f{}'.format(s), ('flt', 0.0, 'a@{}'.format(s))), ('fneg', ('b2f{}'.format(s), ('flt', 'a@{}'.format(s), 0.0)))), ('fsign', a), match_fsign_cond),
+       (('iadd', ('b2i{}'.format(s), ('flt', 0, 'a@{}'.format(s))), ('ineg', ('b2i{}'.format(s), ('flt', 'a@{}'.format(s), 0)))), ('f2i{}'.format(s), ('fsign', a)), match_fsign_cond),
 
        # float? -> float? -> floatS ==> float? -> floatS
        (('~f2f{}'.format(s), ('f2f', a)), ('f2f{}'.format(s), a)),
@@ -1369,22 +1388,22 @@ optimizations.extend([
    (('ishr', a, 0), a),
    (('ushr', 0, a), 0),
    (('ushr', a, 0), a),
-   (('ior', ('ishl@16', a, b), ('ushr@16', a, ('iadd', 16, ('ineg', b)))), ('urol', a, b), '!options->lower_rotate'),
-   (('ior', ('ishl@16', a, b), ('ushr@16', a, ('isub', 16, b))), ('urol', a, b), '!options->lower_rotate'),
-   (('ior', ('ishl@32', a, b), ('ushr@32', a, ('iadd', 32, ('ineg', b)))), ('urol', a, b), '!options->lower_rotate'),
-   (('ior', ('ishl@32', a, b), ('ushr@32', a, ('isub', 32, b))), ('urol', a, b), '!options->lower_rotate'),
-   (('ior', ('ushr@16', a, b), ('ishl@16', a, ('iadd', 16, ('ineg', b)))), ('uror', a, b), '!options->lower_rotate'),
-   (('ior', ('ushr@16', a, b), ('ishl@16', a, ('isub', 16, b))), ('uror', a, b), '!options->lower_rotate'),
-   (('ior', ('ushr@32', a, b), ('ishl@32', a, ('iadd', 32, ('ineg', b)))), ('uror', a, b), '!options->lower_rotate'),
-   (('ior', ('ushr@32', a, b), ('ishl@32', a, ('isub', 32, b))), ('uror', a, b), '!options->lower_rotate'),
-   (('urol@8',  a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub',  8, b))), 'options->lower_rotate'),
-   (('urol@16', a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub', 16, b))), 'options->lower_rotate'),
-   (('urol@32', a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub', 32, b))), 'options->lower_rotate'),
-   (('urol@64', a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub', 64, b))), 'options->lower_rotate'),
-   (('uror@8',  a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub',  8, b))), 'options->lower_rotate'),
-   (('uror@16', a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub', 16, b))), 'options->lower_rotate'),
-   (('uror@32', a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub', 32, b))), 'options->lower_rotate'),
-   (('uror@64', a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub', 64, b))), 'options->lower_rotate'),
+   (('ior', ('ishl@16', a, b), ('ushr@16', a, ('iadd', 16, ('ineg', b)))), ('urol', a, b), 'options->has_rotate16'),
+   (('ior', ('ishl@16', a, b), ('ushr@16', a, ('isub', 16, b))), ('urol', a, b), 'options->has_rotate16'),
+   (('ior', ('ishl@32', a, b), ('ushr@32', a, ('iadd', 32, ('ineg', b)))), ('urol', a, b), 'options->has_rotate32'),
+   (('ior', ('ishl@32', a, b), ('ushr@32', a, ('isub', 32, b))), ('urol', a, b), 'options->has_rotate32'),
+   (('ior', ('ushr@16', a, b), ('ishl@16', a, ('iadd', 16, ('ineg', b)))), ('uror', a, b), 'options->has_rotate16'),
+   (('ior', ('ushr@16', a, b), ('ishl@16', a, ('isub', 16, b))), ('uror', a, b), 'options->has_rotate16'),
+   (('ior', ('ushr@32', a, b), ('ishl@32', a, ('iadd', 32, ('ineg', b)))), ('uror', a, b), 'options->has_rotate32'),
+   (('ior', ('ushr@32', a, b), ('ishl@32', a, ('isub', 32, b))), ('uror', a, b), 'options->has_rotate32'),
+   (('urol@8',  a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub',  8, b))), '!options->has_rotate8'),
+   (('urol@16', a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub', 16, b))), '!options->has_rotate16'),
+   (('urol@32', a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub', 32, b))), '!options->has_rotate32'),
+   (('urol@64', a, b), ('ior', ('ishl', a, b), ('ushr', a, ('isub', 64, b)))),
+   (('uror@8',  a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub',  8, b))), '!options->has_rotate8'),
+   (('uror@16', a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub', 16, b))), '!options->has_rotate16'),
+   (('uror@32', a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub', 32, b))), '!options->has_rotate32'),
+   (('uror@64', a, b), ('ior', ('ushr', a, b), ('ishl', a, ('isub', 64, b)))),
 
    # bfi(X, a, b) = (b & ~X) | (a & X)
    # If X = ~0: (b & 0) | (a & 0xffffffff) = a
@@ -1424,9 +1443,14 @@ optimizations.extend([
     ('~fmul', ('fpow', a, b), ('fpow', c, d)), '!options->lower_fpow'), # 2^(lg2(a) * b + lg2(c) + d) = a^b * c^d
    (('~fexp2', ('fmul', ('flog2', a), 0.5)), ('fsqrt', a)),
    (('~fexp2', ('fmul', ('flog2', a), 2.0)), ('fmul', a, a)),
+   (('~fexp2', ('fmul', ('flog2', a), 3.0)), ('fmul', ('fmul', a, a), a)),
    (('~fexp2', ('fmul', ('flog2', a), 4.0)), ('fmul', ('fmul', a, a), ('fmul', a, a))),
+   (('~fexp2', ('fmul', ('flog2', a), 5.0)), ('fmul', ('fmul', ('fmul', a, a), ('fmul', a, a)), a)),
+   (('~fexp2', ('fmul', ('flog2', a), 6.0)), ('fmul', ('fmul', ('fmul', a, a), ('fmul', a, a)), ('fmul', a, a))),
+   (('~fexp2', ('fmul', ('flog2', a), 8.0)), ('fmul', ('fmul', ('fmul', a, a), ('fmul', a, a)), ('fmul', ('fmul', a, a), ('fmul', a, a)))),
    (('~fpow', a, 1.0), a),
    (('~fpow', a, 2.0), ('fmul', a, a)),
+   (('~fpow', a, 3.0), ('fmul', ('fmul', a, a), a)),
    (('~fpow', a, 4.0), ('fmul', ('fmul', a, a), ('fmul', a, a))),
    (('~fpow', 2.0, a), ('fexp2', a)),
    (('~fpow', ('fpow', a, 2.2), 0.454545), a),
@@ -1506,6 +1530,9 @@ optimizations.extend([
     ('ineg', ('b2i', ('iand', a, b)))),
    (('umax', ('b2i', 'a@1'), ('b2i', 'b@1')), ('b2i', ('ior',  a, b))),
    (('umin', ('b2i', 'a@1'), ('b2i', 'b@1')), ('b2i', ('iand', a, b))),
+
+   # Clean up LLVM booleans. b2i output is 0/1 so iand is a no-op.
+   (('iand', ('b2i', a), 1), ('b2i', a)),
 
    (('ine', ('umin', ('ineg', ('b2i', 'a@1')), b), 0), ('iand', a, ('ine', b, 0))),
    (('ine', ('umax', ('ineg', ('b2i', 'a@1')), b), 0), ('ior' , a, ('ine', b, 0))),
@@ -1694,12 +1721,15 @@ optimizations.extend([
 
    # Lower pack/unpack
    (('pack_64_2x32_split', a, b), ('ior', ('u2u64', a), ('ishl', ('u2u64', b), 32)), 'options->lower_pack_64_2x32_split'),
-   (('pack_32_2x16_split', a, b), ('ior', ('u2u32', a), ('ishl', ('u2u32', b), 16)), 'options->lower_pack_32_2x16_split'),
+   (('pack_32_2x16_split', a, b), ('ior', ('u2u32', a), ('ishl', ('u2u32', b), 16)), 'options->lower_pack_32_2x16_split || options->lower_pack_split'),
    (('pack_half_2x16_split', a, b), ('pack_half_2x16_rtz_split', a, b), 'options->has_pack_half_2x16_rtz'),
    (('unpack_64_2x32_split_x', a), ('u2u32', a), 'options->lower_unpack_64_2x32_split'),
    (('unpack_64_2x32_split_y', a), ('u2u32', ('ushr', a, 32)), 'options->lower_unpack_64_2x32_split'),
-   (('unpack_32_2x16_split_x', a), ('u2u16', a), 'options->lower_unpack_32_2x16_split'),
-   (('unpack_32_2x16_split_y', a), ('u2u16', ('ushr', a, 16)), 'options->lower_unpack_32_2x16_split'),
+   (('unpack_32_2x16_split_x', a), ('u2u16', a), 'options->lower_unpack_32_2x16_split || options->lower_pack_split'),
+   (('unpack_32_2x16_split_y', a), ('u2u16', ('ushr', a, 16)), 'options->lower_unpack_32_2x16_split || options->lower_pack_split'),
+
+   (('unpack_64_2x32_split_x', ('ushr', a, 32)), ('unpack_64_2x32_split_y', a), '!options->lower_unpack_64_2x32_split'),
+   (('u2u32', ('ushr', 'a@64', 32)), ('unpack_64_2x32_split_y', a), '!options->lower_unpack_64_2x32_split'),
 
    # Useless masking before unpacking
    (('unpack_half_2x16_split_x', ('iand', a, 0xffff)), ('unpack_half_2x16_split_x', a)),
@@ -1746,6 +1776,10 @@ optimizations.extend([
    (('extract_u8', ('pack_32_4x8_split', a, b, c, d), 1), ('u2u', b)),
    (('extract_u8', ('pack_32_4x8_split', a, b, c, d), 2), ('u2u', c)),
    (('extract_u8', ('pack_32_4x8_split', a, b, c, d), 3), ('u2u', d)),
+
+   # Reduce intermediate precision with int64.
+   (('u2u32', ('iadd(is_used_once)', 'a@64', b)),
+    ('iadd', ('u2u32', a), ('u2u32', b))),
 ])
 
 # After the ('extract_u8', a, 0) pattern, above, triggers, there will be
@@ -1778,7 +1812,7 @@ optimizations.extend([
 
    # Propagate negation up multiplication chains
    (('fmul(is_used_by_non_fsat)', ('fneg', a), b), ('fneg', ('fmul', a, b))),
-   (('fmulz(is_used_by_non_fsat)', ('fneg', a), b), ('fneg', ('fmulz', a, b)), '!'+signed_zero_inf_nan_preserve_32),
+   (('fmulz(is_used_by_non_fsat)', ('fneg', a), b), ('fneg', ('fmulz', a, b)), '!'+signed_zero_preserve_32),
    (('ffma', ('fneg', a), ('fneg', b), c), ('ffma', a, b, c)),
    (('ffmaz', ('fneg', a), ('fneg', b), c), ('ffmaz', a, b, c)),
    (('imul', ('ineg', a), b), ('ineg', ('imul', a, b))),
@@ -1854,18 +1888,18 @@ optimizations.extend([
    (('bcsel', ('ine', 'a@32', 0), ('iadd', 31, ('ineg', ('ufind_msb', a))), ('ufind_msb', a)), ('ufind_msb_rev', a), 'options->has_find_msb_rev'),
    (('bcsel', ('ieq', 'a@32', 0), ('ufind_msb', a), ('iadd', 31, ('ineg', ('ufind_msb', a)))), ('ufind_msb_rev', a), 'options->has_find_msb_rev'),
 
-   (('bcsel', ('ine', ('ifind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ifind_msb_rev', a))), -1), ('ifind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ine', ('ufind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), -1), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ieq', ('ifind_msb_rev', 'a@32'), -1), -1, ('iadd', 31, ('ineg', ('ifind_msb_rev', a)))), ('ifind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ieq', ('ufind_msb_rev', 'a@32'), -1), -1, ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ine', ('ifind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ifind_msb_rev', a))), ('ifind_msb_rev', a)), ('ifind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ine', ('ufind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), ('ufind_msb_rev', a)), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ieq', ('ifind_msb_rev', 'a@32'), -1), ('ifind_msb_rev', a), ('iadd', 31, ('ineg', ('ifind_msb_rev', a)))), ('ifind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ieq', ('ufind_msb_rev', 'a@32'), -1), ('ufind_msb_rev', a), ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ine', 'a@32', 0), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), -1), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ieq', 'a@32', 0), -1, ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ine', 'a@32', 0), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), ('ufind_msb_rev', a)), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
-   (('bcsel', ('ieq', 'a@32', 0), ('ufind_msb_rev', a), ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_find_msb_to_reverse'),
+   (('bcsel', ('ine', ('ifind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ifind_msb_rev', a))), -1), ('ifind_msb', a), '!options->lower_ifind_msb'),
+   (('bcsel', ('ine', ('ufind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), -1), ('ufind_msb', a), '!options->lower_ufind_msb'),
+   (('bcsel', ('ieq', ('ifind_msb_rev', 'a@32'), -1), -1, ('iadd', 31, ('ineg', ('ifind_msb_rev', a)))), ('ifind_msb', a), '!options->lower_ifind_msb'),
+   (('bcsel', ('ieq', ('ufind_msb_rev', 'a@32'), -1), -1, ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_ufind_msb'),
+   (('bcsel', ('ine', ('ifind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ifind_msb_rev', a))), ('ifind_msb_rev', a)), ('ifind_msb', a), '!options->lower_ifind_msb'),
+   (('bcsel', ('ine', ('ufind_msb_rev', 'a@32'), -1), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), ('ufind_msb_rev', a)), ('ufind_msb', a), '!options->lower_ufind_msb'),
+   (('bcsel', ('ieq', ('ifind_msb_rev', 'a@32'), -1), ('ifind_msb_rev', a), ('iadd', 31, ('ineg', ('ifind_msb_rev', a)))), ('ifind_msb', a), '!options->lower_ifind_msb'),
+   (('bcsel', ('ieq', ('ufind_msb_rev', 'a@32'), -1), ('ufind_msb_rev', a), ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_ufind_msb'),
+   (('bcsel', ('ine', 'a@32', 0), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), -1), ('ufind_msb', a), '!options->lower_ufind_msb'),
+   (('bcsel', ('ieq', 'a@32', 0), -1, ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_ufind_msb'),
+   (('bcsel', ('ine', 'a@32', 0), ('iadd', 31, ('ineg', ('ufind_msb_rev', a))), ('ufind_msb_rev', a)), ('ufind_msb', a), '!options->lower_ufind_msb'),
+   (('bcsel', ('ieq', 'a@32', 0), ('ufind_msb_rev', a), ('iadd', 31, ('ineg', ('ufind_msb_rev', a)))), ('ufind_msb', a), '!options->lower_ufind_msb'),
 
    # This is safe. Both ufind_msb_rev and bitfield_reverse can only have
    # 32-bit sources, so the transformation can only generate correct NIR.
@@ -1894,7 +1928,7 @@ optimizations.extend([
    (('bitfield_insert', 'base', 'insert', 'offset', 'bits'),
     ('bcsel', ('ult', 31, 'bits'), 'insert',
               ('bfi', ('bfm', 'bits', 'offset'), 'insert', 'base')),
-    'options->lower_bitfield_insert'),
+    'options->lower_bitfield_insert && options->has_bfm && options->has_bfi'),
    (('ihadd', a, b), ('iadd', ('iand', a, b), ('ishr', ('ixor', a, b), 1)), 'options->lower_hadd'),
    (('uhadd', a, b), ('iadd', ('iand', a, b), ('ushr', ('ixor', a, b), 1)), 'options->lower_hadd'),
    (('irhadd', a, b), ('isub', ('ior', a, b), ('ishr', ('ixor', a, b), 1)), 'options->lower_hadd'),
@@ -1987,23 +2021,23 @@ optimizations.extend([
     (('ior',
      ('iand', 'base', ('inot', ('ishl', ('isub', ('ishl', 1, 'bits'), 1), 'offset'))),
      ('iand', ('ishl', 'insert', 'offset'), ('ishl', ('isub', ('ishl', 1, 'bits'), 1), 'offset'))))),
-    'options->lower_bitfield_insert_to_shifts'),
+    'options->lower_bitfield_insert && (!options->has_bfm || (!options->has_bfi && !options->has_bitfield_select))'),
 
    # Alternative lowering that uses bitfield_select.
    (('bitfield_insert', 'base', 'insert', 'offset', 'bits'),
     ('bcsel', ('ult', 31, 'bits'), 'insert',
               ('bitfield_select', ('bfm', 'bits', 'offset'), ('ishl', 'insert', 'offset'), 'base')),
-    'options->lower_bitfield_insert_to_bitfield_select'),
+    'options->lower_bitfield_insert && options->has_bfm && options->has_bitfield_select'),
 
    (('ibitfield_extract', 'value', 'offset', 'bits'),
     ('bcsel', ('ult', 31, 'bits'), 'value',
               ('ibfe', 'value', 'offset', 'bits')),
-    'options->lower_bitfield_extract'),
+    'options->lower_bitfield_extract && options->has_bfe'),
 
    (('ubitfield_extract', 'value', 'offset', 'bits'),
     ('bcsel', ('ult', 31, 'bits'), 'value',
               ('ubfe', 'value', 'offset', 'bits')),
-    'options->lower_bitfield_extract'),
+    'options->lower_bitfield_extract && options->has_bfe'),
 
    # (src0 & src1) | (~src0 & src2). Constant fold if src2 is 0.
    (('bitfield_select', a, b, 0), ('iand', a, b)),
@@ -2028,7 +2062,7 @@ optimizations.extend([
     ('bfm', 'width', 'offset')),
 
    # open-coded BFM
-   (('iadd@32', ('ishl', 1, a), -1), ('bfm', a, 0), 'options->lower_bitfield_insert_to_bitfield_select || options->lower_bitfield_insert'),
+   (('iadd@32', ('ishl', 1, a), -1), ('bfm', a, 0), 'options->has_bfm'),
    (('ishl', ('bfm', a, 0), b), ('bfm', a, b)),
 
    # Section 8.8 (Integer Functions) of the GLSL 4.60 spec says:
@@ -2055,7 +2089,7 @@ optimizations.extend([
      ('ishr',
        ('ishl', 'value', ('isub', ('isub', 32, 'bits'), 'offset')),
        ('isub', 32, 'bits'))),
-    'options->lower_bitfield_extract_to_shifts'),
+    'options->lower_bitfield_extract && !options->has_bfe'),
 
    (('ubitfield_extract', 'value', 'offset', 'bits'),
     ('iand',
@@ -2063,17 +2097,17 @@ optimizations.extend([
      ('bcsel', ('ieq', 'bits', 32),
       0xffffffff,
       ('isub', ('ishl', 1, 'bits'), 1))),
-    'options->lower_bitfield_extract_to_shifts'),
+    'options->lower_bitfield_extract && !options->has_bfe'),
 
    (('ifind_msb', 'value'),
     ('ufind_msb', ('bcsel', ('ilt', 'value', 0), ('inot', 'value'), 'value')),
-    'options->lower_ifind_msb'),
+    'options->lower_ifind_msb && !options->has_find_msb_rev && !options->has_uclz'),
 
    (('ifind_msb', 'value'),
     ('bcsel', ('ige', ('ifind_msb_rev', 'value'), 0),
      ('isub', 31, ('ifind_msb_rev', 'value')),
      ('ifind_msb_rev', 'value')),
-    'options->lower_find_msb_to_reverse'),
+    'options->lower_ifind_msb && options->has_find_msb_rev'),
 
    # uclz of an absolute value source almost always does the right thing.
    # There are a couple problem values:
@@ -2095,19 +2129,19 @@ optimizations.extend([
    # be achieved by (x ^ (x >> 31)).
    (('ifind_msb', 'value'),
     ('isub', 31, ('uclz', ('ixor', 'value', ('ishr', 'value', 31)))),
-    'options->lower_ifind_msb_to_uclz'),
+    'options->lower_ifind_msb && options->has_uclz'),
 
    (('ufind_msb', 'value@32'),
     ('bcsel', ('ige', ('ufind_msb_rev', 'value'), 0),
      ('isub', 31, ('ufind_msb_rev', 'value')),
      ('ufind_msb_rev', 'value')),
-    'options->lower_find_msb_to_reverse'),
+    'options->lower_ufind_msb && options->has_find_msb_rev'),
 
    (('ufind_msb', 'value@32'),
     ('isub', 31, ('uclz', 'value')),
-    'options->lower_ufind_msb_to_uclz'),
+    'options->lower_ufind_msb && options->has_uclz'),
 
-   (('uclz', a), ('umin', 32, ('ufind_msb_rev', a)), 'options->lower_uclz'),
+   (('uclz', a), ('umin', 32, ('ufind_msb_rev', a)), '!options->has_uclz && options->has_find_msb_rev'),
 
    (('find_lsb', 'value@64'),
     ('ufind_msb', ('iand', 'value', ('ineg', 'value'))),
@@ -2193,18 +2227,6 @@ optimizations.extend([
     ('f2f32', ('u2u16', ('ushr', a, 16))),
     'options->lower_pack_split'),
 
-   (('pack_32_2x16_split', 'a@16', 'b@16'),
-    ('ior', ('ishl', ('u2u32', b), 16), ('u2u32', a)),
-    'options->lower_pack_split'),
-
-   (('unpack_32_2x16_split_x', 'a@32'),
-    ('u2u16', a),
-    'options->lower_pack_split'),
-
-   (('unpack_32_2x16_split_y', 'a@32'),
-    ('u2u16', ('ushr', 'a', 16)),
-    'options->lower_pack_split'),
-
    (('isign', a), ('imin', ('imax', a, -1), 1), 'options->lower_isign'),
    (('imin', ('imax', a, -1), 1), ('isign', a), '!options->lower_isign'),
    (('imax', ('imin', a, 1), -1), ('isign', a), '!options->lower_isign'),
@@ -2212,6 +2234,7 @@ optimizations.extend([
    # Mark the new comparisons precise to prevent them being changed to 'a !=
    # 0' or 'a == 0'.
    (('fsign', a), ('fsub', ('b2f', ('!flt', 0.0, a)), ('b2f', ('!flt', a, 0.0))), 'options->lower_fsign'),
+   (('fsign', 'a@64'), ('fsub', ('b2f', ('!flt', 0.0, a)), ('b2f', ('!flt', a, 0.0))), 'options->lower_doubles_options & nir_lower_dsign'),
 
    # Address/offset calculations:
    # Drivers supporting imul24 should use the nir_lower_amul() pass, this
@@ -2599,6 +2622,25 @@ optimizations += [
    (vkd3d_proton_packed_f2f16_rtz_lo(('fneg', 'x'), ('fabs', 'x')), ('pack_half_2x16_rtz_split', ('fneg', 'x'), 0)),
 ]
 
+def vkd3d_proton_msad():
+   pattern = None
+   for i in range(4):
+      ref = ('extract_u8', 'a@32', i)
+      src = ('extract_u8', 'b@32', i)
+      sad = ('iabs', ('iadd', ref, ('ineg', src)))
+      msad = ('bcsel', ('ieq', ref, 0), 0, sad)
+      if pattern == None:
+         pattern = msad
+      else:
+         pattern = ('iadd', pattern, msad)
+   pattern = (pattern[0] + '(many-comm-expr)', *pattern[1:])
+   return pattern
+
+optimizations += [
+   (vkd3d_proton_msad(), ('msad_4x8', a, b, 0), 'options->has_msad'),
+   (('iadd', ('msad_4x8', a, b, 0), c), ('msad_4x8', a, b, c)),
+]
+
 
 # "all_equal(eq(a, b), vec(~0))" is the same as "all_equal(a, b)"
 # "any_nequal(neq(a, b), vec(0))" is the same as "any_nequal(a, b)"
@@ -2729,6 +2771,21 @@ optimizations.extend([
     (('fisnormal', 'a@64'), ('ult', 0x3fffffffffffff, ('iadd', ('ishl', a, 1), 0x20000000000000)), 'options->lower_fisnormal')
     ])
 
+
+"""
+  if (fabs(val) < SMALLEST_NORMALIZED_FLOAT16)
+     return (val & SIGN_BIT) /* +0.0 or -0.0 as appropriate */;
+  else
+     return f2f32(f2f16(val));
+"""
+optimizations.extend([
+    (('fquantize2f16', 'a@32'),
+     ('bcsel', ('!flt', ('!fabs', a), math.ldexp(1.0, -14)),
+               ('iand', a, 1 << 31),
+               ('!f2f32', ('!f2f16_rtne', a))),
+     'options->lower_fquantize2f16')
+    ])
+
 for s in range(0, 31):
     mask = 0xffffffff << s
 
@@ -2741,6 +2798,48 @@ for s in range(0, 31):
         (('bfi', mask, a, '#b'), ('iadd', ('ishl', a, s), ('iand', b, ~mask)),
          'options->avoid_ternary_with_two_constants'),
     ])
+
+# NaN propagation: Binary opcodes. If any operand is NaN, replace it with NaN.
+# (unary opcodes with NaN are evaluated by nir_opt_constant_folding, not here)
+for op in ['fadd', 'fdiv', 'fmod', 'fmul', 'fpow', 'frem', 'fsub']:
+    optimizations += [((op, '#a(is_nan)', b), NAN)]
+    optimizations += [((op, a, '#b(is_nan)'), NAN)] # some opcodes are not commutative
+
+# NaN propagation: Trinary opcodes. If any operand is NaN, replace it with NaN.
+for op in ['ffma', 'flrp']:
+    optimizations += [((op, '#a(is_nan)', b, c), NAN)]
+    optimizations += [((op, a, '#b(is_nan)', c), NAN)] # some opcodes are not commutative
+    optimizations += [((op, a, b, '#c(is_nan)'), NAN)]
+
+# NaN propagation: FP min/max. Pick the non-NaN operand.
+for op in ['fmin', 'fmax']:
+    optimizations += [((op, '#a(is_nan)', b), b)] # commutative
+
+# NaN propagation: ldexp is NaN if the first operand is NaN.
+optimizations += [(('ldexp', '#a(is_nan)', b), NAN)]
+
+# NaN propagation: Dot opcodes. If any component is NaN, replace it with NaN.
+for op in ['fdot2', 'fdot3', 'fdot4', 'fdot5', 'fdot8', 'fdot16']:
+    optimizations += [((op, '#a(is_any_comp_nan)', b), NAN)] # commutative
+
+# NaN propagation: FP comparison opcodes except !=. Replace it with false.
+for op in ['feq', 'fge', 'flt']:
+    optimizations += [((op, '#a(is_nan)', b), False)]
+    optimizations += [((op, a, '#b(is_nan)'), False)] # some opcodes are not commutative
+
+# NaN propagation: FP comparison opcodes using !=. Replace it with true.
+# Operator != is the only opcode where a comparison with NaN returns true.
+for op in ['fneu']:
+    optimizations += [((op, '#a(is_nan)', b), True)] # commutative
+
+# NaN propagation: FP comparison opcodes except != returning FP 0 or 1.
+for op in ['seq', 'sge', 'slt']:
+    optimizations += [((op, '#a(is_nan)', b), 0.0)]
+    optimizations += [((op, a, '#b(is_nan)'), 0.0)] # some opcodes are not commutative
+
+# NaN propagation: FP comparison opcodes using != returning FP 0 or 1.
+# Operator != is the only opcode where a comparison with NaN returns true.
+optimizations += [(('sne', '#a(is_nan)', b), 1.0)] # commutative
 
 # This section contains optimizations to propagate downsizing conversions of
 # constructed vectors into vectors of downsized components. Whether this is
@@ -3180,8 +3279,7 @@ for op in ['ffma', 'ffmaz']:
 # first eliminate temporary up-conversions such as in op1(f2fmp(f2f32(op2()))).
 #
 # Unary opcodes
-for op in ['fabs', 'fceil', 'fcos', 'fddx', 'fddx_coarse', 'fddx_fine', 'fddy',
-           'fddy_coarse', 'fddy_fine', 'fexp2', 'ffloor', 'ffract', 'flog2', 'fneg',
+for op in ['fabs', 'fceil', 'fcos', 'fexp2', 'ffloor', 'ffract', 'flog2', 'fneg',
            'frcp', 'fround_even', 'frsq', 'fsat', 'fsign', 'fsin', 'fsqrt']:
     late_optimizations += [(('~f2f32', (op, ('f2fmp', a))), (op, a))]
 
@@ -3210,6 +3308,8 @@ late_optimizations += [
   (('i2imp', a), ('u2u16', a), "!options->preserve_mediump"),
   (('u2fmp', a), ('u2f16', a), "!options->preserve_mediump"),
   (('fisfinite', a), ('flt', ('fabs', a), float("inf"))),
+
+  (('f2f16', a), ('f2f16_rtz', a), "options->force_f2f16_rtz && !nir_is_rounding_mode_rtne(info->float_controls_execution_mode, 16)"),
 
   (('fcsel', ('slt', 0, a), b, c), ('fcsel_gt', a, b, c), "options->has_fused_comp_and_csel"),
   (('fcsel', ('slt', a, 0), b, c), ('fcsel_gt', ('fneg', a), b, c), "options->has_fused_comp_and_csel"),

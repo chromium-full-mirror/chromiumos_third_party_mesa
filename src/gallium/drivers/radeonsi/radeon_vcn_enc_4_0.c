@@ -16,7 +16,7 @@
 #include "radeon_vcn_enc.h"
 
 #define RENCODE_FW_INTERFACE_MAJOR_VERSION   1
-#define RENCODE_FW_INTERFACE_MINOR_VERSION   0
+#define RENCODE_FW_INTERFACE_MINOR_VERSION   11
 
 #define RENCODE_IB_PARAM_CDF_DEFAULT_TABLE_BUFFER  0x00000019
 #define RENCODE_IB_PARAM_ENCODE_STATISTICS         0x0000001a
@@ -58,9 +58,29 @@ static void radeon_enc_sq_destroy(struct radeon_encoder *enc)
    rvcn_sq_tail(&enc->cs, &enc->sq);
 }
 
+static void radeon_enc_op_preset(struct radeon_encoder *enc)
+{
+   uint32_t preset_mode;
+
+   if (enc->enc_pic.quality_modes.preset_mode == RENCODE_PRESET_MODE_SPEED &&
+         (enc->enc_pic.sample_adaptive_offset_enabled_flag &&
+         (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_HEVC)))
+      preset_mode = RENCODE_IB_OP_SET_BALANCE_ENCODING_MODE;
+   else if (enc->enc_pic.quality_modes.preset_mode == RENCODE_PRESET_MODE_QUALITY)
+      preset_mode = RENCODE_IB_OP_SET_QUALITY_ENCODING_MODE;
+   else if (enc->enc_pic.quality_modes.preset_mode == RENCODE_PRESET_MODE_HIGH_QUALITY)
+      preset_mode = RENCODE_IB_OP_SET_HIGH_QUALITY_ENCODING_MODE;
+   else if (enc->enc_pic.quality_modes.preset_mode == RENCODE_PRESET_MODE_BALANCE)
+      preset_mode = RENCODE_IB_OP_SET_BALANCE_ENCODING_MODE;
+   else
+      preset_mode = RENCODE_IB_OP_SET_SPEED_ENCODING_MODE;
+
+   RADEON_ENC_BEGIN(preset_mode);
+   RADEON_ENC_END();
+}
+
 static void radeon_enc_session_init(struct radeon_encoder *enc)
 {
-   bool av1_encoding = false;
    uint32_t av1_height = enc->enc_pic.pic_height_in_luma_samples;
 
    switch (u_reduce_video_profile(enc->base.profile)) {
@@ -68,11 +88,20 @@ static void radeon_enc_session_init(struct radeon_encoder *enc)
          enc->enc_pic.session_init.encode_standard = RENCODE_ENCODE_STANDARD_H264;
          enc->enc_pic.session_init.aligned_picture_width = align(enc->base.width, 16);
          enc->enc_pic.session_init.aligned_picture_height = align(enc->base.height, 16);
+
+         enc->enc_pic.session_init.padding_width =
+            (enc->enc_pic.crop_left + enc->enc_pic.crop_right) * 2;
+         enc->enc_pic.session_init.padding_height =
+            (enc->enc_pic.crop_top + enc->enc_pic.crop_bottom) * 2;
          break;
       case PIPE_VIDEO_FORMAT_HEVC:
          enc->enc_pic.session_init.encode_standard = RENCODE_ENCODE_STANDARD_HEVC;
          enc->enc_pic.session_init.aligned_picture_width = align(enc->base.width, 64);
          enc->enc_pic.session_init.aligned_picture_height = align(enc->base.height, 16);
+         enc->enc_pic.session_init.padding_width =
+            (enc->enc_pic.crop_left + enc->enc_pic.crop_right) * 2;
+         enc->enc_pic.session_init.padding_height =
+            (enc->enc_pic.crop_top + enc->enc_pic.crop_bottom) * 2;
          break;
       case PIPE_VIDEO_FORMAT_AV1:
          enc->enc_pic.session_init.encode_standard = RENCODE_ENCODE_STANDARD_AV1;
@@ -83,31 +112,22 @@ static void radeon_enc_session_init(struct radeon_encoder *enc)
          if (!(av1_height % 8) && (av1_height % 16) && !(enc->enc_pic.enable_render_size))
             enc->enc_pic.session_init.aligned_picture_height = av1_height + 2;
 
-         av1_encoding = true;
+         enc->enc_pic.session_init.padding_width =
+            enc->enc_pic.session_init.aligned_picture_width -
+            enc->enc_pic.pic_width_in_luma_samples;
+         enc->enc_pic.session_init.padding_height =
+            enc->enc_pic.session_init.aligned_picture_height - av1_height;
+
+         if (enc->enc_pic.enable_render_size)
+            enc->enc_pic.enable_render_size =
+                           (enc->enc_pic.session_init.aligned_picture_width !=
+                            enc->enc_pic.render_width) ||
+                           (enc->enc_pic.session_init.aligned_picture_height !=
+                            enc->enc_pic.render_height);
          break;
       default:
          assert(0);
          break;
-   }
-
-   enc->enc_pic.session_init.padding_width =
-      enc->enc_pic.session_init.aligned_picture_width - enc->base.width;
-   enc->enc_pic.session_init.padding_height =
-      enc->enc_pic.session_init.aligned_picture_height - enc->base.height;
-
-   if (av1_encoding) {
-      enc->enc_pic.session_init.padding_width =
-         enc->enc_pic.session_init.aligned_picture_width -
-         enc->enc_pic.pic_width_in_luma_samples;
-      enc->enc_pic.session_init.padding_height =
-         enc->enc_pic.session_init.aligned_picture_height - av1_height;
-
-      if (enc->enc_pic.enable_render_size)
-         enc->enc_pic.enable_render_size =
-                        (enc->enc_pic.session_init.aligned_picture_width !=
-                         enc->enc_pic.render_width) ||
-                        (enc->enc_pic.session_init.aligned_picture_height !=
-                         enc->enc_pic.render_height);
    }
 
    enc->enc_pic.session_init.slice_output_enabled = 0;
@@ -125,6 +145,7 @@ static void radeon_enc_session_init(struct radeon_encoder *enc)
    RADEON_ENC_CS(enc->enc_pic.session_init.pre_encode_chroma_enabled);
    RADEON_ENC_CS(enc->enc_pic.session_init.slice_output_enabled);
    RADEON_ENC_CS(enc->enc_pic.session_init.display_remote);
+   RADEON_ENC_CS(0);
    RADEON_ENC_END();
 }
 
@@ -368,6 +389,8 @@ static void radeon_enc_spec_misc_av1(struct radeon_encoder *enc)
    RADEON_ENC_CS(enc->enc_pic.av1_spec_misc.disable_cdf_update);
    RADEON_ENC_CS(enc->enc_pic.av1_spec_misc.disable_frame_end_update_cdf);
    RADEON_ENC_CS(enc->enc_pic.av1_spec_misc.num_tiles_per_picture);
+   RADEON_ENC_CS(0);
+   RADEON_ENC_CS(0);
    RADEON_ENC_END();
 }
 
@@ -839,7 +862,7 @@ static void radeon_enc_obu_instruction(struct radeon_encoder *enc)
    radeon_enc_av1_bs_instruction_type(enc, RENCODE_AV1_BITSTREAM_INSTRUCTION_COPY, 0);
 
    radeon_enc_av1_temporal_delimiter(enc);
-   if (enc->enc_pic.need_av1_seq)
+   if (enc->enc_pic.need_av1_seq || enc->enc_pic.need_sequence_header)
       radeon_enc_av1_sequence_header(enc);
 
    /* if others OBU types are needed such as meta data, then they need to be byte aligned and added here
@@ -887,12 +910,13 @@ static void radeon_enc_av1_encode_params(struct radeon_encoder *enc)
 
    if (enc->luma->meta_offset) {
       RVID_ERR("DCC surfaces not supported.\n");
-      return;
+      assert(false);
    }
 
    enc->enc_pic.enc_params.allowed_max_bitstream_size = enc->bs_size;
    enc->enc_pic.enc_params.input_pic_luma_pitch = enc->luma->u.gfx9.surf_pitch;
-   enc->enc_pic.enc_params.input_pic_chroma_pitch = enc->chroma->u.gfx9.surf_pitch;
+   enc->enc_pic.enc_params.input_pic_chroma_pitch = enc->chroma ?
+      enc->chroma->u.gfx9.surf_pitch : enc->luma->u.gfx9.surf_pitch;
    enc->enc_pic.enc_params.input_pic_swizzle_mode = enc->luma->u.gfx9.swizzle_mode;
 
    RADEON_ENC_BEGIN(enc->cmd.enc_params);
@@ -907,7 +931,8 @@ static void radeon_enc_av1_encode_params(struct radeon_encoder *enc)
       RADEON_ENC_CS(0);
    } else {
       RADEON_ENC_READ(enc->handle, RADEON_DOMAIN_VRAM, enc->luma->u.gfx9.surf_offset);
-      RADEON_ENC_READ(enc->handle, RADEON_DOMAIN_VRAM, enc->chroma->u.gfx9.surf_offset);
+      RADEON_ENC_READ(enc->handle, RADEON_DOMAIN_VRAM, enc->chroma ?
+         enc->chroma->u.gfx9.surf_offset : enc->luma->u.gfx9.surf_pitch);
    }
 
    RADEON_ENC_CS(enc->enc_pic.enc_params.input_pic_luma_pitch);
@@ -934,10 +959,6 @@ static void radeon_enc_ctx(struct radeon_encoder *enc)
                                            == PIPE_VIDEO_FORMAT_AV1;
    enc->enc_pic.ctx_buf.swizzle_mode = radeon_enc_ref_swizzle_mode(enc);
    enc->enc_pic.ctx_buf.two_pass_search_center_map_offset = 0;
-   if (is_av1)
-      enc->enc_pic.ctx_buf.colloc_buffer_offset = 0;
-   else
-      enc->enc_pic.ctx_buf.colloc_buffer_offset = enc->dpb_size;
 
    RADEON_ENC_BEGIN(enc->cmd.ctx);
    RADEON_ENC_READWRITE(enc->dpb->res->buf, enc->dpb->res->domains, 0);
@@ -1012,6 +1033,7 @@ void radeon_enc_4_0_init(struct radeon_encoder *enc)
    enc->begin = radeon_enc_sq_begin;
    enc->encode = radeon_enc_sq_encode;
    enc->destroy = radeon_enc_sq_destroy;
+   enc->op_preset = radeon_enc_op_preset;
 
    if (u_reduce_video_profile(enc->base.profile) == PIPE_VIDEO_FORMAT_AV1) {
       enc->before_encode = radeon_enc_av1_dpb_management;

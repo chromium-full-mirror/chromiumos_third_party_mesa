@@ -36,14 +36,14 @@ struct d3d12_image_format_conversion_info;
 struct d3d12_image_format_conversion_info_arr;
 enum d3d12_state_var;
 
-nir_ssa_def *
+nir_def *
 d3d12_get_state_var(nir_builder *b,
                     enum d3d12_state_var var_enum,
                     const char *var_name,
                     const struct glsl_type *var_type,
                     nir_variable **out_var);
 
-nir_ssa_def *
+nir_def *
 d3d12_get_state_var(nir_builder *b,
                     enum d3d12_state_var var_enum,
                     const char *var_name,
@@ -101,7 +101,7 @@ bool
 d3d12_disable_multisampling(nir_shader *s);
 
 bool
-d3d12_split_multistream_varyings(nir_shader *s);
+d3d12_split_needed_varyings(nir_shader *s);
 
 void
 d3d12_write_0_to_new_varying(nir_shader *s, nir_variable *var);

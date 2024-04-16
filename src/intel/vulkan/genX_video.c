@@ -26,6 +26,8 @@
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
+#include "util/vl_zscan_data.h"
+
 void
 genX(CmdBeginVideoCodingKHR)(VkCommandBuffer commandBuffer,
                              const VkVideoBeginCodingInfoKHR *pBeginInfo)
@@ -61,10 +63,46 @@ genX(CmdEndVideoCodingKHR)(VkCommandBuffer commandBuffer,
    cmd_buffer->video.params = NULL;
 }
 
+/*
+ * The default scan order of scaling lists is up-right-diagonal
+ * according to the spec. But the device requires raster order,
+ * so we need to convert from the passed scaling lists.
+ */
+static void
+anv_h265_matrix_from_uprightdiagonal(StdVideoH265ScalingLists *out_sl,
+                                     const StdVideoH265ScalingLists *sl)
+{
+  uint8_t i, j;
+
+  for (i = 0; i < 6; i++) {
+     for (j = 0; j < STD_VIDEO_H265_SCALING_LIST_4X4_NUM_ELEMENTS; j++)
+        out_sl->ScalingList4x4[i][vl_zscan_h265_up_right_diagonal_16[j]] =
+           sl->ScalingList4x4[i][j];
+
+     for (j = 0; j < STD_VIDEO_H265_SCALING_LIST_8X8_NUM_ELEMENTS; j++)
+        out_sl->ScalingList8x8[i][vl_zscan_h265_up_right_diagonal[j]] =
+           sl->ScalingList8x8[i][j];
+
+     for (j = 0; j < STD_VIDEO_H265_SCALING_LIST_16X16_NUM_ELEMENTS; j++)
+        out_sl->ScalingList16x16[i][vl_zscan_h265_up_right_diagonal[j]] =
+           sl->ScalingList16x16[i][j];
+  }
+
+  for (i = 0; i < STD_VIDEO_H265_SCALING_LIST_32X32_NUM_LISTS; i++) {
+     for (j = 0; j < STD_VIDEO_H265_SCALING_LIST_32X32_NUM_ELEMENTS; j++)
+        out_sl->ScalingList32x32[i][vl_zscan_h265_up_right_diagonal[j]] =
+           sl->ScalingList32x32[i][j];
+  }
+}
+
 static void
 scaling_list(struct anv_cmd_buffer *cmd_buffer,
              const StdVideoH265ScalingLists *scaling_list)
 {
+   StdVideoH265ScalingLists out_sl = {0, };
+
+   anv_h265_matrix_from_uprightdiagonal(&out_sl, scaling_list);
+
    /* 4x4, 8x8, 16x16, 32x32 */
    for (uint8_t size = 0; size < 4; size++) {
       /* Intra, Inter */
@@ -87,22 +125,22 @@ scaling_list(struct anv_cmd_buffer *cmd_buffer,
                   for (uint8_t i = 0; i < 4; i++)
                      for (uint8_t j = 0; j < 4; j++)
                         qm.QuantizerMatrix8x8[4 * i + j] =
-                           scaling_list->ScalingList4x4[3 * pred + color][4 * i + j];
+                           out_sl.ScalingList4x4[3 * pred + color][4 * i + j];
                } else if (size == 1) {
                   for (uint8_t i = 0; i < 8; i++)
                      for (uint8_t j = 0; j < 8; j++)
                         qm.QuantizerMatrix8x8[8 * i + j] =
-                           scaling_list->ScalingList8x8[3 * pred + color][8 * i + j];
+                           out_sl.ScalingList8x8[3 * pred + color][8 * i + j];
                } else if (size == 2) {
                   for (uint8_t i = 0; i < 8; i++)
                      for (uint8_t j = 0; j < 8; j++)
                         qm.QuantizerMatrix8x8[8 * i + j] =
-                           scaling_list->ScalingList16x16[3 * pred + color][8 * i + j];
+                           out_sl.ScalingList16x16[3 * pred + color][8 * i + j];
                } else if (size == 3) {
                   for (uint8_t i = 0; i < 8; i++)
                      for (uint8_t j = 0; j < 8; j++)
                         qm.QuantizerMatrix8x8[8 * i + j] =
-                           scaling_list->ScalingList32x32[pred][8 * i + j];
+                           out_sl.ScalingList32x32[pred][8 * i + j];
                }
             }
          }
@@ -382,7 +420,7 @@ anv_h265_decode_video(struct anv_cmd_buffer *cmd_buffer,
       };
 
       indirect.HCPIndirectBitstreamObjectAccessUpperBound =
-         anv_address_add(src_buffer->address,  ALIGN(frame_info->srcBufferRange, 4096));
+         anv_address_add(src_buffer->address, align64(frame_info->srcBufferRange, 4096));
 
       indirect.HCPIndirectCUObjectMemoryAddressAttributes = (struct GENX(MEMORYADDRESSATTRIBUTES)) {
          .MOCS = anv_mocs(cmd_buffer->device, NULL, 0),
@@ -549,7 +587,8 @@ anv_h265_decode_video(struct anv_cmd_buffer *cmd_buffer,
             cum += pps->column_width_minus1[4 * i + 2] + 1;
             tile.ColumnPosition[i].CtbPos3i = cum;
 
-            if ((4 * i + 3) == pps->num_tile_columns_minus1)
+            if ((4 * i + 3) >= MIN2(pps->num_tile_columns_minus1,
+                                    ARRAY_SIZE(pps->column_width_minus1)))
                break;
 
             cum += pps->column_width_minus1[4 * i + 3] + 1;
@@ -595,7 +634,7 @@ anv_h265_decode_video(struct anv_cmd_buffer *cmd_buffer,
    /* Slice parsing */
    uint32_t last_slice = h265_pic_info->sliceSegmentCount - 1;
    void *slice_map = anv_gem_mmap(cmd_buffer->device, src_buffer->address.bo,
-                                  src_buffer->address.offset, frame_info->srcBufferRange, 0);
+                                  src_buffer->address.offset, frame_info->srcBufferRange);
 
    struct vk_video_h265_slice_params slice_params[h265_pic_info->sliceSegmentCount];
 
@@ -1022,90 +1061,34 @@ anv_h264_decode_video(struct anv_cmd_buffer *cmd_buffer,
       avc_img.CurrentPictureFrameNumber = h264_pic_info->pStdPictureInfo->frame_num;
    }
 
-   if (pps->flags.pic_scaling_matrix_present_flag) {
+   StdVideoH264ScalingLists scaling_lists;
+   vk_video_derive_h264_scaling_list(sps, pps, &scaling_lists);
+   anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
+      qm.DWordLength = 16;
+      qm.AVC = AVC_4x4_Intra_MATRIX;
+      for (unsigned m = 0; m < 3; m++)
+         for (unsigned q = 0; q < 16; q++)
+            qm.ForwardQuantizerMatrix[m * 16 + vl_zscan_normal_16[q]] = scaling_lists.ScalingList4x4[m][q];
+   }
+   anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
+      qm.DWordLength = 16;
+      qm.AVC = AVC_4x4_Inter_MATRIX;
+      for (unsigned m = 0; m < 3; m++)
+         for (unsigned q = 0; q < 16; q++)
+            qm.ForwardQuantizerMatrix[m * 16 + vl_zscan_normal_16[q]] = scaling_lists.ScalingList4x4[m + 3][q];
+   }
+   if (pps->flags.transform_8x8_mode_flag) {
       anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
          qm.DWordLength = 16;
-         qm.AVC = AVC_4x4_Intra_MATRIX;
-         for (unsigned m = 0; m < 3; m++)
-            for (unsigned q = 0; q < 16; q++)
-               qm.ForwardQuantizerMatrix[m * 16 + q] = pps->pScalingLists->ScalingList4x4[m][q];
-      }
-      anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-         qm.DWordLength = 16;
-         qm.AVC = AVC_4x4_Inter_MATRIX;
-         for (unsigned m = 0; m < 3; m++)
-            for (unsigned q = 0; q < 16; q++)
-               qm.ForwardQuantizerMatrix[m * 16 + q] = pps->pScalingLists->ScalingList4x4[m + 3][q];
-      }
-      if (pps->flags.transform_8x8_mode_flag) {
-         anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-            qm.DWordLength = 16;
-            qm.AVC = AVC_8x8_Intra_MATRIX;
-            for (unsigned q = 0; q < 64; q++)
-               qm.ForwardQuantizerMatrix[q] = pps->pScalingLists->ScalingList8x8[0][q];
-         }
-         anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-            qm.DWordLength = 16;
-            qm.AVC = AVC_8x8_Inter_MATRIX;
-            for (unsigned q = 0; q < 64; q++)
-               qm.ForwardQuantizerMatrix[q] = pps->pScalingLists->ScalingList8x8[3][q];
-         }
-      }
-   } else if (sps->flags.seq_scaling_matrix_present_flag) {
-      anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-         qm.DWordLength = 16;
-         qm.AVC = AVC_4x4_Intra_MATRIX;
-         for (unsigned m = 0; m < 3; m++)
-            for (unsigned q = 0; q < 16; q++)
-               qm.ForwardQuantizerMatrix[m * 16 + q] = sps->pScalingLists->ScalingList4x4[m][q];
+         qm.AVC = AVC_8x8_Intra_MATRIX;
+         for (unsigned q = 0; q < 64; q++)
+            qm.ForwardQuantizerMatrix[vl_zscan_normal[q]] = scaling_lists.ScalingList8x8[0][q];
       }
       anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
          qm.DWordLength = 16;
-         qm.AVC = AVC_4x4_Inter_MATRIX;
-         for (unsigned m = 0; m < 3; m++)
-            for (unsigned q = 0; q < 16; q++)
-               qm.ForwardQuantizerMatrix[m * 16 + q] = sps->pScalingLists->ScalingList4x4[m + 3][q];
-      }
-      if (pps->flags.transform_8x8_mode_flag) {
-         anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-            qm.DWordLength = 16;
-            qm.AVC = AVC_8x8_Intra_MATRIX;
-            for (unsigned q = 0; q < 64; q++)
-               qm.ForwardQuantizerMatrix[q] = sps->pScalingLists->ScalingList8x8[0][q];
-         }
-         anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-            qm.DWordLength = 16;
-            qm.AVC = AVC_8x8_Inter_MATRIX;
-            for (unsigned q = 0; q < 64; q++)
-               qm.ForwardQuantizerMatrix[q] = sps->pScalingLists->ScalingList8x8[3][q];
-         }
-      }
-   } else {
-      anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-         qm.DWordLength = 16;
-         qm.AVC = AVC_4x4_Intra_MATRIX;
-         for (unsigned q = 0; q < 3 * 16; q++)
-            qm.ForwardQuantizerMatrix[q] = 0x10;
-      }
-      anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-         qm.DWordLength = 16;
-         qm.AVC = AVC_4x4_Inter_MATRIX;
-         for (unsigned q = 0; q < 3 * 16; q++)
-            qm.ForwardQuantizerMatrix[q] = 0x10;
-      }
-      if (pps->flags.transform_8x8_mode_flag) {
-         anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-            qm.DWordLength = 16;
-            qm.AVC = AVC_8x8_Intra_MATRIX;
-            for (unsigned q = 0; q < 64; q++)
-               qm.ForwardQuantizerMatrix[q] = 0x10;
-         }
-         anv_batch_emit(&cmd_buffer->batch, GENX(MFX_QM_STATE), qm) {
-            qm.DWordLength = 16;
-            qm.AVC = AVC_8x8_Inter_MATRIX;
-            for (unsigned q = 0; q < 64; q++)
-               qm.ForwardQuantizerMatrix[q] = 0x10;
-         }
+         qm.AVC = AVC_8x8_Inter_MATRIX;
+         for (unsigned q = 0; q < 64; q++)
+            qm.ForwardQuantizerMatrix[vl_zscan_normal[q]] = scaling_lists.ScalingList8x8[1][q];
       }
    }
 

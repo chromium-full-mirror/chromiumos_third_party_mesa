@@ -25,6 +25,7 @@
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
 
+#include "nir/pipe_nir.h"
 #include "pipe/p_defines.h"
 
 #include "util/u_inlines.h"
@@ -877,7 +878,7 @@ nv50_blitter_make_fp(struct pipe_context *pipe,
    coord_var->data.location = VARYING_SLOT_VAR0;
    coord_var->data.interpolation = INTERP_MODE_NOPERSPECTIVE;
 
-   nir_ssa_def *coord = nir_load_var(&b, coord_var);
+   nir_def *coord = nir_load_var(&b, coord_var);
    if (ptarg == PIPE_TEXTURE_1D_ARRAY) {
       /* Adjust coordinates. Depth is in z, but TEX expects it to be in y. */
       coord = nir_channels(&b, coord, TGSI_WRITEMASK_XZ);
@@ -891,7 +892,7 @@ nv50_blitter_make_fp(struct pipe_context *pipe,
    const struct glsl_type *sampler_type =
       glsl_sampler_type(sampler_dim, false, is_array, GLSL_TYPE_FLOAT);
 
-   nir_ssa_def *s = NULL;
+   nir_def *s = NULL;
    if (tex_s) {
       nir_variable *sampler =
          nir_variable_create(b.shader, nir_var_uniform,
@@ -904,7 +905,7 @@ nv50_blitter_make_fp(struct pipe_context *pipe,
       s = nir_channel(&b, s, 0);
    }
 
-   nir_ssa_def *rgba = NULL, *z = NULL;
+   nir_def *rgba = NULL, *z = NULL;
    if (tex_rgbaz) {
       nir_variable *sampler =
          nir_variable_create(b.shader, nir_var_uniform,
@@ -923,14 +924,14 @@ nv50_blitter_make_fp(struct pipe_context *pipe,
    }
 
    /* handle conversions */
-   nir_ssa_def *out_ssa;
+   nir_def *out_ssa;
    nir_component_mask_t out_mask = 0;
    if (cvt_un8) {
       if (tex_s) {
          s = nir_i2f32(&b, s);
          s = nir_fmul_imm(&b, s, 1.0f / 0xff);
       } else {
-         s = nir_ssa_undef(&b, 1, 32);
+         s = nir_undef(&b, 1, 32);
       }
 
       if (tex_rgbaz) {
@@ -944,7 +945,7 @@ nv50_blitter_make_fp(struct pipe_context *pipe,
                                               1.0f / 0x00ff00,
                                               1.0f / 0xff0000));
       } else {
-         z = nir_ssa_undef(&b, 3, 32);
+         z = nir_undef(&b, 3, 32);
       }
 
       if (mode == NV50_BLIT_MODE_Z24S8 ||
@@ -973,8 +974,8 @@ nv50_blitter_make_fp(struct pipe_context *pipe,
          out_ssa = rgba;
          out_mask |= TGSI_WRITEMASK_XYZW;
       } else {
-         out_ssa = nir_vec2(&b, z ? z : nir_ssa_undef(&b, 1, 32),
-                                s ? s : nir_ssa_undef(&b, 1, 32));
+         out_ssa = nir_vec2(&b, z ? z : nir_undef(&b, 1, 32),
+                                s ? s : nir_undef(&b, 1, 32));
          if (tex_rgbaz) out_mask |= TGSI_WRITEMASK_X;
          if (tex_s)     out_mask |= TGSI_WRITEMASK_Y;
       }
@@ -992,9 +993,7 @@ nv50_blitter_make_fp(struct pipe_context *pipe,
    /* return shader */
    NIR_PASS_V(b.shader, nir_lower_samplers);
 
-   struct pipe_shader_state state;
-   pipe_shader_state_from_nir(&state, b.shader);
-   return pipe->create_fs_state(pipe, &state);
+   return pipe_shader_from_nir(pipe, b.shader);
 }
 
 static void
@@ -1798,7 +1797,7 @@ nv50_blitter_destroy(struct nv50_screen *screen)
          struct nv50_program *prog = blitter->fp[i][m];
          if (prog) {
             nv50_program_destroy(NULL, prog);
-            ralloc_free((void *)prog->pipe.ir.nir);
+            ralloc_free((void *)prog->nir);
             FREE(prog);
          }
       }

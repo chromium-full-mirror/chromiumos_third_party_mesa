@@ -247,26 +247,23 @@ create_jit_vertex_buffer_type(struct gallivm_state *gallivm,
                               const char *struct_name)
 {
    LLVMTargetDataRef target = gallivm->target;
-   LLVMTypeRef elem_types[4];
+   LLVMTypeRef elem_types[3];
    LLVMTypeRef vb_type;
 
-   elem_types[0] = LLVMInt16TypeInContext(gallivm->context);
-   elem_types[1] = LLVMInt8TypeInContext(gallivm->context);
-   elem_types[2] = LLVMInt32TypeInContext(gallivm->context);
-   elem_types[3] = LLVMPointerType(LLVMInt8TypeInContext(gallivm->context), 0);
+   elem_types[0] = LLVMInt8TypeInContext(gallivm->context);
+   elem_types[1] = LLVMInt32TypeInContext(gallivm->context);
+   elem_types[2] = LLVMPointerType(LLVMInt8TypeInContext(gallivm->context), 0);
 
    vb_type = LLVMStructTypeInContext(gallivm->context, elem_types,
                                      ARRAY_SIZE(elem_types), 0);
 
    (void) target; /* silence unused var warning for non-debug build */
-   LP_CHECK_MEMBER_OFFSET(struct pipe_vertex_buffer, stride,
-                          target, vb_type, 0);
    LP_CHECK_MEMBER_OFFSET(struct pipe_vertex_buffer, is_user_buffer,
-                          target, vb_type, 1);
+                          target, vb_type, 0);
    LP_CHECK_MEMBER_OFFSET(struct pipe_vertex_buffer, buffer_offset,
-                          target, vb_type, 2);
+                          target, vb_type, 1);
    LP_CHECK_MEMBER_OFFSET(struct pipe_vertex_buffer, buffer.resource,
-                          target, vb_type, 3);
+                          target, vb_type, 2);
 
    LP_CHECK_STRUCT_SIZE(struct pipe_vertex_buffer, target, vb_type);
 
@@ -599,6 +596,7 @@ generate_vs(struct draw_llvm_variant *variant,
       lp_jit_resources_constants(variant->gallivm, variant->resources_type, resources_ptr);
    LLVMValueRef ssbos_ptr =
       lp_jit_resources_ssbos(variant->gallivm, variant->resources_type, resources_ptr);
+   struct draw_llvm_variant_key *key = &variant->key;
 
    struct lp_build_tgsi_params params;
    memset(&params, 0, sizeof(params));
@@ -608,6 +606,7 @@ generate_vs(struct draw_llvm_variant *variant,
    params.consts_ptr = consts_ptr;
    params.system_values = system_values;
    params.inputs = inputs;
+   params.num_inputs = key->nr_vertex_elements;
    params.context_type = variant->context_type;
    params.context_ptr = context_ptr;
    params.resources_type = variant->resources_type;
@@ -1149,7 +1148,7 @@ generate_clipmask(struct draw_llvm *llvm,
    LLVMValueRef zero, shift;
    LLVMValueRef pos_x, pos_y, pos_z, pos_w;
    LLVMValueRef cv_x, cv_y, cv_z, cv_w;
-   LLVMValueRef plane1, planes, plane_ptr, sum;
+   LLVMValueRef plane1, planes, plane_ptr;
    struct lp_type f32_type = vs_type;
    struct lp_type i32_type = lp_int_type(vs_type);
    const unsigned pos = llvm->draw->vs.position_output;
@@ -1290,6 +1289,7 @@ generate_clipmask(struct draw_llvm *llvm,
          } else {
             LLVMTypeRef vs_elem_type = lp_build_elem_type(gallivm, vs_type);
             LLVMTypeRef vs_type_llvm = lp_build_vec_type(gallivm, vs_type);
+            LLVMValueRef sum = NULL;
             indices[0] = lp_build_const_int32(gallivm, 0);
             indices[1] = lp_build_const_int32(gallivm, plane_idx);
 
@@ -1742,14 +1742,14 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant)
                                                 util_format_get_blocksize(velem->src_format));
       LLVMValueRef src_offset = lp_build_const_int32(gallivm,
                                                      velem->src_offset);
+      LLVMValueRef src_stride = lp_build_const_int32(gallivm,
+                                                     velem->src_stride);
       struct lp_build_if_state if_ctx;
 
       if (velem->src_format != PIPE_FORMAT_NONE) {
          vbuffer_ptr = LLVMBuildGEP2(builder, variant->buffer_type, vbuffers_ptr, &vb_index, 1, "");
          vb_info = LLVMBuildGEP2(builder, variant->vb_type, vb_ptr, &vb_index, 1, "");
-         vb_stride[j] = draw_jit_vbuffer_stride(gallivm, variant->vb_type, vb_info);
-         vb_stride[j] = LLVMBuildZExt(gallivm->builder, vb_stride[j],
-                                      LLVMInt32TypeInContext(context), "");
+         vb_stride[j] = src_stride;
          vb_buffer_offset = draw_jit_vbuffer_offset(gallivm, variant->vb_type, vb_info);
          map_ptr[j] = draw_jit_dvbuffer_map(gallivm, variant->buffer_type, vbuffer_ptr);
          buffer_size = draw_jit_dvbuffer_size(gallivm, variant->buffer_type, vbuffer_ptr);
@@ -2165,14 +2165,19 @@ draw_llvm_set_mapped_texture(struct draw_context *draw,
    jit_tex->depth = depth;
    jit_tex->first_level = first_level;
    jit_tex->last_level = last_level;
+   jit_tex->mip_offsets[0] = 0;
    jit_tex->base = base_ptr;
-   jit_tex->num_samples = num_samples;
-   jit_tex->sample_stride = sample_stride;
-
-   for (unsigned j = first_level; j <= last_level; j++) {
-      jit_tex->mip_offsets[j] = mip_offsets[j];
-      jit_tex->row_stride[j] = row_stride[j];
-      jit_tex->img_stride[j] = img_stride[j];
+   if (num_samples > 1) {
+      jit_tex->mip_offsets[LP_JIT_TEXTURE_SAMPLE_STRIDE] = sample_stride;
+      jit_tex->row_stride[0] = row_stride[0];
+      jit_tex->img_stride[0] = img_stride[0];
+      jit_tex->last_level = num_samples;
+   } else {
+      for (unsigned j = first_level; j <= last_level; j++) {
+         jit_tex->mip_offsets[j] = mip_offsets[j];
+         jit_tex->row_stride[j] = row_stride[j];
+         jit_tex->img_stride[j] = img_stride[j];
+      }
    }
 }
 
@@ -2455,6 +2460,7 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
    params.aniso_filter_table = lp_jit_resources_aniso_filter_table(gallivm,
                                                                    variant->resources_type,
                                                                    resources_ptr);
+
 
    if (llvm->draw->gs.geometry_shader->state.type == PIPE_SHADER_IR_TGSI)
       lp_build_tgsi_soa(variant->gallivm,

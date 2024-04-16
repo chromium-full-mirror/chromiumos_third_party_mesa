@@ -105,6 +105,99 @@ validate_ir(Program* program)
    for (Block& block : program->blocks) {
       for (aco_ptr<Instruction>& instr : block.instructions) {
 
+         unsigned pck_defs = instr_info.definitions[(int)instr->opcode];
+         unsigned pck_ops = instr_info.operands[(int)instr->opcode];
+
+         if (pck_defs != 0) {
+            /* Before GFX10 v_cmpx also writes VCC. */
+            if (instr->isVOPC() && program->gfx_level < GFX10 && pck_defs == exec_hi)
+               pck_defs = vcc | (exec_hi << 8);
+
+            for (unsigned i = 0; i < 4; i++) {
+               uint32_t def = (pck_defs >> (i * 8)) & 0xff;
+               if (def == 0) {
+                  check(i == instr->definitions.size(), "Too many definitions", instr.get());
+                  break;
+               } else {
+                  check(i < instr->definitions.size(), "Too few definitions", instr.get());
+                  if (i >= instr->definitions.size())
+                     break;
+               }
+
+               if (def == m0) {
+                  check(instr->definitions[i].isFixed() && instr->definitions[i].physReg() == m0,
+                        "Definition needs m0", instr.get());
+               } else if (def == scc) {
+                  check(instr->definitions[i].isFixed() && instr->definitions[i].physReg() == scc,
+                        "Definition needs scc", instr.get());
+               } else if (def == exec_hi) {
+                  RegClass rc = instr->isSALU() ? s2 : program->lane_mask;
+                  check(instr->definitions[i].isFixed() &&
+                           instr->definitions[i].physReg() == exec &&
+                           instr->definitions[i].regClass() == rc,
+                        "Definition needs exec", instr.get());
+               } else if (def == exec_lo) {
+                  check(instr->definitions[i].isFixed() &&
+                           instr->definitions[i].physReg() == exec_lo &&
+                           instr->definitions[i].regClass() == s1,
+                        "Definition needs exec_lo", instr.get());
+               } else if (def == vcc) {
+                  check(instr->definitions[i].regClass() == program->lane_mask,
+                        "Definition has to be lane mask", instr.get());
+                  check(!instr->definitions[i].isFixed() ||
+                           instr->definitions[i].physReg() == vcc || instr->isVOP3() ||
+                           instr->isSDWA(),
+                        "Definition has to be vcc", instr.get());
+               } else {
+                  check(instr->definitions[i].size() == def, "Definition has wrong size",
+                        instr.get());
+               }
+            }
+         }
+
+         if (pck_ops != 0) {
+            for (unsigned i = 0; i < 4; i++) {
+               uint32_t op = (pck_ops >> (i * 8)) & 0xff;
+               if (op == 0) {
+                  check(i == instr->operands.size(), "Too many operands", instr.get());
+                  break;
+               } else {
+                  check(i < instr->operands.size(), "Too few operands", instr.get());
+                  if (i >= instr->operands.size())
+                     break;
+               }
+
+               if (op == m0) {
+                  check(instr->operands[i].isFixed() && instr->operands[i].physReg() == m0,
+                        "Operand needs m0", instr.get());
+               } else if (op == scc) {
+                  check(instr->operands[i].isFixed() && instr->operands[i].physReg() == scc,
+                        "Operand needs scc", instr.get());
+               } else if (op == exec_hi) {
+                  RegClass rc = instr->isSALU() ? s2 : program->lane_mask;
+                  check(instr->operands[i].isFixed() && instr->operands[i].physReg() == exec &&
+                           instr->operands[i].hasRegClass() && instr->operands[i].regClass() == rc,
+                        "Operand needs exec", instr.get());
+               } else if (op == exec_lo) {
+                  check(instr->operands[i].isFixed() && instr->operands[i].physReg() == exec_lo &&
+                           instr->operands[i].hasRegClass() && instr->operands[i].regClass() == s1,
+                        "Operand needs exec_lo", instr.get());
+               } else if (op == vcc) {
+                  check(instr->operands[i].hasRegClass() &&
+                           instr->operands[i].regClass() == program->lane_mask,
+                        "Operand has to be lane mask", instr.get());
+                  check(!instr->operands[i].isFixed() || instr->operands[i].physReg() == vcc ||
+                           instr->isVOP3(),
+                        "Operand has to be vcc", instr.get());
+               } else {
+                  check(instr->operands[i].size() == op ||
+                           (instr->operands[i].isFixed() && instr->operands[i].physReg() >= 128 &&
+                            instr->operands[i].physReg() < 256),
+                        "Operand has wrong size", instr.get());
+               }
+            }
+         }
+
          /* check base format */
          Format base_format = instr->format;
          base_format = (Format)((uint32_t)base_format & ~(uint32_t)Format::SDWA);
@@ -116,7 +209,7 @@ validate_ir(Program* program)
             base_format = Format::VOP2;
          else if ((uint32_t)base_format & (uint32_t)Format::VOPC)
             base_format = Format::VOPC;
-         else if ((uint32_t)base_format & (uint32_t)Format::VINTRP) {
+         else if (base_format == Format::VINTRP) {
             if (instr->opcode == aco_opcode::v_interp_p1ll_f16 ||
                 instr->opcode == aco_opcode::v_interp_p1lv_f16 ||
                 instr->opcode == aco_opcode::v_interp_p2_legacy_f16 ||
@@ -146,6 +239,11 @@ validate_ir(Program* program)
                   "Format cannot have DPP applied", instr.get());
             check((!instr->isVOP3() && !instr->isVOP3P()) || program->gfx_level >= GFX11,
                   "VOP3+DPP is GFX11+ only", instr.get());
+
+            bool fi =
+               instr->isDPP8() ? instr->dpp8().fetch_inactive : instr->dpp16().fetch_inactive;
+            check(!fi || program->gfx_level >= GFX10, "DPP Fetch-Inactive is GFX10+ only",
+                  instr.get());
          }
 
          /* check SDWA */
@@ -254,8 +352,9 @@ validate_ir(Program* program)
                   check(!vop3p.opsel_lo[i] && !vop3p.opsel_hi[i],
                         "Unexpected opsel for subdword operand", instr.get());
             }
-            check(instr->definitions[0].regClass() == v1, "VOP3P must have v1 definition",
-                  instr.get());
+            check(instr->definitions[0].regClass() == v1 ||
+                     instr_info.classes[(int)instr->opcode] == instr_class::wmma,
+                  "VOP3P must have v1 definition", instr.get());
          }
 
          /* check for undefs */
@@ -266,8 +365,9 @@ validate_ir(Program* program)
                                    instr->opcode == aco_opcode::p_create_vector ||
                                    instr->opcode == aco_opcode::p_jump_to_epilog ||
                                    instr->opcode == aco_opcode::p_dual_src_export_gfx11 ||
+                                   instr->opcode == aco_opcode::p_end_with_regs ||
                                    (instr->opcode == aco_opcode::p_interp_gfx11 && i == 0) ||
-                                   (instr->opcode == aco_opcode::p_bpermute_gfx11w64 && i == 0) ||
+                                   (instr->opcode == aco_opcode::p_bpermute_permlane && i == 0) ||
                                    (flat && i == 1) || (instr->isMIMG() && (i == 1 || i == 2)) ||
                                    ((instr->isMUBUF() || instr->isMTBUF()) && i == 1) ||
                                    (instr->isScratch() && i == 0) || (instr->isDS() && i == 0) ||
@@ -550,16 +650,18 @@ validate_ir(Program* program)
                         instr->operands[0].size() == 2,
                      "First operand of p_jump_to_epilog must be a SGPR", instr.get());
                for (unsigned i = 1; i < instr->operands.size(); i++) {
-                  check(
-                     instr->operands[i].isOfType(RegType::vgpr) || instr->operands[i].isUndefined(),
-                     "Other operands of p_jump_to_epilog must be VGPRs or undef", instr.get());
+                  check(instr->operands[i].isOfType(RegType::vgpr) ||
+                           instr->operands[i].isOfType(RegType::sgpr) ||
+                           instr->operands[i].isUndefined(),
+                        "Other operands of p_jump_to_epilog must be VGPRs, SGPRs or undef",
+                        instr.get());
                }
             } else if (instr->opcode == aco_opcode::p_dual_src_export_gfx11) {
                check(instr->definitions.size() == 6,
                      "p_dual_src_export_gfx11 must have 6 definitions", instr.get());
-               check(instr->definitions[2].regClass().type() == RegType::vgpr &&
-                        instr->definitions[2].regClass().size() == 1,
-                     "Third definition of p_dual_src_export_gfx11 must be a v1", instr.get());
+               check(instr->definitions[2].regClass() == program->lane_mask,
+                     "Third definition of p_dual_src_export_gfx11 must be a lane mask",
+                     instr.get());
                check(instr->definitions[3].regClass() == program->lane_mask,
                      "Fourth definition of p_dual_src_export_gfx11 must be a lane mask",
                      instr.get());

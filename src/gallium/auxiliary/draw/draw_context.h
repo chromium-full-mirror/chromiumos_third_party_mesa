@@ -93,7 +93,7 @@ struct draw_prim_info {
 
 struct draw_context *draw_create(struct pipe_context *pipe);
 
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
 struct draw_context *draw_create_with_llvm_context(struct pipe_context *pipe,
                                                    void *context);
 #endif
@@ -320,7 +320,7 @@ void draw_delete_mesh_shader(struct draw_context *draw,
  */
 
 void draw_set_vertex_buffers(struct draw_context *draw,
-                             unsigned start_slot, unsigned count,
+                             unsigned count,
                              unsigned unbind_num_trailing_slots,
                              const struct pipe_vertex_buffer *buffers);
 

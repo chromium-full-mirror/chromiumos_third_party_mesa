@@ -30,7 +30,12 @@
 #include "compiler/glsl/list.h"
 
 #define MAX_SAMPLER_MESSAGE_SIZE 11
-#define MAX_VGRF_SIZE 16
+
+/* The sampler can return a vec5 when sampling with sparse residency. In
+ * SIMD32, each component takes up 4 GRFs, so we need to allow up to size-20
+ * VGRFs to hold the result.
+ */
+#define MAX_VGRF_SIZE(devinfo) ((devinfo)->ver >= 20 ? 40 : 20)
 
 #ifdef __cplusplus
 struct backend_reg : private brw_reg
@@ -91,7 +96,6 @@ struct bblock_t;
 
 struct backend_instruction : public exec_node {
    bool is_3src(const struct brw_compiler *compiler) const;
-   bool is_tex() const;
    bool is_math() const;
    bool is_control_flow_begin() const;
    bool is_control_flow_end() const;
@@ -194,6 +198,16 @@ struct backend_instruction {
     * mod and predication.
     */
    unsigned flag_subreg:2;
+
+   /**
+    * Systolic depth used by DPAS instruction.
+    */
+   unsigned sdepth:4;
+
+   /**
+    * Repeat count used by DPAS instruction.
+    */
+   unsigned rcount:4;
 
    /** The number of hardware registers used for a message header. */
    uint8_t header_size;

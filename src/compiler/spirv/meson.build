@@ -51,6 +51,7 @@ files_libvtn = files(
   'vtn_alu.c',
   'vtn_amd.c',
   'vtn_cfg.c',
+  'vtn_cmat.c',
   'vtn_glsl450.c',
   'vtn_opencl.c',
   'vtn_private.h',
@@ -66,11 +67,10 @@ libvtn = static_library(
    vtn_gather_types_c,
    vtn_generator_ids_h,
   ],
-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_compiler],
+  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa],
   c_args : [c_msvc_compat_args, no_override_init_args],
   gnu_symbol_visibility : 'hidden',
   dependencies : [idep_nir, dep_valgrind],
-  link_with : libcompiler,
   build_by_default : false,
 )
 
@@ -81,9 +81,11 @@ idep_vtn = declare_dependency(
 
 spirv2nir = executable(
   'spirv2nir',
-  files('spirv2nir.c'),
+  files('spirv2nir.c') + [
+   vtn_generator_ids_h,
+  ],
   dependencies : [dep_m, idep_vtn, idep_mesautil],
-  include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_compiler],
+  include_directories : [inc_include, inc_src],
   c_args : [c_msvc_compat_args, no_override_init_args],
   gnu_symbol_visibility : 'hidden',
   build_by_default : with_tools.contains('nir'),
@@ -103,7 +105,7 @@ if with_tests
       ),
       c_args : [c_msvc_compat_args, no_override_init_args],
       gnu_symbol_visibility : 'hidden',
-      include_directories : [inc_include, inc_src, inc_mapi, inc_mesa],
+      include_directories : [inc_include, inc_src],
       dependencies : [idep_vtn, dep_thread, idep_gtest, idep_nir, idep_mesautil],
     ),
     suite : ['compiler', 'spirv'],

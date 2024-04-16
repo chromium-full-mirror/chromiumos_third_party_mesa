@@ -47,7 +47,7 @@
 
 #include "draw_vertex_header.h"
 
-#ifdef DRAW_LLVM_AVAILABLE
+#if DRAW_LLVM_AVAILABLE
 struct gallivm_state;
 #endif
 
@@ -207,6 +207,7 @@ struct draw_context
        */
       unsigned max_index;
 
+      unsigned vertex_strides[PIPE_MAX_ATTRIBS];
       struct pipe_vertex_element vertex_element[PIPE_MAX_ATTRIBS];
       unsigned nr_vertex_elements;
 

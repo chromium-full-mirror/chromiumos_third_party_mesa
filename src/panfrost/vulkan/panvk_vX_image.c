@@ -102,7 +102,7 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    view->pview = (struct pan_image_view){
-      .image = &image->pimage,
+      .planes[0] = &image->pimage,
       .format = vk_format_to_pipe_format(view->vk.view_format),
       .dim = panvk_view_type_to_mali_tex_dim(view->vk.view_type),
       .nr_samples = image->pimage.layout.nr_samples,
@@ -143,7 +143,7 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
                        : MALI_ATTRIBUTE_TYPE_3D_INTERLEAVED;
          cfg.pointer = image->pimage.data.bo->ptr.gpu + offset;
          cfg.stride = util_format_get_blocksize(view->pview.format);
-         cfg.size = image->pimage.data.bo->size - offset;
+         cfg.size = panfrost_bo_size(image->pimage.data.bo) - offset;
       }
 
       attrib_buf += pan_size(ATTRIBUTE_BUFFER);
