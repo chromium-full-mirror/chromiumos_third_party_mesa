@@ -401,7 +401,7 @@ __OUT_IB5(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
  */
 #define HW_QUERY_BASE_REG REG_AXXX_CP_SCRATCH_REG4
 
-#ifdef DEBUG
+#if MESA_DEBUG
 #define __EMIT_MARKER 1
 #else
 #define __EMIT_MARKER 0
@@ -505,6 +505,13 @@ fd4_size2indextype(unsigned index_size)
    DBG("unsupported index size: %d", index_size);
    assert(0);
    return INDEX4_SIZE_32_BIT;
+}
+
+/* Convert 19.2MHz RBBM always-on timer ticks to ns */
+static inline uint64_t
+ticks_to_ns(uint64_t ts)
+{
+   return ts * (1000000000 / 19200000);
 }
 
 #ifdef __cplusplus

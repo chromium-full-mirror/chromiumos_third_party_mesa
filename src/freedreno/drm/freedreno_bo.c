@@ -27,6 +27,7 @@
 #include "util/os_mman.h"
 
 #include "freedreno_drmif.h"
+#include "freedreno_drm_perfetto.h"
 #include "freedreno_priv.h"
 
 simple_mtx_t table_lock = SIMPLE_MTX_INITIALIZER;
@@ -105,7 +106,8 @@ fd_bo_init_common(struct fd_bo *bo, struct fd_device *dev)
    bo->max_fences = 1;
    bo->fences = &bo->_inline_fence;
 
-   VG_BO_ALLOC(bo);
+   if (!bo->map)
+      VG_BO_ALLOC(bo);
 }
 
 /* allocate a new buffer object, call w/ table_lock held */
@@ -140,10 +142,13 @@ bo_new(struct fd_device *dev, uint32_t size, uint32_t flags,
    struct fd_bo *bo = NULL;
 
    if (size < FD_BO_HEAP_BLOCK_SIZE) {
-      if ((flags == 0) && dev->default_heap)
-         return fd_bo_heap_alloc(dev->default_heap, size);
-      if ((flags == RING_FLAGS) && dev->ring_heap)
-         return fd_bo_heap_alloc(dev->ring_heap, size);
+      uint32_t alloc_flags = flags & ~_FD_BO_HINTS;
+      if ((alloc_flags == 0) && dev->default_heap)
+         bo = fd_bo_heap_alloc(dev->default_heap, size, flags);
+      else if ((alloc_flags == RING_FLAGS) && dev->ring_heap)
+         bo = fd_bo_heap_alloc(dev->ring_heap, size, flags);
+      if (bo)
+         return bo;
    }
 
    /* demote cached-coherent to WC if not supported: */
@@ -164,6 +169,8 @@ bo_new(struct fd_device *dev, uint32_t size, uint32_t flags,
    simple_mtx_unlock(&table_lock);
 
    bo->alloc_flags = flags;
+
+   fd_alloc_log(bo, FD_ALLOC_NONE, FD_ALLOC_ACTIVE);
 
    return bo;
 }
@@ -383,6 +390,7 @@ fd_bo_del(struct fd_bo *bo)
 
    bo_finalize(bo);
    dev_flush(dev);
+   fd_alloc_log(bo, FD_ALLOC_ACTIVE, FD_ALLOC_NONE);
    bo_del(bo);
 }
 
@@ -416,6 +424,7 @@ fd_bo_del_array(struct fd_bo **bos, int count)
     */
 
    for (int i = 0; i < count; i++) {
+      fd_alloc_log(bos[i], FD_ALLOC_ACTIVE, FD_ALLOC_NONE);
       bo_del(bos[i]);
    }
 }
@@ -602,6 +611,22 @@ fd_bo_is_cached(struct fd_bo *bo)
    return !!(bo->alloc_flags & FD_BO_CACHED_COHERENT);
 }
 
+void
+fd_bo_set_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size)
+{
+   if (!bo->funcs->set_metadata)
+      return;
+   bo->funcs->set_metadata(bo, metadata, metadata_size);
+}
+
+int
+fd_bo_get_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size)
+{
+   if (!bo->funcs->get_metadata)
+      return -ENOSYS;
+   return bo->funcs->get_metadata(bo, metadata, metadata_size);
+}
+
 void *
 fd_bo_map_os_mmap(struct fd_bo *bo)
 {
@@ -641,6 +666,16 @@ fd_bo_map(struct fd_bo *bo)
    return __fd_bo_map(bo);
 }
 
+static void *
+fd_bo_map_for_upload(struct fd_bo *bo)
+{
+   void *addr = __fd_bo_map(bo);
+   if (bo->alloc_flags & FD_BO_NOMAP)
+      VG_BO_MAPPED(bo);
+
+   return addr;
+}
+
 void
 fd_bo_upload(struct fd_bo *bo, void *src, unsigned off, unsigned len)
 {
@@ -649,7 +684,7 @@ fd_bo_upload(struct fd_bo *bo, void *src, unsigned off, unsigned len)
       return;
    }
 
-   memcpy((uint8_t *)__fd_bo_map(bo) + off, src, len);
+   memcpy((uint8_t *)fd_bo_map_for_upload(bo) + off, src, len);
 }
 
 bool

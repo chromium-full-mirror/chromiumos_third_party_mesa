@@ -1,27 +1,7 @@
 /* -*- mesa-c++  -*-
- *
- * Copyright (c) 2019 Collabora LTD
- *
+ * Copyright 2019 Collabora LTD
  * Author: Gert Wollny <gert.wollny@collabora.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "sfn_nir.h"
@@ -443,7 +423,7 @@ r600_nir_lower_atomics(nir_shader *shader)
    std::map<unsigned, nir_variable *> sorted_var;
 
    nir_foreach_variable_with_modes_safe(var, shader, nir_var_uniform) {
-      if (var->type->contains_atomic()) {
+      if (glsl_contains_atomic(var->type)) {
          sorted_var[(var->data.binding << 16) | var->data.offset] = var;
          exec_node_remove(&var->node);
       }
@@ -451,7 +431,7 @@ r600_nir_lower_atomics(nir_shader *shader)
 
    for (auto& [dummy, var] : sorted_var) {
       auto iindex = binding_offset.find(var->data.binding);
-      unsigned offset_update = var->type->atomic_size() / 4; /* ATOMIC_COUNTER_SIZE */
+      unsigned offset_update = glsl_atomic_size(var->type) / 4; /* ATOMIC_COUNTER_SIZE */
       if (iindex == binding_offset.end()) {
          var->data.index = 0;
          binding_offset[var->data.binding] = offset_update;
@@ -647,7 +627,7 @@ optimize_once(nir_shader *shader)
    NIR_PASS(progress, shader, nir_opt_copy_prop_vars);
    NIR_PASS(progress, shader, nir_opt_remove_phis);
 
-   if (nir_opt_trivial_continues(shader)) {
+   if (nir_opt_loop(shader)) {
       progress = true;
       NIR_PASS(progress, shader, nir_copy_prop);
       NIR_PASS(progress, shader, nir_opt_dce);
@@ -762,6 +742,7 @@ r600_lower_and_optimize_nir(nir_shader *sh,
       ((sh->info.bit_sizes_float | sh->info.bit_sizes_int) & 64);
 
    r600::sort_uniforms(sh);
+   NIR_PASS_V(sh, r600_nir_fix_kcache_indirect_access);
 
    while (optimize_once(sh))
       ;
@@ -847,8 +828,10 @@ r600_lower_and_optimize_nir(nir_shader *sh,
    if (lower_64bit)
       NIR_PASS_V(sh, r600::r600_nir_64_to_vec2);
 
-   if ((sh->info.bit_sizes_float | sh->info.bit_sizes_int) & 64)
+   if ((sh->info.bit_sizes_float | sh->info.bit_sizes_int) & 64) {
       NIR_PASS_V(sh, r600::r600_split_64bit_uniforms_and_ubo);
+      NIR_PASS_V(sh, nir_lower_doubles, NULL, sh->options->lower_doubles_options);
+   }
 
    /* Lower to scalar to let some optimization work out better */
    while (optimize_once(sh))

@@ -49,7 +49,7 @@
       }                                                                                          \
    } while(0)
 
-typedef void (*radeon_enc_get_buffer)(struct pipe_resource *resource, struct pb_buffer **handle,
+typedef void (*radeon_enc_get_buffer)(struct pipe_resource *resource, struct pb_buffer_lean **handle,
                                       struct radeon_surf **surface);
 
 struct pipe_video_codec *radeon_create_encoder(struct pipe_context *context,
@@ -107,6 +107,7 @@ struct radeon_enc_pic {
    bool sample_adaptive_offset_enabled_flag;
    bool pcm_enabled_flag;
    bool sps_temporal_mvp_enabled_flag;
+   bool use_rc_per_pic_ex;
 
    struct {
       struct {
@@ -124,6 +125,7 @@ struct radeon_enc_pic {
             uint32_t is_obu_frame:1;
             uint32_t stream_obu_frame:1;  /* all frames have the same number of tiles */
             uint32_t need_av1_seq:1;
+            uint32_t av1_mark_long_term_reference:1;
          };
          uint32_t render_width;
          uint32_t render_height;
@@ -131,6 +133,7 @@ struct radeon_enc_pic {
          enum pipe_av1_enc_frame_type last_frame_type;
          uint32_t display_frame_id;
          uint32_t frame_id;
+         uint32_t temporal_seq_num;
          uint32_t order_hint;
          uint32_t order_hint_bits;
          uint32_t refresh_frame_flags;
@@ -146,6 +149,12 @@ struct radeon_enc_pic {
       uint32_t count_last_layer;
       rvcn_enc_av1_ref_frame_t frames[RENCDOE_AV1_NUM_REF_FRAMES];
       rvcn_enc_av1_recon_slot_t recon_slots[RENCDOE_AV1_NUM_REF_FRAMES + 1];
+      uint8_t av1_ref_frame_idx[RENCDOE_AV1_REFS_PER_FRAME];
+      void *av1_ref_list[RENCDOE_AV1_NUM_REF_FRAMES];
+      void *av1_recon_frame;
+      uint32_t av1_ref_frame_ctrl_l0;
+      uint32_t av1_ref_frame_ctrl_l1;
+      uint32_t av1_ltr_seq;
    };
 
    rvcn_enc_session_info_t session_info;
@@ -162,6 +171,9 @@ struct radeon_enc_pic {
    rvcn_enc_h264_encode_params_t h264_enc_params;
    rvcn_enc_h264_deblocking_filter_t h264_deblock;
    rvcn_enc_hevc_deblocking_filter_t hevc_deblock;
+   rvcn_enc_hevc_encode_params_t hevc_enc_params;
+   rvcn_enc_av1_encode_params_t av1_enc_params;
+   rvcn_enc_av1_tile_config_t av1_tile_config;
    rvcn_enc_rate_ctl_per_picture_t rc_per_pic;
    rvcn_enc_quality_params_t quality_params;
    rvcn_enc_encode_context_buffer_t ctx_buf;
@@ -172,6 +184,8 @@ struct radeon_enc_pic {
    rvcn_enc_stats_t enc_statistics;
    rvcn_enc_input_format_t enc_input_format;
    rvcn_enc_output_format_t enc_output_format;
+   rvcn_enc_qp_map_t enc_qp_map;
+   rvcn_enc_metadata_buffer_t metadata;
 };
 
 struct radeon_encoder {
@@ -206,6 +220,7 @@ struct radeon_encoder {
    void (*rc_per_pic)(struct radeon_encoder *enc);
    void (*encode_params)(struct radeon_encoder *enc);
    void (*encode_params_codec_spec)(struct radeon_encoder *enc);
+   void (*qp_map)(struct radeon_encoder *enc);
    void (*op_init)(struct radeon_encoder *enc);
    void (*op_close)(struct radeon_encoder *enc);
    void (*op_enc)(struct radeon_encoder *enc);
@@ -218,6 +233,9 @@ struct radeon_encoder {
    void (*encode_statistics)(struct radeon_encoder *enc);
    void (*obu_instructions)(struct radeon_encoder *enc);
    void (*cdf_default_table)(struct radeon_encoder *enc);
+   void (*ctx_override)(struct radeon_encoder *enc);
+   void (*metadata)(struct radeon_encoder *enc);
+   void (*tile_config)(struct radeon_encoder *enc);
    /* mq is used for preversing multiple queue ibs */
    void (*mq_begin)(struct radeon_encoder *enc);
    void (*mq_encode)(struct radeon_encoder *enc);
@@ -231,19 +249,21 @@ struct radeon_encoder {
 
    radeon_enc_get_buffer get_buffer;
 
-   struct pb_buffer *handle;
+   struct pb_buffer_lean *handle;
    struct radeon_surf *luma;
    struct radeon_surf *chroma;
 
-   struct pb_buffer *bs_handle;
+   struct pb_buffer_lean *bs_handle;
    unsigned bs_size;
 
    struct rvid_buffer *si;
    struct rvid_buffer *fb;
    struct rvid_buffer *dpb;
    struct rvid_buffer *cdf;
+   struct rvid_buffer *roi;
+   struct rvid_buffer *meta;
    struct radeon_enc_pic enc_pic;
-   struct pb_buffer *stats;
+   struct pb_buffer_lean *stats;
    rvcn_enc_cmd_t cmd;
 
    unsigned alignment;
@@ -259,14 +279,18 @@ struct radeon_encoder {
 
    bool emulation_prevention;
    bool need_feedback;
+   bool need_rate_control;
+   bool need_rc_per_pic;
    unsigned dpb_size;
+   unsigned roi_size;
+   unsigned metadata_size;
    rvcn_enc_picture_info_t dpb_info[RENCODE_MAX_NUM_RECONSTRUCTED_PICTURES];
    unsigned max_ltr_idx;
 
    struct pipe_context *ectx;
 };
 
-void radeon_enc_add_buffer(struct radeon_encoder *enc, struct pb_buffer *buf,
+void radeon_enc_add_buffer(struct radeon_encoder *enc, struct pb_buffer_lean *buf,
                            unsigned usage, enum radeon_bo_domain domain, signed offset);
 
 void radeon_enc_dummy(struct radeon_encoder *enc);
@@ -302,6 +326,8 @@ void radeon_enc_2_0_init(struct radeon_encoder *enc);
 void radeon_enc_3_0_init(struct radeon_encoder *enc);
 
 void radeon_enc_4_0_init(struct radeon_encoder *enc);
+
+void radeon_enc_5_0_init(struct radeon_encoder *enc);
 
 void radeon_enc_av1_bs_instruction_type(struct radeon_encoder *enc,
                                         unsigned int inst, unsigned int obu_type);

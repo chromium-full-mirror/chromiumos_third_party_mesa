@@ -42,9 +42,9 @@ wrap_matrix(struct vtn_builder *b, struct vtn_ssa_value *val)
    if (glsl_type_is_matrix(val->type))
       return val;
 
-   struct vtn_ssa_value *dest = rzalloc(b, struct vtn_ssa_value);
+   struct vtn_ssa_value *dest = vtn_zalloc(b, struct vtn_ssa_value);
    dest->type = glsl_get_bare_type(val->type);
-   dest->elems = ralloc_array(b, struct vtn_ssa_value *, 1);
+   dest->elems = vtn_alloc_array(b, struct vtn_ssa_value *, 1);
    dest->elems[0] = val;
 
    return dest;
@@ -94,38 +94,16 @@ matrix_multiply(struct vtn_builder *b,
       transpose_result = true;
    }
 
-   if (src0_transpose && !src1_transpose &&
-       glsl_get_base_type(src0->type) == GLSL_TYPE_FLOAT) {
-      /* We already have the rows of src0 and the columns of src1 available,
-       * so we can just take the dot product of each row with each column to
-       * get the result.
-       */
-
-      for (unsigned i = 0; i < src1_columns; i++) {
-         nir_def *vec_src[4];
-         for (unsigned j = 0; j < src0_rows; j++) {
-            vec_src[j] = nir_fdot(&b->nb, src0_transpose->elems[j]->def,
-                                          src1->elems[i]->def);
-         }
-         dest->elems[i]->def = nir_vec(&b->nb, vec_src, src0_rows);
-      }
-   } else {
-      /* We don't handle the case where src1 is transposed but not src0, since
-       * the general case only uses individual components of src1 so the
-       * optimizer should chew through the transpose we emitted for src1.
-       */
-
-      for (unsigned i = 0; i < src1_columns; i++) {
-         /* dest[i] = sum(src0[j] * src1[i][j] for all j) */
+   for (unsigned i = 0; i < src1_columns; i++) {
+      /* dest[i] = sum(src0[j] * src1[i][j] for all j) */
+      dest->elems[i]->def =
+         nir_fmul(&b->nb, src0->elems[src0_columns - 1]->def,
+                  nir_channel(&b->nb, src1->elems[i]->def, src0_columns - 1));
+      for (int j = src0_columns - 2; j >= 0; j--) {
          dest->elems[i]->def =
-            nir_fmul(&b->nb, src0->elems[src0_columns - 1]->def,
-                     nir_channel(&b->nb, src1->elems[i]->def, src0_columns - 1));
-         for (int j = src0_columns - 2; j >= 0; j--) {
-            dest->elems[i]->def =
-               nir_ffma(&b->nb, src0->elems[j]->def,
-                                nir_channel(&b->nb, src1->elems[i]->def, j),
-                                dest->elems[i]->def);
-         }
+            nir_ffma(&b->nb, src0->elems[j]->def,
+                             nir_channel(&b->nb, src1->elems[i]->def, j),
+                             dest->elems[i]->def);
       }
    }
 
@@ -425,6 +403,63 @@ vtn_nir_alu_op_for_spirv_opcode(struct vtn_builder *b,
 }
 
 static void
+handle_fp_fast_math(struct vtn_builder *b, UNUSED struct vtn_value *val,
+                 UNUSED int member, const struct vtn_decoration *dec,
+                 UNUSED void *_void)
+{
+   vtn_assert(dec->scope == VTN_DEC_DECORATION);
+   if (dec->decoration != SpvDecorationFPFastMathMode)
+      return;
+
+   SpvFPFastMathModeMask can_fast_math =
+      SpvFPFastMathModeAllowRecipMask |
+      SpvFPFastMathModeAllowContractMask |
+      SpvFPFastMathModeAllowReassocMask |
+      SpvFPFastMathModeAllowTransformMask;
+
+   if ((dec->operands[0] & can_fast_math) != can_fast_math)
+      b->nb.exact = true;
+
+   /* Decoration overrides defaults */
+   b->nb.fp_fast_math = 0;
+   if (!(dec->operands[0] & SpvFPFastMathModeNSZMask))
+      b->nb.fp_fast_math |=
+         FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP16 |
+         FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP32 |
+         FLOAT_CONTROLS_SIGNED_ZERO_PRESERVE_FP64;
+   if (!(dec->operands[0] & SpvFPFastMathModeNotNaNMask))
+      b->nb.fp_fast_math |=
+         FLOAT_CONTROLS_NAN_PRESERVE_FP16 |
+         FLOAT_CONTROLS_NAN_PRESERVE_FP32 |
+         FLOAT_CONTROLS_NAN_PRESERVE_FP64;
+   if (!(dec->operands[0] & SpvFPFastMathModeNotInfMask))
+      b->nb.fp_fast_math |=
+         FLOAT_CONTROLS_INF_PRESERVE_FP16 |
+         FLOAT_CONTROLS_INF_PRESERVE_FP32 |
+         FLOAT_CONTROLS_INF_PRESERVE_FP64;
+}
+
+void
+vtn_handle_fp_fast_math(struct vtn_builder *b, struct vtn_value *val)
+{
+   /* Take the NaN/Inf/SZ preserve bits from the execution mode and set them
+    * on the builder, so the generated instructions can take it from it.
+    * We only care about some of them, check nir_alu_instr for details.
+    * We also copy all bit widths, because we can't easily get the correct one
+    * here.
+    */
+#define FLOAT_CONTROLS2_BITS (FLOAT_CONTROLS_SIGNED_ZERO_INF_NAN_PRESERVE_FP16 | \
+                              FLOAT_CONTROLS_SIGNED_ZERO_INF_NAN_PRESERVE_FP32 | \
+                              FLOAT_CONTROLS_SIGNED_ZERO_INF_NAN_PRESERVE_FP64)
+   static_assert(FLOAT_CONTROLS2_BITS == BITSET_MASK(9),
+      "enum float_controls and fp_fast_math out of sync!");
+   b->nb.fp_fast_math = b->shader->info.float_controls_execution_mode &
+      FLOAT_CONTROLS2_BITS;
+   vtn_foreach_decoration(b, val, handle_fp_fast_math, NULL);
+#undef FLOAT_CONTROLS2_BITS
+}
+
+static void
 handle_no_contraction(struct vtn_builder *b, UNUSED struct vtn_value *val,
                       UNUSED int member, const struct vtn_decoration *dec,
                       UNUSED void *_void)
@@ -603,6 +638,7 @@ vtn_handle_alu(struct vtn_builder *b, SpvOp opcode,
    }
 
    vtn_handle_no_contraction(b, dest_val);
+   vtn_handle_fp_fast_math(b, dest_val);
    bool mediump_16bit = vtn_alu_op_mediump_16bit(b, opcode, dest_val);
 
    /* Collect the various SSA sources */

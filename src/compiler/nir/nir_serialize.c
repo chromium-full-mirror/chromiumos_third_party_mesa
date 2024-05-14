@@ -202,8 +202,6 @@ read_constant(read_ctx *ctx, nir_variable *nvar)
 
 enum var_data_encoding {
    var_encode_full,
-   var_encode_shader_temp,
-   var_encode_function_temp,
    var_encode_location_diff,
 };
 
@@ -264,30 +262,23 @@ write_variable(write_ctx *ctx, const nir_variable *var)
        data.mode != nir_var_shader_out)
       data.location = 0;
 
-   /* Temporary variables don't serialize var->data. */
-   if (data.mode == nir_var_shader_temp)
-      flags.u.data_encoding = var_encode_shader_temp;
-   else if (data.mode == nir_var_function_temp)
-      flags.u.data_encoding = var_encode_function_temp;
-   else {
-      struct nir_variable_data tmp = data;
+   struct nir_variable_data tmp = data;
 
-      tmp.location = ctx->last_var_data.location;
-      tmp.location_frac = ctx->last_var_data.location_frac;
-      tmp.driver_location = ctx->last_var_data.driver_location;
+   tmp.location = ctx->last_var_data.location;
+   tmp.location_frac = ctx->last_var_data.location_frac;
+   tmp.driver_location = ctx->last_var_data.driver_location;
 
-      /* See if we can encode only the difference in locations from the last
-       * variable.
-       */
-      if (memcmp(&ctx->last_var_data, &tmp, sizeof(tmp)) == 0 &&
-          abs((int)data.location -
-              (int)ctx->last_var_data.location) < (1 << 12) &&
-          abs((int)data.driver_location -
-              (int)ctx->last_var_data.driver_location) < (1 << 15))
-         flags.u.data_encoding = var_encode_location_diff;
-      else
-         flags.u.data_encoding = var_encode_full;
-   }
+   /* See if we can encode only the difference in locations from the last
+    * variable.
+    */
+   if (memcmp(&ctx->last_var_data, &tmp, sizeof(tmp)) == 0 &&
+       abs((int)data.location -
+           (int)ctx->last_var_data.location) < (1 << 12) &&
+       abs((int)data.driver_location -
+           (int)ctx->last_var_data.driver_location) < (1 << 15))
+      flags.u.data_encoding = var_encode_location_diff;
+   else
+      flags.u.data_encoding = var_encode_full;
 
    flags.u.ray_query = var->data.ray_query;
 
@@ -306,26 +297,23 @@ write_variable(write_ctx *ctx, const nir_variable *var)
    if (flags.u.has_name)
       blob_write_string(ctx->blob, var->name);
 
-   if (flags.u.data_encoding == var_encode_full ||
-       flags.u.data_encoding == var_encode_location_diff) {
-      if (flags.u.data_encoding == var_encode_full) {
-         blob_write_bytes(ctx->blob, &data, sizeof(data));
-      } else {
-         /* Serialize only the difference in locations from the last variable.
-          */
-         union packed_var_data_diff diff;
+   if (flags.u.data_encoding == var_encode_full) {
+      blob_write_bytes(ctx->blob, &data, sizeof(data));
+   } else {
+      /* Serialize only the difference in locations from the last variable.
+       */
+      union packed_var_data_diff diff;
 
-         diff.u.location = data.location - ctx->last_var_data.location;
-         diff.u.location_frac = data.location_frac -
-                                ctx->last_var_data.location_frac;
-         diff.u.driver_location = data.driver_location -
-                                  ctx->last_var_data.driver_location;
+      diff.u.location = data.location - ctx->last_var_data.location;
+      diff.u.location_frac = data.location_frac -
+                             ctx->last_var_data.location_frac;
+      diff.u.driver_location = data.driver_location -
+                               ctx->last_var_data.driver_location;
 
-         blob_write_uint32(ctx->blob, diff.u32);
-      }
-
-      ctx->last_var_data = data;
+      blob_write_uint32(ctx->blob, diff.u32);
    }
+
+   ctx->last_var_data = data;
 
    for (unsigned i = 0; i < var->num_state_slots; i++) {
       blob_write_bytes(ctx->blob, &var->state_slots[i],
@@ -374,11 +362,7 @@ read_variable(read_ctx *ctx)
       var->name = NULL;
    }
 
-   if (flags.u.data_encoding == var_encode_shader_temp)
-      var->data.mode = nir_var_shader_temp;
-   else if (flags.u.data_encoding == var_encode_function_temp)
-      var->data.mode = nir_var_function_temp;
-   else if (flags.u.data_encoding == var_encode_full) {
+   if (flags.u.data_encoding == var_encode_full) {
       blob_copy_bytes(ctx->blob, (uint8_t *)&var->data, sizeof(var->data));
       ctx->last_var_data = var->data;
    } else { /* var_encode_location_diff */
@@ -738,6 +722,7 @@ write_alu(write_ctx *ctx, const nir_alu_instr *alu)
    }
 
    write_def(ctx, &alu->def, header, alu->instr.type);
+   blob_write_uint32(ctx->blob, alu->fp_fast_math);
 
    if (header.alu.packed_src_ssa_16bit) {
       for (unsigned i = 0; i < num_srcs; i++) {
@@ -789,6 +774,7 @@ read_alu(read_ctx *ctx, union packed_instr header)
    alu->no_unsigned_wrap = header.alu.no_unsigned_wrap;
 
    read_def(ctx, &alu->def, &alu->instr, header);
+   alu->fp_fast_math = blob_read_uint32(ctx->blob);
 
    if (header.alu.packed_src_ssa_16bit) {
       for (unsigned i = 0; i < num_srcs; i++) {
@@ -1696,6 +1682,7 @@ static void
 write_block(write_ctx *ctx, const nir_block *block)
 {
    write_add_object(ctx, block);
+   blob_write_uint8(ctx->blob, block->divergent);
    blob_write_uint32(ctx->blob, exec_list_length(&block->instr_list));
 
    ctx->last_instr_type = ~0;
@@ -1718,6 +1705,7 @@ read_block(read_ctx *ctx, struct exec_list *cf_list)
       exec_node_data(nir_block, exec_list_get_tail(cf_list), cf_node.node);
 
    read_add_object(ctx, block);
+   block->divergent = blob_read_uint8(ctx->blob);
    unsigned num_instrs = blob_read_uint32(ctx->blob);
    for (unsigned i = 0; i < num_instrs;) {
       i += read_instr(ctx, block);
@@ -1895,9 +1883,17 @@ write_function(write_ctx *ctx, const nir_function *fxn)
       flags |= 0x10;
    if (fxn->dont_inline)
       flags |= 0x20;
+   if (fxn->is_subroutine)
+      flags |= 0x40;
    blob_write_uint32(ctx->blob, flags);
    if (fxn->name)
       blob_write_string(ctx->blob, fxn->name);
+
+   blob_write_uint32(ctx->blob, fxn->subroutine_index);
+   blob_write_uint32(ctx->blob, fxn->num_subroutine_types);
+   for (unsigned i = 0; i < fxn->num_subroutine_types; i++) {
+      encode_type_to_blob(ctx->blob, fxn->subroutine_types[i]);
+   }
 
    write_add_object(ctx, fxn);
 
@@ -1920,10 +1916,17 @@ static void
 read_function(read_ctx *ctx)
 {
    uint32_t flags = blob_read_uint32(ctx->blob);
+
    bool has_name = flags & 0x4;
    char *name = has_name ? blob_read_string(ctx->blob) : NULL;
 
    nir_function *fxn = nir_function_create(ctx->nir, name);
+
+   fxn->subroutine_index = blob_read_uint32(ctx->blob);
+   fxn->num_subroutine_types = blob_read_uint32(ctx->blob);
+   for (unsigned i = 0; i < fxn->num_subroutine_types; i++) {
+      fxn->subroutine_types[i] = decode_type_from_blob(ctx->blob);
+   }
 
    read_add_object(ctx, fxn);
 
@@ -1941,6 +1944,7 @@ read_function(read_ctx *ctx)
       fxn->impl = NIR_SERIALIZE_FUNC_HAS_IMPL;
    fxn->should_inline = flags & 0x10;
    fxn->dont_inline = flags & 0x20;
+   fxn->is_subroutine = flags & 0x40;
 }
 
 static void
@@ -2024,20 +2028,8 @@ nir_serialize(struct blob *blob, const nir_shader *nir, bool strip)
 
    write_xfb_info(&ctx, nir->xfb_info);
 
-   if (nir->info.stage == MESA_SHADER_KERNEL) {
-      blob_write_uint32(blob, nir->printf_info_count);
-      for (int i = 0; i < nir->printf_info_count; i++) {
-         u_printf_info *info = &nir->printf_info[i];
-         blob_write_uint32(blob, info->num_args);
-         blob_write_uint32(blob, info->string_size);
-         blob_write_bytes(blob, info->arg_sizes,
-                          info->num_args * sizeof(*info->arg_sizes));
-         /* we can't use blob_write_string, because it contains multiple NULL
-          * terminated strings */
-         blob_write_bytes(blob, info->strings,
-                          info->string_size * sizeof(*info->strings));
-      }
-   }
+   if (nir->info.uses_printf)
+      nir_serialize_printf_info(blob, nir->printf_info, nir->printf_info_count);
 
    blob_overwrite_uint32(blob, idx_size_offset, ctx.next_idx);
 
@@ -2096,22 +2088,10 @@ nir_deserialize(void *mem_ctx,
 
    ctx.nir->xfb_info = read_xfb_info(&ctx);
 
-   if (ctx.nir->info.stage == MESA_SHADER_KERNEL) {
-      ctx.nir->printf_info_count = blob_read_uint32(blob);
+   if (ctx.nir->info.uses_printf) {
       ctx.nir->printf_info =
-         ralloc_array(ctx.nir, u_printf_info, ctx.nir->printf_info_count);
-
-      for (int i = 0; i < ctx.nir->printf_info_count; i++) {
-         u_printf_info *info = &ctx.nir->printf_info[i];
-         info->num_args = blob_read_uint32(blob);
-         info->string_size = blob_read_uint32(blob);
-         info->arg_sizes = ralloc_array(ctx.nir, unsigned, info->num_args);
-         blob_copy_bytes(blob, info->arg_sizes,
-                         info->num_args * sizeof(*info->arg_sizes));
-         info->strings = ralloc_array(ctx.nir, char, info->string_size);
-         blob_copy_bytes(blob, info->strings,
-                         info->string_size * sizeof(*info->strings));
-      }
+         nir_deserialize_printf_info(ctx.nir, blob,
+                                     &ctx.nir->printf_info_count);
    }
 
    free(ctx.idx_table);
@@ -2145,4 +2125,46 @@ nir_shader_serialize_deserialize(nir_shader *shader)
 
    nir_shader_replace(shader, copy);
    ralloc_free(dead_ctx);
+}
+
+void
+nir_serialize_printf_info(struct blob *blob,
+                          const u_printf_info *printf_info,
+                          unsigned printf_info_count)
+{
+   blob_write_uint32(blob, printf_info_count);
+   for (int i = 0; i < printf_info_count; i++) {
+      const u_printf_info *info = &printf_info[i];
+      blob_write_uint32(blob, info->num_args);
+      blob_write_uint32(blob, info->string_size);
+      blob_write_bytes(blob, info->arg_sizes,
+                       info->num_args * sizeof(info->arg_sizes[0]));
+      /* we can't use blob_write_string, because it contains multiple NULL
+       * terminated strings */
+      blob_write_bytes(blob, info->strings, info->string_size);
+   }
+}
+
+u_printf_info *
+nir_deserialize_printf_info(void *mem_ctx,
+                            struct blob_reader *blob,
+                            unsigned *printf_info_count)
+{
+   *printf_info_count = blob_read_uint32(blob);
+
+   u_printf_info *printf_info =
+      ralloc_array(mem_ctx, u_printf_info, *printf_info_count);
+
+   for (int i = 0; i < *printf_info_count; i++) {
+      u_printf_info *info = &printf_info[i];
+      info->num_args = blob_read_uint32(blob);
+      info->string_size = blob_read_uint32(blob);
+      info->arg_sizes = ralloc_array(mem_ctx, unsigned, info->num_args);
+      blob_copy_bytes(blob, info->arg_sizes,
+                      info->num_args * sizeof(info->arg_sizes[0]));
+      info->strings = ralloc_array(mem_ctx, char, info->string_size);
+      blob_copy_bytes(blob, info->strings, info->string_size);
+   }
+
+   return printf_info;
 }

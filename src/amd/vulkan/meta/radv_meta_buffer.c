@@ -1,8 +1,12 @@
 #include "nir/nir_builder.h"
+#include "radv_cp_dma.h"
+#include "radv_debug.h"
 #include "radv_meta.h"
+#include "radv_sdma.h"
 
 #include "radv_cs.h"
 #include "sid.h"
+#include "vk_common_entrypoints.h"
 
 static nir_shader *
 build_buffer_fill_shader(struct radv_device *dev)
@@ -155,7 +159,7 @@ radv_device_finish_meta_buffer_state(struct radv_device *device)
 static void
 fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint64_t size, uint32_t data)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radv_meta_saved_state saved_state;
 
    radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS);
@@ -171,8 +175,8 @@ fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint64_t siz
       .data = data,
    };
 
-   radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.fill_p_layout,
-                         VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fill_consts), &fill_consts);
+   vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.fill_p_layout,
+                              VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(fill_consts), &fill_consts);
 
    radv_unaligned_dispatch(cmd_buffer, DIV_ROUND_UP(size, 16), 1, 1);
 
@@ -182,7 +186,7 @@ fill_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t va, uint64_t siz
 static void
 copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t dst_va, uint64_t size)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radv_meta_saved_state saved_state;
 
    radv_meta_save(&saved_state, cmd_buffer, RADV_META_SAVE_COMPUTE_PIPELINE | RADV_META_SAVE_CONSTANTS);
@@ -198,8 +202,8 @@ copy_buffer_shader(struct radv_cmd_buffer *cmd_buffer, uint64_t src_va, uint64_t
       .max_offset = size - 16,
    };
 
-   radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.copy_p_layout,
-                         VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(copy_consts), &copy_consts);
+   vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer), device->meta_state.buffer.copy_p_layout,
+                              VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(copy_consts), &copy_consts);
 
    radv_unaligned_dispatch(cmd_buffer, DIV_ROUND_UP(size, 16), 1, 1);
 
@@ -210,9 +214,10 @@ static bool
 radv_prefer_compute_dma(const struct radv_device *device, uint64_t size, struct radeon_winsys_bo *src_bo,
                         struct radeon_winsys_bo *dst_bo)
 {
+   const struct radv_physical_device *pdev = radv_device_physical(device);
    bool use_compute = size >= RADV_BUFFER_OPS_CS_THRESHOLD;
 
-   if (device->physical_device->rad_info.gfx_level >= GFX10 && device->physical_device->rad_info.has_dedicated_vram) {
+   if (pdev->info.gfx_level >= GFX10 && pdev->info.has_dedicated_vram) {
       if ((src_bo && !(src_bo->initial_domain & RADEON_DOMAIN_VRAM)) ||
           (dst_bo && !(dst_bo->initial_domain & RADEON_DOMAIN_VRAM))) {
          /* Prefer CP DMA for GTT on dGPUS due to slow PCIe. */
@@ -227,16 +232,19 @@ uint32_t
 radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *image, struct radeon_winsys_bo *bo,
                  uint64_t va, uint64_t size, uint32_t value)
 {
-   bool use_compute = radv_prefer_compute_dma(cmd_buffer->device, size, NULL, bo);
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   bool use_compute = radv_prefer_compute_dma(device, size, NULL, bo);
    uint32_t flush_bits = 0;
 
    assert(!(va & 3));
    assert(!(size & 3));
 
    if (bo)
-      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, bo);
+      radv_cs_add_buffer(device->ws, cmd_buffer->cs, bo);
 
-   if (use_compute) {
+   if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
+      radv_sdma_fill_buffer(device, cmd_buffer->cs, va, size, value);
+   } else if (use_compute) {
       cmd_buffer->state.flush_bits |= radv_dst_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_WRITE_BIT, image);
 
       fill_buffer_shader(cmd_buffer, va, size, value);
@@ -244,7 +252,7 @@ radv_fill_buffer(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *im
       flush_bits = RADV_CMD_FLAG_CS_PARTIAL_FLUSH | RADV_CMD_FLAG_INV_VCACHE |
                    radv_src_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_WRITE_BIT, image);
    } else if (size)
-      si_cp_dma_clear_buffer(cmd_buffer, va, size, value);
+      radv_cp_dma_clear_buffer(cmd_buffer, va, size, value);
 
    return flush_bits;
 }
@@ -253,27 +261,30 @@ void
 radv_copy_buffer(struct radv_cmd_buffer *cmd_buffer, struct radeon_winsys_bo *src_bo, struct radeon_winsys_bo *dst_bo,
                  uint64_t src_offset, uint64_t dst_offset, uint64_t size)
 {
-   bool use_compute = !(size & 3) && !(src_offset & 3) && !(dst_offset & 3) &&
-                      radv_prefer_compute_dma(cmd_buffer->device, size, src_bo, dst_bo);
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   bool use_compute =
+      !(size & 3) && !(src_offset & 3) && !(dst_offset & 3) && radv_prefer_compute_dma(device, size, src_bo, dst_bo);
 
    uint64_t src_va = radv_buffer_get_va(src_bo) + src_offset;
    uint64_t dst_va = radv_buffer_get_va(dst_bo) + dst_offset;
 
-   radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, src_bo);
-   radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_bo);
+   radv_cs_add_buffer(device->ws, cmd_buffer->cs, src_bo);
+   radv_cs_add_buffer(device->ws, cmd_buffer->cs, dst_bo);
 
-   if (use_compute)
+   if (cmd_buffer->qf == RADV_QUEUE_TRANSFER)
+      radv_sdma_copy_buffer(device, cmd_buffer->cs, src_va, dst_va, size);
+   else if (use_compute)
       copy_buffer_shader(cmd_buffer, src_va, dst_va, size);
    else if (size)
-      si_cp_dma_buffer_copy(cmd_buffer, src_va, dst_va, size);
+      radv_cp_dma_buffer_copy(cmd_buffer, src_va, dst_va, size);
 }
 
 VKAPI_ATTR void VKAPI_CALL
 radv_CmdFillBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize fillSize,
                    uint32_t data)
 {
-   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
-   RADV_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
+   VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
 
    fillSize = vk_buffer_range(&dst_buffer->vk, dstOffset, fillSize) & ~3ull;
 
@@ -303,9 +314,9 @@ copy_buffer(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer *src_buffer, 
 VKAPI_ATTR void VKAPI_CALL
 radv_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *pCopyBufferInfo)
 {
-   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
-   RADV_FROM_HANDLE(radv_buffer, src_buffer, pCopyBufferInfo->srcBuffer);
-   RADV_FROM_HANDLE(radv_buffer, dst_buffer, pCopyBufferInfo->dstBuffer);
+   VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(radv_buffer, src_buffer, pCopyBufferInfo->srcBuffer);
+   VK_FROM_HANDLE(radv_buffer, dst_buffer, pCopyBufferInfo->dstBuffer);
 
    for (unsigned r = 0; r < pCopyBufferInfo->regionCount; r++) {
       copy_buffer(cmd_buffer, src_buffer, dst_buffer, &pCopyBufferInfo->pRegions[r]);
@@ -315,13 +326,14 @@ radv_CmdCopyBuffer2(VkCommandBuffer commandBuffer, const VkCopyBufferInfo2 *pCop
 void
 radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const void *data, uint64_t size)
 {
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    uint64_t words = size / 4;
    bool mec = radv_cmd_buffer_uses_mec(cmd_buffer);
 
    assert(size < RADV_BUFFER_UPDATE_THRESHOLD);
 
-   si_emit_cache_flush(cmd_buffer);
-   radeon_check_space(cmd_buffer->device->ws, cmd_buffer->cs, words + 4);
+   radv_emit_cache_flush(cmd_buffer);
+   radeon_check_space(device->ws, cmd_buffer->cs, words + 4);
 
    radeon_emit(cmd_buffer->cs, PKT3(PKT3_WRITE_DATA, 2 + words, 0));
    radeon_emit(cmd_buffer->cs,
@@ -330,7 +342,7 @@ radv_update_buffer_cp(struct radv_cmd_buffer *cmd_buffer, uint64_t va, const voi
    radeon_emit(cmd_buffer->cs, va >> 32);
    radeon_emit_array(cmd_buffer->cs, data, words);
 
-   if (unlikely(cmd_buffer->device->trace_bo))
+   if (radv_device_fault_detection_enabled(device))
       radv_cmd_buffer_trace_emit(cmd_buffer);
 }
 
@@ -338,8 +350,9 @@ VKAPI_ATTR void VKAPI_CALL
 radv_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDeviceSize dstOffset, VkDeviceSize dataSize,
                      const void *pData)
 {
-   RADV_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
-   RADV_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
+   VK_FROM_HANDLE(radv_cmd_buffer, cmd_buffer, commandBuffer);
+   VK_FROM_HANDLE(radv_buffer, dst_buffer, dstBuffer);
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    uint64_t va = radv_buffer_get_va(dst_buffer->bo);
    va += dstOffset + dst_buffer->offset;
 
@@ -349,8 +362,8 @@ radv_CmdUpdateBuffer(VkCommandBuffer commandBuffer, VkBuffer dstBuffer, VkDevice
    if (!dataSize)
       return;
 
-   if (dataSize < RADV_BUFFER_UPDATE_THRESHOLD) {
-      radv_cs_add_buffer(cmd_buffer->device->ws, cmd_buffer->cs, dst_buffer->bo);
+   if (dataSize < RADV_BUFFER_UPDATE_THRESHOLD && cmd_buffer->qf != RADV_QUEUE_TRANSFER) {
+      radv_cs_add_buffer(device->ws, cmd_buffer->cs, dst_buffer->bo);
       radv_update_buffer_cp(cmd_buffer, va, pData, dataSize);
    } else {
       uint32_t buf_offset;

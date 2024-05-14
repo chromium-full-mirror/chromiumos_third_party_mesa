@@ -207,6 +207,7 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
    struct pipe_resource *prsc = &rsc->b.b;
    struct fd_screen *screen = fd_screen(rsc->b.b.screen);
    uint32_t flags =
+      (prsc->target == PIPE_BUFFER) ? FD_BO_HINT_BUFFER : FD_BO_HINT_IMAGE |
       COND(rsc->layout.tile_mode, FD_BO_NOMAP) |
       COND((prsc->usage & PIPE_USAGE_STAGING) &&
            (prsc->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT),
@@ -1108,6 +1109,13 @@ fd_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
 
    handle->modifier = fd_resource_modifier(rsc);
 
+   if (prsc->target != PIPE_BUFFER) {
+      struct fdl_metadata metadata = {
+         .modifier = handle->modifier,
+      };
+      fd_bo_set_metadata(rsc->bo, &metadata, sizeof(metadata));
+   }
+
    DBG("%" PRSC_FMT ", modifier=%" PRIx64, PRSC_ARGS(prsc), handle->modifier);
 
    bool ret = fd_screen_bo_get_handle(pscreen, rsc->bo, rsc->scanout,
@@ -1661,14 +1669,20 @@ fd_resource_from_memobj(struct pipe_screen *pscreen,
    struct fd_memory_object *memobj = fd_memory_object(pmemobj);
    struct pipe_resource *prsc;
    struct fd_resource *rsc;
+   struct fdl_metadata metadata;
    uint32_t size;
+
    assert(memobj->bo);
+   assert(offset == 0);
 
    /* We shouldn't get a scanout buffer here. */
    assert(!(tmpl->bind & PIPE_BIND_SCANOUT));
 
    uint64_t modifiers = DRM_FORMAT_MOD_INVALID;
-   if (tmpl->bind & PIPE_BIND_LINEAR) {
+   if (pmemobj->dedicated &&
+       !fd_bo_get_metadata(memobj->bo, &metadata, sizeof(metadata))) {
+      modifiers = metadata.modifier;
+   } else if (tmpl->bind & PIPE_BIND_LINEAR) {
       modifiers = DRM_FORMAT_MOD_LINEAR;
    } else if (is_a6xx(screen) && tmpl->width0 >= FDL_MIN_UBWC_WIDTH) {
       modifiers = DRM_FORMAT_MOD_QCOM_COMPRESSED;

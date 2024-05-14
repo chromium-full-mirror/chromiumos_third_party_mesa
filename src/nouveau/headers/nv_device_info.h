@@ -5,7 +5,7 @@
 
 #define NVIDIA_VENDOR_ID 0x10de
 
-enum PACKED nv_device_type {
+enum ENUM_PACKED nv_device_type {
    NV_DEVICE_TYPE_IGP,
    NV_DEVICE_TYPE_DIS,
    NV_DEVICE_TYPE_SOC,
@@ -43,6 +43,7 @@ struct nv_device_info {
    uint16_t cls_compute;
 
    uint64_t vram_size_B;
+   uint64_t bar_size_B;
 };
 
 #endif /* NV_DEVINFO_H */

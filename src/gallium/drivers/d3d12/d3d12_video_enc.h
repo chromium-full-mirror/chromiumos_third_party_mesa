@@ -29,9 +29,7 @@
 #include "d3d12_video_dpb_storage_manager.h"
 #include "d3d12_video_encoder_bitstream_builder_h264.h"
 #include "d3d12_video_encoder_bitstream_builder_hevc.h"
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
 #include "d3d12_video_encoder_bitstream_builder_av1.h"
-#endif
 #include <list>
 
 ///
@@ -148,18 +146,14 @@ struct D3D12EncodeCapabilities
    {
       D3D12_VIDEO_ENCODER_PROFILE_H264 m_H264Profile;
       D3D12_VIDEO_ENCODER_PROFILE_HEVC m_HEVCProfile;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_PROFILE  m_AV1Profile;
-#endif
    } m_encoderSuggestedProfileDesc = {};
 
    union
    {
       D3D12_VIDEO_ENCODER_LEVELS_H264                 m_H264LevelSetting;
       D3D12_VIDEO_ENCODER_LEVEL_TIER_CONSTRAINTS_HEVC m_HEVCLevelSetting;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_LEVEL_TIER_CONSTRAINTS  m_AV1LevelSetting;
-#endif
    } m_encoderLevelSuggestedDesc = {};
 
    struct
@@ -167,14 +161,10 @@ struct D3D12EncodeCapabilities
       union{
          D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_SUPPORT_H264 m_H264CodecCaps;
          D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_SUPPORT_HEVC m_HEVCCodecCaps;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
          D3D12_VIDEO_ENCODER_AV1_CODEC_CONFIGURATION_SUPPORT  m_AV1CodecCaps;
-#endif
       };
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_FRAME_SUBREGION_LAYOUT_CONFIG_SUPPORT m_AV1TileCaps;
       D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAGS RequiredNotRequestedFeatureFlags;
-#endif
    } m_encoderCodecSpecificConfigCaps = {};
 
    // The maximum number of slices that the output of the current frame to be encoded will contain
@@ -196,13 +186,15 @@ struct D3D12EncodeRateControlState
       D3D12_VIDEO_ENCODER_RATE_CONTROL_CBR  m_Configuration_CBR;
       D3D12_VIDEO_ENCODER_RATE_CONTROL_VBR  m_Configuration_VBR;
       D3D12_VIDEO_ENCODER_RATE_CONTROL_QVBR m_Configuration_QVBR;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_RATE_CONTROL_CQP1  m_Configuration_CQP1;
       D3D12_VIDEO_ENCODER_RATE_CONTROL_CBR1  m_Configuration_CBR1;
       D3D12_VIDEO_ENCODER_RATE_CONTROL_VBR1  m_Configuration_VBR1;
       D3D12_VIDEO_ENCODER_RATE_CONTROL_QVBR1 m_Configuration_QVBR1;  
-#endif
    } m_Config;
+
+   // AV1 uses 16 bit integers, H26x uses 8 bit integers
+   std::vector<int8_t> m_pRateControlQPMap8Bit;
+   std::vector<int16_t> m_pRateControlQPMap16Bit;
 };
 
 struct D3D12EncodeConfiguration
@@ -224,18 +216,14 @@ struct D3D12EncodeConfiguration
    {
       D3D12_VIDEO_ENCODER_PROFILE_H264 m_H264Profile;
       D3D12_VIDEO_ENCODER_PROFILE_HEVC m_HEVCProfile;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_PROFILE  m_AV1Profile;
-#endif
    } m_encoderProfileDesc = {};
 
    union
    {
       D3D12_VIDEO_ENCODER_LEVELS_H264                 m_H264LevelSetting;
       D3D12_VIDEO_ENCODER_LEVEL_TIER_CONSTRAINTS_HEVC m_HEVCLevelSetting;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_LEVEL_TIER_CONSTRAINTS  m_AV1LevelSetting;
-#endif
    } m_encoderLevelDesc = {};
 
    struct D3D12EncodeRateControlState m_encoderRateControlDesc = {};
@@ -244,9 +232,7 @@ struct D3D12EncodeConfiguration
    {
       D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_H264 m_H264Config;
       D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_HEVC m_HEVCConfig;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_CODEC_CONFIGURATION  m_AV1Config;
-#endif
    } m_encoderCodecSpecificConfigDesc = {};
 
 
@@ -255,31 +241,25 @@ struct D3D12EncodeConfiguration
    {
       D3D12_VIDEO_ENCODER_PICTURE_CONTROL_SUBREGIONS_LAYOUT_DATA_SLICES m_SlicesPartition_H264;
       D3D12_VIDEO_ENCODER_PICTURE_CONTROL_SUBREGIONS_LAYOUT_DATA_SLICES m_SlicesPartition_HEVC;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       struct {
          D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_SUBREGIONS_LAYOUT_DATA_TILES TilesPartition;
          uint8_t TilesGroupsCount;
          av1_tile_group_t TilesGroups[128];
       } m_TilesConfig_AV1;
-#endif
    } m_encoderSliceConfigDesc = {};
 
    union
    {
       D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_H264 m_H264GroupOfPictures;
       D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_HEVC m_HEVCGroupOfPictures;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_SEQUENCE_STRUCTURE m_AV1SequenceStructure;
-#endif
    } m_encoderGOPConfigDesc = {};
 
    union
    {
       D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA_H264 m_H264PicData;
       D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA_HEVC m_HEVCPicData;
-#if ((D3D12_SDK_VERSION >= 611) && (D3D12_PREVIEW_SDK_VERSION >= 712))
       D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_CODEC_DATA m_AV1PicData;
-#endif
    } m_encoderPicParamsDesc = {};
 
    D3D12_VIDEO_ENCODER_MOTION_ESTIMATION_PRECISION_MODE m_encoderMotionPrecisionLimit =
@@ -376,12 +356,23 @@ struct EncodedBitstreamResolvedMetadata
    struct d3d12_fence m_FenceData;
 };
 
+enum d3d12_video_encoder_driver_workarounds
+{
+   d3d12_video_encoder_driver_workaround_none = 0x0,
+   // Workaround for drivers supporting rate control reconfiguration but not reporting it
+   // and having issues with encoder state/heap objects recreation
+   d3d12_video_encoder_driver_workaround_rate_control_reconfig = 0x1,
+};
+DEFINE_ENUM_FLAG_OPERATORS(d3d12_video_encoder_driver_workarounds);
+
 struct d3d12_video_encoder
 {
    struct pipe_video_codec base = {};
    struct pipe_screen *    m_screen = nullptr;
    struct d3d12_screen *   m_pD3D12Screen = nullptr;
    UINT max_quality_levels = 1;
+
+   enum d3d12_video_encoder_driver_workarounds driver_workarounds = d3d12_video_encoder_driver_workaround_none;
 
    ///
    /// D3D12 objects and context info
@@ -520,6 +511,15 @@ void
 d3d12_video_encoder_store_current_picture_references(d3d12_video_encoder *pD3D12Enc,
                                                      uint64_t current_metadata_slot);
 
+
+// Implementation here to prevent template linker issues
+template<typename T>
+void
+d3d12_video_encoder_update_picparams_region_of_interest_qpmap(struct d3d12_video_encoder *pD3D12Enc,
+                                                              const struct pipe_enc_roi *roi_config,
+                                                              int32_t min_delta_qp,
+                                                              int32_t max_delta_qp,
+                                                              std::vector<T>& pQPMap);
 ///
 /// d3d12_video_encoder functions ends
 ///

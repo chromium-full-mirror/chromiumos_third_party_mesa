@@ -31,6 +31,7 @@
 #include "util/u_dynarray.h"
 #include "nir_spirv.h"
 #include "spirv.h"
+#include "spirv_info.h"
 #include "vtn_generator_ids.h"
 
 extern uint32_t mesa_spirv_debug;
@@ -120,6 +121,17 @@ _vtn_fail(struct vtn_builder *b, const char *file, unsigned line,
       if (!likely(expr)) \
          vtn_fail("%s", #expr); \
    } while (0)
+
+/* These are used to allocate data that can be dropped at the end of
+ * the parsing.  Any NIR data structure should keep using the ralloc,
+ * since they will outlive the parsing.
+ */
+#define vtn_alloc(B, TYPE)               linear_alloc(B->lin_ctx, TYPE)
+#define vtn_zalloc(B, TYPE)              linear_zalloc(B->lin_ctx, TYPE)
+#define vtn_alloc_array(B, TYPE, ELEMS)  linear_alloc_array(B->lin_ctx, TYPE, ELEMS)
+#define vtn_zalloc_array(B, TYPE, ELEMS) linear_zalloc_array(B->lin_ctx, TYPE, ELEMS)
+#define vtn_alloc_size(B, SIZE)          linear_alloc_child(B->lin_ctx, SIZE)
+#define vtn_zalloc_size(B, SIZE)         linear_zalloc_child(B->lin_ctx, SIZE)
 
 enum vtn_value_type {
    vtn_value_type_invalid = 0,
@@ -617,6 +629,8 @@ struct vtn_decoration {
 struct vtn_builder {
    nir_builder nb;
 
+   linear_ctx *lin_ctx;
+
    /* Used by vtn_fail to jump back to the beginning of SPIR-V compilation */
    jmp_buf fail_jump;
 
@@ -658,6 +672,9 @@ struct vtn_builder {
    enum vtn_generator generator_id;
    SpvSourceLanguage source_lang;
 
+   struct spirv_capabilities supported_capabilities;
+   struct spirv_capabilities enabled_capabilities;
+
    /* True if we need to fix up CS OpControlBarrier */
    bool wa_glslang_cs_barrier;
 
@@ -668,15 +685,12 @@ struct vtn_builder {
    bool wa_ignore_return_after_emit_mesh_tasks;
 
    /* Workaround discard bugs in HLSL -> SPIR-V compilers */
-   bool uses_demote_to_helper_invocation;
    bool convert_discard_to_demote;
 
    gl_shader_stage entry_point_stage;
    const char *entry_point_name;
    struct vtn_value *entry_point;
    struct vtn_value *workgroup_size_builtin;
-   bool variable_pointers;
-   bool image_gather_bias_lod;
 
    uint32_t *interface_ids;
    size_t interface_ids_count;
@@ -955,6 +969,8 @@ void vtn_handle_bitcast(struct vtn_builder *b, const uint32_t *w,
                         unsigned count);
 
 void vtn_handle_no_contraction(struct vtn_builder *b, struct vtn_value *val);
+
+void vtn_handle_fp_fast_math(struct vtn_builder *b, struct vtn_value *val);
 
 void vtn_handle_subgroup(struct vtn_builder *b, SpvOp opcode,
                          const uint32_t *w, unsigned count);

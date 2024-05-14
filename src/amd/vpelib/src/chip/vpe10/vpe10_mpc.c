@@ -29,7 +29,6 @@
 #include "vpe10_cm_common.h"
 #include "fixed31_32.h"
 #include "conversion.h"
-#include "color_pwl.h"
 
 #define CTX_BASE mpc
 #define CTX      vpe10_mpc
@@ -275,16 +274,17 @@ void vpe10_program_output_csc(struct mpc *mpc, enum vpe_surface_pixel_format pix
 
     enum mpc_output_csc_mode ocsc_mode = MPC_OUTPUT_CSC_COEF_A;
 
-    if (mpc->funcs->power_on_ogam_lut)
-        mpc->funcs->power_on_ogam_lut(mpc, true);
+        if (mpc->funcs->power_on_ogam_lut)
+            mpc->funcs->power_on_ogam_lut(mpc, true);
 
-    if (matrix != NULL) {
-        if (mpc->funcs->set_output_csc != NULL)
-            mpc->funcs->set_output_csc(mpc, matrix, ocsc_mode);
-    } else {
-        if (mpc->funcs->set_ocsc_default != NULL)
-            mpc->funcs->set_ocsc_default(mpc, pixel_format, colorspace, ocsc_mode);
-    }
+        if (matrix != NULL) {
+            if (mpc->funcs->set_output_csc != NULL)
+                mpc->funcs->set_output_csc(mpc, matrix, ocsc_mode);
+        }
+        else {
+            if (mpc->funcs->set_ocsc_default != NULL)
+                mpc->funcs->set_ocsc_default(mpc, pixel_format, colorspace, ocsc_mode);
+        }
 }
 
 enum vpmpcc_ogam_mode {
@@ -1091,13 +1091,23 @@ static void vpe10_mpc_program_1dlut_luta_settings(struct mpc *mpc, const struct 
 }
 
 static void vpe10_mpc_program_1dlut_pwl(
-    struct mpc *mpc, const struct pwl_result_data *rgb, uint32_t num)
+    struct mpc *mpc, const struct pwl_result_data *rgb, uint32_t num, enum cm_type gamma_type)
 {
     PROGRAM_ENTRY();
 
-    uint32_t last_base_value_red   = rgb[num].red_reg;
-    uint32_t last_base_value_green = rgb[num].blue_reg;
-    uint32_t last_base_value_blue  = rgb[num].green_reg;
+    uint32_t last_base_value_red;
+    uint32_t last_base_value_green;
+    uint32_t last_base_value_blue;
+
+    if (gamma_type == CM_DEGAM) {
+        last_base_value_red = rgb[num].red_reg;
+        last_base_value_green = rgb[num].blue_reg;
+        last_base_value_blue = rgb[num].green_reg;
+    } else {
+        last_base_value_red   = rgb[num - 1].red_reg + rgb[num - 1].delta_red_reg;
+        last_base_value_green = rgb[num - 1].green_reg + rgb[num - 1].delta_green_reg;
+        last_base_value_blue  = rgb[num - 1].blue_reg + rgb[num - 1].delta_blue_reg;
+    }
 
     if (vpe_is_rgb_equal(rgb, num)) {
         vpe10_cm_helper_program_pwl(config_writer, rgb, last_base_value_red, num,
@@ -1128,16 +1138,18 @@ static void vpe10_mpc_program_1dlut_pwl(
 }
 
 // Blend-gamma control.
-void vpe10_mpc_program_1dlut(struct mpc *mpc, const struct pwl_params *params)
+void vpe10_mpc_program_1dlut(struct mpc *mpc, const struct pwl_params *params, enum cm_type gamma_type)
 {
     PROGRAM_ENTRY();
 
-    if (params == NULL) {
+    if ((params == NULL) || (vpe_priv == NULL) ||
+        (vpe_priv->init.debug.bypass_blndgam == true)) { // the bypass flag is used in debug mode to skip this block entirely
         REG_SET(VPMPCC_MCM_1DLUT_CONTROL, REG_DEFAULT(VPMPCC_MCM_1DLUT_CONTROL),
             VPMPCC_MCM_1DLUT_MODE, 0);
 
         if (vpe_priv->init.debug.enable_mem_low_power.bits.mpc)
             vpe10_mpc_power_on_1dlut_shaper_3dlut(mpc, false);
+
         return;
     }
 
@@ -1145,7 +1157,7 @@ void vpe10_mpc_program_1dlut(struct mpc *mpc, const struct pwl_params *params)
 
     vpe10_mpc_configure_1dlut(mpc, true);
     vpe10_mpc_program_1dlut_luta_settings(mpc, params);
-    vpe10_mpc_program_1dlut_pwl(mpc, params->rgb_resulted, params->hw_points_num);
+    vpe10_mpc_program_1dlut_pwl(mpc, params->rgb_resulted, params->hw_points_num, gamma_type);
 
     REG_SET(
         VPMPCC_MCM_1DLUT_CONTROL, REG_DEFAULT(VPMPCC_MCM_1DLUT_CONTROL), VPMPCC_MCM_1DLUT_MODE, 2);
@@ -1263,18 +1275,10 @@ void vpe10_mpc_set_output_transfer_func(struct mpc *mpc, struct output_ctx *outp
     if (ret == false && output_ctx->output_tf) {
         // No support HWPWL as it is legacy
         if (output_ctx->output_tf->type == TF_TYPE_DISTRIBUTED_POINTS) {
-            if (!output_ctx->output_tf->use_pre_calculated_table ||
-                mpc->vpe_priv->init.debug.force_tf_calculation) {
-                vpe10_cm_helper_translate_curve_to_hw_format( // this is cm3.0 version instead 1.0
-                                                              // as DCN3.2
-                    output_ctx->output_tf, &mpc->regamma_params, false);
-                params = &mpc->regamma_params;
-            } else {
-                vpe10_cm_get_tf_pwl_params(output_ctx->output_tf, &params, CM_REGAM);
-                VPE_ASSERT(params != NULL);
-                if (params == NULL)
-                    return;
-            }
+            vpe10_cm_helper_translate_curve_to_hw_format( // this is cm3.0 version instead 1.0
+                                                          // as DCN3.2
+                output_ctx->output_tf, &mpc->regamma_params, false);
+            params = &mpc->regamma_params;
         }
         /* there are no ROM LUTs in OUTGAM */
         if (output_ctx->output_tf->type == TF_TYPE_PREDEFINED)
@@ -1286,17 +1290,22 @@ void vpe10_mpc_set_output_transfer_func(struct mpc *mpc, struct output_ctx *outp
 void vpe10_mpc_set_blend_lut(struct mpc *mpc, const struct transfer_func *blend_tf)
 {
     struct pwl_params *blend_lut = NULL;
+    enum cm_type gamma_type = CM_DEGAM;
 
-    if (blend_tf) {
-        if (blend_tf->type == TF_TYPE_DISTRIBUTED_POINTS) {
+    if (blend_tf && blend_tf->type == TF_TYPE_DISTRIBUTED_POINTS) {
+
+        gamma_type = blend_tf->cm_gamma_type;
+
+        if (gamma_type == CM_DEGAM)
             vpe10_cm_helper_translate_curve_to_degamma_hw_format(
                 blend_tf, &mpc->blender_params); // TODO should init regamma_params first
-            blend_lut = &mpc->blender_params;
-        }
-    }
-    mpc->funcs->program_1dlut(mpc, blend_lut);
+        else
+            vpe10_cm_helper_translate_curve_to_hw_format(blend_tf, &mpc->blender_params, false);
 
-    return;
+        blend_lut = &mpc->blender_params;
+    }
+
+    mpc->funcs->program_1dlut(mpc, blend_lut, gamma_type);
 }
 
 bool vpe10_mpc_program_movable_cm(struct mpc *mpc, const struct transfer_func *func_shaper,

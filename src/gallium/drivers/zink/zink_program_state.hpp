@@ -128,9 +128,10 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
    /* extra safety asserts for optimal path to catch refactoring bugs */
    if (prog->optimal_keys) {
       ASSERTED const union zink_shader_key_optimal *opt = (union zink_shader_key_optimal*)&prog->last_variant_hash;
-      ASSERTED uint32_t sanitized = zink_sanitize_optimal_key(ctx->gfx_stages, ctx->gfx_pipeline_state.shader_keys_optimal.key.val);
-      assert(opt->val == sanitized);
-      assert(state->optimal_key == sanitized);
+      ASSERTED union zink_shader_key_optimal sanitized = {};
+      sanitized.val = zink_sanitize_optimal_key(ctx->gfx_stages, ctx->gfx_pipeline_state.shader_keys_optimal.key.val);
+      assert(opt->val == sanitized.val);
+      assert(state->optimal_key == sanitized.val);
    }
    /* recalc vertex state if missing optimal extensions */
    if (DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT2 && DYNAMIC_STATE != ZINK_DYNAMIC_VERTEX_INPUT && ctx->vertex_state_changed) {
@@ -168,7 +169,7 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
           !prog->inline_variants && likely(prog->last_pipeline[rp_idx][idx]) &&
           /* this data is too big to compare in the fast-path */
           likely(!prog->shaders[MESA_SHADER_FRAGMENT]->fs.legacy_shadow_mask)) {
-         state->pipeline = prog->last_pipeline[rp_idx][idx];
+         state->pipeline = prog->last_pipeline[rp_idx][idx]->pipeline;
          return state->pipeline;
       }
    }
@@ -245,7 +246,7 @@ zink_get_gfx_pipeline(struct zink_context *ctx,
    /* update states for fastpath */
    if (DYNAMIC_STATE >= ZINK_DYNAMIC_VERTEX_INPUT) {
       prog->last_finalized_hash[rp_idx][idx] = state->final_hash;
-      prog->last_pipeline[rp_idx][idx] = cache_entry->pipeline;
+      prog->last_pipeline[rp_idx][idx] = cache_entry;
    }
    return state->pipeline;
 }

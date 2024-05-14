@@ -209,6 +209,7 @@ files_libnir = files(
   'nir_lower_subgroups.c',
   'nir_lower_system_values.c',
   'nir_lower_task_shader.c',
+  'nir_lower_terminate_to_demote.c',
   'nir_lower_tess_coord_z.c',
   'nir_lower_tex_shadow.c',
   'nir_lower_tex.c',
@@ -252,10 +253,12 @@ files_libnir = files(
   'nir_opt_intrinsics.c',
   'nir_opt_large_constants.c',
   'nir_opt_load_store_vectorize.c',
+  'nir_opt_loop.c',
   'nir_opt_loop_unroll.c',
   'nir_opt_memcpy.c',
   'nir_opt_move.c',
   'nir_opt_move_discards_to_top.c',
+  'nir_opt_mqsad.c',
   'nir_opt_non_uniform_access.c',
   'nir_opt_offsets.c',
   'nir_opt_peephole_select.c',
@@ -269,9 +272,10 @@ files_libnir = files(
   'nir_opt_shrink_stores.c',
   'nir_opt_shrink_vectors.c',
   'nir_opt_sink.c',
-  'nir_opt_trivial_continues.c',
   'nir_opt_undef.c',
   'nir_opt_uniform_atomics.c',
+  'nir_opt_uniform_subgroup.c',
+  'nir_opt_varyings.c',
   'nir_opt_vectorize.c',
   'nir_passthrough_gs.c',
   'nir_passthrough_tcs.c',
@@ -299,6 +303,7 @@ files_libnir = files(
   'nir_sweep.c',
   'nir_to_lcssa.c',
   'nir_trivialize_registers.c',
+  'nir_use_dominance.c',
   'nir_validate.c',
   'nir_vla.h',
   'nir_worklist.c',
@@ -306,13 +311,23 @@ files_libnir = files(
   'nir_xfb_info.h',
 )
 
+# When a file is too large, -Wmisleading-indentation will give a note about
+# not being able to process it, however that is not suppressable by a #pragma
+# in GCC.  This happens with the generated code in nir_opt_algebraic.c.
+#
+# As a workaround, drop the warning for GCC.  Clang builds should cover this.
+no_misleading_indentation = []
+if cc.get_id() == 'gcc'
+  no_misleading_indentation += cc.get_supported_arguments('-Wno-misleading-indentation')
+endif
+
 _libnir = static_library(
   'nir',
   [files_libnir, nir_opt_algebraic_c, nir_opcodes_c,
    nir_opcodes_h, nir_constant_expressions_c, nir_builder_opcodes_h,
    nir_intrinsics_c, nir_intrinsics_h, nir_intrinsics_indices_h],
   include_directories : [inc_include, inc_src],
-  c_args : [c_msvc_compat_args, no_override_init_args],
+  c_args : [c_msvc_compat_args, no_override_init_args, no_misleading_indentation],
   gnu_symbol_visibility : 'hidden',
   dependencies : [idep_compiler, dep_valgrind],
   build_by_default : false,
@@ -323,7 +338,7 @@ inc_nir = include_directories('.')
 # Headers-only dependency
 idep_nir_headers = declare_dependency(
   sources : [nir_opcodes_h, nir_builder_opcodes_h, nir_intrinsics_h, nir_intrinsics_indices_h,
-             ir_expression_operation_h, builtin_types_h, builtin_types_cpp_h],
+             ir_expression_operation_h, builtin_types_h],
   include_directories : [inc_nir, inc_compiler],
 )
 
@@ -338,6 +353,11 @@ if with_tests
     msvc_designated_initializer = 'cpp_std=c++latest'
   else
     msvc_designated_initializer = 'cpp_std=c++20'
+  endif
+
+  msvc_bigobj = []
+  if cc.get_id() == 'msvc'
+    msvc_bigobj = '/bigobj'
   endif
 
   test(
@@ -358,12 +378,21 @@ if with_tests
         'tests/mod_analysis_tests.cpp',
         'tests/negative_equal_tests.cpp',
         'tests/opt_if_tests.cpp',
+        'tests/opt_peephole_select.cpp',
         'tests/opt_shrink_vectors_tests.cpp',
+        'tests/opt_varyings_tests_bicm_binary_alu.cpp',
+        'tests/opt_varyings_tests_dead_input.cpp',
+        'tests/opt_varyings_tests_dead_output.cpp',
+        'tests/opt_varyings_tests_dedup.cpp',
+        'tests/opt_varyings_tests_prop_const.cpp',
+        'tests/opt_varyings_tests_prop_ubo.cpp',
+        'tests/opt_varyings_tests_prop_uniform.cpp',
+        'tests/opt_varyings_tests_prop_uniform_expr.cpp',
         'tests/serialize_tests.cpp',
         'tests/range_analysis_tests.cpp',
         'tests/vars_tests.cpp',
       ),
-      cpp_args : [cpp_msvc_compat_args],
+      cpp_args : [cpp_msvc_compat_args, msvc_bigobj],
       override_options: [msvc_designated_initializer],
       gnu_symbol_visibility : 'hidden',
       include_directories : [inc_include, inc_src],

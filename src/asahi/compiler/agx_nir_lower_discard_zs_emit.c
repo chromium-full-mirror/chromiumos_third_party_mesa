@@ -13,7 +13,7 @@
 #define BASE_S      2
 
 static bool
-lower_zs_emit(nir_block *block)
+lower_zs_emit(nir_block *block, bool force_early_z)
 {
    nir_intrinsic_instr *zs_emit = NULL;
    bool progress = false;
@@ -30,6 +30,16 @@ lower_zs_emit(nir_block *block)
       if (sem.location != FRAG_RESULT_DEPTH &&
           sem.location != FRAG_RESULT_STENCIL)
          continue;
+
+      /* If early-Z is forced, z/s writes are a no-op (and will cause problems
+       * later in the compile). Piglit early-z tests this. Just remove the
+       * offending writes.
+       */
+      if (force_early_z) {
+         nir_instr_remove(instr);
+         progress = true;
+         continue;
+      }
 
       nir_builder b = nir_builder_at(nir_before_instr(instr));
 
@@ -74,7 +84,9 @@ static bool
 lower_discard(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
 {
    if (intr->intrinsic != nir_intrinsic_discard &&
-       intr->intrinsic != nir_intrinsic_discard_if)
+       intr->intrinsic != nir_intrinsic_discard_if &&
+       intr->intrinsic != nir_intrinsic_demote &&
+       intr->intrinsic != nir_intrinsic_demote_if)
       return false;
 
    b->cursor = nir_before_instr(&intr->instr);
@@ -83,7 +95,8 @@ lower_discard(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
    nir_def *no_samples = nir_imm_intN_t(b, 0, 16);
    nir_def *killed_samples = all_samples;
 
-   if (intr->intrinsic == nir_intrinsic_discard_if)
+   if (intr->intrinsic == nir_intrinsic_discard_if ||
+       intr->intrinsic == nir_intrinsic_demote_if)
       killed_samples = nir_bcsel(b, intr->src[0].ssa, all_samples, no_samples);
 
    /* This will get lowered later as needed */
@@ -117,7 +130,7 @@ agx_nir_lower_zs_emit(nir_shader *s)
       bool progress = false;
 
       nir_foreach_block(block, impl) {
-         progress |= lower_zs_emit(block);
+         progress |= lower_zs_emit(block, s->info.fs.early_fragment_tests);
       }
 
       if (progress) {

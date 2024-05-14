@@ -345,7 +345,7 @@ d3d12_video_decoder_decode_bitstream(struct pipe_video_codec *codec,
 
    if (pD3D12Dec->m_d3d12DecProfileType == d3d12_video_decode_profile_type_h264) {
       struct pipe_h264_picture_desc *h264 = (pipe_h264_picture_desc*) picture;
-      target->interlaced = !h264->pps->sps->frame_mbs_only_flag && (h264->field_pic_flag || /* PAFF */ h264->pps->sps->mb_adaptive_frame_field_flag); /* MBAFF */
+      target->interlaced = !h264->pps->sps->frame_mbs_only_flag;
    }
 }
 
@@ -354,6 +354,7 @@ d3d12_video_decoder_store_upper_layer_references(struct d3d12_video_decoder *pD3
                                                  struct pipe_video_buffer *target,
                                                  struct pipe_picture_desc *picture)
 {
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    pD3D12Dec->m_pCurrentDecodeTarget = target;
    switch (pD3D12Dec->m_d3d12DecProfileType) {
 #if VIDEO_CODEC_H264DEC
@@ -389,6 +390,7 @@ d3d12_video_decoder_store_upper_layer_references(struct d3d12_video_decoder *pD3
          unreachable("Unsupported d3d12_video_decode_profile_type");
       } break;
    }
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
 }
 
 /**
@@ -703,13 +705,14 @@ d3d12_video_decoder_end_frame(struct pipe_video_codec *codec,
       // Copy all format subresources/texture planes
       for (PlaneSlice = 0; PlaneSlice < pD3D12Dec->m_decodeFormatInfo.PlaneCount; PlaneSlice++) {
          assert(d3d12OutputArguments.OutputSubresource < INT16_MAX);
-         struct pipe_box box = { 0,
-                                 0,
-                                 // src array slice, taken as Z for TEXTURE_2D_ARRAY
-                                 static_cast<int16_t>(d3d12OutputArguments.OutputSubresource),
-                                 static_cast<int>(pPipeDstViews[PlaneSlice]->texture->width0),
-                                 static_cast<int16_t>(pPipeDstViews[PlaneSlice]->texture->height0),
-                                 1 };
+         struct pipe_box box;
+         u_box_3d(0,
+                  0,
+                  // src array slice, taken as Z for TEXTURE_2D_ARRAY
+                  static_cast<int16_t>(d3d12OutputArguments.OutputSubresource),
+                  static_cast<int>(pPipeDstViews[PlaneSlice]->texture->width0),
+                  static_cast<int16_t>(pPipeDstViews[PlaneSlice]->texture->height0),
+                  1, &box);
 
          pD3D12Dec->base.context->resource_copy_region(pD3D12Dec->base.context,
                                                        pPipeDstViews[PlaneSlice]->texture,              // dst
@@ -1075,6 +1078,7 @@ d3d12_video_decoder_prepare_for_decode_frame(struct d3d12_video_decoder *pD3D12D
    // otherwise, use the standard output resource
    [[maybe_unused]] ID3D12Resource *pCurrentFrameDPBEntry = fReferenceOnly ? *ppRefOnlyOutTexture2D : *ppOutTexture2D;
    [[maybe_unused]] uint32_t currentFrameDPBEntrySubresource = fReferenceOnly ? *pRefOnlyOutSubresourceIndex : *pOutSubresourceIndex;
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    switch (pD3D12Dec->m_d3d12DecProfileType) {
 #if VIDEO_CODEC_H264DEC
       case d3d12_video_decode_profile_type_h264:
@@ -1113,7 +1117,7 @@ d3d12_video_decoder_prepare_for_decode_frame(struct d3d12_video_decoder *pD3D12D
          unreachable("Unsupported d3d12_video_decode_profile_type");
       } break;
    }
-
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
    return true;
 }
 
@@ -1125,15 +1129,13 @@ d3d12_video_decoder_reconfigure_dpb(struct d3d12_video_decoder *pD3D12Dec,
    uint32_t width;
    uint32_t height;
    uint16_t maxDPB;
-   bool isInterlaced;
-   d3d12_video_decoder_get_frame_info(pD3D12Dec, &width, &height, &maxDPB, isInterlaced);
+   d3d12_video_decoder_get_frame_info(pD3D12Dec, &width, &height, &maxDPB);
 
    ID3D12Resource *pPipeD3D12DstResource = d3d12_resource_resource(pD3D12VideoBuffer->texture);
    D3D12_RESOURCE_DESC outputResourceDesc = GetDesc(pPipeD3D12DstResource);
 
-   assert(pD3D12VideoBuffer->base.interlaced == isInterlaced);
    D3D12_VIDEO_FRAME_CODED_INTERLACE_TYPE interlaceTypeRequested =
-      isInterlaced ? D3D12_VIDEO_FRAME_CODED_INTERLACE_TYPE_FIELD_BASED : D3D12_VIDEO_FRAME_CODED_INTERLACE_TYPE_NONE;
+      pD3D12VideoBuffer->base.interlaced ? D3D12_VIDEO_FRAME_CODED_INTERLACE_TYPE_FIELD_BASED : D3D12_VIDEO_FRAME_CODED_INTERLACE_TYPE_NONE;
    if ((pD3D12Dec->m_decodeFormat != outputResourceDesc.Format) ||
        (pD3D12Dec->m_decoderDesc.Configuration.InterlaceType != interlaceTypeRequested)) {
       // Copy current pD3D12Dec->m_decoderDesc, modify decodeprofile and re-create decoder.
@@ -1215,6 +1217,7 @@ d3d12_video_decoder_reconfigure_dpb(struct d3d12_video_decoder *pD3D12Dec,
 void
 d3d12_video_decoder_refresh_dpb_active_references(struct d3d12_video_decoder *pD3D12Dec)
 {
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    switch (pD3D12Dec->m_d3d12DecProfileType) {
 #if VIDEO_CODEC_H264DEC
       case d3d12_video_decode_profile_type_h264:
@@ -1245,40 +1248,41 @@ d3d12_video_decoder_refresh_dpb_active_references(struct d3d12_video_decoder *pD
          unreachable("Unsupported d3d12_video_decode_profile_type");
       } break;
    }
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
 }
 
 void
 d3d12_video_decoder_get_frame_info(
-   struct d3d12_video_decoder *pD3D12Dec, uint32_t *pWidth, uint32_t *pHeight, uint16_t *pMaxDPB, bool &isInterlaced)
+   struct d3d12_video_decoder *pD3D12Dec, uint32_t *pWidth, uint32_t *pHeight, uint16_t *pMaxDPB)
 {
    *pWidth = 0;
    *pHeight = 0;
    *pMaxDPB = 0;
-   isInterlaced = false;
 
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    switch (pD3D12Dec->m_d3d12DecProfileType) {
 #if VIDEO_CODEC_H264DEC
       case d3d12_video_decode_profile_type_h264:
       {
-         d3d12_video_decoder_get_frame_info_h264(pD3D12Dec, pWidth, pHeight, pMaxDPB, isInterlaced);
+         d3d12_video_decoder_get_frame_info_h264(pD3D12Dec, pWidth, pHeight, pMaxDPB);
       } break;
 #endif
 #if VIDEO_CODEC_H265DEC
       case d3d12_video_decode_profile_type_hevc:
       {
-         d3d12_video_decoder_get_frame_info_hevc(pD3D12Dec, pWidth, pHeight, pMaxDPB, isInterlaced);
+         d3d12_video_decoder_get_frame_info_hevc(pD3D12Dec, pWidth, pHeight, pMaxDPB);
       } break;
 #endif
 #if VIDEO_CODEC_AV1DEC
       case d3d12_video_decode_profile_type_av1:
       {
-         d3d12_video_decoder_get_frame_info_av1(pD3D12Dec, pWidth, pHeight, pMaxDPB, isInterlaced);
+         d3d12_video_decoder_get_frame_info_av1(pD3D12Dec, pWidth, pHeight, pMaxDPB);
       } break;
 #endif
 #if VIDEO_CODEC_VP9DEC
       case d3d12_video_decode_profile_type_vp9:
       {
-         d3d12_video_decoder_get_frame_info_vp9(pD3D12Dec, pWidth, pHeight, pMaxDPB, &isInterlaced);
+         d3d12_video_decoder_get_frame_info_vp9(pD3D12Dec, pWidth, pHeight, pMaxDPB);
       } break;
 #endif
       default:
@@ -1286,6 +1290,7 @@ d3d12_video_decoder_get_frame_info(
          unreachable("Unsupported d3d12_video_decode_profile_type");
       } break;
    }
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
 
    if (pD3D12Dec->m_ConfigDecoderSpecificFlags & d3d12_video_decode_config_specific_flag_alignment_height) {
       const uint32_t AlignmentMask = 31;
@@ -1301,6 +1306,7 @@ d3d12_video_decoder_store_converted_dxva_picparams_from_pipe_input(
    struct d3d12_video_buffer *pD3D12VideoBuffer   // input argument, target video buffer
 )
 {
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    assert(picture);
    assert(codec);
    struct d3d12_video_decoder *pD3D12Dec = (struct d3d12_video_decoder *) codec;
@@ -1388,6 +1394,7 @@ d3d12_video_decoder_store_converted_dxva_picparams_from_pipe_input(
          unreachable("Unsupported d3d12_video_decode_profile_type");
       } break;
    }
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
 }
 
 void
@@ -1395,6 +1402,7 @@ d3d12_video_decoder_prepare_dxva_slices_control(
    struct d3d12_video_decoder *pD3D12Dec,   // input argument, current decoder
    struct pipe_picture_desc *picture)
 {
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    [[maybe_unused]] auto &inFlightResources = pD3D12Dec->m_inflightResourcesPool[d3d12_video_decoder_pool_current_index(pD3D12Dec)];
    d3d12_video_decode_profile_type profileType =
       d3d12_video_decoder_convert_pipe_video_profile_to_profile_type(pD3D12Dec->base.profile);
@@ -1436,6 +1444,7 @@ d3d12_video_decoder_prepare_dxva_slices_control(
          unreachable("Unsupported d3d12_video_decode_profile_type");
       } break;
    }
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
 }
 
 void
@@ -1471,6 +1480,7 @@ d3d12_video_decoder_supports_aot_dpb(D3D12_FEATURE_DATA_VIDEO_DECODE_SUPPORT dec
                                      d3d12_video_decode_profile_type profileType)
 {
    bool supportedProfile = false;
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    switch (profileType) {
 #if VIDEO_CODEC_H264DEC
       case d3d12_video_decode_profile_type_h264:
@@ -1500,6 +1510,7 @@ d3d12_video_decoder_supports_aot_dpb(D3D12_FEATURE_DATA_VIDEO_DECODE_SUPPORT dec
          supportedProfile = false;
          break;
    }
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
 
    return (decodeSupport.DecodeTier >= D3D12_VIDEO_DECODE_TIER_2) && supportedProfile;
 }
@@ -1559,6 +1570,7 @@ d3d12_video_decoder_convert_pipe_video_profile_to_d3d12_profile(enum pipe_video_
 GUID
 d3d12_video_decoder_resolve_profile(d3d12_video_decode_profile_type profileType, DXGI_FORMAT decode_format)
 {
+#if D3D12_VIDEO_ANY_DECODER_ENABLED
    switch (profileType) {
 #if VIDEO_CODEC_H264DEC
       case d3d12_video_decode_profile_type_h264:
@@ -1604,6 +1616,9 @@ d3d12_video_decoder_resolve_profile(d3d12_video_decode_profile_type profileType,
          unreachable("Unsupported d3d12_video_decode_profile_type");
       } break;
    }
+#else
+   return {};
+#endif // D3D12_VIDEO_ANY_DECODER_ENABLED
 }
 
 bool

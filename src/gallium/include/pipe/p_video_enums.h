@@ -153,6 +153,18 @@ enum pipe_video_cap
    */
    PIPE_VIDEO_CAP_ENC_INTRA_REFRESH_MAX_DURATION = 46,
    PIPE_VIDEO_CAP_ENC_H264_SUPPORTS_CABAC_ENCODE = 47,
+   /*
+      crop and partial decode support
+   */
+   PIPE_VIDEO_CAP_ROI_CROP_DEC = 48,
+   /*
+    * Encoding Region Of Interest feature
+    */
+   PIPE_VIDEO_CAP_ENC_ROI = 49,
+   /*
+    * Encoding surface width/height alignment
+    */
+   PIPE_VIDEO_CAP_ENC_SURFACE_ALIGNMENT = 50,
 };
 
 enum pipe_video_h264_enc_dbk_filter_mode_flags
@@ -325,7 +337,7 @@ enum pipe_video_slice_mode
    /*
     * Partitions the frame using max slice size per coded slice
    */
-   PIPE_VIDEO_SLICE_MODE_MAX_SLICE_SICE = 1,
+   PIPE_VIDEO_SLICE_MODE_MAX_SLICE_SIZE = 1,
 };
 
 enum pipe_video_entrypoint

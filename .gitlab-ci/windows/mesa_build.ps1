@@ -30,7 +30,7 @@ Write-Output installdir:$installdir
 Write-Output sourcedir:$sourcedir
 
 $MyPath = $MyInvocation.MyCommand.Path | Split-Path -Parent
-. "$MyPath\mesa_vs_init.ps1"
+. "$MyPath\mesa_init_msvc.ps1"
 
 $depsInstallPath="C:\mesa-deps"
 
@@ -59,7 +59,6 @@ meson setup `
 -Dopencl-spirv=true `
 -Dmicrosoft-clc=enabled `
 -Dstatic-libclc=all `
--Dopencl-external-clang-headers=disabled `
 -Dspirv-to-dxil=true `
 -Dbuild-tests=true `
 -Dwerror=true `
@@ -84,5 +83,7 @@ Copy-Item ".\.gitlab-ci\windows\spirv2dxil_check.ps1" -Destination $installdir
 Copy-Item ".\.gitlab-ci\windows\spirv2dxil_run.ps1" -Destination $installdir
 
 Copy-Item ".\.gitlab-ci\windows\deqp_runner_run.ps1" -Destination $installdir
+
+Copy-Item ".\.gitlab-ci\windows\vainfo_run.ps1" -Destination $installdir
 
 Get-ChildItem -Recurse -Filter "ci" | Get-ChildItem -Include "*.txt","*.toml" | Copy-Item -Destination $installdir

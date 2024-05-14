@@ -4,29 +4,15 @@
  * based on anv driver:
  * Copyright © 2016 Intel Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "nir/nir_builder.h"
+#include "radv_entrypoints.h"
 #include "radv_meta.h"
+#include "vk_common_entrypoints.h"
 #include "vk_format.h"
+#include "vk_shader_module.h"
 
 enum blit2d_src_type {
    BLIT2D_SRC_TYPE_IMAGE,
@@ -48,6 +34,7 @@ static void
 create_iview(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *surf, struct radv_image_view *iview,
              VkFormat depth_format, VkImageAspectFlagBits aspects)
 {
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    VkFormat format;
 
    if (depth_format)
@@ -55,7 +42,7 @@ create_iview(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *s
    else
       format = surf->format;
 
-   radv_image_view_init(iview, cmd_buffer->device,
+   radv_image_view_init(iview, device,
                         &(VkImageViewCreateInfo){
                            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                            .image = radv_image_to_handle(surf->image),
@@ -74,13 +61,14 @@ static void
 create_bview(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_buffer *src, struct radv_buffer_view *bview,
              VkFormat depth_format)
 {
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    VkFormat format;
 
    if (depth_format)
       format = depth_format;
    else
       format = src->format;
-   radv_buffer_view_init(bview, cmd_buffer->device,
+   radv_buffer_view_init(bview, device,
                          &(VkBufferViewCreateInfo){
                             .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
                             .flags = 0,
@@ -101,7 +89,7 @@ blit2d_bind_src(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf
                 struct radv_meta_blit2d_buffer *src_buf, struct blit2d_src_temps *tmp, enum blit2d_src_type src_type,
                 VkFormat depth_format, VkImageAspectFlagBits aspects, uint32_t log2_samples)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    if (src_type == BLIT2D_SRC_TYPE_BUFFER) {
       create_bview(cmd_buffer, src_buf, &tmp->bview, depth_format);
@@ -117,16 +105,16 @@ blit2d_bind_src(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf
                                    .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
                                    .pTexelBufferView = (VkBufferView[]){radv_buffer_view_to_handle(&tmp->bview)}}});
 
-      radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
-                            device->meta_state.blit2d[log2_samples].p_layouts[src_type], VK_SHADER_STAGE_FRAGMENT_BIT,
-                            16, 4, &src_buf->pitch);
+      vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
+                                 device->meta_state.blit2d[log2_samples].p_layouts[src_type],
+                                 VK_SHADER_STAGE_FRAGMENT_BIT, 16, 4, &src_buf->pitch);
    } else {
       create_iview(cmd_buffer, src_img, &tmp->iview, depth_format, aspects);
 
       if (src_type == BLIT2D_SRC_TYPE_IMAGE_3D)
-         radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
-                               device->meta_state.blit2d[log2_samples].p_layouts[src_type],
-                               VK_SHADER_STAGE_FRAGMENT_BIT, 16, 4, &src_img->layer);
+         vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
+                                    device->meta_state.blit2d[log2_samples].p_layouts[src_type],
+                                    VK_SHADER_STAGE_FRAGMENT_BIT, 16, 4, &src_img->layer);
 
       radv_meta_push_descriptor_set(cmd_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     device->meta_state.blit2d[log2_samples].p_layouts[src_type], 0, /* set */
@@ -155,7 +143,8 @@ struct blit2d_dst_temps {
 static void
 bind_pipeline(struct radv_cmd_buffer *cmd_buffer, enum blit2d_src_type src_type, unsigned fs_key, uint32_t log2_samples)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.blit2d[log2_samples].pipelines[src_type][fs_key];
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.blit2d[log2_samples].pipelines[src_type][fs_key];
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 }
@@ -163,7 +152,8 @@ bind_pipeline(struct radv_cmd_buffer *cmd_buffer, enum blit2d_src_type src_type,
 static void
 bind_depth_pipeline(struct radv_cmd_buffer *cmd_buffer, enum blit2d_src_type src_type, uint32_t log2_samples)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.blit2d[log2_samples].depth_only_pipeline[src_type];
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.blit2d[log2_samples].depth_only_pipeline[src_type];
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 }
@@ -171,7 +161,8 @@ bind_depth_pipeline(struct radv_cmd_buffer *cmd_buffer, enum blit2d_src_type src
 static void
 bind_stencil_pipeline(struct radv_cmd_buffer *cmd_buffer, enum blit2d_src_type src_type, uint32_t log2_samples)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.blit2d[log2_samples].stencil_only_pipeline[src_type];
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.blit2d[log2_samples].stencil_only_pipeline[src_type];
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 }
@@ -182,7 +173,7 @@ radv_meta_blit2d_normal_dst(struct radv_cmd_buffer *cmd_buffer, struct radv_meta
                             unsigned num_rects, struct radv_meta_blit2d_rect *rects, enum blit2d_src_type src_type,
                             uint32_t log2_samples)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    for (unsigned r = 0; r < num_rects; ++r) {
       radv_CmdSetViewport(radv_cmd_buffer_to_handle(cmd_buffer), 0, 1,
@@ -224,9 +215,9 @@ radv_meta_blit2d_normal_dst(struct radv_cmd_buffer *cmd_buffer, struct radv_meta
             rects[r].src_y + rects[r].height,
          };
 
-         radv_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
-                               device->meta_state.blit2d[log2_samples].p_layouts[src_type], VK_SHADER_STAGE_VERTEX_BIT,
-                               0, 16, vertex_push_constants);
+         vk_common_CmdPushConstants(radv_cmd_buffer_to_handle(cmd_buffer),
+                                    device->meta_state.blit2d[log2_samples].p_layouts[src_type],
+                                    VK_SHADER_STAGE_VERTEX_BIT, 0, 16, vertex_push_constants);
 
          if (aspect_mask == VK_IMAGE_ASPECT_COLOR_BIT || aspect_mask == VK_IMAGE_ASPECT_PLANE_0_BIT ||
              aspect_mask == VK_IMAGE_ASPECT_PLANE_1_BIT || aspect_mask == VK_IMAGE_ASPECT_PLANE_2_BIT) {

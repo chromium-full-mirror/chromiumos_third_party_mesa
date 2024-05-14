@@ -14,6 +14,86 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Set NIR options shared by ACO, LLVM, RADV, and radeonsi. */
+void ac_set_nir_options(struct radeon_info *info, bool use_llvm,
+                        nir_shader_compiler_options *options)
+{
+   /*        |---------------------------------- Performance & Availability --------------------------------|
+    *        |MAD/MAC/MADAK/MADMK|MAD_LEGACY|MAC_LEGACY|    FMA     |FMAC/FMAAK/FMAMK|FMA_LEGACY|PK_FMA_F16,|Best choice
+    * Arch   |    F32,F16,F64    | F32,F16  | F32,F16  |F32,F16,F64 |    F32,F16     |   F32    |PK_FMAC_F16|F16,F32,F64
+    * ------------------------------------------------------------------------------------------------------------------
+    * gfx6,7 |     1 , - , -     |  1 , -   |  1 , -   |1/4, - ,1/16|     - , -      |    -     |   - , -   | - ,MAD,FMA
+    * gfx8   |     1 , 1 , -     |  1 , -   |  - , -   |1/4, 1 ,1/16|     - , -      |    -     |   - , -   |MAD,MAD,FMA
+    * gfx9   |     1 ,1|0, -     |  1 , -   |  - , -   | 1 , 1 ,1/16|    0|1, -      |    -     |   2 , -   |FMA,MAD,FMA
+    * gfx10  |     1 , - , -     |  1 , -   |  1 , -   | 1 , 1 ,1/16|     1 , 1      |    -     |   2 , 2   |FMA,MAD,FMA
+    * gfx10.3|     - , - , -     |  - , -   |  - , -   | 1 , 1 ,1/16|     1 , 1      |    1     |   2 , 2   |  all FMA
+    * gfx11  |     - , - , -     |  - , -   |  - , -   | 2 , 2 ,1/16|     2 , 2      |    2     |   2 , 2   |  all FMA
+    *
+    * Tahiti, Hawaii, Carrizo, Vega20: FMA_F32 is full rate, FMA_F64 is 1/4
+    * gfx9 supports MAD_F16 only on Vega10, Raven, Raven2, Renoir.
+    * gfx9 supports FMAC_F32 only on Vega20, but doesn't support FMAAK and FMAMK.
+    *
+    * gfx8 prefers MAD for F16 because of MAC/MADAK/MADMK.
+    * gfx9 and newer prefer FMA for F16 because of the packed instruction.
+    * gfx10 and older prefer MAD for F32 because of the legacy instruction.
+    */
+
+   memset(options, 0, sizeof(*options));
+   options->vertex_id_zero_based = true;
+   options->lower_scmp = true;
+   options->lower_flrp16 = true;
+   options->lower_flrp32 = true;
+   options->lower_flrp64 = true;
+   options->lower_device_index_to_zero = true;
+   options->lower_fdiv = true;
+   options->lower_fmod = true;
+   options->lower_ineg = true;
+   options->lower_bitfield_insert = true;
+   options->lower_bitfield_extract = true;
+   options->lower_pack_snorm_4x8 = true;
+   options->lower_pack_unorm_4x8 = true;
+   options->lower_pack_half_2x16 = true;
+   options->lower_pack_64_2x32 = true;
+   options->lower_pack_64_4x16 = true;
+   options->lower_pack_32_2x16 = true;
+   options->lower_unpack_snorm_2x16 = true;
+   options->lower_unpack_snorm_4x8 = true;
+   options->lower_unpack_unorm_2x16 = true;
+   options->lower_unpack_unorm_4x8 = true;
+   options->lower_unpack_half_2x16 = true;
+   options->lower_fpow = true;
+   options->lower_mul_2x32_64 = true;
+   options->lower_iadd_sat = info->gfx_level <= GFX8;
+   options->lower_hadd = true;
+   options->lower_mul_32x16 = true;
+   options->has_bfe = true;
+   options->has_bfm = true;
+   options->has_bitfield_select = true;
+   options->has_fsub = true;
+   options->has_isub = true;
+   options->has_sdot_4x8 = info->has_accelerated_dot_product;
+   options->has_sudot_4x8 = info->has_accelerated_dot_product && info->gfx_level >= GFX11;
+   options->has_udot_4x8 = info->has_accelerated_dot_product;
+   options->has_sdot_4x8_sat = info->has_accelerated_dot_product;
+   options->has_sudot_4x8_sat = info->has_accelerated_dot_product && info->gfx_level >= GFX11;
+   options->has_udot_4x8_sat = info->has_accelerated_dot_product;
+   options->has_dot_2x16 = info->has_accelerated_dot_product && info->gfx_level < GFX11;
+   options->has_find_msb_rev = true;
+   options->has_pack_half_2x16_rtz = true;
+   options->has_bit_test = !use_llvm;
+   options->has_fmulz = true;
+   options->has_msad = true;
+   options->has_shfr32 = true;
+   options->use_interpolated_input_intrinsics = true;
+   options->lower_int64_options = nir_lower_imul64 | nir_lower_imul_high64 | nir_lower_imul_2x32_64 | nir_lower_divmod64 |
+                                  nir_lower_minmax64 | nir_lower_iabs64 | nir_lower_iadd_sat64 | nir_lower_conv64;
+   options->divergence_analysis_options = nir_divergence_view_index_uniform;
+   options->optimize_quad_vote_to_reduce = true;
+   options->lower_fisnormal = true;
+   options->support_16bit_alu = info->gfx_level >= GFX8;
+   options->vectorize_vec2_16bit = info->has_packed_math_16bit;
+}
+
 unsigned ac_get_spi_shader_z_format(bool writes_z, bool writes_stencil, bool writes_samplemask,
                                     bool writes_mrt0_alpha)
 {
@@ -620,10 +700,10 @@ enum ac_image_dim ac_get_image_dim(enum amd_gfx_level gfx_level, enum glsl_sampl
 }
 
 unsigned ac_get_fs_input_vgpr_cnt(const struct ac_shader_config *config,
-                                  uint8_t *num_pos_inputs)
+                                  uint8_t *num_fragcoord_components)
 {
    unsigned num_input_vgprs = 0;
-   unsigned pos_inputs = 0;
+   unsigned fragcoord_components = 0;
 
    if (G_0286CC_PERSP_SAMPLE_ENA(config->spi_ps_input_addr))
       num_input_vgprs += 2;
@@ -643,19 +723,19 @@ unsigned ac_get_fs_input_vgpr_cnt(const struct ac_shader_config *config,
       num_input_vgprs += 1;
    if (G_0286CC_POS_X_FLOAT_ENA(config->spi_ps_input_addr)) {
       num_input_vgprs += 1;
-      pos_inputs++;
+      fragcoord_components++;
    }
    if (G_0286CC_POS_Y_FLOAT_ENA(config->spi_ps_input_addr)) {
       num_input_vgprs += 1;
-      pos_inputs++;
+      fragcoord_components++;
    }
    if (G_0286CC_POS_Z_FLOAT_ENA(config->spi_ps_input_addr)) {
       num_input_vgprs += 1;
-      pos_inputs++;
+      fragcoord_components++;
    }
    if (G_0286CC_POS_W_FLOAT_ENA(config->spi_ps_input_addr)) {
       num_input_vgprs += 1;
-      pos_inputs++;
+      fragcoord_components++;
    }
    if (G_0286CC_FRONT_FACE_ENA(config->spi_ps_input_addr))
       num_input_vgprs += 1;
@@ -666,8 +746,8 @@ unsigned ac_get_fs_input_vgpr_cnt(const struct ac_shader_config *config,
    if (G_0286CC_POS_FIXED_PT_ENA(config->spi_ps_input_addr))
       num_input_vgprs += 1;
 
-   if (num_pos_inputs)
-      *num_pos_inputs = pos_inputs;
+   if (num_fragcoord_components)
+      *num_fragcoord_components = fragcoord_components;
 
    return num_input_vgprs;
 }
@@ -820,6 +900,9 @@ void ac_compute_late_alloc(const struct radeon_info *info, bool ngg, bool ngg_cu
    *late_alloc_wave64 = 0; /* The limit is per SA. */
    *cu_mask = 0xffff;
 
+   /* This should never be called on gfx12. Gfx12 doesn't need to mask CUs for late alloc. */
+   assert(info->gfx_level < GFX12);
+
    /* CU masking can decrease performance and cause a hang with <= 2 CUs per SA. */
    if (info->min_good_cu_per_sa <= 2)
       return;
@@ -951,6 +1034,93 @@ unsigned ac_compute_ngg_workgroup_size(unsigned es_verts, unsigned gs_inst_prims
    return CLAMP(workgroup_size, 1, 256);
 }
 
+uint32_t ac_compute_num_tess_patches(const struct radeon_info *info, uint32_t num_tcs_input_cp,
+                                     uint32_t num_tcs_output_cp, uint32_t vram_per_patch,
+                                     uint32_t lds_per_patch, uint32_t wave_size,
+                                     bool tess_uses_primid)
+{
+   /* The VGT HS block increments the patch ID unconditionally
+    * within a single threadgroup. This results in incorrect
+    * patch IDs when instanced draws are used.
+    *
+    * The intended solution is to restrict threadgroups to
+    * a single instance by setting SWITCH_ON_EOI, which
+    * should cause IA to split instances up. However, this
+    * doesn't work correctly on GFX6 when there is no other
+    * SE to switch to.
+    */
+   const bool has_primid_instancing_bug = info->gfx_level == GFX6 && info->max_se == 1;
+   if (has_primid_instancing_bug && tess_uses_primid)
+      return 1;
+
+   /* Ensure that we only need 4 waves per CU, so that we don't need to check
+    * resource usage (such as whether we have enough VGPRs to fit the whole
+    * threadgroup into the CU). It also ensures that the number of tcs in and out
+    * vertices per threadgroup are at most 256, which is the hw limit.
+    */
+   const unsigned max_verts_per_patch = MAX2(num_tcs_input_cp, num_tcs_output_cp);
+   unsigned num_patches = 256 / max_verts_per_patch;
+
+   /* Not necessary for correctness, but higher numbers are slower.
+    * The hardware can do more, but we prefer fully occupied waves.
+    * eg. 64 triangle patches means 3 fully occupied Wave64 waves.
+    */
+   num_patches = MIN2(num_patches, 64);
+
+   /* When distributed tessellation is unsupported, switch between SEs
+    * at a higher frequency to manually balance the workload between SEs.
+    */
+   if (!info->has_distributed_tess && info->max_se > 1)
+      num_patches = MIN2(num_patches, 16); /* recommended */
+
+   /* Make sure the output data fits in the offchip buffer */
+   if (vram_per_patch) {
+      const uint32_t tess_offchip_block_dw_size = info->family == CHIP_HAWAII ? 4096 : 8192;
+      num_patches =
+         MIN2(num_patches, (tess_offchip_block_dw_size * 4) / vram_per_patch);
+   }
+
+   /* Make sure that the data fits in LDS. This assumes the shaders only
+    * use LDS for the inputs and outputs.
+    */
+   if (lds_per_patch) {
+      ASSERTED const unsigned max_lds_size = info->gfx_level >= GFX9 ? 64 * 1024 : 32 * 1024; /* hw limit */
+      const unsigned target_lds_size = max_lds_size / 2; /* target at least 2 workgroups per CU */
+      num_patches = MIN2(num_patches, target_lds_size / lds_per_patch);
+      assert(num_patches * lds_per_patch <= max_lds_size);
+   }
+   num_patches = MAX2(num_patches, 1);
+
+   /* Make sure that vector lanes are fully occupied by cutting off the last wave
+    * if it's only partially filled.
+    */
+   const unsigned temp_verts_per_tg = num_patches * max_verts_per_patch;
+
+   if (temp_verts_per_tg > wave_size &&
+       (wave_size - temp_verts_per_tg % wave_size >= MAX2(max_verts_per_patch, 8)))
+      num_patches = (temp_verts_per_tg & ~(wave_size - 1)) / max_verts_per_patch;
+
+   if (info->gfx_level == GFX6) {
+      /* GFX6 bug workaround, related to power management. Limit LS-HS
+       * threadgroups to only one wave.
+       */
+      const unsigned one_wave = wave_size / max_verts_per_patch;
+      num_patches = MIN2(num_patches, one_wave);
+   }
+
+   return num_patches;
+}
+
+uint32_t
+ac_compute_tess_lds_size(const struct radeon_info *info, uint32_t lds_per_patch, uint32_t num_patches)
+{
+   const unsigned lds_size = lds_per_patch * num_patches;
+
+   assert(lds_size <= (info->gfx_level >= GFX9 ? 65536 : 32768));
+
+   return align(lds_size, info->lds_encode_granularity) / info->lds_encode_granularity;
+}
+
 uint32_t ac_apply_cu_en(uint32_t value, uint32_t clear_mask, unsigned value_shift,
                         const struct radeon_info *info)
 {
@@ -959,6 +1129,16 @@ uint32_t ac_apply_cu_en(uint32_t value, uint32_t clear_mask, unsigned value_shif
    unsigned cu_en_shift = ffs(cu_en_mask) - 1;
    /* The value being set. */
    uint32_t cu_en = (value & cu_en_mask) >> cu_en_shift;
+
+   uint32_t set_cu_en = info->spi_cu_en;
+
+   if (info->gfx_level >= GFX12 && clear_mask == 0) {
+      /* The CU mask has 32 bits and is per SE, not per SA. This math doesn't work with
+       * asymmetric WGP harvesting because SA0 doesn't always end on the same bit.
+       */
+      set_cu_en &= BITFIELD_MASK(info->max_good_cu_per_sa);
+      set_cu_en |= set_cu_en << info->max_good_cu_per_sa;
+   }
 
    /* AND the field by spi_cu_en. */
    uint32_t spi_cu_en = info->spi_cu_en >> value_shift;
@@ -1060,7 +1240,28 @@ union ac_hw_cache_flags ac_get_hw_cache_flags(const struct radeon_info *info,
 
    bool scope_is_device = access & (ACCESS_COHERENT | ACCESS_VOLATILE);
 
-   if (info->gfx_level >= GFX11) {
+   if (info->gfx_level >= GFX12) {
+      if (access & ACCESS_CP_GE_COHERENT_AMD) {
+         result.gfx12.scope = info->cp_sdma_ge_use_system_memory_scope ?
+                                 gfx12_scope_memory : gfx12_scope_device;
+      } else if (scope_is_device) {
+         result.gfx12.scope = gfx12_scope_device;
+      } else {
+         result.gfx12.scope = gfx12_scope_cu;
+      }
+
+      if (access & ACCESS_NON_TEMPORAL) {
+         if (access & ACCESS_TYPE_LOAD) {
+            /* Don't use non_temporal for SMEM because it can't set regular_temporal for MALL. */
+            if (!(access & ACCESS_TYPE_SMEM))
+               result.gfx12.temporal_hint = gfx12_load_near_non_temporal_far_regular_temporal;
+         } else if (access & ACCESS_TYPE_STORE) {
+            result.gfx12.temporal_hint = gfx12_store_near_non_temporal_far_regular_temporal;
+         } else {
+            result.gfx12.temporal_hint = gfx12_atomic_non_temporal;
+         }
+      }
+   } else if (info->gfx_level >= GFX11) {
       /* GFX11 simplified it and exposes what is actually useful.
        *
        * GLC means device scope for loads only. (stores and atomics are always device scope)
@@ -1142,16 +1343,21 @@ union ac_hw_cache_flags ac_get_hw_cache_flags(const struct radeon_info *info,
          result.value |= ac_glc;
    }
 
-   if (access & ACCESS_IS_SWIZZLED_AMD)
-      result.value |= ac_swizzled;
+   if (access & ACCESS_IS_SWIZZLED_AMD) {
+      if (info->gfx_level >= GFX12)
+         result.gfx12.swizzled = true;
+      else
+         result.value |= ac_swizzled;
+   }
 
    return result;
 }
 
-unsigned ac_get_all_edge_flag_bits(void)
+unsigned ac_get_all_edge_flag_bits(enum amd_gfx_level gfx_level)
 {
-   /* This will be extended in the future. */
-   return (1u << 9) | (1u << 19) | (1u << 29);
+   return gfx_level >= GFX12 ?
+            ((1u << 8) | (1u << 17) | (1u << 26)) :
+            ((1u << 9) | (1u << 19) | (1u << 29));
 }
 
 /**

@@ -30,11 +30,13 @@ amd_json_files = [
   '../registers/gfx103.json',
   '../registers/gfx11.json',
   '../registers/gfx115.json',
+  '../registers/gfx12.json',
 
   # Manually written:
   '../registers/pkt3.json',
   '../registers/gfx10-rsrc.json',
   '../registers/gfx11-rsrc.json',
+  '../registers/gfx12-rsrc.json',
   '../registers/registers-manually-defined.json',
 ]
 
@@ -92,6 +94,7 @@ amd_common_files = files(
   'ac_msgpack.h',
   'ac_nir.c',
   'ac_nir.h',
+  'ac_nir_helpers.h',
   'ac_nir_opt_outputs.c',
   'ac_nir_cull.c',
   'ac_nir_lower_esgs_io_to_mem.c',

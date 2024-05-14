@@ -2,25 +2,8 @@
  * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
  *                Joakim Sindholt <opensource@zhasha.com>
  * Copyright 2009 Marek Olšák <maraeo@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "util/format/u_format.h"
 #include "util/u_math.h"
@@ -65,11 +48,13 @@ void r300_shader_read_fs_inputs(struct tgsi_shader_info* info,
             case TGSI_SEMANTIC_TEXCOORD:
                 assert(index < ATTR_TEXCOORD_COUNT);
                 fs_inputs->texcoord[index] = i;
+                fs_inputs->num_texcoord++;
                 break;
 
             case TGSI_SEMANTIC_GENERIC:
                 assert(index < ATTR_GENERIC_COUNT);
                 fs_inputs->generic[index] = i;
+                fs_inputs->num_generic++;
                 break;
 
             case TGSI_SEMANTIC_FOG:
@@ -523,6 +508,8 @@ static void r300_translate_fragment_shader(
             abort();
         }
 
+        free(compiler.code->constants.Constants);
+        free(compiler.code->constants_remap_table);
         rc_destroy(&compiler.Base);
         r300_dummy_fragment_shader(r300, shader);
         return;

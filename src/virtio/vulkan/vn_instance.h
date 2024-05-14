@@ -13,10 +13,6 @@
 
 #include "vn_common.h"
 
-#include "venus-protocol/vn_protocol_driver_defines.h"
-
-#include "vn_cs.h"
-#include "vn_renderer.h"
 #include "vn_renderer_util.h"
 
 /* require and request at least Vulkan 1.1 at both instance and device levels
@@ -24,7 +20,7 @@
 #define VN_MIN_RENDERER_VERSION VK_API_VERSION_1_1
 
 /* max advertised version at both instance and device levels */
-#if defined(ANDROID) && ANDROID_API_LEVEL < 33
+#if defined(ANDROID_STRICT) && ANDROID_API_LEVEL < 33
 #define VN_MAX_API_VERSION VK_MAKE_VERSION(1, 1, VK_HEADER_VERSION)
 #else
 #define VN_MAX_API_VERSION VK_MAKE_VERSION(1, 3, VK_HEADER_VERSION)
@@ -49,10 +45,7 @@ struct vn_instance {
 
    struct {
       struct vn_ring *ring;
-
-      /* to synchronize renderer/ring */
-      mtx_t roundtrip_mutex;
-      uint64_t roundtrip_next;
+      struct list_head tls_rings;
 
       struct vn_watchdog watchdog;
    } ring;
@@ -68,6 +61,8 @@ struct vn_instance {
    uint32_t renderer_api_version;
    uint32_t renderer_version;
 
+   bool engine_is_zink;
+
    struct {
       mtx_t mutex;
       bool initialized;
@@ -82,22 +77,6 @@ VK_DEFINE_HANDLE_CASTS(vn_instance,
                        base.base.base,
                        VkInstance,
                        VK_OBJECT_TYPE_INSTANCE)
-
-VkResult
-vn_instance_submit_roundtrip(struct vn_instance *instance,
-                             uint64_t *roundtrip_seqno);
-
-void
-vn_instance_wait_roundtrip(struct vn_instance *instance,
-                           uint64_t roundtrip_seqno);
-
-static inline void
-vn_instance_roundtrip(struct vn_instance *instance)
-{
-   uint64_t roundtrip_seqno;
-   if (vn_instance_submit_roundtrip(instance, &roundtrip_seqno) == VK_SUCCESS)
-      vn_instance_wait_roundtrip(instance, roundtrip_seqno);
-}
 
 static inline struct vn_renderer_shmem *
 vn_instance_cs_shmem_alloc(struct vn_instance *instance,

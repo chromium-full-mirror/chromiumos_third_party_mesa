@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 #include "brw_fs.h"
+#include "brw_fs_builder.h"
 #include "brw_cfg.h"
 
 using namespace brw;
@@ -76,7 +77,7 @@ PredicatedBreakTest::opt_predicated_break(fs_visitor *s)
       s->cfg->dump();
    }
 
-   bool ret = ::opt_predicated_break(s);
+   bool ret = brw_fs_opt_predicated_break(*s);
 
    if (print) {
       fprintf(stderr, "\n= After =\n");

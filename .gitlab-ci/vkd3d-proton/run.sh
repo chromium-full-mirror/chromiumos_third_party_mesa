@@ -23,7 +23,7 @@ export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$INSTALL/lib/:/vkd3d-proton-tests/x64/"
 MESA_VERSION=$(sed 's/\./\\./g' "$INSTALL/VERSION")
 
 # Set the Vulkan driver to use.
-export VK_ICD_FILENAMES="$INSTALL/share/vulkan/icd.d/${VK_DRIVER}_icd.x86_64.json"
+export VK_DRIVER_FILES="$INSTALL/share/vulkan/icd.d/${VK_DRIVER}_icd.x86_64.json"
 
 # Set environment for Wine.
 export WINEDEBUG="-all"
@@ -62,14 +62,13 @@ then
     fi
 
     # Collect all the failures
-    VKD3D_PROTON_RESULTS="${VKD3D_PROTON_RESULTS:-vkd3d-proton-results}"
     RESULTSFILE="$RESULTS/$VKD3D_PROTON_RESULTS.txt"
     mkdir -p .gitlab-ci/vkd3d-proton
     grep "Test failed" "$RESULTS"/vkd3d-proton.log > "$RESULTSFILE"
 
     # Gather the list expected failures
-    if [ -f "$INSTALL/$VKD3D_PROTON_RESULTS.txt" ]; then
-        cp "$INSTALL/$VKD3D_PROTON_RESULTS.txt" \
+    if [ -f "$INSTALL/$VKD3D_PROTON_RESULTS-vkd3d.txt" ]; then
+        cp "$INSTALL/$VKD3D_PROTON_RESULTS-vkd3d.txt" \
            ".gitlab-ci/vkd3d-proton/$VKD3D_PROTON_RESULTS.txt.baseline"
     else
         touch ".gitlab-ci/vkd3d-proton/$VKD3D_PROTON_RESULTS.txt.baseline"

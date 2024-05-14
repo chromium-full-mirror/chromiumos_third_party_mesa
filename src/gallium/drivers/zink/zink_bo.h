@@ -94,10 +94,10 @@ zink_heap_from_domain_flags(VkMemoryPropertyFlags domains, enum zink_alloc_flag 
 }
 
 static ALWAYS_INLINE unsigned
-zink_mem_type_idx_from_bits(struct zink_screen *screen, enum zink_heap heap, uint32_t bits)
+zink_mem_type_idx_from_types(struct zink_screen *screen, enum zink_heap heap, uint32_t types)
 {
    for (unsigned i = 0; i < screen->heap_count[heap]; i++) {
-      if (bits & BITFIELD_BIT(screen->heap_map[heap][i])) {
+      if (types & BITFIELD_BIT(screen->heap_map[heap][i])) {
          return screen->heap_map[heap][i];
       }
    }
@@ -131,7 +131,7 @@ zink_bo_get_mem(const struct zink_bo *bo)
 static ALWAYS_INLINE VkDeviceSize
 zink_bo_get_size(const struct zink_bo *bo)
 {
-   return bo->mem ? bo->base.size : bo->u.slab.real->base.size;
+   return bo->mem ? bo->base.base.size : bo->u.slab.real->base.base.size;
 }
 
 void *

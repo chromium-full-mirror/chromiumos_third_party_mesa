@@ -65,7 +65,9 @@
 #define VG(x) ((void)0)
 #endif
 
-#ifdef ANDROID
+#include "util/detect_os.h"
+
+#if DETECT_OS_ANDROID
 #include <vndk/hardware_buffer.h>
 #include "util/u_gralloc/u_gralloc.h"
 #endif
@@ -102,7 +104,7 @@
 #include "wsi_common.h"
 
 /* A non-fatal assert.  Useful for debugging. */
-#ifdef DEBUG
+#if MESA_DEBUG
 #define v3dv_assert(x) ({ \
    if (unlikely(!(x))) \
       fprintf(stderr, "%s:%d ASSERT: %s", __FILE__, __LINE__, #x); \
@@ -200,6 +202,7 @@ struct v3dv_physical_device {
    } options;
 
    struct {
+      bool cpu_queue;
       bool multisync;
       bool perfmon;
    } caps;
@@ -249,6 +252,7 @@ enum v3dv_queue_type {
    V3DV_QUEUE_CL = 0,
    V3DV_QUEUE_CSD,
    V3DV_QUEUE_TFU,
+   V3DV_QUEUE_CPU,
    V3DV_QUEUE_ANY,
    V3DV_QUEUE_COUNT,
 };
@@ -335,6 +339,7 @@ struct v3dv_pipeline_key {
    uint8_t f32_color_rb;
    uint32_t va_swap_rb_mask;
    bool has_multiview;
+   bool line_smooth;
 };
 
 struct v3dv_pipeline_cache_stats {
@@ -595,7 +600,7 @@ struct v3dv_device {
    void *device_address_mem_ctx;
    struct util_dynarray device_address_bo_list; /* Array of struct v3dv_bo * */
 
-#ifdef ANDROID
+#if DETECT_OS_ANDROID
    struct u_gralloc *gralloc;
 #endif
 };
@@ -736,7 +741,7 @@ struct v3dv_image {
     */
    struct v3dv_image *shadow;
 
-#ifdef ANDROID
+#if DETECT_OS_ANDROID
    /* Image is backed by VK_ANDROID_native_buffer, */
    bool is_native_buffer_memory;
    /* Image is backed by VK_ANDROID_external_memory_android_hardware_buffer */
@@ -1035,102 +1040,49 @@ struct v3dv_cmd_buffer_attachment_state {
    bool use_tlb_resolve;
 };
 
+/* Cached values derived from Vulkan viewport/count */
 struct v3dv_viewport_state {
-   uint32_t count;
-   VkViewport viewports[MAX_VIEWPORTS];
    float translate[MAX_VIEWPORTS][3];
    float scale[MAX_VIEWPORTS][3];
 };
 
-struct v3dv_scissor_state {
-   uint32_t count;
-   VkRect2D scissors[MAX_SCISSORS];
-};
-
-/* Mostly a v3dv mapping of VkDynamicState, used to track which data as
- * defined as dynamic
- */
-enum v3dv_dynamic_state_bits {
-   V3DV_DYNAMIC_VIEWPORT                  = 1 << 0,
-   V3DV_DYNAMIC_SCISSOR                   = 1 << 1,
-   V3DV_DYNAMIC_STENCIL_COMPARE_MASK      = 1 << 2,
-   V3DV_DYNAMIC_STENCIL_WRITE_MASK        = 1 << 3,
-   V3DV_DYNAMIC_STENCIL_REFERENCE         = 1 << 4,
-   V3DV_DYNAMIC_BLEND_CONSTANTS           = 1 << 5,
-   V3DV_DYNAMIC_DEPTH_BIAS                = 1 << 6,
-   V3DV_DYNAMIC_LINE_WIDTH                = 1 << 7,
-   V3DV_DYNAMIC_COLOR_WRITE_ENABLE        = 1 << 8,
-   V3DV_DYNAMIC_DEPTH_BOUNDS              = 1 << 9,
-   V3DV_DYNAMIC_ALL                       = (1 << 10) - 1,
-};
-
-/* Flags for dirty pipeline state.
+/* Flags for custom dirty state, that could lead to packet emission.
+ *
+ * Note *custom*, for all the dynamic state tracking coming from the Vulkan
+ * API, we use the Mesa runtime framework and their predefined flags
+ * (MESA_VK_DYNAMIC_XXX).
+ *
+ * Here we defined additional flags used to track dirty state.
  */
 enum v3dv_cmd_dirty_bits {
-   V3DV_CMD_DIRTY_VIEWPORT                  = 1 << 0,
-   V3DV_CMD_DIRTY_SCISSOR                   = 1 << 1,
-   V3DV_CMD_DIRTY_STENCIL_COMPARE_MASK      = 1 << 2,
-   V3DV_CMD_DIRTY_STENCIL_WRITE_MASK        = 1 << 3,
-   V3DV_CMD_DIRTY_STENCIL_REFERENCE         = 1 << 4,
-   V3DV_CMD_DIRTY_PIPELINE                  = 1 << 5,
-   V3DV_CMD_DIRTY_COMPUTE_PIPELINE          = 1 << 6,
-   V3DV_CMD_DIRTY_VERTEX_BUFFER             = 1 << 7,
-   V3DV_CMD_DIRTY_INDEX_BUFFER              = 1 << 8,
-   V3DV_CMD_DIRTY_DESCRIPTOR_SETS           = 1 << 9,
-   V3DV_CMD_DIRTY_COMPUTE_DESCRIPTOR_SETS   = 1 << 10,
-   V3DV_CMD_DIRTY_PUSH_CONSTANTS            = 1 << 11,
-   V3DV_CMD_DIRTY_PUSH_CONSTANTS_UBO        = 1 << 12,
-   V3DV_CMD_DIRTY_BLEND_CONSTANTS           = 1 << 13,
-   V3DV_CMD_DIRTY_OCCLUSION_QUERY           = 1 << 14,
-   V3DV_CMD_DIRTY_DEPTH_BIAS                = 1 << 15,
-   V3DV_CMD_DIRTY_LINE_WIDTH                = 1 << 16,
-   V3DV_CMD_DIRTY_VIEW_INDEX                = 1 << 17,
-   V3DV_CMD_DIRTY_COLOR_WRITE_ENABLE        = 1 << 18,
-   V3DV_CMD_DIRTY_DEPTH_BOUNDS              = 1 << 19,
-   V3DV_CMD_DIRTY_DRAW_ID                   = 1 << 20,
+   V3DV_CMD_DIRTY_PIPELINE                  = 1 << 0,
+   V3DV_CMD_DIRTY_COMPUTE_PIPELINE          = 1 << 1,
+   V3DV_CMD_DIRTY_VERTEX_BUFFER             = 1 << 2,
+   V3DV_CMD_DIRTY_INDEX_BUFFER              = 1 << 3,
+   V3DV_CMD_DIRTY_DESCRIPTOR_SETS           = 1 << 4,
+   V3DV_CMD_DIRTY_COMPUTE_DESCRIPTOR_SETS   = 1 << 5,
+   V3DV_CMD_DIRTY_PUSH_CONSTANTS            = 1 << 6,
+   V3DV_CMD_DIRTY_PUSH_CONSTANTS_UBO        = 1 << 7,
+   V3DV_CMD_DIRTY_OCCLUSION_QUERY           = 1 << 8,
+   V3DV_CMD_DIRTY_VIEW_INDEX                = 1 << 9,
+   V3DV_CMD_DIRTY_DRAW_ID                   = 1 << 10,
+   V3DV_CMD_DIRTY_ALL                       = (1 << 10) - 1,
 };
 
 struct v3dv_dynamic_state {
-   /**
-    * Bitmask of (1 << VK_DYNAMIC_STATE_*).
-    * Defines the set of saved dynamic state.
+   /* FIXME: we keep some viewport info cached (translate, scale) because we
+    * use that on more that one place. But note that translate_z and scale_z
+    * is also used in several places, and we recompute it based on
+    * scissor/viewport info all time. So perhaps we could do the same with the
+    * x and y component.
     */
-   uint32_t mask;
-
    struct v3dv_viewport_state viewport;
 
-   struct v3dv_scissor_state scissor;
-
-   struct {
-      uint32_t front;
-      uint32_t back;
-   } stencil_compare_mask;
-
-   struct {
-      uint32_t front;
-      uint32_t back;
-   } stencil_write_mask;
-
-   struct {
-      uint32_t front;
-      uint32_t back;
-   } stencil_reference;
-
-   float blend_constants[4];
-
-   struct {
-      float constant_factor;
-      float depth_bias_clamp;
-      float slope_factor;
-   } depth_bias;
-
-   struct {
-      float                                     min;
-      float                                     max;
-   } depth_bounds;
-
-   float line_width;
-
+   /* We cache the color_write_enable as the vulkan runtime keeps a 8-bit
+    * bitset with a bit per attachment, but in order to combine with the
+    * color_write_masks is easier to cache a 32-bit bitset with 4 bits per
+    * attachment.
+    */
    uint32_t color_write_enable;
 };
 
@@ -1147,7 +1099,7 @@ enum v3dv_ez_state {
 
 enum v3dv_job_type {
    V3DV_JOB_TYPE_GPU_CL = 0,
-   V3DV_JOB_TYPE_GPU_CL_SECONDARY,
+   V3DV_JOB_TYPE_GPU_CL_INCOMPLETE,
    V3DV_JOB_TYPE_GPU_TFU,
    V3DV_JOB_TYPE_GPU_CSD,
    V3DV_JOB_TYPE_CPU_RESET_QUERIES,
@@ -1229,6 +1181,18 @@ struct v3dv_job {
     * so we want to flag them to avoid freeing resources they don't own.
     */
    bool is_clone;
+
+   /* If this is a cloned job, if it has its own BCL resource. This happens
+    * when we suspend jobs with in command buffers with the
+    * VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT flag.
+    */
+   bool clone_owns_bcl;
+
+   /* VK_KHR_dynamic_rendering */
+   bool suspending;
+   bool resuming;
+   struct v3dv_cl_out *suspend_branch_inst_ptr;
+   uint32_t suspended_bcl_end;
 
    /* If the job executes on the transfer stage of the pipeline */
    bool is_transfer;
@@ -1387,6 +1351,9 @@ void v3dv_job_start_frame(struct v3dv_job *job,
 bool v3dv_job_type_is_gpu(struct v3dv_job *job);
 
 struct v3dv_job *
+v3dv_job_clone(struct v3dv_job *job, bool skip_bcl);
+
+struct v3dv_job *
 v3dv_job_clone_in_cmd_buffer(struct v3dv_job *job,
                              struct v3dv_cmd_buffer *cmd_buffer);
 
@@ -1407,6 +1374,21 @@ void v3dv_cmd_buffer_emit_pre_draw(struct v3dv_cmd_buffer *cmd_buffer,
                                    uint32_t vertex_count);
 
 bool v3dv_job_allocate_tile_state(struct v3dv_job *job);
+
+void
+v3dv_setup_dynamic_framebuffer(struct v3dv_cmd_buffer *cmd_buffer,
+                               const VkRenderingInfoKHR *pRenderingInfo);
+
+void
+v3dv_destroy_dynamic_framebuffer(struct v3dv_cmd_buffer *cmd_buffer);
+
+void
+v3dv_setup_dynamic_render_pass(struct v3dv_cmd_buffer *cmd_buffer,
+                               const VkRenderingInfoKHR *pRenderingInfo);
+
+void
+v3dv_setup_dynamic_render_pass_inheritance(struct v3dv_cmd_buffer *cmd_buffer,
+                                           const VkCommandBufferInheritanceRenderingInfo *info);
 
 /* FIXME: only used on v3dv_cmd_buffer and v3dvx_cmd_buffer, perhaps move to a
  * cmd_buffer specific header?
@@ -1439,10 +1421,12 @@ enum {
    V3DV_BARRIER_GRAPHICS_BIT = (1 << 0),
    V3DV_BARRIER_COMPUTE_BIT  = (1 << 1),
    V3DV_BARRIER_TRANSFER_BIT = (1 << 2),
+   V3DV_BARRIER_CPU_BIT      = (1 << 3),
 };
 #define V3DV_BARRIER_ALL (V3DV_BARRIER_GRAPHICS_BIT | \
                           V3DV_BARRIER_TRANSFER_BIT | \
-                          V3DV_BARRIER_COMPUTE_BIT);
+                          V3DV_BARRIER_COMPUTE_BIT | \
+                          V3DV_BARRIER_CPU_BIT);
 
 struct v3dv_barrier_state {
    /* Mask of V3DV_BARRIER_* indicating where we consume a barrier. */
@@ -1465,6 +1449,14 @@ struct v3dv_barrier_state {
 struct v3dv_cmd_buffer_state {
    struct v3dv_render_pass *pass;
    struct v3dv_framebuffer *framebuffer;
+
+   /* VK_KHR_dynamic_rendering */
+   struct v3dv_render_pass dynamic_pass;
+   struct v3dv_subpass dynamic_subpass;
+   struct v3dv_render_pass_attachment dynamic_attachments[18 /* (8 color + D/S) x 2 (for resolves) */];
+   struct v3dv_subpass_attachment dynamic_subpass_attachments[18];
+   struct v3dv_framebuffer *dynamic_framebuffer;
+
    VkRect2D render_area;
 
    /* Current job being recorded */
@@ -1475,8 +1467,16 @@ struct v3dv_cmd_buffer_state {
    struct v3dv_cmd_pipeline_state gfx;
    struct v3dv_cmd_pipeline_state compute;
 
+   /* For most state tracking we rely on vk_dynamic_graphics_state, but we
+    * maintain a custom structure for some state-related data that we want to
+    * cache.
+    */
    struct v3dv_dynamic_state dynamic;
 
+   /* This dirty is for v3dv_cmd_dirty_bits (FIXME: perhaps we should be more
+    * explicit about it). For dirty flags coming from Vulkan dynamic state,
+    * use the vk_dynamic_graphics_state handled by the vk_cmd_buffer
+    */
    uint32_t dirty;
    VkShaderStageFlagBits dirty_descriptor_stages;
    VkShaderStageFlagBits dirty_push_constants_stages;
@@ -1536,6 +1536,10 @@ struct v3dv_cmd_buffer_state {
    /* If we are currently recording job(s) for a transfer operation */
    bool is_transfer;
 
+   /* VK_KHR_dynamic_rendering */
+   bool suspending;
+   bool resuming;
+
    /* Barrier state tracking */
    struct v3dv_barrier_state barrier;
 
@@ -1557,6 +1561,7 @@ struct v3dv_cmd_buffer_state {
       bool tile_aligned_render_area;
       VkRect2D render_area;
 
+      struct vk_dynamic_graphics_state dynamic_graphics_state;
       struct v3dv_dynamic_state dynamic;
 
       struct v3dv_cmd_pipeline_state gfx;
@@ -1598,10 +1603,24 @@ struct v3dv_cmd_buffer_state {
          struct v3dv_perf_query *perf;
       } active_query;
    } query;
+
+   /* This is dynamic state since VK_EXT_extended_dynamic_state. */
+   bool z_updates_enable;
+
+   /* ez_state can be dynamic since VK_EXT_extended_dynamic_state so we need
+    * to keep track of it in the cmd_buffer state
+    */
+   enum v3dv_ez_state ez_state;
+
+   /* incompatible_ez_test can be dynamic since VK_EXT_extended_dynamic_state
+    * so we need to keep track of it in the cmd_buffer state
+    */
+   bool incompatible_ez_test;
+
 };
 
 void
-v3dv_cmd_buffer_state_get_viewport_z_xform(struct v3dv_cmd_buffer_state *state,
+v3dv_cmd_buffer_state_get_viewport_z_xform(struct v3dv_cmd_buffer *cmd_buffer,
                                            uint32_t vp_idx,
                                            float *translate_z, float *scale_z);
 
@@ -1646,8 +1665,14 @@ struct v3dv_query {
          uint32_t offset;
       } occlusion;
 
-      /* Used by CPU queries (timestamp) */
-      uint64_t value;
+      /* Used by timestamp queries */
+      struct {
+         /* Offset of this query in the timestamp BO for its value */
+         uint32_t offset;
+
+         /* Syncobj to signal timestamp query availability */
+         struct vk_sync *sync;
+      } timestamp;
 
       /* Used by performance queries */
       struct v3dv_perf_query perf;
@@ -1679,6 +1704,12 @@ struct v3dv_query_pool {
       /* Offset of the availability info in the BO */
       uint32_t avail_offset;
    } occlusion;
+
+   /* Only used with timestamp queries */
+   struct {
+      /* BO with the query timestamp values */
+      struct v3dv_bo *bo;
+   } timestamp;
 
    /* Only used with performance queries */
    struct {
@@ -2223,6 +2254,9 @@ struct v3dv_pipeline {
 
    struct v3dv_pipeline_stage *stages[BROADCOM_SHADER_STAGES];
 
+   /* For VK_KHR_dynamic_rendering */
+   struct vk_render_pass_state rendering_info;
+
    /* Flags for whether optional pipeline stages are present, for convenience */
    bool has_gs;
 
@@ -2235,12 +2269,10 @@ struct v3dv_pipeline {
       uint32_t size_per_thread;
    } spill;
 
-   struct v3dv_dynamic_state dynamic_state;
+   struct vk_dynamic_graphics_state dynamic_graphics_state;
+   struct v3dv_dynamic_state dynamic;
 
    struct v3dv_pipeline_layout *layout;
-
-   /* Whether this pipeline enables depth writes */
-   bool z_updates_enable;
 
    enum v3dv_ez_state ez_state;
 
@@ -2249,11 +2281,11 @@ struct v3dv_pipeline {
     */
    bool incompatible_ez_test;
 
+   bool rasterization_enabled;
    bool msaa;
    bool sample_rate_shading;
    uint32_t sample_mask;
 
-   bool primitive_restart;
    bool negative_one_to_one;
 
    /* Accessed by binding. So vb[binding]->stride is the stride of the vertex
@@ -2278,6 +2310,8 @@ struct v3dv_pipeline {
    uint32_t va_count;
 
    enum mesa_prim topology;
+
+   bool line_smooth;
 
    struct v3dv_pipeline_shared_data *shared_data;
 
@@ -2313,15 +2347,6 @@ struct v3dv_pipeline {
       /* Mask with enabled color channels for each RT (4 bits per RT) */
       uint32_t color_write_masks;
    } blend;
-
-   /* Depth bias */
-   struct {
-      bool enabled;
-      bool is_z16;
-   } depth_bias;
-
-   /* Depth bounds */
-   bool depth_bounds_test_enabled;
 
    struct {
       void *mem_ctx;
@@ -2366,11 +2391,8 @@ v3dv_cmd_buffer_get_descriptor_state(struct v3dv_cmd_buffer *cmd_buffer,
 
 const nir_shader_compiler_options *v3dv_pipeline_get_nir_options(void);
 
-uint32_t v3dv_physical_device_vendor_id(struct v3dv_physical_device *dev);
-uint32_t v3dv_physical_device_device_id(struct v3dv_physical_device *dev);
-
-#define v3dv_debug_ignored_stype(sType) \
-   mesa_logd("%s: ignored VkStructureType %u:%s\n\n", __func__, (sType), vk_StructureType_to_str(sType))
+uint32_t v3dv_physical_device_vendor_id(const struct v3dv_physical_device *dev);
+uint32_t v3dv_physical_device_device_id(const struct v3dv_physical_device *dev);
 
 const uint8_t *v3dv_get_format_swizzle(struct v3dv_device *device, VkFormat f,
                                        uint8_t plane);
@@ -2662,7 +2684,20 @@ v3dv_update_image_layout(struct v3dv_device *device,
                          bool disjoint,
                          const VkImageDrmFormatModifierExplicitCreateInfoEXT *explicit_mod_info);
 
-#ifdef ANDROID
+float
+v3dv_get_aa_line_width(struct v3dv_pipeline *pipeline,
+                       struct v3dv_cmd_buffer *buffer);
+
+
+void
+v3dv_compute_ez_state(struct vk_dynamic_graphics_state *dyn,
+                      struct v3dv_pipeline *pipeline,
+                      enum v3dv_ez_state *ez_state,
+                      bool *incompatible_ez_test);
+
+uint32_t v3dv_pipeline_primitive(VkPrimitiveTopology vk_prim);
+
+#if DETECT_OS_ANDROID
 VkResult
 v3dv_gralloc_to_drm_explicit_layout(struct u_gralloc *gralloc,
                                     struct u_gralloc_buffer_handle *in_hnd,
@@ -2675,6 +2710,6 @@ v3dv_import_native_buffer_fd(VkDevice device_h,
                              int dma_buf,
                              const VkAllocationCallbacks *alloc,
                              VkImage image_h);
-#endif /* ANDROID */
+#endif /* DETECT_OS_ANDROID */
 
 #endif /* V3DV_PRIVATE_H */

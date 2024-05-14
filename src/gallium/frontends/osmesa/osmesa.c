@@ -48,13 +48,20 @@
  * much nicer, new off-screen Gallium interface...
  */
 
+/**
+ * The following block is for avoid windows.h to be included
+ * and osmesa require APIENTRY to be defined
+ */
+#include "util/glheader.h"
+#ifndef APIENTRY
+#define APIENTRY GLAPIENTRY
+#endif
+#include "GL/osmesa.h"
 
 #include <stdio.h>
 #include <c11/threads.h>
 
 #include "state_tracker/st_context.h"
-
-#include "GL/osmesa.h"
 
 #include "glapi/glapi.h"  /* for OSMesaGetProcAddress below */
 
@@ -63,7 +70,7 @@
 #include "pipe/p_state.h"
 
 #include "util/u_atomic.h"
-#include "util/u_box.h"
+#include "util/box.h"
 #include "util/u_debug.h"
 #include "util/format/u_format.h"
 #include "util/u_inlines.h"

@@ -147,6 +147,7 @@ etna_link_shaders(struct etna_context *ctx, struct compiled_shader_state *cs,
                     COND(last_varying_2x, VIVS_RA_CONTROL_LAST_VARYING_2X);
 
    cs->PA_ATTRIBUTE_ELEMENT_COUNT = VIVS_PA_ATTRIBUTE_ELEMENT_COUNT_COUNT(link.num_varyings);
+   STATIC_ASSERT(VIVS_PA_SHADER_ATTRIBUTES__LEN >= ETNA_NUM_VARYINGS);
    for (int idx = 0; idx < link.num_varyings; ++idx)
       cs->PA_SHADER_ATTRIBUTES[idx] = link.varyings[idx].pa_attributes;
 
@@ -407,7 +408,7 @@ create_variant(struct etna_shader *shader,
 
    etna_disk_cache_store(shader->compiler, v);
 
-#ifdef DEBUG
+#if MESA_DEBUG
    if (DBG_ENABLED(ETNA_DBG_DUMP_SHADERS))
       etna_dump_shader(v);
 #endif

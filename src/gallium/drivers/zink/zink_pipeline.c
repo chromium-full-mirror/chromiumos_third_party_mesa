@@ -273,7 +273,7 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
    if (screen->info.have_EXT_color_write_enable)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_COLOR_WRITE_ENABLE_EXT;
 
-   assert(state->rast_prim != MESA_PRIM_COUNT);
+   assert(state->rast_prim != MESA_PRIM_COUNT || zink_debug & ZINK_DEBUG_SHADERDB);
 
    VkPipelineRasterizationLineStateCreateInfoEXT rast_line_state;
    if (screen->info.have_EXT_line_rasterization &&
@@ -332,6 +332,8 @@ zink_create_gfx_pipeline(struct zink_screen *screen,
 
    VkGraphicsPipelineCreateInfo pci = {0};
    pci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+   if (zink_debug & ZINK_DEBUG_SHADERDB)
+      pci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
    if (!optimize)
       pci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
    if (screen->info.have_EXT_attachment_feedback_loop_dynamic_state) {
@@ -617,7 +619,8 @@ zink_create_gfx_pipeline_output(struct zink_screen *screen, struct zink_gfx_pipe
    if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
       pci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
    pipelineDynamicStateCreateInfo.dynamicStateCount = state_count;
-   pci.pColorBlendState = &blend_state;
+   if (!screen->have_full_ds3)
+      pci.pColorBlendState = &blend_state;
    pci.pMultisampleState = &ms_state;
    pci.pDynamicState = &pipelineDynamicStateCreateInfo;
 
@@ -682,7 +685,7 @@ zink_create_gfx_pipeline_input(struct zink_screen *screen,
    if (screen->info.have_EXT_vertex_input_dynamic_state)
       dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_EXT;
    else if (state->uses_dynamic_stride && state->element_state->num_attribs)
-      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE_EXT;
+      dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE;
    dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY;
    dynamicStateEnables[state_count++] = VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE;
    assert(state_count < ARRAY_SIZE(dynamicStateEnables));
@@ -904,7 +907,7 @@ zink_create_gfx_pipeline_combined(struct zink_screen *screen, struct zink_gfx_pr
    VRAM_ALLOC_LOOP(result,
       VKSCR(CreateGraphicsPipelines)(screen->dev, prog->base.pipeline_cache, 1, &pci, NULL, &pipeline),
       u_rwlock_wrunlock(&prog->base.pipeline_cache_lock);
-      if (result != VK_SUCCESS && result != VK_PIPELINE_COMPILE_REQUIRED_EXT) {
+      if (result != VK_SUCCESS && result != VK_PIPELINE_COMPILE_REQUIRED) {
          mesa_loge("ZINK: vkCreateGraphicsPipelines failed");
          return VK_NULL_HANDLE;
       }

@@ -14,7 +14,7 @@ export LLVM_VERSION="${LLVM_VERSION:=15}"
 
 check_minio()
 {
-    S3_PATH="${S3_HOST}/mesa-lava/$1/${DISTRIBUTION_TAG}/${DEBIAN_ARCH}"
+    S3_PATH="${S3_HOST}/${S3_KERNEL_BUCKET}/$1/${DISTRIBUTION_TAG}/${DEBIAN_ARCH}"
     if curl -L --retry 4 -f --retry-delay 60 -s -X HEAD \
       "https://${S3_PATH}/done"; then
         echo "Remote files are up-to-date, skip rebuilding them."
@@ -147,6 +147,8 @@ CONTAINER_EPHEMERAL=(
     zstd
 )
 
+echo "deb [trusted=yes] https://gitlab.freedesktop.org/gfx-ci/ci-deb-repo/-/raw/${PKG_REPO_REV}/ ${FDO_DISTRIBUTION_VERSION%-*} main" | tee /etc/apt/sources.list.d/gfx-ci_.list
+
 apt-get update
 apt-get install -y --no-remove \
 		   -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' \
@@ -194,6 +196,7 @@ PKG_DEP=(
 )
 [ "$DEBIAN_ARCH" = "amd64" ] && PKG_ARCH=(
   firmware-amd-graphics
+  firmware-misc-nonfree
   libgl1 libglu1-mesa
   inetutils-syslogd iptables libcap2
   libfontconfig1
@@ -216,7 +219,8 @@ mmdebstrap \
     --include "${PKG_BASE[*]} ${PKG_CI[*]} ${PKG_DEP[*]} ${PKG_MESA_DEP[*]} ${PKG_ARCH[*]}" \
     bookworm \
     "$ROOTFS/" \
-    "http://deb.debian.org/debian"
+    "http://deb.debian.org/debian" \
+    "deb [trusted=yes] https://gitlab.freedesktop.org/gfx-ci/ci-deb-repo/-/raw/${PKG_REPO_REV}/ ${FDO_DISTRIBUTION_VERSION%-*} main"
 
 ############### Install mold
 . .gitlab-ci/container/build-mold.sh
@@ -268,7 +272,17 @@ mv /usr/local/bin/*-runner $ROOTFS/usr/bin/.
 
 
 ############### Build dEQP
-DEQP_TARGET=surfaceless . .gitlab-ci/container/build-deqp.sh
+DEQP_API=GL \
+DEQP_TARGET=surfaceless \
+. .gitlab-ci/container/build-deqp.sh
+
+DEQP_API=GLES \
+DEQP_TARGET=surfaceless \
+. .gitlab-ci/container/build-deqp.sh
+
+DEQP_API=VK \
+DEQP_TARGET=default \
+. .gitlab-ci/container/build-deqp.sh
 
 mv /deqp $ROOTFS/.
 
@@ -320,6 +334,11 @@ fi
 rm -rf /root/.cargo
 rm -rf /root/.rustup
 
+############### Delete firmware files we don't need
+if [ "$DEBIAN_ARCH" = "amd64" ]; then
+   dpkg -L firmware-misc-nonfree | grep -v "i915" | xargs rm || true
+fi
+
 ############### Fill rootfs
 cp .gitlab-ci/container/setup-rootfs.sh $ROOTFS/.
 cp .gitlab-ci/container/strip-rootfs.sh $ROOTFS/.
@@ -346,8 +365,8 @@ popd
 
 . .gitlab-ci/container/container_post_build.sh
 
-ci-fairy s3cp --token-file "${CI_JOB_JWT_FILE}" /lava-files/"${ROOTFSTAR}" \
+ci-fairy s3cp --token-file "${S3_JWT_FILE}" /lava-files/"${ROOTFSTAR}" \
       https://${S3_PATH}/"${ROOTFSTAR}"
 
 touch /lava-files/done
-ci-fairy s3cp --token-file "${CI_JOB_JWT_FILE}" /lava-files/done https://${S3_PATH}/done
+ci-fairy s3cp --token-file "${S3_JWT_FILE}" /lava-files/done https://${S3_PATH}/done

@@ -28,8 +28,6 @@
 
 typedef enum {
    undefined,
-   invariant,
-   not_invariant,
    basic_induction
 } nir_loop_variable_type;
 
@@ -94,10 +92,7 @@ get_loop_var(nir_def *value, loop_info_state *state)
       var->in_nested_loop = false;
       var->init_src = NULL;
       var->update_src = NULL;
-      if (value->parent_instr->type == nir_instr_type_load_const)
-         var->type = invariant;
-      else
-         var->type = undefined;
+      var->type = undefined;
 
       BITSET_SET(state->loop_vars_init, value->index);
    }
@@ -268,65 +263,6 @@ is_var_phi(nir_loop_variable *var)
    return var->def->parent_instr->type == nir_instr_type_phi;
 }
 
-static inline bool
-mark_invariant(nir_def *def, loop_info_state *state)
-{
-   nir_loop_variable *var = get_loop_var(def, state);
-
-   if (var->type == invariant)
-      return true;
-
-   if (!var->in_loop) {
-      var->type = invariant;
-      return true;
-   }
-
-   if (var->type == not_invariant)
-      return false;
-
-   if (is_var_alu(var)) {
-      nir_alu_instr *alu = nir_instr_as_alu(def->parent_instr);
-
-      for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
-         if (!mark_invariant(alu->src[i].src.ssa, state)) {
-            var->type = not_invariant;
-            return false;
-         }
-      }
-      var->type = invariant;
-      return true;
-   }
-
-   /* Phis shouldn't be invariant except if one operand is invariant, and the
-    * other is the phi itself. These should be removed by opt_remove_phis.
-    * load_consts are already set to invariant and constant during init,
-    * and so should return earlier. Remaining op_codes are set undefined.
-    */
-   var->type = not_invariant;
-   return false;
-}
-
-static void
-compute_invariance_information(loop_info_state *state)
-{
-   /* An expression is invariant in a loop L if:
-    *  (base cases)
-    *    – it’s a constant
-    *    – it’s a variable use, all of whose single defs are outside of L
-    *  (inductive cases)
-    *    – it’s a pure computation all of whose args are loop invariant
-    *    – it’s a variable use whose single reaching def, and the
-    *      rhs of that def is loop-invariant
-    */
-   list_for_each_entry_safe(nir_loop_variable, var, &state->process_list,
-                            process_link) {
-      assert(!var->in_if_branch && !var->in_nested_loop);
-
-      if (mark_invariant(var->def, state))
-         list_del(&var->process_link);
-   }
-}
-
 /* If all of the instruction sources point to identical ALU instructions (as
  * per nir_instrs_equal), return one of the ALU instructions.  Otherwise,
  * return NULL.
@@ -402,12 +338,10 @@ compute_induction_information(loop_info_state *state)
    list_for_each_entry_safe(nir_loop_variable, var, &state->process_list,
                             process_link) {
 
-      /* It can't be an induction variable if it is invariant. Invariants and
-       * things in nested loops or conditionals should have been removed from
-       * the list by compute_invariance_information().
+      /* Things in nested loops or conditionals should not have been added into
+       * the procss_list.
        */
-      assert(!var->in_if_branch && !var->in_nested_loop &&
-             var->type != invariant);
+      assert(!var->in_if_branch && !var->in_nested_loop);
 
       /* We are only interested in checking phis for the basic induction
        * variable case as its simple to detect. All basic induction variables
@@ -893,6 +827,7 @@ get_iteration(nir_op cond_op, nir_const_value initial, nir_const_value step,
               unsigned execution_mode)
 {
    nir_const_value span, iter;
+   unsigned iter_bit_size = bit_size;
 
    switch (invert_comparison_if_needed(cond_op, invert_cond)) {
    case nir_op_ine:
@@ -946,14 +881,15 @@ get_iteration(nir_op cond_op, nir_const_value initial, nir_const_value step,
       iter = eval_const_binop(nir_op_fdiv, bit_size, span,
                               step, execution_mode);
       iter = eval_const_unop(nir_op_f2i64, bit_size, iter, execution_mode);
+      iter_bit_size = 64;
       break;
 
    default:
       return -1;
    }
 
-   uint64_t iter_u64 = nir_const_value_as_uint(iter, bit_size);
-   return iter_u64 > INT_MAX ? -1 : (int)iter_u64;
+   uint64_t iter_u64 = nir_const_value_as_uint(iter, iter_bit_size);
+   return iter_u64 > u_intN_max(iter_bit_size) ? -1 : (int)iter_u64;
 }
 
 static int32_t
@@ -1171,11 +1107,13 @@ calculate_iterations(nir_scalar basis, nir_scalar limit_basis,
     */
    for (int bias = -1; bias <= 1; bias++) {
       const int iter_bias = iter_int + bias;
+      if (iter_bias < 1)
+         continue;
 
       if (test_iterations(iter_bias, step, limit, alu_op, bit_size,
                           induction_base_type, initial,
                           limit_rhs, invert_cond, execution_mode)) {
-         return iter_bias > 0 ? iter_bias - trip_offset : iter_bias;
+         return iter_bias - trip_offset;
       }
    }
 
@@ -1554,10 +1492,6 @@ get_loop_info(loop_info_state *state, nir_function_impl *impl)
       return;
    }
 
-   /* Induction analysis needs invariance information so get that first */
-   compute_invariance_information(state);
-
-   /* We have invariance information so try to find induction variables */
    if (!compute_induction_information(state))
       return;
 

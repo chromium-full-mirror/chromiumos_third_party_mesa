@@ -12,6 +12,7 @@ use mesa_rust::pipe::resource::*;
 use mesa_rust::pipe::screen::ResourceType;
 use mesa_rust::util::disk_cache::*;
 use mesa_rust_gen::*;
+use rusticl_llvm_gen::*;
 use rusticl_opencl_gen::*;
 
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ use std::collections::HashSet;
 use std::ffi::CString;
 use std::mem::size_of;
 use std::ptr;
+use std::ptr::addr_of;
 use std::slice;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -43,12 +45,25 @@ fn get_disk_cache() -> &'static Option<DiskCache> {
     let func_ptrs = [
         // ourselves
         get_disk_cache as _,
+        // LLVM
+        llvm_LLVMContext_LLVMContext as _,
+        // clang
+        clang_getClangFullVersion as _,
+        // SPIRV-LLVM-Translator
+        llvm_writeSpirv1 as _,
     ];
     unsafe {
         DISK_CACHE_ONCE.call_once(|| {
             DISK_CACHE = DiskCache::new("rusticl", &func_ptrs, 0);
         });
-        &DISK_CACHE
+        &*addr_of!(DISK_CACHE)
+    }
+}
+
+fn clc_validator_options(dev: &Device) -> clc_validator_options {
+    clc_validator_options {
+        // has to match CL_DEVICE_MAX_PARAMETER_SIZE
+        limit_max_function_arg: dev.param_max_size() as u32,
     }
 }
 
@@ -77,9 +92,14 @@ pub struct NirKernelBuild {
     pub printf_info: Option<NirPrintfInfo>,
 }
 
+// SAFETY: `CSOWrapper` is only safe to use if the device supports `PIPE_CAP_SHAREABLE_SHADERS` and
+//         we make sure to set `nir_or_cso` to `KernelDevStateVariant::Cso` only if that's the case.
+unsafe impl Send for NirKernelBuild {}
+unsafe impl Sync for NirKernelBuild {}
+
 pub struct ProgramBuild {
     pub builds: HashMap<&'static Device, ProgramDevBuild>,
-    pub kernel_info: HashMap<String, KernelInfo>,
+    pub kernel_info: HashMap<String, Arc<KernelInfo>>,
     spec_constants: HashMap<u32, nir_const_value>,
     kernels: Vec<String>,
 }
@@ -112,9 +132,10 @@ impl NirKernelBuild {
         let len = buf.len() as u32;
 
         if len > 0 {
+            // TODO bind as constant buffer
             let res = dev
                 .screen()
-                .resource_create_buffer(len, ResourceType::Normal)
+                .resource_create_buffer(len, ResourceType::Normal, PIPE_BIND_GLOBAL)
                 .unwrap();
 
             dev.helper_ctx()
@@ -183,7 +204,8 @@ impl ProgramBuild {
                 kernel_info.attributes_string = String::new();
             }
 
-            self.kernel_info.insert(kernel_name.clone(), kernel_info);
+            self.kernel_info
+                .insert(kernel_name.clone(), Arc::new(kernel_info));
         }
     }
 
@@ -224,6 +246,10 @@ impl ProgramBuild {
         } else {
             None
         }
+    }
+
+    pub fn kernels(&self) -> &[String] {
+        &self.kernels
     }
 
     pub fn to_nir(&self, kernel: &str, d: &Device) -> NirShader {
@@ -276,9 +302,6 @@ fn prepare_options(options: &str, dev: &Device) -> Vec<CString> {
         options.push_str(" -cl-std=CL");
         options.push_str(dev.clc_version.api_str());
     }
-    if !dev.image_supported() {
-        options.push_str(" -U__IMAGE_SUPPORT__");
-    }
     options.push_str(" -D__OPENCL_VERSION__=");
     options.push_str(dev.cl_version.clc_str());
 
@@ -308,9 +331,11 @@ fn prepare_options(options: &str, dev: &Device) -> Vec<CString> {
     res.push(&options[old..]);
 
     res.iter()
-        .map(|&a| match a {
-            "-cl-denorms-are-zero" => "-fdenormal-fp-math=positive-zero",
-            _ => a,
+        .filter_map(|&a| match a {
+            "-cl-denorms-are-zero" => Some("-fdenormal-fp-math=positive-zero"),
+            // We can ignore it as long as we don't support ifp
+            "-cl-no-subgroup-ifp" => None,
+            _ => Some(a),
         })
         .map(CString::new)
         .map(Result::unwrap)
@@ -338,18 +363,18 @@ impl Program {
             .collect()
     }
 
-    pub fn new(context: &Arc<Context>, devs: &[&'static Device], src: CString) -> Arc<Program> {
+    pub fn new(context: Arc<Context>, src: CString) -> Arc<Program> {
         Arc::new(Self {
-            base: CLObjectBase::new(),
-            context: context.clone(),
-            devs: devs.to_vec(),
-            src: ProgramSourceType::Src(src),
+            base: CLObjectBase::new(RusticlTypes::Program),
             build: Mutex::new(ProgramBuild {
-                builds: Self::create_default_builds(devs),
+                builds: Self::create_default_builds(&context.devs),
                 spec_constants: HashMap::new(),
                 kernels: Vec::new(),
                 kernel_info: HashMap::new(),
             }),
+            devs: context.devs.to_vec(),
+            context: context,
+            src: ProgramSourceType::Src(src),
         })
     }
 
@@ -421,7 +446,7 @@ impl Program {
         build.build_nirs(false);
 
         Arc::new(Self {
-            base: CLObjectBase::new(),
+            base: CLObjectBase::new(RusticlTypes::Program),
             context: context,
             devs: devs,
             src: ProgramSourceType::Binary,
@@ -432,7 +457,7 @@ impl Program {
     pub fn from_spirv(context: Arc<Context>, spirv: &[u8]) -> Arc<Program> {
         let builds = Self::create_default_builds(&context.devs);
         Arc::new(Self {
-            base: CLObjectBase::new(),
+            base: CLObjectBase::new(RusticlTypes::Program),
             devs: context.devs.clone(),
             context: context,
             src: ProgramSourceType::Il(SPIRVBin::from_bin(spirv)),
@@ -500,7 +525,12 @@ impl Program {
         for (i, d) in self.devs.iter().enumerate() {
             let mut ptr = ptrs[i];
             let info = lock.dev_build(d);
-            let spirv = info.spirv.as_ref().unwrap().to_bin();
+
+            // no spirv means nothing to write
+            let Some(spirv) = info.spirv.as_ref() else {
+                continue;
+            };
+            let spirv = spirv.to_bin();
 
             unsafe {
                 // 1. binary format version
@@ -524,19 +554,10 @@ impl Program {
         ptrs.to_vec()
     }
 
-    pub fn kernel_signatures(&self, kernel_name: &str) -> HashSet<Vec<spirv::SPIRVKernelArg>> {
-        let build = self.build_info();
-        let devs = build.devs_with_build();
-
-        if devs.is_empty() {
-            return HashSet::new();
-        }
-
-        devs.iter().map(|d| build.args(d, kernel_name)).collect()
-    }
-
-    pub fn kernels(&self) -> Vec<String> {
-        self.build_info().kernels.clone()
+    // TODO: at the moment we do not support compiling programs with different signatures across
+    // devices. If we do in the future, this needs to be properly implemented.
+    pub fn has_unique_kernel_signatures(&self, _kernel_name: &str) -> bool {
+        true
     }
 
     pub fn active_kernels(&self) -> bool {
@@ -596,16 +617,13 @@ impl Program {
     ) -> bool {
         let d = info.dev_build_mut(dev);
 
+        let val_options = clc_validator_options(dev);
         let (spirv, log) = match &self.src {
             ProgramSourceType::Il(spirv) => {
-                let options = clc_validator_options {
-                    // has to match CL_DEVICE_MAX_PARAMETER_SIZE
-                    limit_max_function_arg: dev.param_max_size() as u32,
-                };
                 if Platform::dbg().allow_invalid_spirv {
                     (Some(spirv.clone()), String::new())
                 } else {
-                    spirv.clone_on_validate(&options)
+                    spirv.clone_on_validate(&val_options)
                 }
             }
             ProgramSourceType::Src(src) => {
@@ -621,7 +639,7 @@ impl Program {
                     eprintln!("source code:\n{src}");
                 }
 
-                spirv::SPIRVBin::from_clc(
+                let (spirv, msgs) = spirv::SPIRVBin::from_clc(
                     src,
                     &args,
                     headers,
@@ -629,7 +647,18 @@ impl Program {
                     dev.cl_features(),
                     &dev.spirv_extensions,
                     dev.address_bits(),
-                )
+                );
+
+                if Platform::dbg().validate_spirv {
+                    if let Some(spirv) = spirv {
+                        let (res, spirv_msgs) = spirv.validate(&val_options);
+                        (res.then_some(spirv), format!("{}\n{}", msgs, spirv_msgs))
+                    } else {
+                        (None, msgs)
+                    }
+                } else {
+                    (spirv, msgs)
+                }
             }
             // do nothing if we got a library or binary
             _ => {
@@ -673,6 +702,17 @@ impl Program {
                 .collect();
 
             let (spirv, log) = spirv::SPIRVBin::link(&bins, lib);
+            let (spirv, log) = if Platform::dbg().validate_spirv {
+                if let Some(spirv) = spirv {
+                    let val_options = clc_validator_options(d);
+                    let (res, spirv_msgs) = spirv.validate(&val_options);
+                    (res.then_some(spirv), format!("{}\n{}", log, spirv_msgs))
+                } else {
+                    (None, log)
+                }
+            } else {
+                (spirv, log)
+            };
 
             let status;
             let bin_type;
@@ -715,7 +755,7 @@ impl Program {
         build.build_nirs(false);
 
         Arc::new(Self {
-            base: CLObjectBase::new(),
+            base: CLObjectBase::new(RusticlTypes::Program),
             context: context,
             devs: devs.to_owned(),
             src: ProgramSourceType::Linked,

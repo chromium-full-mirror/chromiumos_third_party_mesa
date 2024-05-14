@@ -648,10 +648,20 @@ ntq_emit_tmu_general(struct v3d_compile *c, nir_intrinsic_instr *instr,
                                 v3d_tmu_get_type_from_op(tmu_op, !is_load) ==
                                 V3D_TMU_OP_TYPE_ATOMIC;
 
+                        /* Only load per-quad if we can be certain that all
+                         * lines in the quad are active. Notice that demoted
+                         * invocations, unlike terminated ones, are still
+                         * active: we want to skip memory writes for them but
+                         * loads should still work.
+                         */
                         uint32_t perquad =
-                                is_load && !vir_in_nonuniform_control_flow(c)
-                                ? GENERAL_TMU_LOOKUP_PER_QUAD
-                                : GENERAL_TMU_LOOKUP_PER_PIXEL;
+                                is_load && !vir_in_nonuniform_control_flow(c) &&
+                                ((c->s->info.stage == MESA_SHADER_FRAGMENT &&
+                                  c->s->info.fs.needs_quad_helper_invocations &&
+                                  !c->emitted_discard) ||
+                                 c->s->info.uses_wide_subgroup_intrinsics) ?
+                                GENERAL_TMU_LOOKUP_PER_QUAD :
+                                GENERAL_TMU_LOOKUP_PER_PIXEL;
                         config = 0xffffff00 | tmu_op << 3 | perquad;
 
                         if (tmu_op == V3D_TMU_OP_WRITE_CMPXCHG_READ_FLUSH) {
@@ -1904,6 +1914,7 @@ emit_frag_end(struct v3d_compile *c)
         if (c->output_position_index == -1 &&
             !(c->s->info.num_images || c->s->info.num_ssbos) &&
             !c->s->info.fs.uses_discard &&
+            !c->s->info.fs.uses_demote &&
             !c->fs_key->sample_alpha_to_coverage &&
             c->output_sample_mask_index == -1 &&
             has_any_tlb_color_write) {
@@ -2091,7 +2102,7 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
                 NIR_PASS(progress, s, nir_opt_idiv_const, 32);
                 NIR_PASS(progress, s, nir_lower_alu);
 
-                if (nir_opt_trivial_continues(s)) {
+                if (nir_opt_loop(s)) {
                    progress = true;
                    NIR_PASS(progress, s, nir_copy_prop);
                    NIR_PASS(progress, s, nir_opt_dce);
@@ -2101,7 +2112,6 @@ v3d_optimize_nir(struct v3d_compile *c, struct nir_shader *s)
 
                 NIR_PASS(progress, s, nir_opt_remove_phis);
                 NIR_PASS(progress, s, nir_opt_if, false);
-                NIR_PASS(progress, s, nir_opt_undef);
                 if (c && !c->disable_gcm) {
                         bool local_progress = false;
                         NIR_PASS(local_progress, s, nir_opt_gcm, false);
@@ -2186,14 +2196,10 @@ driver_location_compare(const nir_variable *a, const nir_variable *b)
 }
 
 static struct qreg
-ntq_emit_vpm_read(struct v3d_compile *c,
-                  uint32_t *num_components_queued,
-                  uint32_t *remaining,
-                  uint32_t vpm_index)
+ntq_emit_vpm_read(struct v3d_compile *c, uint32_t num_components)
 {
         return vir_LDVPMV_IN(c,
-                             vir_uniform_ui(c,
-                                            (*num_components_queued)++));
+                             vir_uniform_ui(c, num_components));
 }
 
 static void
@@ -2227,8 +2233,7 @@ ntq_setup_vs_inputs(struct v3d_compile *c)
                 }
         }
 
-        unsigned num_components = 0;
-        uint32_t vpm_components_queued = 0;
+        uint32_t vpm_components = 0;
         bool uses_iid = BITSET_TEST(c->s->info.system_values_read,
                                     SYSTEM_VALUE_INSTANCE_ID) ||
                         BITSET_TEST(c->s->info.system_values_read,
@@ -2240,27 +2245,14 @@ ntq_setup_vs_inputs(struct v3d_compile *c)
                         BITSET_TEST(c->s->info.system_values_read,
                                     SYSTEM_VALUE_VERTEX_ID_ZERO_BASE);
 
-        num_components += uses_iid;
-        num_components += uses_biid;
-        num_components += uses_vid;
+        if (uses_iid)
+                c->iid = ntq_emit_vpm_read(c, vpm_components++);
 
-        for (int i = 0; i < ARRAY_SIZE(c->vattr_sizes); i++)
-                num_components += c->vattr_sizes[i];
+        if (uses_biid)
+                c->biid = ntq_emit_vpm_read(c, vpm_components++);
 
-        if (uses_iid) {
-                c->iid = ntq_emit_vpm_read(c, &vpm_components_queued,
-                                           &num_components, ~0);
-        }
-
-        if (uses_biid) {
-                c->biid = ntq_emit_vpm_read(c, &vpm_components_queued,
-                                            &num_components, ~0);
-        }
-
-        if (uses_vid) {
-                c->vid = ntq_emit_vpm_read(c, &vpm_components_queued,
-                                           &num_components, ~0);
-        }
+        if (uses_vid)
+                c->vid = ntq_emit_vpm_read(c, vpm_components++);
 
         /* The actual loads will happen directly in nir_intrinsic_load_input
          */
@@ -2738,8 +2730,21 @@ ntq_emit_load_input(struct v3d_compile *c, nir_intrinsic_instr *instr)
                                SYSTEM_VALUE_VERTEX_ID)) {
                       index++;
                }
-               for (int i = 0; i < offset; i++)
-                      index += c->vattr_sizes[i];
+
+               for (int i = 0; i < offset; i++) {
+                      /* GFXH-1602: if any builtins (vid, iid, etc) are read then
+                       * attribute 0 must be active (size > 0). When we hit this,
+                       * the driver is expected to program attribute 0 to have a
+                       * size of 1, so here we need to add that.
+                       */
+                      if (i == 0 && c->vs_key->is_coord &&
+                          c->vattr_sizes[i] == 0 && index > 0) {
+                         index++;
+                      } else {
+                         index += c->vattr_sizes[i];
+                      }
+               }
+
                index += nir_intrinsic_component(instr);
                for (int i = 0; i < instr->num_components; i++) {
                       struct qreg vpm_offset = vir_uniform_ui(c, index++);
@@ -3019,6 +3024,46 @@ emit_ldunifa(struct v3d_compile *c, struct qreg *result)
         c->current_unifa_offset += 4;
 }
 
+/* Checks if the value of a nir src is derived from a nir register */
+static bool
+nir_src_derived_from_reg(nir_src src)
+{
+        nir_def *def = src.ssa;
+        if (nir_load_reg_for_def(def))
+                return true;
+
+        nir_instr *parent = def->parent_instr;
+        switch (parent->type) {
+        case nir_instr_type_alu: {
+                nir_alu_instr *alu = nir_instr_as_alu(parent);
+                int num_srcs = nir_op_infos[alu->op].num_inputs;
+                for (int i = 0; i < num_srcs; i++) {
+                        if (nir_src_derived_from_reg(alu->src[i].src))
+                                return true;
+                }
+                return false;
+        }
+        case nir_instr_type_intrinsic: {
+                nir_intrinsic_instr *intr = nir_instr_as_intrinsic(parent);
+                int num_srcs = nir_intrinsic_infos[intr->intrinsic].num_srcs;
+                for (int i = 0; i < num_srcs; i++) {
+                        if (nir_src_derived_from_reg(intr->src[i]))
+                                return true;
+                }
+                return false;
+        }
+        case nir_instr_type_load_const:
+        case nir_instr_type_undef:
+                return false;
+        default:
+                /* By default we assume it may come from a register, the above
+                 * cases should be able to handle the majority of situations
+                 * though.
+                 */
+                return true;
+        };
+}
+
 static bool
 ntq_emit_load_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
 {
@@ -3040,6 +3085,24 @@ ntq_emit_load_unifa(struct v3d_compile *c, nir_intrinsic_instr *instr)
         nir_src offset = is_uniform ? instr->src[0] : instr->src[1];
         if (nir_src_is_divergent(offset))
                 return false;
+
+        /* Emitting loads from unifa may not be safe under non-uniform control
+         * flow. It seems the address that is used to write to the unifa
+         * register is taken from the first lane and if that lane is disabled
+         * by control flow then the value we read may be bogus and lead to
+         * invalid memory accesses on follow-up ldunifa instructions. However,
+         * ntq_store_def only emits conditional writes for nir registersas long
+         * we can be certain that the offset isn't derived from a load_reg we
+         * should be fine.
+         *
+         * The following CTS test can be used to trigger the problem, which
+         * causes a GMP violations in the sim without this check:
+         * dEQP-VK.subgroups.ballot_broadcast.graphics.subgroupbroadcastfirst_int
+         */
+        if (vir_in_nonuniform_control_flow(c) &&
+            nir_src_derived_from_reg(offset)) {
+                return false;
+        }
 
         /* We can only use unifa with SSBOs if they are read-only. Otherwise
          * ldunifa won't see the shader writes to that address (possibly
@@ -3215,32 +3278,103 @@ emit_load_local_invocation_index(struct v3d_compile *c)
                        vir_uniform_ui(c, 32 - c->local_invocation_index_bits));
 }
 
-/* Various subgroup operations rely on the A flags, so this helper ensures that
- * A flags represents currently active lanes in the subgroup.
+/* For the purposes of reduction operations (ballot, alleq, allfeq, bcastf) in
+ * fragment shaders a lane is considered active if any sample flags are set
+ * for *any* lane in the same quad, however, we still need to ensure that
+ * terminated lanes (OpTerminate) are not included. Further, we also need to
+ * disable lanes that may be disabled because of non-uniform control
+ * flow.
  */
-static void
-set_a_flags_for_subgroup(struct v3d_compile *c)
+static enum v3d_qpu_cond
+setup_subgroup_control_flow_condition(struct v3d_compile *c)
 {
-        /* MSF returns 0 for disabled lanes in compute shaders so
-         * PUSHZ will set A=1 for disabled lanes. We want the inverse
-         * of this but we don't have any means to negate the A flags
-         * directly, but we can do it by repeating the same operation
-         * with NORZ (A = ~A & ~Z).
-         */
-        assert(c->s->info.stage == MESA_SHADER_COMPUTE);
-        vir_set_pf(c, vir_MSF_dest(c, vir_nop_reg()), V3D_QPU_PF_PUSHZ);
-        vir_set_uf(c, vir_MSF_dest(c, vir_nop_reg()), V3D_QPU_UF_NORZ);
+        assert(c->s->info.stage == MESA_SHADER_FRAGMENT ||
+               c->s->info.stage == MESA_SHADER_COMPUTE);
 
-        /* If we are under non-uniform control flow we also need to
-         * AND the A flags with the current execute mask.
+        enum v3d_qpu_cond cond = V3D_QPU_COND_NONE;
+
+        /* We need to make sure that terminated lanes in fragment shaders are
+         * not included. We can identify these lanes by comparing the inital
+         * sample mask with the current. This fixes:
+         * dEQP-VK.spirv_assembly.instruction.terminate_invocation.terminate.subgroup_*
+         */
+        if (c->s->info.stage == MESA_SHADER_FRAGMENT && c->emitted_discard) {
+                vir_set_pf(c, vir_AND_dest(c, vir_nop_reg(), c->start_msf,
+                                           vir_NOT(c, vir_XOR(c, c->start_msf,
+                                                              vir_MSF(c)))),
+                           V3D_QPU_PF_PUSHZ);
+                cond = V3D_QPU_COND_IFNA;
+        }
+
+        /* If we are in non-uniform control-flow update the condition to
+         * also limit lanes to those in the current execution mask.
          */
         if (vir_in_nonuniform_control_flow(c)) {
-                const uint32_t bidx = c->cur_block->index;
-                vir_set_uf(c, vir_XOR_dest(c, vir_nop_reg(),
-                                           c->execute,
-                                           vir_uniform_ui(c, bidx)),
-                           V3D_QPU_UF_ANDZ);
+                if (cond == V3D_QPU_COND_IFNA) {
+                        vir_set_uf(c, vir_MOV_dest(c, vir_nop_reg(), c->execute),
+                                   V3D_QPU_UF_NORNZ);
+                } else {
+                        assert(cond == V3D_QPU_COND_NONE);
+                        vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), c->execute),
+                                   V3D_QPU_PF_PUSHZ);
+                }
+                cond = V3D_QPU_COND_IFA;
         }
+
+        return cond;
+}
+
+static void
+emit_compute_barrier(struct v3d_compile *c)
+{
+        /* Ensure we flag the use of the control barrier. NIR's
+         * gather info pass usually takes care of this, but that
+         * requires that we call that pass after any other pass
+         * may emit a control barrier, so this is safer.
+         */
+        c->s->info.uses_control_barrier = true;
+
+        /* Emit a TSY op to get all invocations in the workgroup
+         * (actually supergroup) to block until the last
+         * invocation reaches the TSY op.
+         */
+        vir_BARRIERID_dest(c, vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_SYNCB));
+}
+
+static void
+emit_barrier(struct v3d_compile *c)
+{
+        struct qreg eidx = vir_EIDX(c);
+
+        /* The config for the TSY op should be setup like this:
+         * - Lane 0: Quorum
+         * - Lane 2: TSO id
+         * - Lane 3: TSY opcode
+         */
+
+        /* Lane 0: we want to synchronize across one subgroup. Here we write to
+         * all lanes unconditionally and will overwrite other lanes below.
+         */
+        struct qreg tsy_conf = vir_uniform_ui(c, 1);
+
+        /* Lane 2: TSO id. We choose a general purpose TSO (id=0..64) using the
+         * curent QPU index and thread index to ensure we get a unique one for
+         * this group of invocations in this core.
+         */
+        struct qreg tso_id =
+                vir_AND(c, vir_TIDX(c), vir_uniform_ui(c, 0x0000003f));
+        vir_set_pf(c, vir_XOR_dest(c, vir_nop_reg(), eidx, vir_uniform_ui(c, 2)),
+                   V3D_QPU_PF_PUSHZ);
+        vir_MOV_cond(c, V3D_QPU_COND_IFA, tsy_conf, tso_id);
+
+        /* Lane 3: TSY opcode (set_quorum_wait_inc_check) */
+        struct qreg tsy_op = vir_uniform_ui(c, 16);
+        vir_set_pf(c, vir_XOR_dest(c, vir_nop_reg(), eidx, vir_uniform_ui(c, 3)),
+                   V3D_QPU_PF_PUSHZ);
+        vir_MOV_cond(c, V3D_QPU_COND_IFA, tsy_conf, tsy_op);
+
+        /* Emit TSY sync */
+        vir_MOV_dest(c, vir_reg(QFILE_MAGIC, V3D_QPU_WADDR_SYNCB), tsy_conf);
 }
 
 static void
@@ -3403,8 +3537,12 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 ntq_store_def(c, &instr->def, 0, vir_uniform(c, QUNIFORM_DRAW_ID, 0));
                 break;
 
-        case nir_intrinsic_load_tlb_color_v3d:
+        case nir_intrinsic_load_tlb_color_brcm:
                 vir_emit_tlb_color_read(c, instr);
+                break;
+
+        case nir_intrinsic_load_fep_w_v3d:
+                ntq_store_def(c, &instr->def, 0, vir_MOV(c, c->payload_w));
                 break;
 
         case nir_intrinsic_load_input:
@@ -3423,7 +3561,19 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 ntq_emit_image_size(c, instr);
                 break;
 
+        /* FIXME: the Vulkan and SPIR-V specs specify that OpTerminate (which
+         * is intended to match the semantics of GLSL's discard) should
+         * terminate the invocation immediately. Our implementation doesn't
+         * do that. What we do is actually a demote by removing the invocations
+         * from the sample mask. Maybe we could be more strict and force an
+         * early termination by emitting a (maybe conditional) jump to the
+         * end section of the fragment shader for affected invocations.
+         */
         case nir_intrinsic_discard:
+        case nir_intrinsic_terminate:
+                c->emitted_discard = true;
+                FALLTHROUGH;
+        case nir_intrinsic_demote:
                 ntq_flush_tmu(c);
 
                 if (vir_in_nonuniform_control_flow(c)) {
@@ -3438,7 +3588,11 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 }
                 break;
 
-        case nir_intrinsic_discard_if: {
+        case nir_intrinsic_discard_if:
+        case nir_intrinsic_terminate_if:
+                c->emitted_discard = true;
+                FALLTHROUGH;
+        case nir_intrinsic_demote_if: {
                 ntq_flush_tmu(c);
 
                 enum v3d_qpu_cond cond = ntq_emit_bool_to_cond(c, instr->src[0]);
@@ -3456,7 +3610,6 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
 
                 vir_set_cond(vir_SETMSF_dest(c, vir_nop_reg(),
                                              vir_uniform_ui(c, 0)), cond);
-
                 break;
         }
 
@@ -3467,19 +3620,11 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 ntq_flush_tmu(c);
 
                 if (nir_intrinsic_execution_scope(instr) != SCOPE_NONE) {
-                        /* Ensure we flag the use of the control barrier. NIR's
-                         * gather info pass usually takes care of this, but that
-                         * requires that we call that pass after any other pass
-                         * may emit a control barrier, so this is safer.
-                         */
-                        c->s->info.uses_control_barrier = true;
+                        if (c->s->info.stage == MESA_SHADER_COMPUTE)
+                                emit_compute_barrier(c);
+                        else
+                                emit_barrier(c);
 
-                        /* Emit a TSY op to get all invocations in the workgroup
-                         * (actually supergroup) to block until the last
-                         * invocation reaches the TSY op.
-                         */
-                        vir_BARRIERID_dest(c, vir_reg(QFILE_MAGIC,
-                                                      V3D_QPU_WADDR_SYNCB));
                         /* The blocking of a TSY op only happens at the next
                          * thread switch. No texturing may be outstanding at the
                          * time of a TSY blocking operation.
@@ -3496,7 +3641,6 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 }
                 break;
 
-        case nir_intrinsic_load_workgroup_id_zero_base:
         case nir_intrinsic_load_workgroup_id: {
                 struct qreg x = vir_AND(c, c->cs_payload[0],
                                          vir_uniform_ui(c, 0xffff));
@@ -3715,14 +3859,134 @@ ntq_emit_intrinsic(struct v3d_compile *c, nir_intrinsic_instr *instr)
                 break;
 
         case nir_intrinsic_elect: {
-                set_a_flags_for_subgroup(c);
-                struct qreg first = vir_FLAFIRST(c);
+                struct qreg first;
+                if (vir_in_nonuniform_control_flow(c)) {
+                        /* Sets A=1 for lanes enabled in the execution mask */
+                        vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), c->execute),
+                                   V3D_QPU_PF_PUSHZ);
+                        /* Updates A ANDing with lanes enabled in MSF */
+                        vir_set_uf(c, vir_MSF_dest(c, vir_nop_reg()),
+                                   V3D_QPU_UF_ANDNZ);
+                        first = vir_FLAFIRST(c);
+                } else {
+                        /* Sets A=1 for inactive lanes */
+                        vir_set_pf(c, vir_MSF_dest(c, vir_nop_reg()),
+                                   V3D_QPU_PF_PUSHZ);
+                        first = vir_FLNAFIRST(c);
+                }
 
-                /* Produce a boolean result from Flafirst */
+                /* Produce a boolean result */
                 vir_set_pf(c, vir_XOR_dest(c, vir_nop_reg(),
                                            first, vir_uniform_ui(c, 1)),
                                            V3D_QPU_PF_PUSHZ);
                 struct qreg result = ntq_emit_cond_to_bool(c, V3D_QPU_COND_IFA);
+                ntq_store_def(c, &instr->def, 0, result);
+                break;
+        }
+
+        case nir_intrinsic_ballot: {
+                assert(c->devinfo->ver >= 71);
+                struct qreg value = ntq_get_src(c, instr->src[0], 0);
+                enum v3d_qpu_cond cond = setup_subgroup_control_flow_condition(c);
+                struct qreg res = vir_get_temp(c);
+                vir_set_cond(vir_BALLOT_dest(c, res, value), cond);
+                ntq_store_def(c, &instr->def, 0, vir_MOV(c, res));
+                break;
+        }
+
+        case nir_intrinsic_read_invocation: {
+                assert(c->devinfo->ver >= 71);
+                struct qreg value = ntq_get_src(c, instr->src[0], 0);
+                struct qreg index = ntq_get_src(c, instr->src[1], 0);
+                struct qreg res = vir_SHUFFLE(c, value, index);
+                ntq_store_def(c, &instr->def, 0, vir_MOV(c, res));
+                break;
+        }
+
+        case nir_intrinsic_read_first_invocation: {
+                assert(c->devinfo->ver >= 71);
+                struct qreg value = ntq_get_src(c, instr->src[0], 0);
+                enum v3d_qpu_cond cond = setup_subgroup_control_flow_condition(c);
+                struct qreg res = vir_get_temp(c);
+                vir_set_cond(vir_BCASTF_dest(c, res, value), cond);
+                ntq_store_def(c, &instr->def, 0, vir_MOV(c, res));
+                break;
+        }
+
+        case nir_intrinsic_shuffle: {
+                assert(c->devinfo->ver >= 71);
+                struct qreg value = ntq_get_src(c, instr->src[0], 0);
+                struct qreg indices = ntq_get_src(c, instr->src[1], 0);
+                struct qreg res = vir_SHUFFLE(c, value, indices);
+                ntq_store_def(c, &instr->def, 0, vir_MOV(c, res));
+                break;
+        }
+
+        case nir_intrinsic_vote_feq:
+        case nir_intrinsic_vote_ieq: {
+                assert(c->devinfo->ver >= 71);
+                struct qreg value = ntq_get_src(c, instr->src[0], 0);
+                enum v3d_qpu_cond cond = setup_subgroup_control_flow_condition(c);
+                struct qreg res = vir_get_temp(c);
+                vir_set_cond(instr->intrinsic == nir_intrinsic_vote_ieq ?
+                             vir_ALLEQ_dest(c, res, value) :
+                             vir_ALLFEQ_dest(c, res, value),
+                             cond);
+
+                /* Produce boolean result */
+                vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), res),
+                           V3D_QPU_PF_PUSHZ);
+                struct qreg result = ntq_emit_cond_to_bool(c, V3D_QPU_COND_IFNA);
+                ntq_store_def(c, &instr->def, 0, result);
+                break;
+        }
+
+        case nir_intrinsic_vote_all: {
+                assert(c->devinfo->ver >= 71);
+                struct qreg value = ntq_get_src(c, instr->src[0], 0);
+                enum v3d_qpu_cond cond = setup_subgroup_control_flow_condition(c);
+                struct qreg res = vir_get_temp(c);
+                vir_set_cond(vir_ALLEQ_dest(c, res, value), cond);
+
+                /* We want to check if 'all lanes are equal (alleq != 0) and
+                 * their value is True (value != 0)'.
+                 *
+                 * The first MOV.pushz generates predicate for 'alleq == 0'.
+                 * The second MOV.NORZ generates predicate for:
+                 * '!(alleq == 0) & !(value == 0).
+                 */
+                vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), res),
+                           V3D_QPU_PF_PUSHZ);
+                vir_set_uf(c, vir_MOV_dest(c, vir_nop_reg(), value),
+                           V3D_QPU_UF_NORZ);
+                struct qreg result =
+                        ntq_emit_cond_to_bool(c, V3D_QPU_COND_IFA);
+                ntq_store_def(c, &instr->def, 0, result);
+                break;
+        }
+
+        case nir_intrinsic_vote_any: {
+                assert(c->devinfo->ver >= 71);
+                struct qreg value = ntq_get_src(c, instr->src[0], 0);
+                enum v3d_qpu_cond cond = setup_subgroup_control_flow_condition(c);
+                struct qreg res = vir_get_temp(c);
+                vir_set_cond(vir_ALLEQ_dest(c, res, value), cond);
+
+                /* We want to check 'not (all lanes are equal (alleq != 0)'
+                 * and their value is False (value == 0))'.
+                 *
+                 * The first MOV.pushz generates predicate for 'alleq == 0'.
+                 * The second MOV.NORNZ generates predicate for:
+                 * '!(alleq == 0) & (value == 0).
+                 * The IFNA condition negates the predicate when evaluated:
+                 * '!(!alleq == 0) & (value == 0))
+                 */
+                vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), res),
+                           V3D_QPU_PF_PUSHZ);
+                vir_set_uf(c, vir_MOV_dest(c, vir_nop_reg(), value),
+                           V3D_QPU_UF_NORNZ);
+                struct qreg result =
+                        ntq_emit_cond_to_bool(c, V3D_QPU_COND_IFNA);
                 ntq_store_def(c, &instr->def, 0, result);
                 break;
         }
@@ -3935,19 +4199,27 @@ ntq_emit_nonuniform_if(struct v3d_compile *c, nir_if *if_stmt)
                      c->execute,
                      vir_uniform_ui(c, else_block->index));
 
+        /* Set the flags for taking the THEN block */
+        vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), c->execute),
+                   V3D_QPU_PF_PUSHZ);
+
         /* Jump to ELSE if nothing is active for THEN (unless THEN block is
          * so small it won't pay off), otherwise fall through.
          */
         bool is_cheap = exec_list_is_singular(&if_stmt->then_list) &&
                         is_cheap_block(nir_if_first_then_block(if_stmt));
         if (!is_cheap) {
-                vir_set_pf(c, vir_MOV_dest(c, vir_nop_reg(), c->execute), V3D_QPU_PF_PUSHZ);
                 vir_BRANCH(c, V3D_QPU_BRANCH_COND_ALLNA);
                 vir_link_blocks(c->cur_block, else_block);
         }
         vir_link_blocks(c->cur_block, then_block);
 
-        /* Process the THEN block. */
+        /* Process the THEN block.
+         *
+         * Notice we don't call ntq_activate_execute_for_block here on purpose:
+         * c->execute is already set up to be 0 for lanes that must take the
+         * THEN block.
+         */
         vir_set_emit_block(c, then_block);
         ntq_emit_cf_list(c, &if_stmt->then_list);
 
@@ -4276,6 +4548,7 @@ nir_to_vir(struct v3d_compile *c)
 {
         switch (c->s->info.stage) {
         case MESA_SHADER_FRAGMENT:
+                c->start_msf = vir_MSF(c);
                 if (c->devinfo->ver < 71)
                         c->payload_w = vir_MOV(c, vir_reg(QFILE_REG, 0));
                 else

@@ -69,7 +69,7 @@ struct pipe_video_buffer *si_video_buffer_create_with_modifiers(struct pipe_cont
 }
 
 /* set the decoding target buffer offsets */
-static struct pb_buffer *si_uvd_set_dtb(struct ruvd_msg *msg, struct vl_video_buffer *buf)
+static struct pb_buffer_lean *si_uvd_set_dtb(struct ruvd_msg *msg, struct vl_video_buffer *buf)
 {
    struct si_screen *sscreen = (struct si_screen *)buf->base.context->screen;
    struct si_texture *luma = (struct si_texture *)buf->resources[0];
@@ -85,7 +85,7 @@ static struct pb_buffer *si_uvd_set_dtb(struct ruvd_msg *msg, struct vl_video_bu
 }
 
 /* get the radeon resources for VCE */
-static void si_vce_get_buffer(struct pipe_resource *resource, struct pb_buffer **handle,
+static void si_vce_get_buffer(struct pipe_resource *resource, struct pb_buffer_lean **handle,
                               struct radeon_surf **surface)
 {
    struct si_texture *res = (struct si_texture *)resource;
@@ -115,7 +115,8 @@ struct pipe_video_codec *si_uvd_create_decoder(struct pipe_context *context,
          else
             return si_vce_create_encoder(context, templ, ctx->ws, si_vce_get_buffer);
       }
-   } else if (templ->entrypoint == PIPE_VIDEO_ENTRYPOINT_PROCESSING)
+   } else if (((struct si_screen *)(context->screen))->info.ip[AMD_IP_VPE].num_queues &&
+              templ->entrypoint == PIPE_VIDEO_ENTRYPOINT_PROCESSING)
       return si_vpe_create_processor(context, templ);
 
    if (ctx->vcn_ip_ver == VCN_4_0_0)

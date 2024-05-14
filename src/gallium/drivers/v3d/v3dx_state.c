@@ -292,16 +292,13 @@ v3d_set_viewport_states(struct pipe_context *pctx,
 static void
 v3d_set_vertex_buffers(struct pipe_context *pctx,
                        unsigned count,
-                       unsigned unbind_num_trailing_slots,
-                       bool take_ownership,
                        const struct pipe_vertex_buffer *vb)
 {
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_vertexbuf_stateobj *so = &v3d->vertexbuf;
 
         util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb,
-                                     count, unbind_num_trailing_slots,
-                                     take_ownership);
+                                     count, true);
         so->count = util_last_bit(so->enabled_mask);
 
         v3d->dirty |= V3D_DIRTY_VTXBUF;
@@ -377,7 +374,7 @@ v3d_vertex_state_create(struct pipe_context *pctx, unsigned num_elements,
                         attr.normalized_int_type = desc->channel[0].normalized;
                         attr.read_as_int_uint = desc->channel[0].pure_integer;
                         attr.instance_divisor = MIN2(elem->instance_divisor,
-                                                     0xffff);
+                                                     V3D_MAX_VERTEX_ATTRIB_DIVISOR);
 
                         switch (desc->channel[0].type) {
                         case UTIL_FORMAT_TYPE_FLOAT:

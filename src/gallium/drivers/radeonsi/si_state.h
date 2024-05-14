@@ -9,6 +9,7 @@
 
 #include "si_pm4.h"
 #include "util/format/u_format.h"
+#include "util/bitset.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,8 +54,21 @@ struct si_state_blend {
 
 struct si_state_rasterizer {
    struct si_pm4_state pm4;
-   /* poly offset states for 16-bit, 24-bit, and 32-bit zbuffers */
-   struct si_pm4_state *pm4_poly_offset;
+
+   /* Register values. */
+   unsigned spi_interp_control_0;
+   unsigned pa_su_point_size;
+   unsigned pa_su_point_minmax;
+   unsigned pa_su_line_cntl;
+   unsigned pa_sc_mode_cntl_0;
+   unsigned pa_su_sc_mode_cntl;
+   unsigned pa_cl_ngg_cntl;
+   unsigned pa_sc_edgerule;
+   unsigned pa_su_poly_offset_db_fmt_cntl[3];
+   unsigned pa_su_poly_offset_clamp;
+   unsigned pa_su_poly_offset_frontback_scale;
+   unsigned pa_su_poly_offset_frontback_offset[3];
+
    unsigned pa_sc_line_stipple;
    unsigned pa_cl_clip_cntl;
    float line_width;
@@ -85,6 +99,7 @@ struct si_state_rasterizer {
    unsigned polygon_mode_is_points : 1;
    unsigned perpendicular_end_caps : 1;
    unsigned bottom_edge_rule : 1;
+   int force_front_face_input : 2;
 };
 
 struct si_dsa_stencil_ref_part {
@@ -107,6 +122,15 @@ struct si_state_dsa {
    struct si_pm4_state pm4;
    struct si_dsa_stencil_ref_part stencil_ref;
 
+   /* Register values. */
+   unsigned db_depth_control;
+   unsigned db_stencil_control;
+   unsigned db_depth_bounds_min;
+   unsigned db_depth_bounds_max;
+   unsigned spi_shader_user_data_ps_alpha_ref;
+   unsigned db_stencil_read_mask;
+   unsigned db_stencil_write_mask;
+
    /* 0 = without stencil buffer, 1 = when both Z and S buffers are present */
    struct si_dsa_order_invariance order_invariance[2];
 
@@ -116,6 +140,7 @@ struct si_state_dsa {
    bool stencil_enabled : 1;
    bool stencil_write_enabled : 1;
    bool db_can_write : 1;
+   bool depth_bounds_enabled : 1;
 };
 
 struct si_stencil_ref {
@@ -125,12 +150,6 @@ struct si_stencil_ref {
 
 struct si_vertex_elements {
    struct si_resource *instance_divisor_factor_buffer;
-   uint32_t rsrc_word3[SI_MAX_ATTRIBS];
-   uint16_t src_offset[SI_MAX_ATTRIBS];
-   uint16_t src_stride[SI_MAX_ATTRIBS];
-   uint8_t fix_fetch[SI_MAX_ATTRIBS];
-   uint8_t format_size[SI_MAX_ATTRIBS];
-   uint8_t vertex_buffer_index[SI_MAX_ATTRIBS];
 
    /* Bitmask of elements that always need a fixup to be applied. */
    uint16_t fix_fetch_always;
@@ -157,6 +176,16 @@ struct si_vertex_elements {
    uint16_t vb_desc_list_alloc_size;
    uint16_t instance_divisor_is_one;     /* bitmask of inputs */
    uint16_t instance_divisor_is_fetched; /* bitmask of inputs */
+
+   uint8_t fix_fetch[SI_MAX_ATTRIBS];
+   uint8_t vertex_buffer_index[SI_MAX_ATTRIBS];
+
+   struct {
+      uint32_t rsrc_word3;
+      uint16_t src_offset;
+      uint16_t stride;
+      uint8_t format_size;
+   } elem[SI_MAX_ATTRIBS];
 };
 
 union si_state {
@@ -164,7 +193,6 @@ union si_state {
       struct si_state_blend *blend;
       struct si_state_rasterizer *rasterizer;
       struct si_state_dsa *dsa;
-      struct si_pm4_state *poly_offset;
       struct si_shader *ls;
       struct si_shader *hs;
       struct si_shader *es;
@@ -185,8 +213,7 @@ union si_state_atoms {
       /* This must be first. */
       struct si_atom pm4_states[SI_NUM_STATES];
       struct si_atom gfx_add_all_to_bo_list;
-      struct si_atom streamout_begin;
-      struct si_atom streamout_enable; /* must be after streamout_begin */
+      struct si_atom streamout_enable;
       struct si_atom framebuffer;
       struct si_atom sample_locations;
       struct si_atom db_render_state;
@@ -210,7 +237,9 @@ union si_state_atoms {
       struct si_atom vgt_pipeline_state;
       struct si_atom tess_io_layout;
       struct si_atom cache_flush;
+      struct si_atom streamout_begin; /* this must be done after cache_flush */
       struct si_atom render_cond; /* this must be after cache_flush */
+      struct si_atom spi_ge_ring_state; /* this must be last because it waits for idle. */
    } s;
    struct si_atom array[sizeof(struct si_atoms_s) / sizeof(struct si_atom)];
 };
@@ -220,8 +249,7 @@ union si_state_atoms {
 
 static inline uint64_t si_atoms_that_always_roll_context(void)
 {
-   return SI_STATE_BIT(blend) | SI_STATE_BIT(rasterizer) | SI_STATE_BIT(dsa) |
-          SI_STATE_BIT(poly_offset) |
+   return SI_STATE_BIT(blend) |
           SI_ATOM_BIT(streamout_begin) | SI_ATOM_BIT(streamout_enable) | SI_ATOM_BIT(framebuffer) |
           SI_ATOM_BIT(sample_locations) | SI_ATOM_BIT(sample_mask) | SI_ATOM_BIT(blend_color)|
           SI_ATOM_BIT(clip_state) | SI_ATOM_BIT(scissors) | SI_ATOM_BIT(viewports)|
@@ -232,19 +260,43 @@ struct si_shader_data {
    uint32_t sh_base[SI_NUM_SHADERS];
 };
 
-/* Context registers whose values are tracked by si_context. */
-enum si_tracked_context_reg
+/* Registers whose values are tracked by si_context. */
+enum si_tracked_reg
 {
-   /* 2 consecutive registers */
-   SI_TRACKED_DB_RENDER_CONTROL,
+   /* CONTEXT registers. */
+   /* 2 consecutive registers (GFX6-11), or separate registers (GFX12) */
+   SI_TRACKED_DB_RENDER_CONTROL,             /* GFX6-11 (not tracked on GFX12) */
    SI_TRACKED_DB_COUNT_CONTROL,
+
+   SI_TRACKED_DB_DEPTH_CONTROL,
+   SI_TRACKED_DB_STENCIL_CONTROL,
+   /* 2 consecutive registers */
+   SI_TRACKED_DB_DEPTH_BOUNDS_MIN,
+   SI_TRACKED_DB_DEPTH_BOUNDS_MAX,
+
+   SI_TRACKED_SPI_INTERP_CONTROL_0,
+   SI_TRACKED_PA_SU_POINT_SIZE,
+   SI_TRACKED_PA_SU_POINT_MINMAX,
+   SI_TRACKED_PA_SU_LINE_CNTL,
+   SI_TRACKED_PA_SC_MODE_CNTL_0,
+   SI_TRACKED_PA_SU_SC_MODE_CNTL,
+   SI_TRACKED_PA_SC_EDGERULE,
+
+   /* 6 consecutive registers */
+   SI_TRACKED_PA_SU_POLY_OFFSET_DB_FMT_CNTL,
+   SI_TRACKED_PA_SU_POLY_OFFSET_CLAMP,
+   SI_TRACKED_PA_SU_POLY_OFFSET_FRONT_SCALE,
+   SI_TRACKED_PA_SU_POLY_OFFSET_FRONT_OFFSET,
+   SI_TRACKED_PA_SU_POLY_OFFSET_BACK_SCALE,
+   SI_TRACKED_PA_SU_POLY_OFFSET_BACK_OFFSET,
 
    /* 2 consecutive registers */
    SI_TRACKED_PA_SC_LINE_CNTL,
    SI_TRACKED_PA_SC_AA_CONFIG,
 
-   /* 5 consecutive registers */
+   /* 5 consecutive registers (GFX6-11) */
    SI_TRACKED_PA_SU_VTX_CNTL,
+   /* 4 consecutive registers (GFX12) */
    SI_TRACKED_PA_CL_GB_VERT_CLIP_ADJ,
    SI_TRACKED_PA_CL_GB_VERT_DISC_ADJ,
    SI_TRACKED_PA_CL_GB_HORZ_CLIP_ADJ,
@@ -253,17 +305,17 @@ enum si_tracked_context_reg
    /* Non-consecutive register */
    SI_TRACKED_SPI_SHADER_POS_FORMAT,
 
-   /* 2 consecutive registers */
+   /* 5 consecutive registers (GFX12), or 2 consecutive registers (GFX6-11) */
    SI_TRACKED_SPI_SHADER_Z_FORMAT,
    SI_TRACKED_SPI_SHADER_COL_FORMAT,
-
+   /* Continuing consecutive registers (GFX12), or separate register (GFX6-11) */
    SI_TRACKED_SPI_BARYC_CNTL,
-
-   /* 2 consecutive registers */
+   /* Continuing consecutive registers (GFX12), or 2 consecutive registers (GFX6-11) */
    SI_TRACKED_SPI_PS_INPUT_ENA,
    SI_TRACKED_SPI_PS_INPUT_ADDR,
 
    SI_TRACKED_DB_EQAA,
+   SI_TRACKED_DB_RENDER_OVERRIDE2,
    SI_TRACKED_DB_SHADER_CONTROL,
    SI_TRACKED_CB_SHADER_MASK,
    SI_TRACKED_CB_TARGET_MASK,
@@ -284,6 +336,7 @@ enum si_tracked_context_reg
    SI_TRACKED_PA_SC_BINNER_CNTL_0,           /* GFX9+ */
    SI_TRACKED_GE_MAX_OUTPUT_PER_SUBGROUP,    /* GFX10+ - the SMALL_PRIM_FILTER slot above can be reused */
    SI_TRACKED_GE_NGG_SUBGRP_CNTL,            /* GFX10+ */
+   SI_TRACKED_PA_CL_NGG_CNTL,                /* GFX10+ */
    SI_TRACKED_DB_PA_SC_VRS_OVERRIDE_CNTL,    /* GFX10.3+ */
 
    /* 3 consecutive registers */
@@ -293,10 +346,10 @@ enum si_tracked_context_reg
 
    /* The slots below can be reused by other generations. */
    SI_TRACKED_VGT_ESGS_RING_ITEMSIZE,        /* GFX6-8 (GFX9+ can reuse this slot) */
-   SI_TRACKED_VGT_REUSE_OFF,                 /* GFX6-8 (GFX9+ can reuse this slot) */
+   SI_TRACKED_VGT_REUSE_OFF,                 /* GFX6-8,10.3 */
    SI_TRACKED_IA_MULTI_VGT_PARAM,            /* GFX6-8 (GFX9+ can reuse this slot) */
 
-   SI_TRACKED_VGT_GS_MAX_PRIMS_PER_SUBGROUP, /* GFX9-10 - the slots above can be reused */
+   SI_TRACKED_VGT_GS_MAX_PRIMS_PER_SUBGROUP, /* GFX9 - the slots above can be reused */
    SI_TRACKED_VGT_GS_ONCHIP_CNTL,            /* GFX9-10 - the slots above can be reused */
 
    SI_TRACKED_VGT_GSVS_RING_ITEMSIZE,        /* GFX6-10 (GFX11+ can reuse this slot) */
@@ -315,20 +368,24 @@ enum si_tracked_context_reg
    SI_TRACKED_VGT_GS_VERT_ITEMSIZE_2,        /* GFX6-10 (GFX11+ can reuse this slot) */
    SI_TRACKED_VGT_GS_VERT_ITEMSIZE_3,        /* GFX6-10 (GFX11+ can reuse this slot) */
 
-   SI_TRACKED_DB_RENDER_OVERRIDE2,           /* GFX6-xx (TBD) */
-   SI_TRACKED_SPI_VS_OUT_CONFIG,             /* GFX6-xx (TBD) */
-   SI_TRACKED_VGT_PRIMITIVEID_EN,            /* GFX6-xx (TBD) */
-   SI_TRACKED_CB_DCC_CONTROL,                /* GFX8-xx (TBD) */
+   SI_TRACKED_SPI_VS_OUT_CONFIG,             /* GFX6-11 */
+   SI_TRACKED_VGT_PRIMITIVEID_EN,            /* GFX6-11 */
+   SI_TRACKED_CB_DCC_CONTROL,                /* GFX8-11 */
+   SI_TRACKED_DB_STENCIL_READ_MASK,          /* GFX12+ */
+   SI_TRACKED_DB_STENCIL_WRITE_MASK,         /* GFX12+ */
+   SI_TRACKED_PA_SC_HISZ_CONTROL,            /* GFX12+ */
+   SI_TRACKED_PA_SC_LINE_STIPPLE_RESET,      /* GFX12+ */
 
    SI_NUM_TRACKED_CONTEXT_REGS,
-};
+   SI_FIRST_TRACKED_OTHER_REG = SI_NUM_TRACKED_CONTEXT_REGS,
 
-/* Non-context registers whose values are tracked by si_context. */
-enum si_tracked_other_reg {
-   SI_TRACKED_GE_PC_ALLOC,                   /* GFX10+ */
-   SI_TRACKED_SPI_SHADER_PGM_RSRC3_GS,       /* GFX7+ */
+   /* SH and UCONFIG registers. */
+   SI_TRACKED_GE_PC_ALLOC = SI_FIRST_TRACKED_OTHER_REG, /* GFX10-11 */
+   SI_TRACKED_SPI_SHADER_PGM_RSRC3_GS,       /* GFX7-11 */
    SI_TRACKED_SPI_SHADER_PGM_RSRC4_GS,       /* GFX10+ */
    SI_TRACKED_VGT_GS_OUT_PRIM_TYPE_UCONFIG,  /* GFX11+ */
+   SI_TRACKED_SPI_SHADER_GS_OUT_CONFIG_PS,   /* GFX12+ */
+   SI_TRACKED_VGT_PRIMITIVEID_EN_UCONFIG,    /* GFX12+ */
 
    SI_TRACKED_IA_MULTI_VGT_PARAM_UCONFIG,    /* GFX9 only */
    SI_TRACKED_GE_CNTL = SI_TRACKED_IA_MULTI_VGT_PARAM_UCONFIG, /* GFX10+ */
@@ -352,7 +409,10 @@ enum si_tracked_other_reg {
    SI_TRACKED_SPI_SHADER_USER_DATA_VS__DRAWID,           /* GFX6-10 */
    SI_TRACKED_SPI_SHADER_USER_DATA_VS__START_INSTANCE,   /* GFX6-10 */
 
+   SI_TRACKED_SPI_SHADER_USER_DATA_PS__ALPHA_REF,
+
    SI_TRACKED_COMPUTE_RESOURCE_LIMITS,
+   SI_TRACKED_COMPUTE_DISPATCH_INTERLEAVE,   /* GFX12+ (not tracked on previous chips) */
    SI_TRACKED_COMPUTE_NUM_THREAD_X,
    SI_TRACKED_COMPUTE_NUM_THREAD_Y,
    SI_TRACKED_COMPUTE_NUM_THREAD_Z,
@@ -367,7 +427,7 @@ enum si_tracked_other_reg {
    SI_TRACKED_COMPUTE_DISPATCH_SCRATCH_BASE_LO, /* GFX11+ */
    SI_TRACKED_COMPUTE_DISPATCH_SCRATCH_BASE_HI, /* GFX11+ */
 
-   SI_NUM_TRACKED_OTHER_REGS,
+   SI_NUM_ALL_TRACKED_REGS,
 };
 
 /* For 3 draw constants: BaseVertex, DrawID, StartInstance */
@@ -378,12 +438,9 @@ enum si_tracked_other_reg {
 #define BASEVERTEX_DRAWID_STARTINSTANCE_MASK (BASEVERTEX_MASK | DRAWID_MASK | STARTINSTANCE_MASK)
 
 struct si_tracked_regs {
-   uint64_t context_reg_saved_mask;
-   uint32_t context_reg_value[SI_NUM_TRACKED_CONTEXT_REGS];
+   BITSET_DECLARE(reg_saved_mask, SI_NUM_ALL_TRACKED_REGS);
+   uint32_t reg_value[SI_NUM_ALL_TRACKED_REGS];
    uint32_t spi_ps_input_cntl[32];
-
-   uint32_t other_reg_saved_mask;
-   uint32_t other_reg_value[SI_NUM_TRACKED_OTHER_REGS];
 };
 
 /* Private read-write buffer slots. */
@@ -410,11 +467,13 @@ enum
    SI_RING_ESGS,                       /* gfx6-8 */
    SI_RING_GSVS,                       /* gfx6-10 */
    SI_GS_QUERY_EMULATED_COUNTERS_BUF,  /* gfx10+ */
+   SI_RING_SHADER_LOG,
 
    SI_NUM_INTERNAL_BINDINGS,
 
    /* Aliases to reuse slots that are unused on other generations. */
-   SI_GS_QUERY_BUF = SI_RING_ESGS,     /* gfx10+ */
+   SI_GS_QUERY_BUF = SI_RING_ESGS,           /* gfx10+ */
+   SI_STREAMOUT_STATE_BUF = SI_RING_GSVS,    /* gfx12+ */
 };
 
 /* Indices into sctx->descriptors, laid out so that gfx and compute pipelines
@@ -610,12 +669,11 @@ void si_get_active_slot_masks(struct si_screen *sscreen, const struct si_shader_
                               uint64_t *const_and_shader_buffers, uint64_t *samplers_and_images);
 int si_shader_select(struct pipe_context *ctx, struct si_shader_ctx_state *state);
 void si_vs_key_update_inputs(struct si_context *sctx);
-void si_get_vs_key_inputs(struct si_context *sctx, union si_shader_key *key,
-                          struct si_vs_prolog_bits *prolog_key);
 void si_update_ps_inputs_read_or_disabled(struct si_context *sctx);
 void si_update_vrs_flat_shading(struct si_context *sctx);
 unsigned si_get_input_prim(const struct si_shader_selector *gs, const union si_shader_key *key);
 bool si_update_ngg(struct si_context *sctx);
+void si_vs_ps_key_update_rast_prim_smooth_stipple(struct si_context *sctx);
 void si_ps_key_update_framebuffer(struct si_context *sctx);
 void si_ps_key_update_framebuffer_blend_rasterizer(struct si_context *sctx);
 void si_ps_key_update_rasterizer(struct si_context *sctx);
@@ -625,7 +683,6 @@ void si_ps_key_update_framebuffer_rasterizer_sample_shading(struct si_context *s
 void si_init_tess_factor_ring(struct si_context *sctx);
 bool si_update_gs_ring_buffers(struct si_context *sctx);
 bool si_update_spi_tmpring_size(struct si_context *sctx, unsigned bytes);
-unsigned si_get_shader_prefetch_size(struct si_shader *shader);
 bool si_set_tcs_to_fixed_func_shader(struct si_context *sctx);
 void si_update_tess_io_layout_state(struct si_context *sctx);
 
@@ -644,6 +701,7 @@ void si_init_draw_functions_GFX10(struct si_context *sctx);
 void si_init_draw_functions_GFX10_3(struct si_context *sctx);
 void si_init_draw_functions_GFX11(struct si_context *sctx);
 void si_init_draw_functions_GFX11_5(struct si_context *sctx);
+void si_init_draw_functions_GFX12(struct si_context *sctx);
 
 /* si_state_msaa.c */
 extern unsigned si_msaa_max_distance[5];

@@ -147,6 +147,20 @@ int fd_fence_wait(struct fd_fence *f);
 /* internal bo flags: */
 #define _FD_BO_NOSYNC             BITSET_BIT(7) /* Avoid userspace fencing on control buffers */
 
+/* Additional flags hinting usage, only used for tracing.  Buffers without
+ * one of these flags set will be presumed to be driver internal.
+ */
+#define FD_BO_HINT_BUFFER         BITSET_BIT(8)
+#define FD_BO_HINT_IMAGE          BITSET_BIT(9)
+#define FD_BO_HINT_COMMAND        BITSET_BIT(10)
+#define _FD_BO_HINT_HEAP          BITSET_BIT(11)
+#define _FD_BO_HINTS              ( \
+   FD_BO_HINT_BUFFER | \
+   FD_BO_HINT_IMAGE | \
+   FD_BO_HINT_COMMAND | \
+   _FD_BO_HINT_HEAP | \
+   0)
+
 /*
  * bo access flags: (keep aligned to MSM_PREP_x)
  */
@@ -309,6 +323,8 @@ void fd_bo_upload(struct fd_bo *bo, void *src, unsigned off, unsigned len);
 bool fd_bo_prefer_upload(struct fd_bo *bo, unsigned len);
 int fd_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op);
 bool fd_bo_is_cached(struct fd_bo *bo);
+void fd_bo_set_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size);
+int fd_bo_get_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size);
 
 #ifdef __cplusplus
 } /* end of extern "C" */

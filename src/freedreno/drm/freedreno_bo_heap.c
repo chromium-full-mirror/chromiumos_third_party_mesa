@@ -22,6 +22,7 @@
  */
 
 #include "freedreno_drmif.h"
+#include "freedreno_drm_perfetto.h"
 #include "freedreno_priv.h"
 
 struct sa_bo {
@@ -123,7 +124,10 @@ sa_release(struct fd_bo *bo)
 
    simple_mtx_assert_locked(&s->heap->lock);
 
-   VG_BO_FREE(bo);
+   /*
+    * We don't track heap allocs in valgrind
+    * VG_BO_FREE(bo);
+    */
 
    fd_bo_fini_fences(bo);
 
@@ -131,6 +135,9 @@ sa_release(struct fd_bo *bo)
       mesa_logi("release: %08x-%x idx=%d", s->offset, bo->size, block_idx(s));
 
    util_vma_heap_free(&s->heap->heap, s->offset, bo->size);
+
+   /* The BO has already been moved ACTIVE->NONE, now move it back to heap: */
+   fd_alloc_log(bo, FD_ALLOC_NONE, FD_ALLOC_HEAP);
 
    /* Drop our reference to the backing block object: */
    fd_bo_del(s->heap->blocks[block_idx(s)]);
@@ -207,13 +214,9 @@ heap_clean(struct fd_bo_heap *heap, bool idle)
 }
 
 struct fd_bo *
-fd_bo_heap_alloc(struct fd_bo_heap *heap, uint32_t size)
+fd_bo_heap_alloc(struct fd_bo_heap *heap, uint32_t size, uint32_t flags)
 {
    heap_clean(heap, true);
-
-   struct sa_bo *s = calloc(1, sizeof(*s));
-
-   s->heap = heap;
 
    /* util_vma does not like zero byte allocations, which we get, for
     * ex, with the initial query buffer allocation on pre-a5xx:
@@ -229,14 +232,24 @@ fd_bo_heap_alloc(struct fd_bo_heap *heap, uint32_t size)
     * (The 8k threshold is just a random guess, but seems to work ok)
     */
    heap->heap.alloc_high = (size <= 8 * 1024);
-   s->offset = util_vma_heap_alloc(&heap->heap, size, SUBALLOC_ALIGNMENT);
+   uint64_t offset = util_vma_heap_alloc(&heap->heap, size, SUBALLOC_ALIGNMENT);
+   if (!offset) {
+      simple_mtx_unlock(&heap->lock);
+      return NULL;
+   }
+
+   struct sa_bo *s = calloc(1, sizeof(*s));
+
+   s->heap = heap;
+   s->offset = offset;
+
    assert((s->offset / FD_BO_HEAP_BLOCK_SIZE) == (s->offset + size - 1) / FD_BO_HEAP_BLOCK_SIZE);
    unsigned idx = block_idx(s);
    if (HEAP_DEBUG)
       mesa_logi("alloc: %08x-%x idx=%d", s->offset, size, idx);
    if (!heap->blocks[idx]) {
       heap->blocks[idx] = fd_bo_new(
-            heap->dev, FD_BO_HEAP_BLOCK_SIZE, heap->flags,
+            heap->dev, FD_BO_HEAP_BLOCK_SIZE, heap->flags | _FD_BO_HINT_HEAP,
             "heap-%x-block-%u", heap->flags, idx);
       if (heap->flags == RING_FLAGS)
          fd_bo_mark_for_dump(heap->blocks[idx]);
@@ -250,14 +263,16 @@ fd_bo_heap_alloc(struct fd_bo_heap *heap, uint32_t size)
    bo->size = size;
    bo->funcs = &heap_bo_funcs;
    bo->handle = 1; /* dummy handle to make fd_bo_init_common() happy */
-   bo->alloc_flags = heap->flags;
+   bo->alloc_flags = flags;
+
+   /* Pre-initialize mmap ptr, to avoid trying to os_mmap() */
+   bo->map = ((uint8_t *)fd_bo_map(heap->blocks[idx])) + block_offset(s);
 
    fd_bo_init_common(bo, heap->dev);
 
    bo->handle = FD_BO_SUBALLOC_HANDLE;
 
-   /* Pre-initialize mmap ptr, to avoid trying to os_mmap() */
-   bo->map = ((uint8_t *)fd_bo_map(heap->blocks[idx])) + block_offset(s);
+   fd_alloc_log(bo, FD_ALLOC_HEAP, FD_ALLOC_ACTIVE);
 
    return bo;
 }

@@ -13,6 +13,13 @@
     <exclude name="MEDIA_STATE_FLUSH" />
     <exclude name="MEDIA_VFE_STATE" />
   </import>
+  <enum name="L1_CACHE_CONTROL" prefix="L1CC">
+    <value name="WBP" value="0" />
+    <value name="UC" value="1" />
+    <value name="WB" value="2" />
+    <value name="WT" value="3" />
+    <value name="WS" value="4" />
+  </enum>
   <enum name="PREF_SLM_ALLOCATION_SIZE">
     <value name="SLM_ENCODES_0K" value="8" />
     <value name="SLM_ENCODES_16K" value="9" />
@@ -22,6 +29,16 @@
     <value name="SLM_ENCODES_128K" value="13" />
     <value name="SLM_ENCODES_192K" value="14" />
     <value name="SLM_ENCODES_256K" value="15" />
+  </enum>
+  <enum name="STATE_SURFACE_TYPE">
+    <value name="SURFTYPE_1D" value="0" />
+    <value name="SURFTYPE_2D" value="1" />
+    <value name="SURFTYPE_3D" value="2" />
+    <value name="SURFTYPE_CUBE" value="3" />
+    <value name="SURFTYPE_BUFFER" value="4" />
+    <value name="SURFTYPE_RES5" value="5" />
+    <value name="SURFTYPE_SCRATCH" value="6" />
+    <value name="SURFTYPE_NULL" value="7" />
   </enum>
   <struct name="INTERFACE_DESCRIPTOR_DATA" length="8">
     <field name="Kernel Start Pointer" start="6" end="31" type="offset" />
@@ -66,9 +83,11 @@
       <value name="RD" value="2" />
       <value name="RTZ" value="3" />
     </field>
-    <field name="Thread group dispatch size" start="187" end="187" type="uint">
+    <field name="Thread Group Dispatch Size" start="186" end="187" type="uint">
       <value name="TG size 8" value="0" />
-      <value name="TG size 16" value="1" />
+      <value name="TG size 4" value="1" />
+      <value name="TG size 2" value="2" />
+      <value name="TG size 1" value="3" />
     </field>
     <field name="Number Of Barriers" start="188" end="190" type="uint" prefix="BARRIER_SIZE">
       <value name="NONE" value="0" />
@@ -300,16 +319,7 @@
     </field>
     <field name="Surface Format" start="18" end="26" type="uint" />
     <field name="Surface Array" start="28" end="28" type="bool" />
-    <field name="Surface Type" start="29" end="31" type="uint">
-      <value name="SURFTYPE_1D" value="0" />
-      <value name="SURFTYPE_2D" value="1" />
-      <value name="SURFTYPE_3D" value="2" />
-      <value name="SURFTYPE_CUBE" value="3" />
-      <value name="SURFTYPE_BUFFER" value="4" />
-      <value name="SURFTYPE_STRBUF" value="5" />
-      <value name="SURFTYPE_SCRATCH" value="6" />
-      <value name="SURFTYPE_NULL" value="7" />
-    </field>
+    <field name="Surface Type" start="29" end="31" type="STATE_SURFACE_TYPE" />
     <field name="Surface QPitch" start="32" end="46" type="uint" />
     <field name="Sample Tap Discard Disable" start="47" end="47" type="bool" />
     <field name="Double Fetch Disable" start="49" end="49" type="bool" />
@@ -347,13 +357,7 @@
     <field name="Surface Min LOD" start="164" end="167" type="uint" />
     <field name="Mip Tail Start LOD" start="168" end="171" type="uint" />
     <field name="Coherency Type" start="174" end="174" type="mbz" />
-    <field name="L1 Cache Control" start="176" end="178" type="uint" prefix="L1CC">
-      <value name="WBP" value="0" />
-      <value name="UC" value="1" />
-      <value name="WB" value="2" />
-      <value name="WT" value="3" />
-      <value name="WS" value="4" />
-    </field>
+    <field name="L1 Cache Control" start="176" end="178" type="L1_CACHE_CONTROL" />
     <field name="EWA Disable For Cube" start="180" end="180" type="bool" />
     <field name="Y Offset" start="181" end="183" type="uint" />
     <field name="X Offset" start="185" end="191" type="uint" />
@@ -1004,6 +1008,7 @@
       <value name="POSOFFSET_CENTROID" value="2" />
       <value name="POSOFFSET_SAMPLE" value="3" />
     </field>
+    <field name="Dual SIMD8 Dispatch Enable" start="197" end="197" type="bool" />
     <field name="Render Target Resolve Type" start="198" end="199" type="uint">
       <value name="RESOLVE_DISABLED" value="0" />
       <value name="RESOLVE_PARTIAL" value="1" />
@@ -1011,6 +1016,7 @@
       <value name="RESOLVE_FULL" value="3" />
     </field>
     <field name="Render Target Fast Clear Enable" start="200" end="200" type="bool" />
+    <field name="Overlapping Subspans Enable" start="201" end="201" type="bool" />
     <field name="Push Constant Enable" start="203" end="203" type="bool" />
     <field name="Maximum Number of Threads Per PSD" start="215" end="223" type="uint" />
     <field name="Dispatch GRF Start Register For Constant/Setup Data 2" start="224" end="230" type="uint" />
@@ -1762,6 +1768,7 @@
     </field>
     <field name="Media Sampler DOP Clock Gate Enable" start="4" end="4" type="bool" />
     <field name="Force Media Awake" start="5" end="5" type="bool" />
+    <field name="Systolic Mode Enable" start="7" end="7" type="bool" />
     <field name="Mask Bits" start="8" end="15" type="uint" />
     <field name="3D Command Sub Opcode" start="16" end="23" type="uint" default="4" />
     <field name="3D Command Opcode" start="24" end="26" type="uint" default="1" />
@@ -1905,6 +1912,7 @@
     <field name="Disable L1 Invalidate for non-L1-cacheable Writes" start="45" end="45" type="bool" />
     <field name="Large GRF Mode" start="47" end="47" type="bool" />
     <field name="Z Pass Async Compute Thread Limit Mask" start="48" end="50" type="uint" />
+    <field name="Mask1" start="48" end="63" type="uint" />
     <field name="Force Non-Coherent Mask" start="51" end="52" type="uint" />
     <field name="Fast Clear Disabled on Compressed Surface Mask" start="53" end="53" type="bool" />
     <field name="Disable SLM Read Merge Optimization Mask" start="54" end="54" type="bool" />
@@ -2117,8 +2125,17 @@
     <field name="Destination Depth/Stencil Resource" start="498" end="498" type="bool" />
     <field name="Destination Array Index" start="501" end="511" type="uint" />
   </instruction>
+  <register name="BCS_AUX_TABLE_BASE_ADDR" length="2" num="0x4240">
+    <field name="Address" start="0" end="63" type="uint" />
+  </register>
   <register name="BCS_CCS_AUX_INV" length="1" num="0x4248">
     <field name="Aux Inv" start="0" end="0" type="bool" />
+  </register>
+  <register name="CCS_INSTDONE" length="1" num="0x1206c">
+    <field name="Ring Enable" start="0" end="0" type="bool" />
+    <field name="VFE Done" start="16" end="16" type="bool" />
+    <field name="TSG Done" start="17" end="17" type="bool" />
+    <field name="CS Done" start="21" end="21" type="bool" />
   </register>
   <register name="CHICKEN_RASTER_1" length="1" num="0x6204">
     <field name="AA Line Quality Fix" start="5" end="5" type="bool" />
@@ -2245,6 +2262,7 @@
     <field name="GW3 Done" start="23" end="23" type="bool" />
     <field name="TDC Done" start="24" end="24" type="bool" />
     <field name="SFBE Done" start="25" end="25" type="bool" />
+    <field name="PSS Done" start="26" end="26" type="bool" />
     <field name="AMFS Done" start="27" end="27" type="bool" />
   </register>
   <register name="SC_INSTDONE_EXTRA" length="1" num="0x7104">
@@ -2262,6 +2280,7 @@
     <field name="GW6 Done" start="22" end="22" type="bool" />
     <field name="GW7 Done" start="23" end="23" type="bool" />
     <field name="TDC1 Done" start="24" end="24" type="bool" />
+    <field name="PSS Done" start="26" end="26" type="bool" />
   </register>
   <register name="SC_INSTDONE_EXTRA2" length="1" num="0x7108">
     <field name="RCC2 Done" start="9" end="9" type="bool" />

@@ -29,13 +29,6 @@ agx_bucket(struct agx_device *dev, unsigned size)
    return &dev->bo_cache.buckets[agx_bucket_index(size)];
 }
 
-static bool
-agx_bo_wait(struct agx_bo *bo, int64_t timeout_ns)
-{
-   /* TODO: When we allow parallelism we'll need to implement this for real */
-   return true;
-}
-
 static void
 agx_bo_cache_remove_locked(struct agx_device *dev, struct agx_bo *bo)
 {
@@ -51,8 +44,8 @@ agx_bo_cache_remove_locked(struct agx_device *dev, struct agx_bo *bo)
  * BO. */
 
 struct agx_bo *
-agx_bo_cache_fetch(struct agx_device *dev, size_t size, uint32_t flags,
-                   const bool dontwait)
+agx_bo_cache_fetch(struct agx_device *dev, size_t size, size_t align,
+                   uint32_t flags, const bool dontwait)
 {
    simple_mtx_lock(&dev->bo_cache.lock);
    struct list_head *bucket = agx_bucket(dev, size);
@@ -67,10 +60,8 @@ agx_bo_cache_fetch(struct agx_device *dev, size_t size, uint32_t flags,
       if (entry->size > 2 * size)
          continue;
 
-      /* If the oldest BO in the cache is busy, likely so is
-       * everything newer, so bail. */
-      if (!agx_bo_wait(entry, dontwait ? 0 : INT64_MAX))
-         break;
+      if (align > entry->align)
+         continue;
 
       /* This one works, use it */
       agx_bo_cache_remove_locked(dev, entry);
@@ -211,8 +202,8 @@ agx_bo_unreference(struct agx_bo *bo)
 }
 
 struct agx_bo *
-agx_bo_create(struct agx_device *dev, unsigned size, enum agx_bo_flags flags,
-              const char *label)
+agx_bo_create_aligned(struct agx_device *dev, unsigned size, unsigned align,
+                      enum agx_bo_flags flags, const char *label)
 {
    struct agx_bo *bo;
    assert(size > 0);
@@ -221,7 +212,7 @@ agx_bo_create(struct agx_device *dev, unsigned size, enum agx_bo_flags flags,
    size = ALIGN_POT(size, 16384);
 
    /* See if we have a BO already in the cache */
-   bo = agx_bo_cache_fetch(dev, size, flags, true);
+   bo = agx_bo_cache_fetch(dev, size, align, flags, true);
 
    /* Update stats based on the first attempt to fetch */
    if (bo != NULL)
@@ -234,12 +225,12 @@ agx_bo_create(struct agx_device *dev, unsigned size, enum agx_bo_flags flags,
     * flush the cache to make space for the new allocation.
     */
    if (!bo)
-      bo = agx_bo_alloc(dev, size, flags);
+      bo = agx_bo_alloc(dev, size, align, flags);
    if (!bo)
-      bo = agx_bo_cache_fetch(dev, size, flags, false);
+      bo = agx_bo_cache_fetch(dev, size, align, flags, false);
    if (!bo) {
       agx_bo_cache_evict_all(dev);
-      bo = agx_bo_alloc(dev, size, flags);
+      bo = agx_bo_alloc(dev, size, align, flags);
    }
 
    if (!bo) {

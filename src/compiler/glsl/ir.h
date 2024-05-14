@@ -38,6 +38,18 @@
 #include "util/glheader.h"
 
 #ifdef __cplusplus
+extern "C" {
+#endif
+
+struct _mesa_glsl_parse_state;
+struct gl_shader_program;
+struct gl_builtin_uniform_desc;
+
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
 
 /**
  * \defgroup IR Intermediate representation nodes
@@ -82,7 +94,8 @@ enum ir_node_type {
    ir_type_end_primitive,
    ir_type_barrier,
    ir_type_max, /**< maximum ir_type enum number, for validation */
-   ir_type_unset = ir_type_max
+   ir_type_unset = ir_type_max,
+   ir_type_error
 };
 
 
@@ -120,7 +133,8 @@ public:
              ir_type == ir_type_constant ||
              ir_type == ir_type_expression ||
              ir_type == ir_type_swizzle ||
-             ir_type == ir_type_texture;
+             ir_type == ir_type_texture ||
+             ir_type == ir_type_error;
    }
 
    bool is_dereference() const
@@ -453,7 +467,7 @@ public:
     */
    inline bool is_interface_instance() const
    {
-      return this->type->without_array() == this->interface_type;
+      return glsl_without_array(this->type) == this->interface_type;
    }
 
    /**
@@ -461,7 +475,7 @@ public:
     */
    inline bool contains_bindless() const
    {
-      if (!this->type->contains_sampler() && !this->type->contains_image())
+      if (!glsl_contains_sampler(this->type) && !glsl_type_contains_image(this->type))
          return false;
 
       return this->data.bindless || this->data.mode != ir_var_uniform;
@@ -531,7 +545,7 @@ public:
 
    enum glsl_interface_packing get_interface_type_packing() const
    {
-     return this->interface_type->get_interface_packing();
+     return glsl_get_ifc_packing(this->interface_type);
    }
    /**
     * Get the max_ifc_array_access pointer
@@ -585,8 +599,8 @@ public:
    inline bool is_interpolation_flat() const
    {
       return this->data.interpolation == INTERP_MODE_FLAT ||
-             this->type->contains_integer() ||
-             this->type->contains_double();
+             glsl_contains_integer(this->type) ||
+             glsl_contains_double(this->type);
    }
 
    inline bool is_name_ralloced() const
@@ -629,7 +643,7 @@ private:
     * If the name length fits into name_storage, it's used, otherwise
     * the name is ralloc'd. shader-db mining showed that 70% of variables
     * fit here. This is a win over ralloc where only ralloc_header has
-    * 20 bytes on 64-bit (28 bytes with DEBUG), and we can also skip malloc.
+    * 20 bytes on 64-bit (28 bytes with debug), and we can also skip malloc.
     */
    char name_storage[16];
 
@@ -2413,13 +2427,13 @@ public:
 void
 visit_exec_list(exec_list *list, ir_visitor *visitor);
 
+void
+visit_exec_list_safe(exec_list *list, ir_visitor *visitor);
+
 /**
  * Validate invariants on each IR node in a list
  */
 void validate_ir_tree(exec_list *instructions);
-
-struct _mesa_glsl_parse_state;
-struct gl_shader_program;
 
 /**
  * Detect whether an unlinked shader contains static recursion
@@ -2454,10 +2468,6 @@ void
 clone_ir_list(void *mem_ctx, exec_list *out, const exec_list *in);
 
 extern void
-_mesa_glsl_initialize_variables(exec_list *instructions,
-				struct _mesa_glsl_parse_state *state);
-
-extern void
 reparent_ir(exec_list *list, void *mem_ctx);
 
 extern char *
@@ -2469,6 +2479,13 @@ mode_string(const ir_variable *var);
 
 extern "C" {
 #endif /* __cplusplus */
+
+extern void
+_mesa_glsl_initialize_types(struct _mesa_glsl_parse_state *state);
+
+extern void
+_mesa_glsl_initialize_variables(struct exec_list *instructions,
+                                struct _mesa_glsl_parse_state *state);
 
 extern void _mesa_print_ir(FILE *f, struct exec_list *instructions,
                            struct _mesa_glsl_parse_state *state);

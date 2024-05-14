@@ -1,24 +1,7 @@
 /*
  * Copyright © 2023 Bas Nieuwenhuizen
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "nir_builder.h"
@@ -181,7 +164,7 @@ radv_nir_lower_cooperative_matrix(nir_shader *shader, unsigned wave_size)
 
                nir_def *elem = intr->src[1].ssa;
                nir_def *r = nir_vector_insert(&b, src1, elem, index);
-               nir_store_deref(&b, dst_deref, r, 0xffff);
+               nir_store_deref(&b, dst_deref, r, nir_component_mask(r->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;
@@ -193,7 +176,7 @@ radv_nir_lower_cooperative_matrix(nir_shader *shader, unsigned wave_size)
 
                nir_def *r = nir_replicate(&b, elem, radv_nir_cmat_length(desc, wave_size));
 
-               nir_store_deref(&b, dst_deref, r, 0xffff);
+               nir_store_deref(&b, dst_deref, r, nir_component_mask(r->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;
@@ -253,7 +236,7 @@ radv_nir_lower_cooperative_matrix(nir_shader *shader, unsigned wave_size)
                }
 
                nir_def *mat = nir_vec(&b, vars, length);
-               nir_store_deref(&b, dst_deref, mat, 0xffff);
+               nir_store_deref(&b, dst_deref, mat, nir_component_mask(mat->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;
@@ -332,7 +315,8 @@ radv_nir_lower_cooperative_matrix(nir_shader *shader, unsigned wave_size)
                ret = nir_cmat_muladd_amd(&b, A, B, C, .saturate = nir_intrinsic_saturate(intr),
                                          .cmat_signed_mask = nir_intrinsic_cmat_signed_mask(intr));
 
-               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), ret, 0xffff);
+               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), ret,
+                               nir_component_mask(ret->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;
@@ -366,7 +350,7 @@ radv_nir_lower_cooperative_matrix(nir_shader *shader, unsigned wave_size)
                   ret = nir_vec(&b, components, ret->num_components * 2);
                }
 
-               nir_store_deref(&b, dst_deref, ret, 0xffff);
+               nir_store_deref(&b, dst_deref, ret, nir_component_mask(ret->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;
@@ -375,7 +359,8 @@ radv_nir_lower_cooperative_matrix(nir_shader *shader, unsigned wave_size)
                nir_def *src1 = radv_nir_load_cmat(&b, wave_size, intr->src[1].ssa);
                nir_op op = nir_intrinsic_alu_op(intr);
                nir_def *ret = nir_build_alu2(&b, op, src1, intr->src[2].ssa);
-               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), ret, 0xffff);
+               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), ret,
+                               nir_component_mask(ret->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;
@@ -385,14 +370,16 @@ radv_nir_lower_cooperative_matrix(nir_shader *shader, unsigned wave_size)
                nir_def *src2 = radv_nir_load_cmat(&b, wave_size, intr->src[2].ssa);
                nir_op op = nir_intrinsic_alu_op(intr);
                nir_def *ret = nir_build_alu2(&b, op, src1, src2);
-               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), ret, 0xffff);
+               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), ret,
+                               nir_component_mask(ret->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;
             }
             case nir_intrinsic_cmat_bitcast: {
                nir_def *src1 = radv_nir_load_cmat(&b, wave_size, intr->src[1].ssa);
-               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), src1, 0xffff);
+               nir_store_deref(&b, nir_instr_as_deref(intr->src[0].ssa->parent_instr), src1,
+                               nir_component_mask(src1->num_components));
                nir_instr_remove(instr);
                progress = true;
                break;

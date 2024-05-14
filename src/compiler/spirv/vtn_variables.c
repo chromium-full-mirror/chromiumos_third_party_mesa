@@ -53,7 +53,7 @@ vtn_align_pointer(struct vtn_builder *b, struct vtn_pointer *ptr,
    if (addr_format == nir_address_format_logical)
       return ptr;
 
-   struct vtn_pointer *copy = ralloc(b, struct vtn_pointer);
+   struct vtn_pointer *copy = vtn_alloc(b, struct vtn_pointer);
    *copy = *ptr;
    copy->deref = nir_alignment_deref_cast(&b->nb, ptr->deref, alignment, 0);
 
@@ -115,7 +115,7 @@ vtn_decorate_pointer(struct vtn_builder *b, struct vtn_value *val,
     * leaking them any further than actually specified in the SPIR-V.
     */
    if (aa.access & ~ptr->access) {
-      struct vtn_pointer *copy = ralloc(b, struct vtn_pointer);
+      struct vtn_pointer *copy = vtn_alloc(b, struct vtn_pointer);
       *copy = *ptr;
       copy->access |= aa.access;
       return copy;
@@ -177,7 +177,7 @@ vtn_access_chain_create(struct vtn_builder *b, unsigned length)
    /* Subtract 1 from the length since there's already one built in */
    size_t size = sizeof(*chain) +
                  (MAX2(length, 1) - 1) * sizeof(chain->link[0]);
-   chain = rzalloc_size(b, size);
+   chain = vtn_zalloc_size(b, size);
    chain->length = length;
 
    return chain;
@@ -404,7 +404,7 @@ vtn_pointer_dereference(struct vtn_builder *b,
           * a pointer which just has a block index and a later access chain
           * will dereference deeper.
           */
-         struct vtn_pointer *ptr = rzalloc(b, struct vtn_pointer);
+         struct vtn_pointer *ptr = vtn_zalloc(b, struct vtn_pointer);
          ptr->mode = base->mode;
          ptr->type = type;
          ptr->block_index = block_index;
@@ -489,7 +489,7 @@ vtn_pointer_dereference(struct vtn_builder *b,
       access |= type->access;
    }
 
-   struct vtn_pointer *ptr = rzalloc(b, struct vtn_pointer);
+   struct vtn_pointer *ptr = vtn_zalloc(b, struct vtn_pointer);
    ptr->mode = base->mode;
    ptr->type = type;
    ptr->var = base->var;
@@ -913,7 +913,7 @@ vtn_get_builtin_location(struct vtn_builder *b,
          *mode = nir_var_shader_in;
       else if (b->shader->info.stage == MESA_SHADER_GEOMETRY)
          *mode = nir_var_shader_out;
-      else if (b->options && b->options->caps.shader_viewport_index_layer &&
+      else if (b->supported_capabilities.ShaderViewportIndexLayerEXT &&
                (b->shader->info.stage == MESA_SHADER_VERTEX ||
                 b->shader->info.stage == MESA_SHADER_TESS_EVAL ||
                 b->shader->info.stage == MESA_SHADER_MESH))
@@ -925,7 +925,7 @@ vtn_get_builtin_location(struct vtn_builder *b,
       *location = VARYING_SLOT_VIEWPORT;
       if (b->shader->info.stage == MESA_SHADER_GEOMETRY)
          *mode = nir_var_shader_out;
-      else if (b->options && b->options->caps.shader_viewport_index_layer &&
+      else if (b->supported_capabilities.ShaderViewportIndexLayerEXT &&
                (b->shader->info.stage == MESA_SHADER_VERTEX ||
                 b->shader->info.stage == MESA_SHADER_TESS_EVAL ||
                 b->shader->info.stage == MESA_SHADER_MESH))
@@ -1266,6 +1266,26 @@ vtn_get_builtin_location(struct vtn_builder *b,
       break;
    case SpvBuiltInCoalescedInputCountAMDX:
       *location = SYSTEM_VALUE_COALESCED_INPUT_COUNT;
+      set_mode_system_value(b, mode);
+      break;
+
+   case SpvBuiltInWarpsPerSMNV:
+      *location = SYSTEM_VALUE_WARPS_PER_SM_NV;
+      set_mode_system_value(b, mode);
+      break;
+
+   case SpvBuiltInSMCountNV:
+      *location = SYSTEM_VALUE_SM_COUNT_NV;
+      set_mode_system_value(b, mode);
+      break;
+
+   case SpvBuiltInWarpIDNV:
+      *location = SYSTEM_VALUE_WARP_ID_NV;
+      set_mode_system_value(b, mode);
+      break;
+
+   case SpvBuiltInSMIDNV:
+      *location = SYSTEM_VALUE_SM_ID_NV;
       set_mode_system_value(b, mode);
       break;
 
@@ -1922,7 +1942,7 @@ vtn_pointer_from_ssa(struct vtn_builder *b, nir_def *ssa,
 {
    vtn_assert(ptr_type->base_type == vtn_base_type_pointer);
 
-   struct vtn_pointer *ptr = rzalloc(b, struct vtn_pointer);
+   struct vtn_pointer *ptr = vtn_zalloc(b, struct vtn_pointer);
    struct vtn_type *without_array =
       vtn_type_without_array(ptr_type->deref);
 
@@ -2024,7 +2044,9 @@ adjust_patch_locations(struct vtn_builder *b, struct vtn_variable *var)
 
    for (uint16_t i = 0; i < num_data; i++) {
       vtn_assert(data[i].location < VARYING_SLOT_PATCH0);
-      if (data[i].patch && data[i].location >= VARYING_SLOT_VAR0)
+      if (data[i].patch &&
+          (data[i].mode == nir_var_shader_in || data[i].mode == nir_var_shader_out) &&
+          data[i].location >= VARYING_SLOT_VAR0)
          data[i].location += VARYING_SLOT_PATCH0 - VARYING_SLOT_VAR0;
    }
 }
@@ -2070,7 +2092,8 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
    case vtn_variable_mode_ssbo:
       if (storage_class == SpvStorageClassStorageBuffer &&
           !without_array->block) {
-         if (b->variable_pointers) {
+         if (!b->enabled_capabilities.VariablePointers &&
+             !b->enabled_capabilities.VariablePointersStorageBuffer) {
             vtn_fail("Variables in the StorageBuffer storage class must "
                      "have a struct type with the Block decoration");
          } else {
@@ -2106,12 +2129,12 @@ vtn_create_variable(struct vtn_builder *b, struct vtn_value *val,
       break;
    }
 
-   struct vtn_variable *var = rzalloc(b, struct vtn_variable);
+   struct vtn_variable *var = vtn_zalloc(b, struct vtn_variable);
    var->type = type;
    var->mode = mode;
    var->base_location = -1;
 
-   val->pointer = rzalloc(b, struct vtn_pointer);
+   val->pointer = vtn_zalloc(b, struct vtn_pointer);
    val->pointer->mode = var->mode;
    val->pointer->type = var->type;
    val->pointer->ptr_type = ptr_type;
@@ -2632,7 +2655,7 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
       struct vtn_type *sampler_type = vtn_value(b, w[1], vtn_value_type_type)->type;
       struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_pointer);
 
-      struct vtn_type *ptr_type = rzalloc(b, struct vtn_type);
+      struct vtn_type *ptr_type = vtn_zalloc(b, struct vtn_type);
       ptr_type->base_type = vtn_base_type_pointer;
       ptr_type->deref = sampler_type;
       ptr_type->storage_class = SpvStorageClassUniform;
@@ -2684,6 +2707,9 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
 
       /* Workaround for https://gitlab.freedesktop.org/mesa/mesa/-/issues/3406 */
       access |= base->access & ACCESS_NON_UNIFORM;
+
+      if (base->mode == vtn_variable_mode_ssbo && b->options->force_ssbo_non_uniform)
+         access |= ACCESS_NON_UNIFORM;
 
       struct vtn_pointer *ptr = vtn_pointer_dereference(b, base, chain);
       ptr->ptr_type = ptr_type;

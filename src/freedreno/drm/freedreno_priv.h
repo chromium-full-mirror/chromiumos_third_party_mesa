@@ -60,7 +60,7 @@ extern simple_mtx_t fence_lock;
 #define SUBALLOC_SIZE (32 * 1024)
 /* Maximum known alignment requirement is a6xx's TEX_CONST at 16 dwords */
 #define SUBALLOC_ALIGNMENT 64
-#define RING_FLAGS (FD_BO_GPUREADONLY | FD_BO_CACHED_COHERENT)
+#define RING_FLAGS (FD_BO_GPUREADONLY | FD_BO_CACHED_COHERENT | FD_BO_HINT_COMMAND)
 
 /*
  * Stupid/simple growable array implementation:
@@ -192,7 +192,7 @@ struct fd_bo_heap *fd_bo_heap_new(struct fd_device *dev, uint32_t flags);
 void fd_bo_heap_destroy(struct fd_bo_heap *heap);
 
 struct fd_bo *fd_bo_heap_block(struct fd_bo *bo);
-struct fd_bo *fd_bo_heap_alloc(struct fd_bo_heap *heap, uint32_t size);
+struct fd_bo *fd_bo_heap_alloc(struct fd_bo_heap *heap, uint32_t size, uint32_t flags);
 
 static inline uint32_t
 submit_offset(struct fd_bo *bo, uint32_t offset)
@@ -457,6 +457,9 @@ struct fd_bo_funcs {
     * Optional, if upload is supported, should upload be preferred?
     */
    bool (*prefer_upload)(struct fd_bo *bo, unsigned len);
+
+   void (*set_metadata)(struct fd_bo *bo, void *metadata, uint32_t metadata_size);
+   int (*get_metadata)(struct fd_bo *bo, void *metadata, uint32_t metadata_size);
 };
 
 void fd_bo_add_fence(struct fd_bo *bo, struct fd_fence *fence);
@@ -555,6 +558,12 @@ VG_BO_OBTAIN(struct fd_bo *bo)
       VALGRIND_MALLOCLIKE_BLOCK(bo->map, bo->size, 0, 1);
    }
 }
+/* special case for fd_bo_upload */
+static inline void
+VG_BO_MAPPED(struct fd_bo *bo)
+{
+   VALGRIND_MALLOCLIKE_BLOCK(bo->map, bo->size, 0, 1);
+}
 #else
 static inline void
 VG_BO_ALLOC(struct fd_bo *bo)
@@ -570,6 +579,10 @@ VG_BO_RELEASE(struct fd_bo *bo)
 }
 static inline void
 VG_BO_OBTAIN(struct fd_bo *bo)
+{
+}
+static inline void
+VG_BO_MAPPED(struct fd_bo *bo)
 {
 }
 #endif

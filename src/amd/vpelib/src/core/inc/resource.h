@@ -95,9 +95,6 @@ struct resource {
 
     void (*get_bufs_req)(struct vpe_priv *vpe_priv, struct vpe_bufs_req *req);
 
-    void (*get_tf_pwl_params)(const struct transfer_func *output_tf, struct pwl_params **lut_params,
-        enum cm_type vpe_cm_type);
-
     // Indicates the nominal range hdr input content should be in during processing.
     int internal_hdr_normalization;
 
@@ -111,7 +108,7 @@ struct resource {
 
 /** translate the vpe ip version into vpe hw level */
 enum vpe_ip_level vpe_resource_parse_ip_version(
-    uint8_t mj, uint8_t mi, uint8_t rv);
+    uint8_t major, uint8_t minor, uint8_t rev_id);
 
 /** initialize the resource ased on vpe hw level */
 enum vpe_status vpe_construct_resource(

@@ -167,8 +167,10 @@ else
 endif
 if with_gallium_virgl
   subdir('winsys/virgl/common')
-  subdir('winsys/virgl/drm')
-  subdir('winsys/virgl/vtest')
+  if not with_platform_windows
+    subdir('winsys/virgl/drm')
+    subdir('winsys/virgl/vtest')
+  endif
   subdir('drivers/virgl')
 else
   driver_virgl = declare_dependency()
@@ -239,17 +241,17 @@ if with_gallium_st_nine
 endif
 if with_gallium_st_d3d10umd
   subdir('frontends/d3d10umd')
-  subdir('targets/d3d10sw')
+  subdir('targets/d3d10umd')
 endif
 if with_platform_windows
-  subdir('frontends/wgl')
-  if with_gallium_d3d12
-    subdir('winsys/d3d12/wgl')
-  else
-    winsys_d3d12_wgl = declare_dependency()
-  endif
-  subdir('targets/wgl')
   if with_opengl
+    subdir('frontends/wgl')
+    if with_gallium_d3d12
+      subdir('winsys/d3d12/wgl')
+    else
+      winsys_d3d12_wgl = declare_dependency()
+    endif
+    subdir('targets/wgl')
     subdir('targets/libgl-gdi')
   endif
 endif
@@ -259,4 +261,9 @@ endif
 if with_swrast_vk
   subdir('frontends/lavapipe')
   subdir('targets/lavapipe')
+endif
+
+if with_teflon
+  subdir('frontends/teflon')
+  subdir('targets/teflon')
 endif

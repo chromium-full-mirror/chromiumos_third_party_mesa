@@ -299,7 +299,7 @@ handleIQMatrixBuffer(vlVaContext *context, vlVaBuffer *buf)
 }
 
 static void
-handleSliceParameterBuffer(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices)
+handleSliceParameterBuffer(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices, unsigned slice_offset)
 {
    switch (u_reduce_video_profile(context->templat.profile)) {
    case PIPE_VIDEO_FORMAT_MPEG12:
@@ -331,7 +331,7 @@ handleSliceParameterBuffer(vlVaContext *context, vlVaBuffer *buf, unsigned num_s
       break;
 
    case PIPE_VIDEO_FORMAT_AV1:
-      vlVaHandleSliceParameterBufferAV1(context, buf, num_slices);
+      vlVaHandleSliceParameterBufferAV1(context, buf, num_slices, slice_offset);
       break;
 
    default:
@@ -651,12 +651,12 @@ handleVAEncMiscParameterTypeMaxSliceSize(vlVaContext *context, VAEncMiscParamete
    switch (u_reduce_video_profile(context->templat.profile)) {
       case PIPE_VIDEO_FORMAT_MPEG4_AVC:
       {
-         context->desc.h264enc.slice_mode = PIPE_VIDEO_SLICE_MODE_MAX_SLICE_SICE;
+         context->desc.h264enc.slice_mode = PIPE_VIDEO_SLICE_MODE_MAX_SLICE_SIZE;
          context->desc.h264enc.max_slice_bytes = max_slice_size_buffer->max_slice_size;
       } break;
       case PIPE_VIDEO_FORMAT_HEVC:
       {
-         context->desc.h265enc.slice_mode = PIPE_VIDEO_SLICE_MODE_MAX_SLICE_SICE;
+         context->desc.h265enc.slice_mode = PIPE_VIDEO_SLICE_MODE_MAX_SLICE_SIZE;
          context->desc.h265enc.max_slice_bytes = max_slice_size_buffer->max_slice_size;
       } break;
       default:
@@ -719,6 +719,56 @@ handleVAEncMiscParameterTypeRIR(vlVaContext *context, VAEncMiscParameterBuffer *
 }
 
 static VAStatus
+handleVAEncMiscParameterTypeROI(vlVaContext *context, VAEncMiscParameterBuffer *misc)
+{
+   VAStatus status = VA_STATUS_SUCCESS;
+   struct pipe_enc_roi *proi= NULL;
+   switch (u_reduce_video_profile(context->templat.profile)) {
+      case PIPE_VIDEO_FORMAT_MPEG4_AVC:
+         proi = &context->desc.h264enc.roi;
+         break;
+      case PIPE_VIDEO_FORMAT_HEVC:
+         proi = &context->desc.h265enc.roi;
+         break;
+#if VA_CHECK_VERSION(1, 16, 0)
+      case PIPE_VIDEO_FORMAT_AV1:
+         proi = &context->desc.av1enc.roi;
+         break;
+#endif
+      default:
+         break;
+   };
+
+   if (proi) {
+      VAEncMiscParameterBufferROI *roi = (VAEncMiscParameterBufferROI *)misc->data;
+      /* do not support priority type, and the maximum region is 32  */
+      if ((roi->num_roi > 0 && roi->roi_flags.bits.roi_value_is_qp_delta == 0)
+           || roi->num_roi > PIPE_ENC_ROI_REGION_NUM_MAX)
+         status = VA_STATUS_ERROR_FLAG_NOT_SUPPORTED;
+      else {
+         uint32_t i;
+         VAEncROI *src = roi->roi;
+
+         proi->num = roi->num_roi;
+         for (i = 0; i < roi->num_roi; i++) {
+            proi->region[i].valid = true;
+            proi->region[i].x = src->roi_rectangle.x;
+            proi->region[i].y = src->roi_rectangle.y;
+            proi->region[i].width = src->roi_rectangle.width;
+            proi->region[i].height = src->roi_rectangle.height;
+            proi->region[i].qp_value = (int32_t)CLAMP(src->roi_value, roi->min_delta_qp, roi->max_delta_qp);
+            src++;
+         }
+
+         for (; i < PIPE_ENC_ROI_REGION_NUM_MAX; i++)
+            proi->region[i].valid = false;
+      }
+   }
+
+   return status;
+}
+
+static VAStatus
 handleVAEncMiscParameterBufferType(vlVaContext *context, vlVaBuffer *buf)
 {
    VAStatus vaStatus = VA_STATUS_SUCCESS;
@@ -756,6 +806,10 @@ handleVAEncMiscParameterBufferType(vlVaContext *context, vlVaBuffer *buf)
 
    case VAEncMiscParameterTypeMaxSliceSize:
       vaStatus = handleVAEncMiscParameterTypeMaxSliceSize(context, misc);
+      break;
+
+   case VAEncMiscParameterTypeROI:
+      vaStatus = handleVAEncMiscParameterTypeROI(context, misc);
       break;
 
    default:
@@ -914,6 +968,7 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
 
    unsigned i;
    unsigned slice_idx = 0;
+   unsigned slice_offset = 0;
    vlVaBuffer *seq_param_buf = NULL;
 
    if (!ctx)
@@ -969,13 +1024,17 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
 
             slice_idx is the zero based number of total slices received
                before this call to handleSliceParameterBuffer
+
+            slice_offset is the slice offset in bitstream buffer
          */
-         handleSliceParameterBuffer(context, buf, slice_idx);
+         handleSliceParameterBuffer(context, buf, slice_idx, slice_offset);
          slice_idx += buf->num_elements;
       } break;
 
       case VASliceDataBufferType:
          vaStatus = handleVASliceDataBufferType(context, buf);
+         if (slice_idx)
+            slice_offset += buf->size;
          break;
 
       case VAProcPipelineParameterBufferType:
@@ -1247,6 +1306,10 @@ vlVaEndPicture(VADriverContextP ctx, VAContextID context_id)
    } else if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_PROCESSING) {
       context->desc.base.fence = &surf->fence;
    }
+
+   /* when there are external handles, we can't set PIPE_FLUSH_ASYNC */
+   if (context->desc.base.fence)
+      context->desc.base.flush_flags = drv->has_external_handles ? 0 : PIPE_FLUSH_ASYNC;
 
    context->decoder->end_frame(context->decoder, context->target, &context->desc.base);
 

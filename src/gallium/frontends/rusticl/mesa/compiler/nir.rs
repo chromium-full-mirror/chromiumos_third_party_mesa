@@ -318,6 +318,11 @@ impl NirShader {
         unsafe { (*self.nir.as_ptr()).scratch_size }
     }
 
+    pub fn reset_shared_size(&mut self) {
+        unsafe {
+            (*self.nir.as_ptr()).info.shared_size = 0;
+        }
+    }
     pub fn shared_size(&self) -> u32 {
         unsafe { (*self.nir.as_ptr()).info.shared_size }
     }
@@ -435,7 +440,12 @@ impl NirShader {
     pub fn get_constant_buffer(&self) -> &[u8] {
         unsafe {
             let nir = self.nir.as_ref();
-            slice::from_raw_parts(nir.constant_data.cast(), nir.constant_data_size as usize)
+            // Sometimes, constant_data can be a null pointer if the size is 0
+            if nir.constant_data_size == 0 {
+                &[]
+            } else {
+                slice::from_raw_parts(nir.constant_data.cast(), nir.constant_data_size as usize)
+            }
         }
     }
 
@@ -443,6 +453,15 @@ impl NirShader {
         unsafe {
             self.nir.as_mut().info.float_controls_execution_mode |=
                 float_controls::FLOAT_CONTROLS_DENORM_PRESERVE_FP16 as u32;
+        }
+    }
+
+    pub fn set_fp_rounding_mode_rtne(&mut self) {
+        unsafe {
+            self.nir.as_mut().info.float_controls_execution_mode |=
+                float_controls::FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP16 as u32
+                    | float_controls::FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP32 as u32
+                    | float_controls::FLOAT_CONTROLS_ROUNDING_MODE_RTE_FP64 as u32;
         }
     }
 

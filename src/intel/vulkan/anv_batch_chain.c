@@ -32,6 +32,8 @@
 #include "anv_private.h"
 #include "anv_measure.h"
 
+#include "common/intel_debug_identifier.h"
+
 #include "genxml/gen9_pack.h"
 #include "genxml/genX_bits.h"
 
@@ -747,8 +749,13 @@ anv_cmd_buffer_alloc_dynamic_state(struct anv_cmd_buffer *cmd_buffer,
 {
    if (size == 0)
       return ANV_STATE_NULL;
+   assert(cmd_buffer->state.current_db_mode !=
+          ANV_CMD_DESCRIPTOR_BUFFER_MODE_UNKNOWN);
    struct anv_state state =
-      anv_state_stream_alloc(&cmd_buffer->dynamic_state_stream,
+      anv_state_stream_alloc(cmd_buffer->state.current_db_mode ==
+                             ANV_CMD_DESCRIPTOR_BUFFER_MODE_BUFFER ?
+                             &cmd_buffer->dynamic_state_db_stream :
+                             &cmd_buffer->dynamic_state_stream,
                              size, alignment);
    if (state.map == NULL)
       anv_batch_set_error(&cmd_buffer->batch, VK_ERROR_OUT_OF_DEVICE_MEMORY);
@@ -1055,27 +1062,9 @@ anv_cmd_buffer_end_batch_buffer(struct anv_cmd_buffer *cmd_buffer)
       const uint32_t length = cmd_buffer->batch.next - cmd_buffer->batch.start;
       if (cmd_buffer->device->physical->use_call_secondary) {
          cmd_buffer->exec_mode = ANV_CMD_BUFFER_EXEC_MODE_CALL_AND_RETURN;
-         /* If the secondary command buffer begins & ends in the same BO and
-          * its length is less than the length of CS prefetch, add some NOOPs
-          * instructions so the last MI_BATCH_BUFFER_START is outside the CS
-          * prefetch.
-          */
-         if (cmd_buffer->batch_bos.next == cmd_buffer->batch_bos.prev) {
-            const enum intel_engine_class engine_class = cmd_buffer->queue_family->engine_class;
-            /* Careful to have everything in signed integer. */
-            int32_t prefetch_len = devinfo->engine_class_prefetch[engine_class];
-            int32_t batch_len = cmd_buffer->batch.next - cmd_buffer->batch.start;
-
-            for (int32_t i = 0; i < (prefetch_len - batch_len); i += 4)
-               anv_batch_emit(&cmd_buffer->batch, GFX9_MI_NOOP, noop);
-         }
 
          void *jump_addr =
-            anv_batch_emitn(&cmd_buffer->batch,
-                            GFX9_MI_BATCH_BUFFER_START_length,
-                            GFX9_MI_BATCH_BUFFER_START,
-                            .AddressSpaceIndicator = ASI_PPGTT,
-                            .SecondLevelBatchBuffer = Firstlevelbatch) +
+            anv_genX(devinfo, batch_emit_return)(&cmd_buffer->batch) +
             (GFX9_MI_BATCH_BUFFER_START_BatchBufferStartAddress_start / 8);
          cmd_buffer->return_addr = anv_batch_address(&cmd_buffer->batch, jump_addr);
 
@@ -1195,18 +1184,10 @@ anv_cmd_buffer_add_secondary(struct anv_cmd_buffer *primary,
       struct anv_batch_bo *first_bbo =
          list_first_entry(&secondary->batch_bos, struct anv_batch_bo, link);
 
-      uint64_t *write_return_addr =
-         anv_batch_emitn(&primary->batch,
-                         GFX9_MI_STORE_DATA_IMM_length + 1 /* QWord write */,
-                         GFX9_MI_STORE_DATA_IMM,
-                         .Address = secondary->return_addr)
-         + (GFX9_MI_STORE_DATA_IMM_ImmediateData_start / 8);
-
-      emit_batch_buffer_start(&primary->batch, first_bbo->bo, 0);
-
-      *write_return_addr =
-         anv_address_physical(anv_batch_address(&primary->batch,
-                                                primary->batch.next));
+      anv_genX(primary->device->info, batch_emit_secondary_call)(
+         &primary->batch,
+         (struct anv_address) { .bo = first_bbo->bo },
+         secondary->return_addr);
 
       anv_cmd_buffer_add_seen_bbos(primary, &secondary->batch_bos);
       break;
@@ -1274,8 +1255,7 @@ anv_cmd_buffer_exec_batch_debug(struct anv_queue *queue,
                                 uint32_t cmd_buffer_count,
                                 struct anv_cmd_buffer **cmd_buffers,
                                 struct anv_query_pool *perf_query_pool,
-                                uint32_t perf_query_pass,
-                                bool is_companion_rcs_cmd_buffer)
+                                uint32_t perf_query_pass)
 {
    if (!INTEL_DEBUG(DEBUG_BATCH | DEBUG_BATCH_STATS))
       return;
@@ -1303,13 +1283,8 @@ anv_cmd_buffer_exec_batch_debug(struct anv_queue *queue,
          }
       }
 
-      for (uint32_t i = 0; i < cmd_buffer_count; i++) {
-         struct anv_cmd_buffer *cmd_buffer =
-            is_companion_rcs_cmd_buffer ?
-            cmd_buffers[i]->companion_rcs_cmd_buffer :
-            cmd_buffers[i];
-         anv_print_batch(device, queue, cmd_buffer);
-      }
+      for (uint32_t i = 0; i < cmd_buffer_count; i++)
+         anv_print_batch(device, queue, cmd_buffers[i]);
    } else if (INTEL_DEBUG(DEBUG_BATCH)) {
       intel_print_batch(queue->decoder, device->trivial_batch_bo->map,
                         device->trivial_batch_bo->size,
@@ -1412,7 +1387,7 @@ anv_queue_submit_sparse_bind_locked(struct anv_queue *queue,
     * supposed to be used by applications that request sparse to be enabled
     * but don't actually *use* it.
     */
-   if (!device->physical->has_sparse) {
+   if (device->physical->sparse_type == ANV_SPARSE_TYPE_NOT_SUPPORTED) {
       if (INTEL_DEBUG(DEBUG_SPARSE))
          fprintf(stderr, "=== application submitting sparse operations: "
                "buffer_bind:%d image_opaque_bind:%d image_bind:%d\n",
@@ -1420,8 +1395,6 @@ anv_queue_submit_sparse_bind_locked(struct anv_queue *queue,
                submit->image_bind_count);
       return vk_queue_set_lost(&queue->vk, "Sparse binding not supported");
    }
-
-   device->using_sparse = true;
 
    assert(submit->command_buffer_count == 0);
 
@@ -1452,10 +1425,9 @@ anv_queue_submit_sparse_bind_locked(struct anv_queue *queue,
       assert(anv_buffer_is_sparse(buffer));
 
       for (uint32_t j = 0; j < bind_info->bindCount; j++) {
-         result = anv_sparse_bind_resource_memory(device,
-                                                  &buffer->sparse_data,
-                                                  &bind_info->pBinds[j],
-                                                  &sparse_submit);
+         result = anv_sparse_bind_buffer(device, buffer,
+                                         &bind_info->pBinds[j],
+                                         &sparse_submit);
          if (result != VK_SUCCESS)
             goto out_free_submit;
       }
@@ -1483,14 +1455,11 @@ anv_queue_submit_sparse_bind_locked(struct anv_queue *queue,
       ANV_FROM_HANDLE(anv_image, image, bind_info->image);
 
       assert(anv_image_is_sparse(image));
-      assert(!image->disjoint);
-      struct anv_sparse_binding_data *sparse_data =
-         &image->bindings[ANV_IMAGE_MEMORY_BINDING_MAIN].sparse_data;
 
       for (uint32_t j = 0; j < bind_info->bindCount; j++) {
-         result = anv_sparse_bind_resource_memory(device, sparse_data,
-                                                  &bind_info->pBinds[j],
-                                                  &sparse_submit);
+         result = anv_sparse_bind_image_opaque(device, image,
+                                               &bind_info->pBinds[j],
+                                               &sparse_submit);
          if (result != VK_SUCCESS)
             goto out_free_submit;
       }

@@ -97,8 +97,8 @@ jm_submit_jc(struct panfrost_batch *batch, mali_ptr first_job_desc,
    submit.requirements = reqs;
 
    if (ctx->in_sync_fd >= 0) {
-      ret =
-         drmSyncobjImportSyncFile(dev->fd, ctx->in_sync_obj, ctx->in_sync_fd);
+      ret = drmSyncobjImportSyncFile(panfrost_device_fd(dev), ctx->in_sync_obj,
+                                     ctx->in_sync_fd);
       assert(!ret);
 
       in_syncs[submit.in_sync_count++] = ctx->in_sync_obj;
@@ -149,16 +149,18 @@ jm_submit_jc(struct panfrost_batch *batch, mali_ptr first_job_desc,
     * by fragment jobs (the polygon list is coming from this heap).
     */
    if (batch->jm.jobs.vtc_jc.first_tiler)
-      bo_handles[submit.bo_handle_count++] = dev->tiler_heap->gem_handle;
+      bo_handles[submit.bo_handle_count++] =
+         panfrost_bo_handle(dev->tiler_heap);
 
    /* Always used on Bifrost, occassionally used on Midgard */
-   bo_handles[submit.bo_handle_count++] = dev->sample_positions->gem_handle;
+   bo_handles[submit.bo_handle_count++] =
+      panfrost_bo_handle(dev->sample_positions);
 
    submit.bo_handles = (u64)(uintptr_t)bo_handles;
    if (ctx->is_noop)
       ret = 0;
    else
-      ret = drmIoctl(dev->fd, DRM_IOCTL_PANFROST_SUBMIT, &submit);
+      ret = drmIoctl(panfrost_device_fd(dev), DRM_IOCTL_PANFROST_SUBMIT, &submit);
    free(bo_handles);
 
    if (ret)
@@ -167,17 +169,20 @@ jm_submit_jc(struct panfrost_batch *batch, mali_ptr first_job_desc,
    /* Trace the job if we're doing that */
    if (dev->debug & (PAN_DBG_TRACE | PAN_DBG_SYNC)) {
       /* Wait so we can get errors reported back */
-      drmSyncobjWait(dev->fd, &out_sync, 1, INT64_MAX, 0, NULL);
+      ret = drmSyncobjWait(panfrost_device_fd(dev), &out_sync, 1, INT64_MAX,
+                           0, NULL);
+      if (ret)
+         return errno;
 
       if (dev->debug & PAN_DBG_TRACE)
-         pandecode_jc(dev->decode_ctx, submit.jc, dev->gpu_id);
+         pandecode_jc(dev->decode_ctx, submit.jc, panfrost_device_gpu_id(dev));
 
       if (dev->debug & PAN_DBG_DUMP)
          pandecode_dump_mappings(dev->decode_ctx);
 
       /* Jobs won't be complete if blackhole rendering, that's ok */
       if (!ctx->is_noop && dev->debug & PAN_DBG_SYNC)
-         pandecode_abort_on_fault(dev->decode_ctx, submit.jc, dev->gpu_id);
+         pandecode_abort_on_fault(dev->decode_ctx, submit.jc, panfrost_device_gpu_id(dev));
    }
 
    return 0;
@@ -230,9 +235,11 @@ done:
 void
 GENX(jm_preload_fb)(struct panfrost_batch *batch, struct pan_fb_info *fb)
 {
+   struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
+
    GENX(pan_preload_fb)
-   (&batch->pool.base, &batch->jm.jobs.vtc_jc, fb, batch->tls.gpu,
-    PAN_ARCH >= 6 ? batch->tiler_ctx.bifrost : 0, NULL);
+   (&dev->blitter, &batch->pool.base, &batch->jm.jobs.vtc_jc, fb,
+    batch->tls.gpu, PAN_ARCH >= 6 ? batch->tiler_ctx.bifrost : 0, NULL);
 }
 
 void
@@ -298,6 +305,11 @@ GENX(jm_launch_grid)(struct panfrost_batch *batch,
       cfg.textures = batch->textures[PIPE_SHADER_COMPUTE];
       cfg.samplers = batch->samplers[PIPE_SHADER_COMPUTE];
    }
+
+#if PAN_ARCH == 4
+   pan_section_pack(t.cpu, COMPUTE_JOB, COMPUTE_PADDING, cfg)
+      ;
+#endif
 #else
    struct panfrost_context *ctx = batch->ctx;
    struct panfrost_compiled_shader *cs = ctx->prog[PIPE_SHADER_COMPUTE];
@@ -331,9 +343,10 @@ GENX(jm_launch_grid)(struct panfrost_batch *batch,
    unsigned indirect_dep = 0;
 #if PAN_GPU_INDIRECTS
    if (info->indirect) {
+      struct panfrost_device *dev = pan_device(batch->ctx->base.screen);
       struct pan_indirect_dispatch_info indirect = {
          .job = t.gpu,
-         .indirect_dim = pan_resource(info->indirect)->image.data.bo->ptr.gpu +
+         .indirect_dim = pan_resource(info->indirect)->image.data.base +
                          info->indirect_offset,
          .num_wg_sysval =
             {
@@ -344,7 +357,8 @@ GENX(jm_launch_grid)(struct panfrost_batch *batch,
       };
 
       indirect_dep = GENX(pan_indirect_dispatch_emit)(
-         &batch->pool.base, &batch->jm.jobs.vtc_jc, &indirect);
+         &dev->indirect_dispatch, &batch->pool.base, &batch->jm.jobs.vtc_jc,
+         &indirect);
    }
 #endif
 
@@ -365,10 +379,10 @@ jm_emit_tiler_desc(struct panfrost_batch *batch)
    struct panfrost_ptr t = pan_pool_alloc_desc(&batch->pool.base, TILER_HEAP);
 
    pan_pack(t.cpu, TILER_HEAP, heap) {
-      heap.size = dev->tiler_heap->size;
+      heap.size = panfrost_bo_size(dev->tiler_heap);
       heap.base = dev->tiler_heap->ptr.gpu;
       heap.bottom = dev->tiler_heap->ptr.gpu;
-      heap.top = dev->tiler_heap->ptr.gpu + dev->tiler_heap->size;
+      heap.top = dev->tiler_heap->ptr.gpu + panfrost_bo_size(dev->tiler_heap);
    }
 
    mali_ptr heap = t.gpu;
@@ -447,6 +461,11 @@ jm_emit_vertex_job(struct panfrost_batch *batch,
 
    section = pan_section_ptr(job, COMPUTE_JOB, DRAW);
    jm_emit_vertex_draw(batch, section);
+
+#if PAN_ARCH == 4
+   pan_section_pack(job, COMPUTE_JOB, COMPUTE_PADDING, cfg)
+      ;
+#endif
 }
 #endif /* PAN_ARCH <= 7 */
 
@@ -479,7 +498,7 @@ jm_emit_tiler_draw(void *out, struct panfrost_batch *batch, bool fs_required,
 
          struct panfrost_resource *rsrc =
             pan_resource(ctx->occlusion_query->rsrc);
-         cfg.occlusion = rsrc->image.data.bo->ptr.gpu;
+         cfg.occlusion = rsrc->image.data.base;
          panfrost_batch_write_rsrc(ctx->batch, rsrc, PIPE_SHADER_FRAGMENT);
       }
 
@@ -506,6 +525,11 @@ jm_emit_tiler_draw(void *out, struct panfrost_batch *batch, bool fs_required,
       cfg.maximum_z = batch->maximum_z;
 
       cfg.depth_stencil = batch->depth_stencil;
+
+      if (prim == MESA_PRIM_LINES && rast->line_smooth) {
+         cfg.multisample_enable = true;
+         cfg.single_sampled_lines = false;
+      }
 
       if (fs_required) {
          bool has_oq = ctx->occlusion_query && ctx->active_queries;

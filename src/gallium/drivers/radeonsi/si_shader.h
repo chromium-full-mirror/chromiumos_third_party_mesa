@@ -66,7 +66,6 @@
  * shader parts per shader increased. The complete new list of shader parts is:
  * - 1st shader: prolog part
  * - 1st shader: main part
- * - 2nd shader: prolog part
  * - 2nd shader: main part
  * - 2nd shader: epilog part
  */
@@ -115,6 +114,7 @@
 #include "shader_info.h"
 #include "ac_binary.h"
 #include "ac_gpu_info.h"
+#include "util/mesa-blake3.h"
 #include "util/u_live_shader_cache.h"
 #include "util/u_queue.h"
 #include "si_pm4.h"
@@ -127,15 +127,22 @@ struct nir_shader;
 struct nir_instr;
 struct nir_lower_subgroups_options;
 
+#define SI_NUM_INTERP     32
 #define SI_MAX_ATTRIBS    16
 #define SI_MAX_VS_OUTPUTS 40
 #define SI_USER_CLIP_PLANE_MASK  0x3F
+
+#define INTERP_MODE_COLOR  INTERP_MODE_COUNT
 
 #define SI_PS_INPUT_CNTL_0000          (S_028644_OFFSET(0x20) | S_028644_DEFAULT_VAL(0))
 #define SI_PS_INPUT_CNTL_0001          (S_028644_OFFSET(0x20) | S_028644_DEFAULT_VAL(3))
 #define SI_PS_INPUT_CNTL_UNUSED        SI_PS_INPUT_CNTL_0000
 /* D3D9 behaviour for COLOR0 requires 0001. GL is undefined. */
 #define SI_PS_INPUT_CNTL_UNUSED_COLOR0 SI_PS_INPUT_CNTL_0001
+
+#define SI_VECTOR_ARG_IS_COLOR               BITFIELD_BIT(0)
+#define SI_VECTOR_ARG_COLOR_COMPONENT(x)     (((x) & 0x7) << 1)
+#define SI_GET_VECTOR_ARG_COLOR_COMPONENT(x) (((x) >> 1) & 0x7)
 
 /* SGPR user data indices */
 enum
@@ -228,27 +235,16 @@ enum
 #define VS_STATE_INDEXED__SHIFT              1
 #define VS_STATE_INDEXED__MASK               0x1 /* Shared by VS and GS */
 
-/* These fields are only set in current_vs_state in si_context, and they are accessible
- * in the shader via vs_state_bits in LS/HS.
- */
-/* bit gap */
-/* TCS output patch0 offset for per-patch outputs / 4
- * - 64 outputs are implied by SI_UNIQUE_SLOT_* values.
- * - max = 32(CPs) * 64(outputs) * 16(vec4) * 64(num_patches) * 2(inputs + outputs) / 4
- *       = 1M, clamped to 32K(LDS limit) / 4 = 8K
- * - only used by si_llvm_tcs_build_end, it can be removed after NIR lowering replaces it
- */
-#define VS_STATE_TCS_OUT_PATCH0_OFFSET__SHIFT   10
-#define VS_STATE_TCS_OUT_PATCH0_OFFSET__MASK    0x3fff
-#define VS_STATE_LS_OUT_VERTEX_SIZE__SHIFT      24
-#define VS_STATE_LS_OUT_VERTEX_SIZE__MASK       0xff /* max 32 * 4 + 1 (to reduce LDS bank conflicts) */
-
 /* These fields are only set in current_gs_state in si_context, and they are accessible
  * in the shader via vs_state_bits in legacy GS, the GS copy shader, and any NGG shader.
  */
 /* bit gap */
-#define GS_STATE_ESGS_VERTEX_STRIDE__SHIFT      10
-#define GS_STATE_ESGS_VERTEX_STRIDE__MASK       0xff /* max 32 * 4 + 1 */
+/* The number of ES outputs is derived from the last output index of SI_UNIQUE_SLOT_* + 1, which
+ * can be 55 at most. The ESGS vertex stride in dwords is: NUM_ES_OUTPUTS * 4 + 1
+ * Only used by GFX9+ to compute LDS addresses of GS inputs.
+ */
+#define GS_STATE_NUM_ES_OUTPUTS__SHIFT          13
+#define GS_STATE_NUM_ES_OUTPUTS__MASK           0x3f
 /* Small prim filter precision = num_samples / quant_mode, which can only be equal to 1/2^n
  * where n is between 4 and 12. Knowing that, we only need to store 4 bits of the FP32 exponent.
  * Set it like this: value = (fui(num_samples / quant_mode) >> 23) & 0xf;
@@ -256,14 +252,14 @@ enum
  * With 0x70 = 112, we get 2^(112 + value - 127) = 2^(value - 15), which is always a negative
  * exponent and it's equal to 1/2^(15 - value).
  */
-#define GS_STATE_SMALL_PRIM_PRECISION_NO_AA__SHIFT 18
+#define GS_STATE_SMALL_PRIM_PRECISION_NO_AA__SHIFT 19
 #define GS_STATE_SMALL_PRIM_PRECISION_NO_AA__MASK  0xf
-#define GS_STATE_SMALL_PRIM_PRECISION__SHIFT    22
+#define GS_STATE_SMALL_PRIM_PRECISION__SHIFT    23
 #define GS_STATE_SMALL_PRIM_PRECISION__MASK     0xf
-#define GS_STATE_STREAMOUT_QUERY_ENABLED__SHIFT 26
+#define GS_STATE_STREAMOUT_QUERY_ENABLED__SHIFT 27
 #define GS_STATE_STREAMOUT_QUERY_ENABLED__MASK  0x1
-#define GS_STATE_PROVOKING_VTX_INDEX__SHIFT     27
-#define GS_STATE_PROVOKING_VTX_INDEX__MASK      0x3
+#define GS_STATE_PROVOKING_VTX_FIRST__SHIFT     28
+#define GS_STATE_PROVOKING_VTX_FIRST__MASK      0x1
 #define GS_STATE_OUTPRIM__SHIFT                 29
 #define GS_STATE_OUTPRIM__MASK                  0x3
 #define GS_STATE_PIPELINE_STATS_EMU__SHIFT      31
@@ -301,12 +297,21 @@ enum
 #define SI_NGG_CULL_CLIP_PLANE_ENABLE(enable) (((enable) & 0xff) << 5)
 #define SI_NGG_CULL_GET_CLIP_PLANE_ENABLE(x)  (((x) >> 5) & 0xff)
 
+struct si_shader_profile {
+   uint32_t blake3[BLAKE3_OUT_LEN32];
+   uint32_t options;
+};
+
+extern struct si_shader_profile si_shader_profiles[];
+unsigned si_get_num_shader_profiles(void);
+
 #define SI_PROFILE_WAVE32                    (1 << 0)
-#define SI_PROFILE_WAVE64                    (1 << 1)
+#define SI_PROFILE_GFX10_WAVE64              (1 << 1)
 /* bit gap */
 #define SI_PROFILE_VS_NO_BINNING             (1 << 3)
-#define SI_PROFILE_PS_NO_BINNING             (1 << 4)
+#define SI_PROFILE_GFX9_GFX10_PS_NO_BINNING  (1 << 4)
 #define SI_PROFILE_CLAMP_DIV_BY_ZERO         (1 << 5)
+#define SI_PROFILE_NO_OPT_UNIFORM_VARYINGS   (1 << 6)
 
 enum si_shader_dump_type {
    SI_DUMP_SHADER_KEY,
@@ -462,7 +467,6 @@ struct si_shader_info {
    uint8_t colors_read; /**< which color components are read by the FS */
    uint8_t colors_written;
    uint16_t output_color_types; /**< Each bit pair is enum si_color_output_type */
-   bool vs_needs_prolog;
    bool color0_writes_all_cbufs; /**< gl_FragColor */
    bool reads_samplemask;   /**< does fragment shader read sample mask? */
    bool reads_tess_factors; /**< If TES reads TESSINNER or TESSOUTER */
@@ -606,26 +610,6 @@ struct si_shader_selector {
  */
 #pragma pack(push, 1)
 
-/* Common VS bits between the shader key and the prolog key. */
-struct si_vs_prolog_bits {
-   /* - If neither "is_one" nor "is_fetched" has a bit set, the instance
-    *   divisor is 0.
-    * - If "is_one" has a bit set, the instance divisor is 1.
-    * - If "is_fetched" has a bit set, the instance divisor will be loaded
-    *   from the constant buffer.
-    */
-   uint16_t instance_divisor_is_one;     /* bitmask of inputs */
-   uint16_t instance_divisor_is_fetched; /* bitmask of inputs */
-   unsigned ls_vgpr_fix : 1;
-};
-
-/* Common TCS bits between the shader key and the epilog key. */
-struct si_tcs_epilog_bits {
-   unsigned prim_mode : 3;
-   unsigned invoc0_tess_factors_are_def : 1;
-   unsigned tes_reads_tess_factors : 1;
-};
-
 /* Common PS bits between the shader key and the prolog key. */
 struct si_ps_prolog_bits {
    unsigned color_two_side : 1;
@@ -657,29 +641,13 @@ struct si_ps_epilog_bits {
 
 union si_shader_part_key {
    struct {
-      struct si_vs_prolog_bits states;
-      unsigned wave32 : 1;
-      unsigned num_input_sgprs : 6;
-      /* For merged stages such as LS-HS, HS input VGPRs are first. */
-      unsigned num_merged_next_stage_vgprs : 3;
-      unsigned num_inputs : 5;
-      unsigned as_ls : 1;
-      unsigned as_es : 1;
-      unsigned as_ngg : 1;
-   } vs_prolog;
-   struct {
-      struct si_tcs_epilog_bits states;
-      unsigned wave32 : 1;
-      unsigned noop_s_barrier : 1;
-   } tcs_epilog;
-   struct {
       struct si_ps_prolog_bits states;
       unsigned wave32 : 1;
       unsigned num_input_sgprs : 6;
       /* Color interpolation and two-side color selection. */
       unsigned colors_read : 8;       /* color input components read */
       unsigned num_interp_inputs : 5; /* BCOLOR is at this location */
-      unsigned num_pos_inputs : 3;
+      unsigned num_fragcoord_components : 3;
       unsigned wqm : 1;
       char color_attr_index[2];
       signed char color_interp_vgpr_index[2]; /* -1 == constant */
@@ -701,15 +669,9 @@ struct si_shader_key_ge {
    /* Prolog and epilog flags. */
    union {
       struct {
-         struct si_vs_prolog_bits prolog;
-      } vs;
-      struct {
-         struct si_vs_prolog_bits ls_prolog; /* for merged LS-HS */
          struct si_shader_selector *ls;      /* for merged LS-HS */
-         struct si_tcs_epilog_bits epilog;
       } tcs; /* tessellation control shader */
       struct {
-         struct si_vs_prolog_bits vs_prolog; /* for merged ES-GS */
          struct si_shader_selector *es;      /* for merged ES-GS */
       } gs;
    } part;
@@ -724,6 +686,15 @@ struct si_shader_key_ge {
 
    /* Flags for monolithic compilation only. */
    struct {
+      /* - If neither "is_one" nor "is_fetched" has a bit set, the instance
+       *   divisor is 0.
+       * - If "is_one" has a bit set, the instance divisor is 1.
+       * - If "is_fetched" has a bit set, the instance divisor will be loaded
+       *   from the constant buffer.
+       */
+      uint16_t instance_divisor_is_one;     /* bitmask of inputs */
+      uint16_t instance_divisor_is_fetched; /* bitmask of inputs */
+
       /* Whether fetch should be opencoded according to vs_fix_fetch.
        * Otherwise, if vs_fix_fetch is non-zero, buffer_load_format_xyzw
        * with minimal fixups is used. */
@@ -735,6 +706,9 @@ struct si_shader_key_ge {
          unsigned vs_export_prim_id : 1;    /* VS and TES only */
          unsigned gs_tri_strip_adj_fix : 1; /* GS only */
       } u;
+
+      /* Gfx12: When no streamout buffers are bound, streamout must be disabled. */
+      unsigned remove_streamout : 1;
    } mono;
 
    /* Optimization flags for asynchronous compilation only. */
@@ -749,6 +723,7 @@ struct si_shader_key_ge {
       /* For NGG VS and TES. */
       unsigned ngg_culling : 13; /* SI_NGG_CULL_* */
 
+
       /* For shaders where monolithic variants have better code.
        *
        * This is a flag that has no effect on code generation,
@@ -759,6 +734,10 @@ struct si_shader_key_ge {
 
       /* VS and TCS have the same number of patch vertices. */
       unsigned same_patch_vertices:1;
+
+      /* For TCS. */
+      unsigned tes_prim_mode : 3;
+      unsigned tes_reads_tess_factors : 1;
 
       unsigned inline_uniforms:1;
 
@@ -797,6 +776,9 @@ struct si_shader_key_ps {
       unsigned prefer_mono : 1;
       unsigned inline_uniforms:1;
 
+      /* This eliminates the FRONT_FACE input VGPR as well as shader code using it. */
+      int force_front_face_input : 2; /* 0 = gl_FrontFacing, 1 = true, -1 = false */
+
       /* This must be kept last to limit the number of variants
        * depending only on the uniform values.
        */
@@ -816,11 +798,14 @@ union si_shader_key {
 struct si_shader_binary_info {
    uint8_t vs_output_param_offset[NUM_TOTAL_VARYING_SLOTS];
    uint32_t vs_output_ps_input_cntl[NUM_TOTAL_VARYING_SLOTS];
+   union si_input_info ps_inputs[SI_NUM_INTERP];
+   uint8_t num_ps_inputs;
+   uint8_t ps_colors_read;
    uint8_t num_input_sgprs;
    uint8_t num_input_vgprs;
    bool uses_vmem_load_other; /* all other VMEM loads and atomics with return */
    bool uses_vmem_sampler_or_bvh;
-   uint8_t num_ps_pos_inputs;
+   uint8_t num_fragcoord_components;
    bool uses_instanceid;
    uint8_t nr_pos_exports;
    uint8_t nr_param_exports;
@@ -971,6 +956,8 @@ struct si_shader {
          unsigned cb_shader_mask;
          unsigned db_shader_control;
          unsigned num_interp;
+         unsigned spi_gs_out_config_ps;
+         unsigned pa_sc_hisz_control;
          bool writes_samplemask;
       } ps;
    };
@@ -1016,13 +1003,14 @@ bool si_shader_binary_open(struct si_screen *screen, struct si_shader *shader,
                            struct ac_rtld_binary *rtld);
 bool si_get_external_symbol(enum amd_gfx_level gfx_level, void *data, const char *name,
                             uint64_t *value);
+unsigned si_get_shader_prefetch_size(struct si_shader *shader);
 
 /* si_shader_info.c */
 void si_nir_scan_shader(struct si_screen *sscreen,  const struct nir_shader *nir,
                         struct si_shader_info *info);
 
 /* si_shader_nir.c */
-extern const struct nir_lower_subgroups_options si_nir_subgroups_options;
+void si_lower_mediump_io(struct nir_shader *nir);
 
 bool si_alu_to_scalar_packed_math_filter(const struct nir_instr *instr, const void *data);
 void si_nir_opts(struct si_screen *sscreen, struct nir_shader *nir, bool first);
@@ -1034,6 +1022,8 @@ unsigned si_determine_wave_size(struct si_screen *sscreen, struct si_shader *sha
 void gfx9_get_gs_info(struct si_shader_selector *es, struct si_shader_selector *gs,
                       struct gfx9_gs_info *out);
 bool gfx10_is_ngg_passthrough(struct si_shader *shader);
+
+bool si_should_clear_lds(struct si_screen *sscreen, const struct nir_shader *shader);
 
 /* Inline helpers. */
 
@@ -1084,7 +1074,8 @@ static inline bool si_shader_uses_streamout(const struct si_shader *shader)
 {
    return shader->selector->stage <= MESA_SHADER_GEOMETRY &&
           shader->selector->info.enabled_streamout_buffer_mask &&
-          !shader->key.ge.opt.remove_streamout;
+          !shader->key.ge.opt.remove_streamout &&
+          !shader->key.ge.mono.remove_streamout;
 }
 
 static inline bool si_shader_uses_discard(struct si_shader *shader)

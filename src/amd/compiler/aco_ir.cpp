@@ -1,25 +1,7 @@
 /*
  * Copyright © 2020 Valve Corporation
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
- *
+ * SPDX-License-Identifier: MIT
  */
 
 #include "aco_ir.h"
@@ -36,18 +18,21 @@ thread_local aco::monotonic_buffer_resource* instruction_buffer = nullptr;
 
 uint64_t debug_flags = 0;
 
-static const struct debug_control aco_debug_options[] = {{"validateir", DEBUG_VALIDATE_IR},
-                                                         {"validatera", DEBUG_VALIDATE_RA},
-                                                         {"novalidateir", DEBUG_NO_VALIDATE_IR},
-                                                         {"perfwarn", DEBUG_PERFWARN},
-                                                         {"force-waitcnt", DEBUG_FORCE_WAITCNT},
-                                                         {"force-waitdeps", DEBUG_FORCE_WAITDEPS},
-                                                         {"novn", DEBUG_NO_VN},
-                                                         {"noopt", DEBUG_NO_OPT},
-                                                         {"nosched", DEBUG_NO_SCHED},
-                                                         {"perfinfo", DEBUG_PERF_INFO},
-                                                         {"liveinfo", DEBUG_LIVE_INFO},
-                                                         {NULL, 0}};
+static const struct debug_control aco_debug_options[] = {
+   {"validateir", DEBUG_VALIDATE_IR},
+   {"validatera", DEBUG_VALIDATE_RA},
+   {"novalidateir", DEBUG_NO_VALIDATE_IR},
+   {"perfwarn", DEBUG_PERFWARN},
+   {"force-waitcnt", DEBUG_FORCE_WAITCNT},
+   {"force-waitdeps", DEBUG_FORCE_WAITDEPS},
+   {"novn", DEBUG_NO_VN},
+   {"noopt", DEBUG_NO_OPT},
+   {"nosched", DEBUG_NO_SCHED | DEBUG_NO_SCHED_ILP | DEBUG_NO_SCHED_VOPD},
+   {"nosched-ilp", DEBUG_NO_SCHED_ILP},
+   {"nosched-vopd", DEBUG_NO_SCHED_VOPD},
+   {"perfinfo", DEBUG_PERF_INFO},
+   {"liveinfo", DEBUG_LIVE_INFO},
+   {NULL, 0}};
 
 static once_flag init_once_flag = ONCE_FLAG_INIT;
 
@@ -114,7 +99,7 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
    program->dev.vgpr_alloc_granule = 4;
 
    if (gfx_level >= GFX10) {
-      program->dev.physical_sgprs = 5120; /* doesn't matter as long as it's at least 128 * 40 */
+      program->dev.physical_sgprs = 128 * 20; /* enough for max waves */
       program->dev.sgpr_alloc_granule = 128;
       program->dev.sgpr_limit =
          108; /* includes VCC, which can be treated as s[106-107] on GFX10+ */
@@ -143,13 +128,13 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
 
    program->dev.scratch_alloc_granule = gfx_level >= GFX11 ? 256 : 1024;
 
-   program->dev.max_wave64_per_simd = 10;
+   program->dev.max_waves_per_simd = 10;
    if (program->gfx_level >= GFX10_3)
-      program->dev.max_wave64_per_simd = 16;
+      program->dev.max_waves_per_simd = 16;
    else if (program->gfx_level == GFX10)
-      program->dev.max_wave64_per_simd = 20;
+      program->dev.max_waves_per_simd = 20;
    else if (program->family >= CHIP_POLARIS10 && program->family <= CHIP_VEGAM)
-      program->dev.max_wave64_per_simd = 8;
+      program->dev.max_waves_per_simd = 8;
 
    program->dev.simd_per_cu = program->gfx_level >= GFX10 ? 2 : 4;
 
@@ -228,7 +213,7 @@ get_sync_info(const Instruction* instr)
     */
    if (instr->opcode == aco_opcode::p_pops_gfx9_overlapped_wave_wait_done ||
        (instr->opcode == aco_opcode::s_wait_event &&
-        !(instr->sopp().imm & wait_event_imm_dont_wait_export_ready))) {
+        !(instr->salu().imm & wait_event_imm_dont_wait_export_ready))) {
       return memory_sync_info(storage_buffer | storage_image, semantic_acquire, scope_queuefamily);
    } else if (instr->opcode == aco_opcode::p_pops_gfx9_ordered_section_done) {
       return memory_sync_info(storage_buffer | storage_image, semantic_release, scope_queuefamily);
@@ -324,8 +309,8 @@ convert_to_SDWA(amd_gfx_level gfx_level, aco_ptr<Instruction>& instr)
 
    aco_ptr<Instruction> tmp = std::move(instr);
    Format format = asSDWA(withoutVOP3(tmp->format));
-   instr.reset(create_instruction<SDWA_instruction>(tmp->opcode, format, tmp->operands.size(),
-                                                    tmp->definitions.size()));
+   instr.reset(
+      create_instruction(tmp->opcode, format, tmp->operands.size(), tmp->definitions.size()));
    std::copy(tmp->operands.cbegin(), tmp->operands.cend(), instr->operands.begin());
    std::copy(tmp->definitions.cbegin(), tmp->definitions.cend(), instr->definitions.begin());
 
@@ -412,6 +397,9 @@ can_use_DPP(amd_gfx_level gfx_level, const aco_ptr<Instruction>& instr, bool dpp
              instr->opcode == aco_opcode::v_dot2_f32_bf16;
    }
 
+   if (instr->opcode == aco_opcode::v_pk_fmac_f16)
+      return gfx_level < GFX11;
+
    /* there are more cases but those all take 64-bit inputs */
    return instr->opcode != aco_opcode::v_madmk_f32 && instr->opcode != aco_opcode::v_madak_f32 &&
           instr->opcode != aco_opcode::v_madmk_f16 && instr->opcode != aco_opcode::v_madak_f16 &&
@@ -445,11 +433,11 @@ convert_to_DPP(amd_gfx_level gfx_level, aco_ptr<Instruction>& instr, bool dpp8)
    Format format =
       (Format)((uint32_t)tmp->format | (uint32_t)(dpp8 ? Format::DPP8 : Format::DPP16));
    if (dpp8)
-      instr.reset(create_instruction<DPP8_instruction>(tmp->opcode, format, tmp->operands.size(),
-                                                       tmp->definitions.size()));
+      instr.reset(
+         create_instruction(tmp->opcode, format, tmp->operands.size(), tmp->definitions.size()));
    else
-      instr.reset(create_instruction<DPP16_instruction>(tmp->opcode, format, tmp->operands.size(),
-                                                        tmp->definitions.size()));
+      instr.reset(
+         create_instruction(tmp->opcode, format, tmp->operands.size(), tmp->definitions.size()));
    std::copy(tmp->operands.cbegin(), tmp->operands.cend(), instr->operands.begin());
    std::copy(tmp->definitions.cbegin(), tmp->definitions.cend(), instr->definitions.begin());
 
@@ -601,12 +589,13 @@ instr_is_16bit(amd_gfx_level gfx_level, aco_opcode op)
 
    switch (op) {
    /* VOP3 */
-   case aco_opcode::v_mad_f16:
-   case aco_opcode::v_mad_u16:
-   case aco_opcode::v_mad_i16:
-   case aco_opcode::v_fma_f16:
-   case aco_opcode::v_div_fixup_f16:
+   case aco_opcode::v_mad_legacy_f16:
+   case aco_opcode::v_mad_legacy_u16:
+   case aco_opcode::v_mad_legacy_i16:
+   case aco_opcode::v_fma_legacy_f16:
+   case aco_opcode::v_div_fixup_legacy_f16: return false;
    case aco_opcode::v_interp_p2_f16:
+   case aco_opcode::v_interp_p2_hi_f16:
    case aco_opcode::v_fma_mixlo_f16:
    case aco_opcode::v_fma_mixhi_f16:
    /* VOP2 */
@@ -646,8 +635,8 @@ instr_is_16bit(amd_gfx_level gfx_level, aco_opcode op)
    case aco_opcode::v_cvt_i16_f16:
    case aco_opcode::v_cvt_norm_i16_f16:
    case aco_opcode::v_cvt_norm_u16_f16: return gfx_level >= GFX10;
-   /* on GFX10, all opsel instructions preserve the high bits */
-   default: return gfx_level >= GFX10 && can_use_opsel(gfx_level, op, -1);
+   /* all non legacy opsel instructions preserve the high bits */
+   default: return can_use_opsel(gfx_level, op, -1);
    }
 }
 
@@ -680,6 +669,7 @@ get_gfx11_true16_mask(aco_opcode op)
    case aco_opcode::v_sin_f16:
    case aco_opcode::v_sqrt_f16:
    case aco_opcode::v_trunc_f16:
+   case aco_opcode::v_swap_b16:
    case aco_opcode::v_mov_b16: return 0x1 | 0x8;
    case aco_opcode::v_add_f16:
    case aco_opcode::v_fmaak_f16:
@@ -1205,37 +1195,11 @@ can_swap_operands(aco_ptr<Instruction>& instr, aco_opcode* new_op, unsigned idx0
    }
 }
 
-wait_imm::wait_imm() : vm(unset_counter), exp(unset_counter), lgkm(unset_counter), vs(unset_counter)
+wait_imm::wait_imm() : exp(unset_counter), lgkm(unset_counter), vm(unset_counter), vs(unset_counter)
 {}
 wait_imm::wait_imm(uint16_t vm_, uint16_t exp_, uint16_t lgkm_, uint16_t vs_)
-    : vm(vm_), exp(exp_), lgkm(lgkm_), vs(vs_)
+    : exp(exp_), lgkm(lgkm_), vm(vm_), vs(vs_)
 {}
-
-wait_imm::wait_imm(enum amd_gfx_level gfx_level, uint16_t packed) : vs(unset_counter)
-{
-   if (gfx_level >= GFX11) {
-      vm = (packed >> 10) & 0x3f;
-      lgkm = (packed >> 4) & 0x3f;
-      exp = packed & 0x7;
-   } else {
-      vm = packed & 0xf;
-      if (gfx_level >= GFX9)
-         vm |= (packed >> 10) & 0x30;
-
-      exp = (packed >> 4) & 0x7;
-
-      lgkm = (packed >> 8) & 0xf;
-      if (gfx_level >= GFX10)
-         lgkm |= (packed >> 8) & 0x30;
-   }
-
-   if (vm == (gfx_level >= GFX9 ? 0x3f : 0xf))
-      vm = wait_imm::unset_counter;
-   if (exp == 0x7)
-      exp = wait_imm::unset_counter;
-   if (lgkm == (gfx_level >= GFX10 ? 0x3f : 0xf))
-      lgkm = wait_imm::unset_counter;
-}
 
 uint16_t
 wait_imm::pack(enum amd_gfx_level gfx_level) const
@@ -1268,35 +1232,102 @@ wait_imm::pack(enum amd_gfx_level gfx_level) const
    return imm;
 }
 
+wait_imm
+wait_imm::max(enum amd_gfx_level gfx_level)
+{
+   wait_imm imm;
+   imm.vm = gfx_level >= GFX9 ? 63 : 15;
+   imm.exp = 7;
+   imm.lgkm = gfx_level >= GFX10 ? 63 : 15;
+   imm.vs = gfx_level >= GFX10 ? 63 : 0;
+   return imm;
+}
+
+bool
+wait_imm::unpack(enum amd_gfx_level gfx_level, const Instruction* instr)
+{
+   if (!instr->isSALU() || (!instr->operands.empty() && instr->operands[0].physReg() != sgpr_null))
+      return false;
+
+   aco_opcode op = instr->opcode;
+   uint16_t packed = instr->salu().imm;
+
+   if (op == aco_opcode::s_waitcnt_expcnt) {
+      exp = std::min<uint8_t>(exp, packed);
+   } else if (op == aco_opcode::s_waitcnt_lgkmcnt) {
+      lgkm = std::min<uint8_t>(lgkm, packed);
+   } else if (op == aco_opcode::s_waitcnt_vmcnt) {
+      vm = std::min<uint8_t>(vm, packed);
+   } else if (op == aco_opcode::s_waitcnt_vscnt) {
+      vs = std::min<uint8_t>(vs, packed);
+   } else if (op == aco_opcode::s_waitcnt) {
+      uint8_t vm2, lgkm2, exp2;
+      if (gfx_level >= GFX11) {
+         vm2 = (packed >> 10) & 0x3f;
+         lgkm2 = (packed >> 4) & 0x3f;
+         exp2 = packed & 0x7;
+      } else {
+         vm2 = packed & 0xf;
+         if (gfx_level >= GFX9)
+            vm2 |= (packed >> 10) & 0x30;
+
+         exp2 = (packed >> 4) & 0x7;
+
+         lgkm2 = (packed >> 8) & 0xf;
+         if (gfx_level >= GFX10)
+            lgkm2 |= (packed >> 8) & 0x30;
+      }
+
+      if (vm2 == (gfx_level >= GFX9 ? 0x3f : 0xf))
+         vm2 = wait_imm::unset_counter;
+      if (exp2 == 0x7)
+         exp2 = wait_imm::unset_counter;
+      if (lgkm2 == (gfx_level >= GFX10 ? 0x3f : 0xf))
+         lgkm2 = wait_imm::unset_counter;
+
+      vm = std::min(vm, vm2);
+      exp = std::min(exp, exp2);
+      lgkm = std::min(lgkm, lgkm2);
+   } else {
+      return false;
+   }
+   return true;
+}
+
 bool
 wait_imm::combine(const wait_imm& other)
 {
-   bool changed = other.vm < vm || other.exp < exp || other.lgkm < lgkm || other.vs < vs;
-   vm = std::min(vm, other.vm);
-   exp = std::min(exp, other.exp);
-   lgkm = std::min(lgkm, other.lgkm);
-   vs = std::min(vs, other.vs);
+   bool changed = false;
+   for (unsigned i = 0; i < wait_type_num; i++) {
+      if (other[i] < (*this)[i])
+         changed = true;
+      (*this)[i] = std::min((*this)[i], other[i]);
+   }
    return changed;
 }
 
 bool
 wait_imm::empty() const
 {
-   return vm == unset_counter && exp == unset_counter && lgkm == unset_counter &&
-          vs == unset_counter;
+   for (unsigned i = 0; i < wait_type_num; i++) {
+      if ((*this)[i] != unset_counter)
+         return false;
+   }
+   return true;
 }
 
 void
 wait_imm::print(FILE* output) const
 {
-   if (exp != unset_counter)
-      fprintf(output, "exp: %u\n", exp);
-   if (vm != unset_counter)
-      fprintf(output, "vm: %u\n", vm);
-   if (lgkm != unset_counter)
-      fprintf(output, "lgkm: %u\n", lgkm);
-   if (vs != unset_counter)
-      fprintf(output, "vs: %u\n", vs);
+   const char* names[wait_type_num];
+   names[wait_type_exp] = "exp";
+   names[wait_type_vm] = "vm";
+   names[wait_type_lgkm] = "lgkm";
+   names[wait_type_vs] = "vs";
+   for (unsigned i = 0; i < wait_type_num; i++) {
+      if ((*this)[i] != unset_counter)
+         fprintf(output, "%s: %u\n", names[i], (*this)[i]);
+   }
 }
 
 bool
@@ -1308,8 +1339,11 @@ should_form_clause(const Instruction* a, const Instruction* b)
    if (a->format != b->format)
       return false;
 
+   if (a->operands.empty() || b->operands.empty())
+      return false;
+
    /* Assume loads which don't use descriptors might load from similar addresses. */
-   if (a->isFlatLike())
+   if (a->isFlatLike() || a->accessesLDS())
       return true;
    if (a->isSMEM() && a->operands[0].bytes() == 8 && b->operands[0].bytes() == 8)
       return true;
@@ -1352,12 +1386,6 @@ dealloc_vgprs(Program* program)
    if (program->gfx_level < GFX11)
       return false;
 
-   /* skip if deallocating VGPRs won't increase occupancy */
-   uint16_t max_waves = program->dev.max_wave64_per_simd * (64 / program->wave_size);
-   max_waves = max_suitable_waves(program, max_waves);
-   if (program->max_reg_demand.vgpr <= get_addr_vgpr_from_waves(program, max_waves))
-      return false;
-
    /* sendmsg(dealloc_vgprs) releases scratch, so this isn't safe if there is a in-progress scratch
     * store. */
    if (uses_scratch(program))
@@ -1370,8 +1398,8 @@ dealloc_vgprs(Program* program)
    if (!block.instructions.empty() && block.instructions.back()->opcode == aco_opcode::s_endpgm) {
       bld.reset(&block.instructions, block.instructions.begin() + (block.instructions.size() - 1));
       /* Due to a hazard, an s_nop is needed before "s_sendmsg sendmsg_dealloc_vgprs". */
-      bld.sopp(aco_opcode::s_nop, -1, 0);
-      bld.sopp(aco_opcode::s_sendmsg, -1, sendmsg_dealloc_vgprs);
+      bld.sopp(aco_opcode::s_nop, 0);
+      bld.sopp(aco_opcode::s_sendmsg, sendmsg_dealloc_vgprs);
    }
 
    return true;
@@ -1382,6 +1410,66 @@ Instruction::isTrans() const noexcept
 {
    return instr_info.classes[(int)opcode] == instr_class::valu_transcendental32 ||
           instr_info.classes[(int)opcode] == instr_class::valu_double_transcendental;
+}
+
+size_t
+get_instr_data_size(Format format)
+{
+   switch (format) {
+   case Format::SOP1:
+   case Format::SOP2:
+   case Format::SOPC:
+   case Format::SOPK:
+   case Format::SOPP: return sizeof(SALU_instruction);
+   case Format::SMEM: return sizeof(SMEM_instruction);
+   case Format::PSEUDO: return sizeof(Pseudo_instruction);
+   case Format::PSEUDO_BARRIER: return sizeof(Pseudo_barrier_instruction);
+   case Format::PSEUDO_REDUCTION: return sizeof(Pseudo_reduction_instruction);
+   case Format::PSEUDO_BRANCH: return sizeof(Pseudo_branch_instruction);
+   case Format::DS: return sizeof(DS_instruction);
+   case Format::FLAT:
+   case Format::GLOBAL:
+   case Format::SCRATCH: return sizeof(FLAT_instruction);
+   case Format::LDSDIR: return sizeof(LDSDIR_instruction);
+   case Format::MTBUF: return sizeof(MTBUF_instruction);
+   case Format::MUBUF: return sizeof(MUBUF_instruction);
+   case Format::MIMG: return sizeof(MIMG_instruction);
+   case Format::VOPD: return sizeof(VOPD_instruction);
+   case Format::VINTERP_INREG: return sizeof(VINTERP_inreg_instruction);
+   case Format::VINTRP: return sizeof(VINTRP_instruction);
+   case Format::EXP: return sizeof(Export_instruction);
+   default:
+      if ((uint16_t)format & (uint16_t)Format::DPP16)
+         return sizeof(DPP16_instruction);
+      else if ((uint16_t)format & (uint16_t)Format::DPP8)
+         return sizeof(DPP8_instruction);
+      else if ((uint16_t)format & (uint16_t)Format::SDWA)
+         return sizeof(SDWA_instruction);
+      else
+         return sizeof(VALU_instruction);
+   }
+}
+
+Instruction*
+create_instruction(aco_opcode opcode, Format format, uint32_t num_operands,
+                   uint32_t num_definitions)
+{
+   size_t size = get_instr_data_size(format);
+   size_t total_size = size + num_operands * sizeof(Operand) + num_definitions * sizeof(Definition);
+
+   void* data = instruction_buffer->allocate(total_size, alignof(uint32_t));
+   memset(data, 0, total_size);
+   Instruction* inst = (Instruction*)data;
+
+   inst->opcode = opcode;
+   inst->format = format;
+
+   uint16_t operands_offset = size - offsetof(Instruction, operands);
+   inst->operands = aco::span<Operand>(operands_offset, num_operands);
+   uint16_t definitions_offset = (char*)inst->operands.end() - (char*)&inst->definitions;
+   inst->definitions = aco::span<Definition>(definitions_offset, num_definitions);
+
+   return inst;
 }
 
 } // namespace aco

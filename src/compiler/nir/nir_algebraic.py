@@ -205,6 +205,9 @@ class Value(object):
       ${'true' if val.inexact else 'false'},
       ${'true' if val.exact else 'false'},
       ${'true' if val.ignore_exact else 'false'},
+      ${'true' if val.nsz else 'false'},
+      ${'true' if val.nnan else 'false'},
+      ${'true' if val.ninf else 'false'},
       ${val.c_opcode()},
       ${val.comm_expr_idx}, ${val.comm_exprs},
       { ${', '.join(src.array_index for src in val.sources)} },
@@ -377,16 +380,15 @@ class Expression(Value):
       # "many-comm-expr" isn't really a condition.  It's notification to the
       # generator that this pattern is known to have too many commutative
       # expressions, and an error should not be generated for this case.
-      self.many_commutative_expressions = False
-      if self.cond and self.cond.find("many-comm-expr") >= 0:
-         # Split the condition into a comma-separated list.  Remove
-         # "many-comm-expr".  If there is anything left, put it back together.
-         c = self.cond[1:-1].split(",")
-         c.remove("many-comm-expr")
-         assert(len(c) <= 1)
+      # nsz, nnan and ninf are special conditions, so we treat them specially too.
+      cond = {k: True for k in self.cond[1:-1].split(",")} if self.cond else {}
+      self.many_commutative_expressions = cond.pop('many-comm-expr', False)
+      self.nsz = cond.pop('nsz', False)
+      self.nnan = cond.pop('nnan', False)
+      self.ninf = cond.pop('ninf', False)
 
-         self.cond = c[0] if c else None
-         self.many_commutative_expressions = True
+      assert len(cond) <= 1
+      self.cond = cond.popitem()[0] if cond else None
 
       # Deduplicate references to the condition functions for the expressions
       # and save the index for the order they were added.
@@ -1168,8 +1170,12 @@ static const nir_algebraic_table ${pass_name}_table = {
 };
 
 bool
-${pass_name}(nir_shader *shader)
-{
+${pass_name}(
+   nir_shader *shader
+% for type, name in params:
+   , ${type} ${name}
+% endfor
+) {
    bool progress = false;
    bool condition_flags[${len(condition_list)}];
    const nir_shader_compiler_options *options = shader->options;
@@ -1192,12 +1198,14 @@ ${pass_name}(nir_shader *shader)
 
 
 class AlgebraicPass(object):
-   def __init__(self, pass_name, transforms):
+   # params is a list of `("type", "name")` tuples
+   def __init__(self, pass_name, transforms, params=[]):
       self.xforms = []
       self.opcode_xforms = defaultdict(lambda : [])
       self.pass_name = pass_name
       self.expression_cond = {}
       self.variable_cond = {}
+      self.params = params
 
       error = False
 
@@ -1263,7 +1271,8 @@ class AlgebraicPass(object):
                                              expression_cond = sorted(self.expression_cond.items(), key=lambda kv: kv[1]),
                                              variable_cond = sorted(self.variable_cond.items(), key=lambda kv: kv[1]),
                                              get_c_opcode=get_c_opcode,
-                                             itertools=itertools)
+                                             itertools=itertools,
+                                             params=self.params)
 
 # The replacement expression isn't necessarily exact if the search expression is exact.
 def ignore_exact(*expr):

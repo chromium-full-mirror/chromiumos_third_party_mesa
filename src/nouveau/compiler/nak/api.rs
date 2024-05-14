@@ -19,6 +19,7 @@ enum DebugFlags {
     Print,
     Serial,
     Spill,
+    Annotate,
 }
 
 pub struct Debug {
@@ -41,6 +42,7 @@ impl Debug {
                 "print" => flags |= 1 << DebugFlags::Print as u8,
                 "serial" => flags |= 1 << DebugFlags::Serial as u8,
                 "spill" => flags |= 1 << DebugFlags::Spill as u8,
+                "annotate" => flags |= 1 << DebugFlags::Annotate as u8,
                 unk => eprintln!("Unknown NAK_DEBUG flag \"{}\"", unk),
             }
         }
@@ -62,6 +64,10 @@ pub trait GetDebugFlags {
     fn spill(&self) -> bool {
         self.debug_flags() & (1 << DebugFlags::Spill as u8) != 0
     }
+
+    fn annotate(&self) -> bool {
+        self.debug_flags() & (1 << DebugFlags::Annotate as u8) != 0
+    }
 }
 
 pub static DEBUG: OnceLock<Debug> = OnceLock::new();
@@ -81,10 +87,13 @@ fn nir_options(dev: &nv_device_info) -> nir_shader_compiler_options {
     let mut op: nir_shader_compiler_options = unsafe { std::mem::zeroed() };
 
     op.lower_fdiv = true;
+    op.fuse_ffma16 = true;
+    op.fuse_ffma32 = true;
+    op.fuse_ffma64 = true;
     op.lower_flrp16 = true;
     op.lower_flrp32 = true;
     op.lower_flrp64 = true;
-    op.lower_bitfield_extract = true;
+    op.lower_bitfield_extract = dev.sm >= 70;
     op.lower_bitfield_insert = true;
     op.lower_pack_half_2x16 = true;
     op.lower_pack_unorm_2x16 = true;
@@ -105,6 +114,18 @@ fn nir_options(dev: &nv_device_info) -> nir_shader_compiler_options {
     op.lower_usub_sat = dev.sm < 70;
     op.lower_iadd_sat = true; // TODO
     op.use_interpolated_input_intrinsics = true;
+    op.lower_doubles_options = nir_lower_drcp
+        | nir_lower_dsqrt
+        | nir_lower_drsq
+        | nir_lower_dtrunc
+        | nir_lower_dfloor
+        | nir_lower_dceil
+        | nir_lower_dfract
+        | nir_lower_dround_even
+        | nir_lower_dsat;
+    if dev.sm >= 70 {
+        op.lower_doubles_options |= nir_lower_dminmax;
+    }
     op.lower_int64_options = !(nir_lower_icmp64
         | nir_lower_iadd64
         | nir_lower_ineg64
@@ -118,9 +139,18 @@ fn nir_options(dev: &nv_device_info) -> nir_shader_compiler_options {
     op.lower_scmp = true;
     op.lower_uadd_carry = true;
     op.lower_usub_borrow = true;
+    op.has_iadd3 = dev.sm >= 70;
     op.has_sdot_4x8 = dev.sm >= 70;
     op.has_udot_4x8 = dev.sm >= 70;
     op.has_sudot_4x8 = dev.sm >= 70;
+    // We set .ftz on f32 by default so we can support fmulz whenever the client
+    // doesn't explicitly request denorms.
+    op.has_fmulz_no_denorms = true;
+    op.has_find_msb_rev = true;
+    op.has_pack_half_2x16_rtz = true;
+    op.has_bfm = dev.sm >= 70;
+
+    op.max_unroll_iterations = 32;
 
     op
 }
@@ -132,10 +162,11 @@ pub extern "C" fn nak_compiler_create(
     assert!(!dev.is_null());
     let dev = unsafe { &*dev };
 
-    DEBUG.get_or_init(|| Debug::new());
+    DEBUG.get_or_init(Debug::new);
 
     let nak = Box::new(nak_compiler {
         sm: dev.sm,
+        warps_per_sm: dev.max_warps_per_mp,
         nir_options: nir_options(dev),
     });
 
@@ -270,6 +301,7 @@ pub extern "C" fn nak_compile_shader(
     s.lower_ineg();
     s.lower_par_copies();
     s.lower_copy_swap();
+    s.opt_jump_thread();
     s.calc_instr_deps();
 
     if DEBUG.print() {
@@ -280,12 +312,14 @@ pub extern "C" fn nak_compile_shader(
 
     let info = nak_shader_info {
         stage: nir.info.stage(),
-        num_gprs: if s.info.sm >= 75 {
+        sm: s.info.sm,
+        num_gprs: if s.info.sm >= 70 {
             max(4, s.info.num_gprs + 2)
         } else {
             max(4, s.info.num_gprs)
         },
         num_barriers: s.info.num_barriers,
+        _pad0: Default::default(),
         slm_size: s.info.slm_size,
         __bindgen_anon_1: match &s.info.stage {
             ShaderStageInfo::Compute(cs_info) => {
@@ -297,6 +331,7 @@ pub extern "C" fn nak_compile_shader(
                             cs_info.local_size[2],
                         ],
                         smem_size: cs_info.smem_size,
+                        _pad: Default::default(),
                     },
                 }
             }
@@ -315,6 +350,7 @@ pub extern "C" fn nak_compile_shader(
                         uses_sample_shading: nir_fs_info.uses_sample_shading(),
                         early_fragment_tests: nir_fs_info
                             .early_fragment_tests(),
+                        _pad: Default::default(),
                     },
                 }
             }
@@ -351,10 +387,14 @@ pub extern "C" fn nak_compile_shader(
                         } else {
                             NAK_TS_PRIMS_TRIANGLES_CW
                         },
+
+                        _pad: Default::default(),
                     },
                 }
             }
-            _ => nak_shader_info__bindgen_ty_1 { dummy: 0 },
+            _ => nak_shader_info__bindgen_ty_1 {
+                _pad: Default::default(),
+            },
         },
         vtg: match &s.info.stage {
             ShaderStageInfo::Geometry(_)
@@ -362,12 +402,15 @@ pub extern "C" fn nak_compile_shader(
             | ShaderStageInfo::Vertex => {
                 let writes_layer =
                     nir.info.outputs_written & (1 << VARYING_SLOT_LAYER) != 0;
+                let writes_point_size =
+                    nir.info.outputs_written & (1 << VARYING_SLOT_PSIZ) != 0;
                 let num_clip = nir.info.clip_distance_array_size();
                 let num_cull = nir.info.cull_distance_array_size();
                 let clip_enable = (1_u32 << num_clip) - 1;
                 let cull_enable = ((1_u32 << num_cull) - 1) << num_clip;
                 nak_shader_info__bindgen_ty_2 {
-                    writes_layer: writes_layer,
+                    writes_layer,
+                    writes_point_size,
                     clip_enable: clip_enable.try_into().unwrap(),
                     cull_enable: cull_enable.try_into().unwrap(),
                     xfb: unsafe { nak_xfb_from_nir(nir.xfb_info) },
@@ -383,6 +426,8 @@ pub extern "C" fn nak_compile_shader(
         write!(asm, "{}", s).expect("Failed to dump assembly");
     }
 
+    s.remove_annotations();
+
     let code = if nak.sm >= 70 {
         s.encode_sm70()
     } else if nak.sm >= 50 {
@@ -396,7 +441,16 @@ pub extern "C" fn nak_compile_shader(
             let c_name = _mesa_shader_stage_to_string(info.stage as u32);
             CStr::from_ptr(c_name).to_str().expect("Invalid UTF-8")
         };
+        let instruction_count = if nak.sm >= 70 {
+            code.len() / 4
+        } else if nak.sm >= 50 {
+            (code.len() / 8) * 3
+        } else {
+            unreachable!()
+        };
+
         eprintln!("Stage: {}", stage_name);
+        eprintln!("Instruction count: {}", instruction_count);
         eprintln!("Num GPRs: {}", info.num_gprs);
         eprintln!("SLM size: {}", info.slm_size);
 

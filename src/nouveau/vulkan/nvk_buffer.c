@@ -9,22 +9,22 @@
 #include "nvk_device_memory.h"
 #include "nvk_physical_device.h"
 
-uint32_t
-nvk_get_buffer_alignment(UNUSED const struct nv_device_info *info,
+static uint32_t
+nvk_get_buffer_alignment(const struct nvk_physical_device *pdev,
                          VkBufferUsageFlags2KHR usage_flags,
                          VkBufferCreateFlags create_flags)
 {
    uint32_t alignment = 16;
 
    if (usage_flags & VK_BUFFER_USAGE_2_UNIFORM_BUFFER_BIT_KHR)
-      alignment = MAX2(alignment, NVK_MIN_UBO_ALIGNMENT);
+      alignment = MAX2(alignment, nvk_min_cbuf_alignment(&pdev->info));
 
    if (usage_flags & VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT_KHR)
       alignment = MAX2(alignment, NVK_MIN_SSBO_ALIGNMENT);
 
    if (usage_flags & (VK_BUFFER_USAGE_2_UNIFORM_TEXEL_BUFFER_BIT_KHR |
                       VK_BUFFER_USAGE_2_STORAGE_TEXEL_BUFFER_BIT_KHR))
-      alignment = MAX2(alignment, NVK_MIN_UBO_ALIGNMENT);
+      alignment = MAX2(alignment, NVK_MIN_TEXEL_BUFFER_ALIGNMENT);
 
    if (create_flags & (VK_BUFFER_CREATE_SPARSE_BINDING_BIT |
                        VK_BUFFER_CREATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT))
@@ -94,7 +94,7 @@ nvk_CreateBuffer(VkDevice device,
        (buffer->vk.create_flags & (VK_BUFFER_CREATE_SPARSE_BINDING_BIT |
                                    VK_BUFFER_CREATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT))) {
       const uint32_t alignment =
-         nvk_get_buffer_alignment(&nvk_device_physical(dev)->info,
+         nvk_get_buffer_alignment(nvk_device_physical(dev),
                                   buffer->vk.usage,
                                   buffer->vk.create_flags);
       assert(alignment >= 4096);
@@ -157,16 +157,17 @@ nvk_GetDeviceBufferMemoryRequirements(
    VkMemoryRequirements2 *pMemoryRequirements)
 {
    VK_FROM_HANDLE(nvk_device, dev, device);
+   struct nvk_physical_device *pdev = nvk_device_physical(dev);
 
    const uint32_t alignment =
-      nvk_get_buffer_alignment(&nvk_device_physical(dev)->info,
+      nvk_get_buffer_alignment(nvk_device_physical(dev),
                                pInfo->pCreateInfo->usage,
                                pInfo->pCreateInfo->flags);
 
    pMemoryRequirements->memoryRequirements = (VkMemoryRequirements) {
       .size = align64(pInfo->pCreateInfo->size, alignment),
       .alignment = alignment,
-      .memoryTypeBits = BITFIELD_MASK(dev->pdev->mem_type_cnt),
+      .memoryTypeBits = BITFIELD_MASK(pdev->mem_type_count),
    };
 
    vk_foreach_struct_const(ext, pMemoryRequirements->pNext) {
@@ -178,7 +179,7 @@ nvk_GetDeviceBufferMemoryRequirements(
          break;
       }
       default:
-         nvk_debug_ignored_stype(ext->sType);
+         vk_debug_ignored_stype(ext->sType);
          break;
       }
    }
@@ -241,22 +242,20 @@ nvk_BindBufferMemory2(VkDevice device,
       buffer->is_local = !(mem->bo->flags & NOUVEAU_WS_BO_GART);
       if (buffer->vma_size_B) {
          VK_FROM_HANDLE(nvk_device, dev, device);
-         if (mem != NULL) {
-            nouveau_ws_bo_bind_vma(dev->ws_dev,
-                                   mem->bo,
-                                   buffer->addr,
-                                   buffer->vma_size_B,
-                                   pBindInfos[i].memoryOffset,
-                                   0 /* pte_kind */);
-         } else {
-            nouveau_ws_bo_unbind_vma(dev->ws_dev,
-                                     buffer->addr,
-                                     buffer->vma_size_B);
-         }
+         nouveau_ws_bo_bind_vma(dev->ws_dev,
+                                mem->bo,
+                                buffer->addr,
+                                buffer->vma_size_B,
+                                pBindInfos[i].memoryOffset,
+                                0 /* pte_kind */);
       } else {
-         buffer->addr =
-            mem != NULL ? mem->bo->offset + pBindInfos[i].memoryOffset : 0;
+         buffer->addr = mem->bo->offset + pBindInfos[i].memoryOffset;
       }
+
+      const VkBindMemoryStatusKHR *status =
+         vk_find_struct_const(pBindInfos[i].pNext, BIND_MEMORY_STATUS_KHR);
+      if (status != NULL && status->pResult != NULL)
+         *status->pResult = VK_SUCCESS;
    }
    return VK_SUCCESS;
 }
