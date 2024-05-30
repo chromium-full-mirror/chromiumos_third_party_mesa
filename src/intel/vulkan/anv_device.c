@@ -522,7 +522,7 @@ get_features(const struct anv_physical_device *pdevice,
       .multiviewTessellationShader         = true,
       .variablePointersStorageBuffer       = true,
       .variablePointers                    = true,
-      .protectedMemory                     = pdevice->has_protected_contexts,
+      .protectedMemory                     = false,
       .samplerYcbcrConversion              = true,
       .shaderDrawParameters                = true,
 
