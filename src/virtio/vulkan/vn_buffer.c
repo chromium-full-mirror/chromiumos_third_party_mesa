@@ -452,8 +452,36 @@ vn_BindBufferMemory2(VkDevice device,
                      const VkBindBufferMemoryInfo *pBindInfos)
 {
    struct vn_device *dev = vn_device_from_handle(device);
+   const VkAllocationCallbacks *alloc = &dev->base.base.alloc;
+
+   VkBindBufferMemoryInfo *local_infos = NULL;
+   for (uint32_t i = 0; i < bindInfoCount; i++) {
+      const VkBindBufferMemoryInfo *info = &pBindInfos[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(info->memory);
+      if (!mem->base_memory)
+         continue;
+
+      if (!local_infos) {
+         const size_t size = sizeof(*local_infos) * bindInfoCount;
+         local_infos = vk_alloc(alloc, size, VN_DEFAULT_ALIGN,
+                                VK_SYSTEM_ALLOCATION_SCOPE_COMMAND);
+         if (!local_infos)
+            return vn_error(dev->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+
+         memcpy(local_infos, pBindInfos, size);
+      }
+
+      local_infos[i].memory = vn_device_memory_to_handle(mem->base_memory);
+      local_infos[i].memoryOffset += mem->base_offset;
+   }
+   if (local_infos)
+      pBindInfos = local_infos;
+
    vn_async_vkBindBufferMemory2(dev->primary_ring, device, bindInfoCount,
                                 pBindInfos);
+
+   vk_free(alloc, local_infos);
 
    return VK_SUCCESS;
 }

@@ -480,9 +480,14 @@ vn_device_init(struct vn_device *dev,
       goto out_memory_report_fini;
    }
 
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++) {
+      struct vn_device_memory_pool *pool = &dev->memory_pools[i];
+      mtx_init(&pool->mutex, mtx_plain);
+   }
+
    result = vn_device_feedback_pool_init(dev);
    if (result != VK_SUCCESS)
-      goto out_queue_family_fini;
+      goto out_memory_pool_fini;
 
    result = vn_feedback_cmd_pools_init(dev);
    if (result != VK_SUCCESS)
@@ -508,7 +513,10 @@ out_feedback_cmd_pools_fini:
 out_feedback_pool_fini:
    vn_device_feedback_pool_fini(dev);
 
-out_queue_family_fini:
+out_memory_pool_fini:
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
+      vn_device_memory_pool_fini(dev, i);
+
    vn_device_queue_family_fini(dev);
 
 out_memory_report_fini:
@@ -591,6 +599,9 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
    vn_feedback_cmd_pools_fini(dev);
 
    vn_device_feedback_pool_fini(dev);
+
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
+      vn_device_memory_pool_fini(dev, i);
 
    vn_device_queue_family_fini(dev);
 

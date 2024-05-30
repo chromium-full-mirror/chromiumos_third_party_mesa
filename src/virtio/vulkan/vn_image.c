@@ -754,7 +754,7 @@ vn_BindImageMemory2(VkDevice device,
          vn_device_memory_from_handle(info->memory);
 
       /* no bind info fixup needed */
-      if (mem) {
+      if (mem && !mem->base_memory) {
          if (img->wsi.is_wsi)
             vn_image_bind_wsi_memory(img, mem);
          continue;
@@ -792,10 +792,13 @@ vn_BindImageMemory2(VkDevice device,
          memcpy(local_infos, pBindInfos, size);
       }
 
-      /* If VkBindImageMemorySwapchainInfoKHR is given, we've looked mem up
-       * above and also need to patch it in.
+      /* If mem is suballocated, mem->base_memory is non-NULL and we must
+       * patch it in.  If VkBindImageMemorySwapchainInfoKHR is given, we've
+       * looked mem up above and also need to patch it in.
        */
-      local_infos[i].memory = vn_device_memory_to_handle(mem);
+      local_infos[i].memory = vn_device_memory_to_handle(
+         mem->base_memory ? mem->base_memory : mem);
+      local_infos[i].memoryOffset += mem->base_offset;
    }
    if (local_infos)
       pBindInfos = local_infos;
