@@ -2,28 +2,13 @@
  * Copyright © 2016 Red Hat.
  * Copyright © 2016 Bas Nieuwenhuizen
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 #include "nir/nir_builder.h"
+#include "radv_entrypoints.h"
 #include "radv_meta.h"
 #include "vk_common_entrypoints.h"
+#include "vk_shader_module.h"
 
 /*
  * GFX queue: Compute shader implementation of image->buffer copy
@@ -1082,10 +1067,12 @@ static void
 create_iview(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *surf, struct radv_image_view *iview,
              VkFormat format, VkImageAspectFlagBits aspects)
 {
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+
    if (format == VK_FORMAT_UNDEFINED)
       format = surf->format;
 
-   radv_image_view_init(iview, cmd_buffer->device,
+   radv_image_view_init(iview, device,
                         &(VkImageViewCreateInfo){
                            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
                            .image = radv_image_to_handle(surf->image),
@@ -1107,7 +1094,9 @@ static void
 create_bview(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer *buffer, unsigned offset, VkFormat format,
              struct radv_buffer_view *bview)
 {
-   radv_buffer_view_init(bview, cmd_buffer->device,
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+
+   radv_buffer_view_init(bview, device,
                          &(VkBufferViewCreateInfo){
                             .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
                             .flags = 0,
@@ -1122,7 +1111,7 @@ static void
 create_buffer_from_image(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *surf,
                          VkBufferUsageFlagBits2KHR usage, VkBuffer *buffer)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radv_device_memory mem;
 
    radv_device_memory_init(&mem, device, surf->image->bindings[0].bo);
@@ -1156,6 +1145,7 @@ static void
 create_bview_for_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer *buffer, unsigned offset,
                            VkFormat src_format, struct radv_buffer_view *bview)
 {
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    VkFormat format;
 
    switch (src_format) {
@@ -1172,7 +1162,7 @@ create_bview_for_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct radv_buffe
       unreachable("invalid R32G32B32 format");
    }
 
-   radv_buffer_view_init(bview, cmd_buffer->device,
+   radv_buffer_view_init(bview, device,
                          &(VkBufferViewCreateInfo){
                             .sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
                             .flags = 0,
@@ -1197,16 +1187,17 @@ fixup_gfx9_cs_copy(struct radv_cmd_buffer *cmd_buffer, const struct radv_meta_bl
                    const struct radv_meta_blit2d_surf *img_bsurf, const struct radv_meta_blit2d_rect *rect,
                    bool to_image)
 {
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const struct radv_physical_device *pdev = radv_device_physical(device);
    const unsigned mip_level = img_bsurf->level;
    const struct radv_image *image = img_bsurf->image;
    const struct radeon_surf *surf = &image->planes[0].surface;
-   struct radv_device *device = cmd_buffer->device;
-   const struct radeon_info *rad_info = &device->physical_device->rad_info;
+   const struct radeon_info *gpu_info = &pdev->info;
    struct ac_addrlib *addrlib = device->ws->get_addrlib(device->ws);
    struct ac_surf_info surf_info = radv_get_ac_surf_info(device, image);
 
    /* GFX10 will use a different workaround unless this is not a 2D image */
-   if (rad_info->gfx_level < GFX9 || (rad_info->gfx_level >= GFX10 && image->vk.image_type == VK_IMAGE_TYPE_2D) ||
+   if (gpu_info->gfx_level < GFX9 || (gpu_info->gfx_level >= GFX10 && image->vk.image_type == VK_IMAGE_TYPE_2D) ||
        image->vk.mip_levels == 1 || !vk_format_is_block_compressed(image->vk.format))
       return;
 
@@ -1216,8 +1207,7 @@ fixup_gfx9_cs_copy(struct radv_cmd_buffer *cmd_buffer, const struct radv_meta_bl
    /* The hardware-calculated extent of the selected mip
     * (naive divide-by-two integer math)
     */
-   VkExtent2D hw_mip_extent = {radv_minify(hw_base_extent.width, mip_level),
-                               radv_minify(hw_base_extent.height, mip_level)};
+   VkExtent2D hw_mip_extent = {u_minify(hw_base_extent.width, mip_level), u_minify(hw_base_extent.height, mip_level)};
 
    /* The actual extent we want to copy */
    VkExtent2D mip_extent = {rect->width, rect->height};
@@ -1246,7 +1236,7 @@ fixup_gfx9_cs_copy(struct radv_cmd_buffer *cmd_buffer, const struct radv_meta_bl
       uint32_t x = (coordY < hw_mip_extent.height) ? hw_mip_extent.width : 0;
       for (; x < mip_extent.width; x++) {
          uint32_t coordX = x + mip_offset.x;
-         uint64_t addr = ac_surface_addr_from_coord(addrlib, rad_info, surf, &surf_info, mip_level, coordX, coordY,
+         uint64_t addr = ac_surface_addr_from_coord(addrlib, gpu_info, surf, &surf_info, mip_level, coordX, coordY,
                                                     img_bsurf->layer, image->vk.image_type == VK_IMAGE_TYPE_3D);
          struct radeon_winsys_bo *img_bo = image->bindings[0].bo;
          struct radeon_winsys_bo *mem_bo = buf_bsurf->buffer->bo;
@@ -1266,9 +1256,11 @@ fixup_gfx9_cs_copy(struct radv_cmd_buffer *cmd_buffer, const struct radv_meta_bl
 static unsigned
 get_image_stride_for_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *surf)
 {
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   const struct radv_physical_device *pdev = radv_device_physical(device);
    unsigned stride;
 
-   if (cmd_buffer->device->physical_device->rad_info.gfx_level >= GFX9) {
+   if (pdev->info.gfx_level >= GFX9) {
       stride = surf->image->planes[0].surface.u.gfx9.surf_pitch;
    } else {
       stride = surf->image->planes[0].surface.u.legacy.level[0].nblk_x * 3;
@@ -1280,7 +1272,7 @@ get_image_stride_for_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct radv_m
 static void
 itob_bind_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *src, struct radv_buffer_view *dst)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radv_meta_push_descriptor_set(
       cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, device->meta_state.itob.img_p_layout, 0, /* set */
@@ -1312,8 +1304,8 @@ void
 radv_meta_image_to_buffer(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *src,
                           struct radv_meta_blit2d_buffer *dst, unsigned num_rects, struct radv_meta_blit2d_rect *rects)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.itob.pipeline;
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.itob.pipeline;
    struct radv_image_view src_view;
    struct radv_buffer_view dst_view;
 
@@ -1322,7 +1314,7 @@ radv_meta_image_to_buffer(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_b
    itob_bind_descriptors(cmd_buffer, &src_view, &dst_view);
 
    if (src->image->vk.image_type == VK_IMAGE_TYPE_3D)
-      pipeline = cmd_buffer->device->meta_state.itob.pipeline_3d;
+      pipeline = device->meta_state.itob.pipeline_3d;
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
@@ -1343,7 +1335,7 @@ static void
 btoi_r32g32b32_bind_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer_view *src,
                                 struct radv_buffer_view *dst)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radv_meta_push_descriptor_set(
       cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, device->meta_state.btoi_r32g32b32.img_p_layout, 0, /* set */
@@ -1371,8 +1363,8 @@ radv_meta_buffer_to_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struc
                                        struct radv_meta_blit2d_surf *dst, unsigned num_rects,
                                        struct radv_meta_blit2d_rect *rects)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.btoi_r32g32b32.pipeline;
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.btoi_r32g32b32.pipeline;
    struct radv_buffer_view src_view, dst_view;
    unsigned dst_offset = 0;
    unsigned stride;
@@ -1414,7 +1406,7 @@ radv_meta_buffer_to_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struc
 static void
 btoi_bind_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer_view *src, struct radv_image_view *dst)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radv_meta_push_descriptor_set(
       cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, device->meta_state.btoi.img_p_layout, 0, /* set */
@@ -1445,8 +1437,8 @@ void
 radv_meta_buffer_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_buffer *src,
                              struct radv_meta_blit2d_surf *dst, unsigned num_rects, struct radv_meta_blit2d_rect *rects)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.btoi.pipeline;
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.btoi.pipeline;
    struct radv_buffer_view src_view;
    struct radv_image_view dst_view;
 
@@ -1461,7 +1453,7 @@ radv_meta_buffer_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_met
    btoi_bind_descriptors(cmd_buffer, &src_view, &dst_view);
 
    if (dst->image->vk.image_type == VK_IMAGE_TYPE_3D)
-      pipeline = cmd_buffer->device->meta_state.btoi.pipeline_3d;
+      pipeline = device->meta_state.btoi.pipeline_3d;
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
    for (unsigned r = 0; r < num_rects; ++r) {
@@ -1486,7 +1478,7 @@ static void
 itoi_r32g32b32_bind_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer_view *src,
                                 struct radv_buffer_view *dst)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radv_meta_push_descriptor_set(
       cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, device->meta_state.itoi_r32g32b32.img_p_layout, 0, /* set */
@@ -1514,8 +1506,8 @@ radv_meta_image_to_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct
                                       struct radv_meta_blit2d_surf *dst, unsigned num_rects,
                                       struct radv_meta_blit2d_rect *rects)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.itoi_r32g32b32.pipeline;
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.itoi_r32g32b32.pipeline;
    struct radv_buffer_view src_view, dst_view;
    unsigned src_offset = 0, dst_offset = 0;
    unsigned src_stride, dst_stride;
@@ -1560,7 +1552,7 @@ radv_meta_image_to_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct
 static void
 itoi_bind_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *src, struct radv_image_view *dst)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radv_meta_push_descriptor_set(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, device->meta_state.itoi.img_p_layout,
                                  0, /* set */
@@ -1596,7 +1588,7 @@ void
 radv_meta_image_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *src,
                             struct radv_meta_blit2d_surf *dst, unsigned num_rects, struct radv_meta_blit2d_rect *rects)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radv_image_view src_view, dst_view;
    uint32_t samples = src->image->vk.samples;
    uint32_t samples_log2 = ffs(samples) - 1;
@@ -1608,15 +1600,26 @@ radv_meta_image_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta
    }
 
    u_foreach_bit (i, dst->aspect_mask) {
-      unsigned aspect_mask = 1u << i;
+      unsigned dst_aspect_mask = 1u << i;
+      unsigned src_aspect_mask = dst_aspect_mask;
       VkFormat depth_format = 0;
-      if (aspect_mask == VK_IMAGE_ASPECT_STENCIL_BIT)
+      if (dst_aspect_mask == VK_IMAGE_ASPECT_STENCIL_BIT)
          depth_format = vk_format_stencil_only(dst->image->vk.format);
-      else if (aspect_mask == VK_IMAGE_ASPECT_DEPTH_BIT)
+      else if (dst_aspect_mask == VK_IMAGE_ASPECT_DEPTH_BIT)
          depth_format = vk_format_depth_only(dst->image->vk.format);
+      else {
+         /*
+          * "Multi-planar images can only be copied on a per-plane basis, and the subresources used in each region when
+          * copying to or from such images must specify only one plane, though different regions can specify different
+          * planes."
+          */
+         assert((dst->aspect_mask & (dst->aspect_mask - 1)) == 0);
+         assert((src->aspect_mask & (src->aspect_mask - 1)) == 0);
+         src_aspect_mask = src->aspect_mask;
+      }
 
-      create_iview(cmd_buffer, src, &src_view, depth_format, aspect_mask);
-      create_iview(cmd_buffer, dst, &dst_view, depth_format, aspect_mask);
+      create_iview(cmd_buffer, src, &src_view, depth_format, src_aspect_mask);
+      create_iview(cmd_buffer, dst, &dst_view, depth_format, dst_aspect_mask);
 
       itoi_bind_descriptors(cmd_buffer, &src_view, &dst_view);
 
@@ -1648,7 +1651,7 @@ radv_meta_image_to_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta
 static void
 cleari_r32g32b32_bind_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer_view *view)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radv_meta_push_descriptor_set(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                  device->meta_state.cleari_r32g32b32.img_p_layout, 0, /* set */
@@ -1667,8 +1670,8 @@ static void
 radv_meta_clear_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *dst,
                                    const VkClearColorValue *clear_color)
 {
-   VkPipeline pipeline = cmd_buffer->device->meta_state.cleari_r32g32b32.pipeline;
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
+   VkPipeline pipeline = device->meta_state.cleari_r32g32b32.pipeline;
    struct radv_buffer_view dst_view;
    unsigned stride;
    VkBuffer buffer;
@@ -1705,7 +1708,7 @@ radv_meta_clear_image_cs_r32g32b32(struct radv_cmd_buffer *cmd_buffer, struct ra
 static void
 cleari_bind_descriptors(struct radv_cmd_buffer *cmd_buffer, struct radv_image_view *dst_iview)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
 
    radv_meta_push_descriptor_set(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, device->meta_state.cleari.img_p_layout,
                                  0, /* set */
@@ -1731,7 +1734,7 @@ void
 radv_meta_clear_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_blit2d_surf *dst,
                          const VkClearColorValue *clear_color)
 {
-   struct radv_device *device = cmd_buffer->device;
+   struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    struct radv_image_view dst_iview;
    uint32_t samples = dst->image->vk.samples;
    uint32_t samples_log2 = ffs(samples) - 1;
@@ -1745,9 +1748,9 @@ radv_meta_clear_image_cs(struct radv_cmd_buffer *cmd_buffer, struct radv_meta_bl
    create_iview(cmd_buffer, dst, &dst_iview, VK_FORMAT_UNDEFINED, dst->aspect_mask);
    cleari_bind_descriptors(cmd_buffer, &dst_iview);
 
-   VkPipeline pipeline = cmd_buffer->device->meta_state.cleari.pipeline[samples_log2];
+   VkPipeline pipeline = device->meta_state.cleari.pipeline[samples_log2];
    if (dst->image->vk.image_type == VK_IMAGE_TYPE_3D)
-      pipeline = cmd_buffer->device->meta_state.cleari.pipeline_3d;
+      pipeline = device->meta_state.cleari.pipeline_3d;
 
    radv_CmdBindPipeline(radv_cmd_buffer_to_handle(cmd_buffer), VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
