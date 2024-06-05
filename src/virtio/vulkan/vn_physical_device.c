@@ -741,6 +741,7 @@ vn_physical_device_init_queue_family_properties(
        (sparse_count && non_sparse_only_count + sparse_count == count))
       physical_dev->sparse_binding_disabled = true;
 
+   physical_dev->sparse_binding_disabled = true;
    physical_dev->queue_family_properties = props;
    physical_dev->queue_family_count = non_sparse_only_count;
 
