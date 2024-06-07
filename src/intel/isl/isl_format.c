@@ -882,10 +882,6 @@ bool
 isl_format_supports_ccs_e(const struct intel_device_info *devinfo,
                           enum isl_format format)
 {
-   /* Disable compression on MTL until B0 */
-   if (intel_needs_workaround(devinfo, 14017240301))
-      return false;
-
    if (!format_info_exists(format))
       return false;
 
@@ -1224,6 +1220,12 @@ isl_format_rgbx_to_rgba(enum isl_format rgbx)
 bool
 isl_format_support_sampler_route_to_lsc(enum isl_format fmt)
 {
+   /* TODO/FIXME: even only enabling the optimization with formats below this
+    * is causing some tests to fail so completely disabling this optimization
+    * for now.
+    */
+   return false;
+
    switch (fmt) {
    case ISL_FORMAT_R8_UNORM:
    case ISL_FORMAT_R8G8_UNORM:
