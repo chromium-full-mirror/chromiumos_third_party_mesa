@@ -766,15 +766,12 @@ struct gl_texture_image
    mesa_format TexFormat;         /**< The actual texture memory format */
 
    GLuint Border;		/**< 0 or 1 */
-   GLuint Width;		/**< = 2^WidthLog2 + 2*Border */
-   GLuint Height;		/**< = 2^HeightLog2 + 2*Border */
-   GLuint Depth;		/**< = 2^DepthLog2 + 2*Border */
+   GLuint Width;
+   GLuint Height;
+   GLuint Depth;
    GLuint Width2;		/**< = Width - 2*Border */
    GLuint Height2;		/**< = Height - 2*Border */
    GLuint Depth2;		/**< = Depth - 2*Border */
-   GLuint WidthLog2;		/**< = log2(Width2) */
-   GLuint HeightLog2;		/**< = log2(Height2) */
-   GLuint DepthLog2;		/**< = log2(Depth2) */
    GLuint MaxNumLevels;		/**< = maximum possible number of mipmap
                                        levels, computed from the dimensions */
 
@@ -1322,6 +1319,8 @@ struct gl_texture_attrib
 
    /** GL_ARB_seamless_cubemap */
    GLboolean CubeMapSeamless;
+
+   GLshort NumSamplersWithClamp;
 
    struct gl_texture_unit Unit[MAX_COMBINED_TEXTURE_IMAGE_UNITS];
    struct gl_fixedfunc_texture_unit FixedFuncUnit[MAX_TEXTURE_COORD_UNITS];
@@ -2482,31 +2481,11 @@ struct gl_shared_state
     */
    simple_mtx_t ShaderIncludeMutex;
 
-   /**
-    * Some context in this share group was affected by a GPU reset
-    *
-    * On the next call to \c glGetGraphicsResetStatus, contexts that have not
-    * been affected by a GPU reset must also return
-    * \c GL_INNOCENT_CONTEXT_RESET_ARB.
-    *
-    * Once this field becomes true, it is never reset to false.
-    */
-   bool ShareGroupReset;
-
    /** EXT_external_objects */
    struct _mesa_HashTable *MemoryObjects;
 
    /** EXT_semaphore */
    struct _mesa_HashTable *SemaphoreObjects;
-
-   /**
-    * Some context in this share group was affected by a disjoint
-    * operation. This operation can be anything that has effects on
-    * values of timer queries in such manner that they become invalid for
-    * performance metrics. As example gpu reset, counter overflow or gpu
-    * frequency changes.
-    */
-   bool DisjointOperation;
 
    /**
     * Whether at least one image has been imported or exported, excluding
@@ -2549,7 +2528,6 @@ struct gl_shared_state
  */
 struct gl_renderbuffer
 {
-   GLuint ClassID;        /**< Useful for drivers */
    GLuint Name;
    GLchar *Label;         /**< GL_KHR_debug */
    GLint RefCount;
@@ -2594,15 +2572,15 @@ struct gl_renderbuffer
    /**
     * Used only when hardware accumulation buffers are not supported.
     */
-   boolean software;
+   bool software;
    void *data;
 
    bool use_readpix_cache;
 
    /* Inputs from Driver.RenderTexture, don't use directly. */
-   boolean is_rtt; /**< whether Driver.RenderTexture was called */
+   bool is_rtt; /**< whether Driver.RenderTexture was called */
    unsigned rtt_face, rtt_slice;
-   boolean rtt_layered; /**< whether glFramebufferTexture was called */
+   bool rtt_layered; /**< whether glFramebufferTexture was called */
    unsigned rtt_nr_samples; /**< from FramebufferTexture2DMultisampleEXT */
 };
 

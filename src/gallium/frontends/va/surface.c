@@ -35,6 +35,7 @@
 #include "util/u_sampler.h"
 #include "util/u_surface.h"
 #include "util/u_video.h"
+#include "util/set.h"
 
 #include "vl/vl_compositor.h"
 #include "vl/vl_video_buffer.h"
@@ -83,6 +84,12 @@ vlVaDestroySurfaces(VADriverContextP ctx, VASurfaceID *surface_list, int num_sur
       }
       if (surf->buffer)
          surf->buffer->destroy(surf->buffer);
+      if (surf->ctx) {
+         assert(_mesa_set_search(surf->ctx->surfaces, surf));
+         _mesa_set_remove_key(surf->ctx->surfaces, surf);
+         if (surf->fence && surf->ctx->decoder && surf->ctx->decoder->destroy_fence)
+            surf->ctx->decoder->destroy_fence(surf->ctx->decoder, surf->fence);
+      }
       util_dynarray_fini(&surf->subpics);
       FREE(surf);
       handle_table_remove(drv->htab, surface_list[i]);
@@ -126,7 +133,7 @@ vlVaSyncSurface(VADriverContextP ctx, VASurfaceID render_target)
       return VA_STATUS_SUCCESS;
    }
 
-   context = handle_table_get(drv->htab, surf->ctx);
+   context = surf->ctx;
    if (!context) {
       mtx_unlock(&drv->mutex);
       return VA_STATUS_ERROR_INVALID_CONTEXT;
@@ -137,7 +144,21 @@ vlVaSyncSurface(VADriverContextP ctx, VASurfaceID render_target)
       return VA_STATUS_ERROR_UNSUPPORTED_ENTRYPOINT;
    }
 
-   if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM) {
+   if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_PROCESSING) {
+      /* If driver does not implement get_processor_fence assume no
+       * async work needed to be waited on and return success
+       */
+      int ret = (context->decoder->get_processor_fence) ? 0 : 1;
+
+      if (context->decoder->get_processor_fence)
+         ret = context->decoder->get_processor_fence(context->decoder,
+                                                     surf->fence,
+                                                     PIPE_DEFAULT_DECODER_FEEDBACK_TIMEOUT_NS);
+
+      mtx_unlock(&drv->mutex);
+      // Assume that the GPU has hung otherwise.
+      return ret ? VA_STATUS_SUCCESS : VA_STATUS_ERROR_TIMEDOUT;
+   } else if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM) {
       int ret = 0;
 
       if (context->decoder->get_decoder_fence)
@@ -167,7 +188,7 @@ vlVaSyncSurface(VADriverContextP ctx, VASurfaceID render_target)
             }
          }
       }
-      context->decoder->get_feedback(context->decoder, surf->feedback, &(surf->coded_buf->coded_size));
+      context->decoder->get_feedback(context->decoder, surf->feedback, &(surf->coded_buf->coded_size), &(surf->coded_buf->extended_metadata));
       surf->feedback = NULL;
       surf->coded_buf->feedback = NULL;
       surf->coded_buf->associated_encode_input_surf = VA_INVALID_ID;
@@ -211,7 +232,7 @@ vlVaQuerySurfaceStatus(VADriverContextP ctx, VASurfaceID render_target, VASurfac
       return VA_STATUS_SUCCESS;
    }
 
-   context = handle_table_get(drv->htab, surf->ctx);
+   context = surf->ctx;
    if (!context) {
       mtx_unlock(&drv->mutex);
       return VA_STATUS_ERROR_INVALID_CONTEXT;
@@ -245,6 +266,19 @@ vlVaQuerySurfaceStatus(VADriverContextP ctx, VASurfaceID render_target, VASurfac
        * VA_STATUS_SUCCESS, the client would be within his/her rights to use a
        * potentially uninitialized/invalid status value unknowingly.
        */
+         *status = VASurfaceRendering;
+   } else if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_PROCESSING) {
+      /* If driver does not implement get_processor_fence assume no
+       * async work needed to be waited on and return surface ready
+       */
+      int ret = (context->decoder->get_processor_fence) ? 0 : 1;
+
+      if (context->decoder->get_processor_fence)
+         ret = context->decoder->get_processor_fence(context->decoder,
+                                                     surf->fence, 0);
+      if (ret)
+         *status = VASurfaceReady;
+      else
          *status = VASurfaceRendering;
    }
 
@@ -596,6 +630,13 @@ vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config_id,
          attribs[i].value.value.i = VA_FOURCC_444P;
          i++;
       }
+      if (config->rt_format & VA_RT_FORMAT_RGBP) {
+         attribs[i].type = VASurfaceAttribPixelFormat;
+         attribs[i].value.type = VAGenericValueTypeInteger;
+         attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE;
+         attribs[i].value.value.i = VA_FOURCC_RGBP;
+         i++;
+      }
    }
 
    attribs[i].type = VASurfaceAttribMemoryType;
@@ -633,6 +674,28 @@ vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config_id,
                                 PIPE_VIDEO_ENTRYPOINT_PROCESSING,
                                 PIPE_VIDEO_CAP_SUPPORTED))
    {
+      unsigned min_width, min_height;
+      min_width = pscreen->get_video_param(pscreen,
+                                  config->profile, config->entrypoint,
+                                  PIPE_VIDEO_CAP_MIN_WIDTH);
+      min_height = pscreen->get_video_param(pscreen,
+                                  config->profile, config->entrypoint,
+                                  PIPE_VIDEO_CAP_MIN_HEIGHT);
+
+      if (min_width > 0 && min_height > 0) {
+         attribs[i].type = VASurfaceAttribMinWidth;
+         attribs[i].value.type = VAGenericValueTypeInteger;
+         attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE;
+         attribs[i].value.value.i = min_width;
+         i++;
+
+         attribs[i].type = VASurfaceAttribMinHeight;
+         attribs[i].value.type = VAGenericValueTypeInteger;
+         attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE;
+         attribs[i].value.value.i = min_height;
+         i++;
+      }
+
       attribs[i].type = VASurfaceAttribMaxWidth;
       attribs[i].value.type = VAGenericValueTypeInteger;
       attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE;
@@ -650,6 +713,16 @@ vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config_id,
                                   config->profile, config->entrypoint,
                                   PIPE_VIDEO_CAP_MAX_HEIGHT);
       i++;
+#if VA_CHECK_VERSION(1, 21, 0)
+      attribs[i].type = VASurfaceAttribAlignmentSize;
+      attribs[i].value.type = VAGenericValueTypeInteger;
+      attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE;
+      attribs[i].value.value.i =
+         pscreen->get_video_param(pscreen,
+                                  config->profile, config->entrypoint,
+                                  PIPE_VIDEO_CAP_ENC_SURFACE_ALIGNMENT);
+      i++;
+#endif
    } else {
       attribs[i].type = VASurfaceAttribMaxWidth;
       attribs[i].value.type = VAGenericValueTypeInteger;
@@ -1097,6 +1170,7 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
        VA_RT_FORMAT_YUV444 != format &&
        VA_RT_FORMAT_YUV400 != format &&
        VA_RT_FORMAT_YUV420_10BPP != format &&
+       VA_RT_FORMAT_RGBP != format &&
        VA_RT_FORMAT_RGB32  != format) {
       return VA_STATUS_ERROR_UNSUPPORTED_RT_FORMAT;
    }
@@ -1308,11 +1382,13 @@ vlVaQueryVideoProcFilterCaps(VADriverContextP ctx, VAContextID context,
 }
 
 static VAProcColorStandardType vpp_input_color_standards[] = {
-   VAProcColorStandardBT601
+   VAProcColorStandardBT601,
+   VAProcColorStandardBT709
 };
 
 static VAProcColorStandardType vpp_output_color_standards[] = {
-   VAProcColorStandardBT601
+   VAProcColorStandardBT601,
+   VAProcColorStandardBT709
 };
 
 VAStatus
@@ -1449,6 +1525,9 @@ static uint32_t pipe_format_to_drm_format(enum pipe_format format)
       return DRM_FORMAT_NV12;
    case PIPE_FORMAT_P010:
       return DRM_FORMAT_P010;
+   case PIPE_FORMAT_YUYV:
+   case PIPE_FORMAT_R8G8_R8B8_UNORM:
+      return DRM_FORMAT_YUYV;
    default:
       return DRM_FORMAT_INVALID;
    }
@@ -1553,7 +1632,7 @@ vlVaExportSurfaceHandle(VADriverContextP ctx,
    desc->width  = surf->templat.width;
    desc->height = surf->templat.height;
 
-   for (p = 0; p < VL_MAX_SURFACES; p++) {
+   for (p = 0; p < ARRAY_SIZE(desc->objects); p++) {
       struct winsys_handle whandle;
       struct pipe_resource *resource;
       uint32_t drm_format;

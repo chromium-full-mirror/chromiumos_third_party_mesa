@@ -50,6 +50,7 @@
 static bool option_full_decode = true;
 static bool option_print_all_bb = false;
 static bool option_print_offsets = true;
+static bool option_dump_kernels = false;
 static enum { COLOR_AUTO, COLOR_ALWAYS, COLOR_NEVER } option_color;
 static char *xml_path = NULL;
 
@@ -106,6 +107,7 @@ static int ring_name_to_class(const char *ring_name,
 {
    static const char *class_names[] = {
       [INTEL_ENGINE_CLASS_RENDER] = "rcs",
+      [INTEL_ENGINE_CLASS_COMPUTE] = "ccs",
       [INTEL_ENGINE_CLASS_COPY] = "bcs",
       [INTEL_ENGINE_CLASS_VIDEO] = "vcs",
       [INTEL_ENGINE_CLASS_VIDEO_ENHANCE] = "vecs",
@@ -289,7 +291,7 @@ struct section {
    size_t data_offset;
 };
 
-#define MAX_SECTIONS 256
+#define MAX_SECTIONS 1024
 static unsigned num_sections;
 static struct section sections[MAX_SECTIONS];
 
@@ -404,6 +406,24 @@ get_intel_batch_bo(void *user_data, bool ppgtt, uint64_t address)
    }
 
    return (struct intel_batch_decode_bo) { .map = NULL };
+}
+
+static void
+dump_shader_binary(void *user_data, const char *short_name,
+                   uint64_t address, const void *data,
+                   unsigned data_length)
+{
+   char filename[128];
+   snprintf(filename, sizeof(filename), "%s_0x%016"PRIx64".bin",
+            short_name, address);
+
+   FILE *f = fopen(filename, "w");
+   if (f == NULL) {
+      fprintf(stderr, "Unable to open %s\n", filename);
+      return;
+   }
+   fwrite(data, data_length, 1, f);
+   fclose(f);
 }
 
 static void
@@ -547,6 +567,14 @@ read_data_file(FILE *file)
          if (matched == 2)
             acthd = ((uint64_t)reg << 32) | reg2;
 
+         matched = sscanf(line, "  ACTHD_LDW: 0x%08x\n", &reg);
+         if (matched == 1)
+            acthd = reg;
+
+         matched = sscanf(line, "  ACTHD_UDW: 0x%08x\n", &reg);
+         if (matched == 1)
+            acthd |= (uint64_t)reg << 32;
+
          matched = sscanf(line, "  PGTBL_ER: 0x%08x\n", &reg);
          if (matched == 1 && reg)
             print_pgtbl_err(reg, &devinfo);
@@ -568,7 +596,15 @@ read_data_file(FILE *file)
          if (matched == 1)
             print_register(spec, "SC_INSTDONE", reg);
 
+         matched = sscanf(line, "  GEN7_SC_INSTDONE: 0x%08x\n", &reg);
+         if (matched == 1)
+            print_register(spec, "SC_INSTDONE", reg);
+
          matched = sscanf(line, "  SC_INSTDONE_EXTRA: 0x%08x\n", &reg);
+         if (matched == 1)
+            print_register(spec, "SC_INSTDONE_EXTRA", reg);
+
+         matched = sscanf(line, "  GEN12_SC_INSTDONE_EXTRA: 0x%08x\n", &reg);
          if (matched == 1)
             print_register(spec, "SC_INSTDONE_EXTRA", reg);
 
@@ -576,7 +612,15 @@ read_data_file(FILE *file)
          if (matched == 1)
             print_register(spec, "SC_INSTDONE_EXTRA2", reg);
 
+         matched = sscanf(line, "  GEN12_SC_INSTDONE_EXTRA2: 0x%08x\n", &reg);
+         if (matched == 1)
+            print_register(spec, "SC_INSTDONE_EXTRA2", reg);
+
          matched = sscanf(line, "  SAMPLER_INSTDONE[%*d][%*d]: 0x%08x\n", &reg);
+         if (matched == 1)
+            print_register(spec, "SAMPLER_INSTDONE", reg);
+
+         matched = sscanf(line, "  GEN8_SAMPLER_INSTDONE[%*d][%*d]: 0x%08x\n", &reg);
          if (matched == 1)
             print_register(spec, "SAMPLER_INSTDONE", reg);
 
@@ -584,7 +628,15 @@ read_data_file(FILE *file)
          if (matched == 1)
             print_register(spec, "ROW_INSTDONE", reg);
 
+         matched = sscanf(line, "  GEN8_ROW_INSTDONE[%*d][%*d]: 0x%08x\n", &reg);
+         if (matched == 1)
+            print_register(spec, "ROW_INSTDONE", reg);
+
          matched = sscanf(line, "  GEOM_SVGUNIT_INSTDONE[%*d][%*d]: 0x%08x\n", &reg);
+         if (matched == 1)
+            print_register(spec, "INSTDONE_GEOM", reg);
+
+         matched = sscanf(line, "  XEHPG_INSTDONE_GEOM_SVG[%*d][%*d]: 0x%08x\n", &reg);
          if (matched == 1)
             print_register(spec, "INSTDONE_GEOM", reg);
 
@@ -683,6 +735,8 @@ read_data_file(FILE *file)
                                NULL, NULL);
    batch_ctx.acthd = acthd;
 
+   if (option_dump_kernels)
+      batch_ctx.shader_binary = dump_shader_binary;
 
    for (int s = 0; s < num_sections; s++) {
       enum intel_engine_class class;
@@ -760,7 +814,8 @@ print_help(const char *progname, FILE *file)
            "      --no-pager      don't launch pager\n"
            "      --no-offsets    don't print instruction offsets\n"
            "      --xml=DIR       load hardware xml description from directory DIR\n"
-           "      --all-bb        print out all batchbuffers\n",
+           "      --all-bb        print out all batchbuffers\n"
+           "      --kernels       dump out all kernels (in current directory)\n",
            progname);
 }
 
@@ -823,6 +878,7 @@ main(int argc, char *argv[])
       { "color",      optional_argument, NULL,                          'c' },
       { "xml",        required_argument, NULL,                          'x' },
       { "all-bb",     no_argument,       (int *) &option_print_all_bb,  true },
+      { "kernels",    no_argument,       (int *) &option_dump_kernels,  true },
       { NULL,         0,                 NULL,                          0 }
    };
 

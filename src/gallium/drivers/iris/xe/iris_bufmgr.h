@@ -26,6 +26,7 @@
 #include <stdbool.h>
 
 struct iris_bufmgr;
+enum iris_heap;
 
 bool iris_xe_init_global_vm(struct iris_bufmgr *bufmgr, uint32_t *vm_id);
 bool iris_xe_destroy_global_vm(struct iris_bufmgr *bufmgr);

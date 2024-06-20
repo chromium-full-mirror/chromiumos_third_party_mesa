@@ -67,9 +67,9 @@
 #include "drm-uapi/panfrost_drm.h"
 
 #include "pan_blend.h"
-#include "pan_cs.h"
+#include "pan_desc.h"
 #include "pan_device.h"
-#include "pan_scoreboard.h"
+#include "pan_jc.h"
 #include "pan_texture.h"
 #include "panvk_mempool.h"
 #include "panvk_varyings.h"
@@ -111,11 +111,6 @@ typedef uint32_t xcb_window_t;
 #define PANVK_SYSVAL_UBO_INDEX     0
 #define PANVK_PUSH_CONST_UBO_INDEX 1
 #define PANVK_NUM_BUILTIN_UBOS     2
-
-#define panvk_printflike(a, b) __attribute__((__format__(__printf__, a, b)))
-
-void panvk_logi(const char *format, ...) panvk_printflike(1, 2);
-void panvk_logi_v(const char *format, va_list va);
 
 #define panvk_stub() assert(!"stub")
 
@@ -182,7 +177,6 @@ struct panvk_physical_device {
 
    struct panvk_instance *instance;
 
-   char path[20];
    char name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
    uint8_t driver_uuid[VK_UUID_SIZE];
    uint8_t device_uuid[VK_UUID_SIZE];
@@ -205,6 +199,7 @@ enum panvk_debug_flags {
    PANVK_DEBUG_AFBC = 1 << 4,
    PANVK_DEBUG_LINEAR = 1 << 5,
    PANVK_DEBUG_DUMP = 1 << 6,
+   PANVK_DEBUG_NO_KNOWN_WARN = 1 << 7,
 };
 
 struct panvk_instance {
@@ -269,7 +264,7 @@ struct panvk_batch {
    struct list_head node;
    struct util_dynarray jobs;
    struct util_dynarray event_ops;
-   struct pan_scoreboard scoreboard;
+   struct pan_jc jc;
    struct {
       const struct panvk_framebuffer *info;
       struct panfrost_ptr desc;
@@ -403,7 +398,6 @@ struct panvk_pipeline_layout {
    unsigned num_dyn_ubos;
    unsigned num_dyn_ssbos;
    uint32_t num_imgs;
-   uint32_t num_sets;
 
    struct {
       uint32_t size;
@@ -1066,7 +1060,7 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(panvk_sampler, base, VkSampler,
          panvk_arch_name(name, v7)(__VA_ARGS__);                               \
          break;                                                                \
       default:                                                                 \
-         unreachable("Invalid arch");                                          \
+         unreachable("Unsupported architecture");                              \
       }                                                                        \
    } while (0)
 

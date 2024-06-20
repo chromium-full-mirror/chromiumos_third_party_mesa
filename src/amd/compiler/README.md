@@ -97,6 +97,10 @@ The next step is a pass out of SSA by inserting parallelcopies at the end of blo
 Most pseudo instructions are lowered to actual machine instructions.
 These are mostly parallel copy instructions created by instruction selection or register allocation and spill/reload code.
 
+#### ILP Scheduling
+
+This second scheduler works on registers rather than SSA-values to determine dependencies. It implements a forward list scheduling algorithm using a partial dependency graph of few instructions at a time and aims to create larger memory clauses and improve ILP.
+
 #### Insert wait states
 
 GCN requires some wait states to be manually inserted in order to ensure correct behavior on memory instructions and some register dependencies.
@@ -105,7 +109,7 @@ This means that we need to insert `s_waitcnt` instructions (and its variants) so
 #### Resolve hazards and insert NOPs
 
 Some instructions require wait states or other instructions to resolve hazards which are not handled by the hardware.
-This pass makes sure that no known hazards occour.
+This pass makes sure that no known hazards occur.
 
 #### Emit program - Assembler
 
@@ -118,7 +122,7 @@ Which software stage gets executed on which hardware stage depends on what kind 
 
 An important difference is that VS is always the first stage to run in SW models,
 whereas HW VS refers to the last HW stage before fragment shading in GCN/RDNA terminology.
-That's why, among other things, the HW VS is no longer used to execute the SW VS when tesselation or geometry shading are used.
+That's why, among other things, the HW VS is no longer used to execute the SW VS when tessellation or geometry shading are used.
 
 #### Glossary of software stages
 
@@ -249,7 +253,8 @@ We also have `ACO_DEBUG` options:
 * `force-waitcnt` - Forces ACO to emit a wait state after each instruction when there is something to wait for. Harms performance.
 * `novn` - Disables the ACO value numbering stage.
 * `noopt` - Disables the ACO optimizer.
-* `nosched` - Disables the ACO scheduler.
+* `nosched` - Disables the ACO pre-RA and post-RA scheduler.
+* `nosched-ilp` - Disables the ACO post-RA ILP scheduler.
 
 Note that you need to **combine these options into a comma-separated list**, for example: `RADV_DEBUG=nocache,shaders` otherwise only the last one will take effect. (This is how all environment variables work, yet this is an often made mistake.) Example:
 

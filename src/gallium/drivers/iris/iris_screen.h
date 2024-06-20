@@ -63,12 +63,17 @@ struct iris_vtable {
    void (*destroy_state)(struct iris_context *ice);
    void (*init_render_context)(struct iris_batch *batch);
    void (*init_compute_context)(struct iris_batch *batch);
+   void (*init_copy_context)(struct iris_batch *batch);
    void (*upload_render_state)(struct iris_context *ice,
                                struct iris_batch *batch,
                                const struct pipe_draw_info *draw,
                                unsigned drawid_offset,
                                const struct pipe_draw_indirect_info *indirect,
                                const struct pipe_draw_start_count_bias *sc);
+   void (*upload_indirect_render_state)(struct iris_context *ice,
+                                        const struct pipe_draw_info *draw,
+                                        const struct pipe_draw_indirect_info *indirect,
+                                        const struct pipe_draw_start_count_bias *sc);
    void (*update_binder_address)(struct iris_batch *batch,
                                  struct iris_binder *binder);
    void (*upload_compute_state)(struct iris_context *ice,
@@ -113,6 +118,11 @@ struct iris_vtable {
                                      struct iris_bo *bo,
                                      uint32_t offset_in_bytes,
                                      uint32_t report_id);
+
+   void (*rewrite_compute_walker_pc)(struct iris_batch *batch,
+                                     uint32_t *walker,
+                                     struct iris_bo *bo,
+                                     uint32_t offset);
 
    unsigned (*derived_program_state_size)(enum iris_program_cache_id id);
    void (*store_derived_program_state)(const struct intel_device_info *devinfo,
@@ -183,6 +193,8 @@ struct iris_screen {
       bool sync_compile;
       bool limit_trig_input_range;
       float lower_depth_range_rate;
+      bool intel_enable_wa_14018912822;
+      bool enable_tbimr;
    } driconf;
 
    /** Does the kernel support various features (KERNEL_HAS_* bitfield)? */
@@ -227,6 +239,8 @@ struct iris_screen {
 
    /** Every screen on a bufmgr has an unique ID assigned by the bufmgr. */
    int id;
+
+   struct iris_bo *breakpoint_bo;
 };
 
 struct pipe_screen *

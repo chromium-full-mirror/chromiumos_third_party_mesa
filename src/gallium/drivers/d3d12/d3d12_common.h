@@ -26,11 +26,7 @@
 
 #pragma once
 
-#ifndef _WIN32
 #include <wsl/winadapter.h>
-#else
-#include <unknwn.h>
-#endif
 
 #define D3D12_IGNORE_SDK_LAYERS
 #ifndef _GAMING_XBOX
@@ -56,7 +52,7 @@
 #endif /* D3D12_TEXTURE_DATA_PITCH_ALIGNMENT */
 
 #if defined(__cplusplus)
-#if !defined(_WIN32) || defined(_MSC_VER) || D3D12_SDK_VERSION < 606
+#if !defined(_WIN32) || defined(_MSC_VER)
 inline D3D12_CPU_DESCRIPTOR_HANDLE
 GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
 {

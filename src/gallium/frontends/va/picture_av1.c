@@ -51,6 +51,12 @@ static void tile_info(vlVaContext *context, VADecPictureParameterBufferAV1 *av1)
    unsigned TileColsLog2 = util_logbase2_ceil(av1->tile_cols);
    unsigned TileRowsLog2 = util_logbase2_ceil(av1->tile_rows);
 
+   if (av1->pic_info_fields.bits.use_superres) {
+      unsigned width = ((av1->frame_width_minus1 + 1) * 8 + av1->superres_scale_denominator / 2)
+         / av1->superres_scale_denominator;
+      MiCols = 2 * (((width - 1) + 8) >> 3);
+   }
+
    sbCols = (av1->seq_info_fields.fields.use_128x128_superblock) ?
       ((MiCols + 31) >> 5) : ((MiCols + 15) >> 4);
    sbRows = (av1->seq_info_fields.fields.use_128x128_superblock) ?
@@ -386,9 +392,11 @@ void vlVaHandlePictureParameterBufferAV1(vlVaDriver *drv, vlVaContext *context, 
       else
          vlVaGetReferenceFrame(drv, av1->ref_frame_map[i], &context->desc.av1.ref[i]);
    }
+
+  context->desc.av1.slice_parameter.slice_count = 0;
 }
 
-void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices)
+void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, unsigned num_slices, unsigned slice_offset)
 {
    for (uint32_t buffer_idx = 0; buffer_idx < buf->num_elements; buffer_idx++) {
       uint32_t slice_index =
@@ -399,9 +407,10 @@ void vlVaHandleSliceParameterBufferAV1(vlVaContext *context, vlVaBuffer *buf, un
 
       VASliceParameterBufferAV1 *av1 = &(((VASliceParameterBufferAV1*)buf->data)[buffer_idx]);
       context->desc.av1.slice_parameter.slice_data_size[slice_index] = av1->slice_data_size;
-      context->desc.av1.slice_parameter.slice_data_offset[slice_index] = av1->slice_data_offset;
+      context->desc.av1.slice_parameter.slice_data_offset[slice_index] = slice_offset + av1->slice_data_offset;
       context->desc.av1.slice_parameter.slice_data_row[slice_index] = av1->tile_row;
       context->desc.av1.slice_parameter.slice_data_col[slice_index] = av1->tile_column;
       context->desc.av1.slice_parameter.slice_data_anchor_frame_idx[slice_index] = av1->anchor_frame_idx;
+      context->desc.av1.slice_parameter.slice_count = slice_index + 1;
    }
 }

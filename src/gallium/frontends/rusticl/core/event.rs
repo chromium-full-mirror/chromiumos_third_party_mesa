@@ -4,13 +4,13 @@ use crate::core::context::*;
 use crate::core::queue::*;
 use crate::impl_cl_type_trait;
 
-use mesa_rust::pipe::context::*;
-use mesa_rust::pipe::fence::*;
+use mesa_rust::pipe::query::*;
+use mesa_rust_gen::*;
 use mesa_rust_util::static_assert;
 use rusticl_opencl_gen::*;
 
 use std::collections::HashSet;
-use std::os::raw::c_void;
+use std::mem;
 use std::slice;
 use std::sync::Arc;
 use std::sync::Condvar;
@@ -24,16 +24,26 @@ static_assert!(CL_RUNNING == 1);
 static_assert!(CL_SUBMITTED == 2);
 static_assert!(CL_QUEUED == 3);
 
-pub type EventSig = Box<dyn Fn(&Arc<Queue>, &PipeContext) -> CLResult<()>>;
+pub type EventSig = Box<dyn FnOnce(&Arc<Queue>, &QueueContext) -> CLResult<()>>;
 
-struct EventMutState {
-    status: cl_int,
-    cbs: [Vec<(EventCB, *mut c_void)>; 3],
-    fence: Option<PipeFence>,
-    work: Option<EventSig>,
+pub enum EventTimes {
+    Queued = CL_PROFILING_COMMAND_QUEUED as isize,
+    Submit = CL_PROFILING_COMMAND_SUBMIT as isize,
+    Start = CL_PROFILING_COMMAND_START as isize,
+    End = CL_PROFILING_COMMAND_END as isize,
 }
 
-#[repr(C)]
+#[derive(Default)]
+struct EventMutState {
+    status: cl_int,
+    cbs: [Vec<EventCB>; 3],
+    work: Option<EventSig>,
+    time_queued: cl_ulong,
+    time_submit: cl_ulong,
+    time_start: cl_ulong,
+    time_end: cl_ulong,
+}
+
 pub struct Event {
     pub base: CLObjectBase<CL_INVALID_EVENT>,
     pub context: Arc<Context>,
@@ -65,9 +75,8 @@ impl Event {
             deps: deps,
             state: Mutex::new(EventMutState {
                 status: CL_QUEUED as cl_int,
-                cbs: [Vec::new(), Vec::new(), Vec::new()],
-                fence: None,
                 work: Some(work),
+                ..Default::default()
             }),
             cv: Condvar::new(),
         })
@@ -82,9 +91,7 @@ impl Event {
             deps: Vec::new(),
             state: Mutex::new(EventMutState {
                 status: CL_SUBMITTED as cl_int,
-                cbs: [Vec::new(), Vec::new(), Vec::new()],
-                fence: None,
-                work: None,
+                ..Default::default()
             }),
             cv: Condvar::new(),
         })
@@ -103,54 +110,87 @@ impl Event {
         self.state().status
     }
 
-    fn set_status(&self, lock: &mut MutexGuard<EventMutState>, new: cl_int) {
+    fn set_status(&self, mut lock: MutexGuard<EventMutState>, new: cl_int) {
         lock.status = new;
-        self.cv.notify_all();
-        if [CL_COMPLETE, CL_RUNNING, CL_SUBMITTED].contains(&(new as u32)) {
-            if let Some(cbs) = lock.cbs.get(new as usize) {
-                cbs.iter()
-                    .for_each(|(cb, data)| unsafe { cb(cl_event::from_ptr(self), new, *data) });
+
+        // signal on completion or an error
+        if new <= CL_COMPLETE as cl_int {
+            self.cv.notify_all();
+        }
+
+        // on error we need to call the CL_COMPLETE callbacks
+        let cb_idx = if new < 0 { CL_COMPLETE } else { new as u32 };
+
+        if [CL_COMPLETE, CL_RUNNING, CL_SUBMITTED].contains(&cb_idx) {
+            if let Some(cbs) = lock.cbs.get_mut(cb_idx as usize) {
+                let cbs = mem::take(cbs);
+                // applications might want to access the event in the callback, so drop the lock
+                // before calling into the callbacks.
+                drop(lock);
+                cbs.into_iter().for_each(|cb| cb.call(self, new));
             }
         }
     }
 
     pub fn set_user_status(&self, status: cl_int) {
-        let mut lock = self.state();
-        self.set_status(&mut lock, status);
+        self.set_status(self.state(), status);
     }
 
     pub fn is_error(&self) -> bool {
         self.status() < 0
     }
 
-    pub fn add_cb(&self, state: cl_int, cb: EventCB, data: *mut c_void) {
+    pub fn is_user(&self) -> bool {
+        self.cmd_type == CL_COMMAND_USER
+    }
+
+    pub fn set_time(&self, which: EventTimes, value: cl_ulong) {
+        let mut lock = self.state();
+        match which {
+            EventTimes::Queued => lock.time_queued = value,
+            EventTimes::Submit => lock.time_submit = value,
+            EventTimes::Start => lock.time_start = value,
+            EventTimes::End => lock.time_end = value,
+        }
+    }
+
+    pub fn get_time(&self, which: EventTimes) -> cl_ulong {
+        let lock = self.state();
+
+        match which {
+            EventTimes::Queued => lock.time_queued,
+            EventTimes::Submit => lock.time_submit,
+            EventTimes::Start => lock.time_start,
+            EventTimes::End => lock.time_end,
+        }
+    }
+
+    pub fn add_cb(&self, state: cl_int, cb: EventCB) {
         let mut lock = self.state();
         let status = lock.status;
 
         // call cb if the status was already reached
         if state >= status {
             drop(lock);
-            unsafe { cb(cl_event::from_ptr(self), status, data) };
+            cb.call(self, state);
         } else {
-            lock.cbs.get_mut(state as usize).unwrap().push((cb, data));
+            lock.cbs.get_mut(state as usize).unwrap().push(cb);
         }
+    }
+
+    pub(super) fn signal(&self) {
+        self.set_status(self.state(), CL_RUNNING as cl_int);
+        self.set_status(self.state(), CL_COMPLETE as cl_int);
     }
 
     pub fn wait(&self) -> cl_int {
         let mut lock = self.state();
-        while lock.status >= CL_SUBMITTED as cl_int {
-            if lock.fence.is_some() {
-                lock.fence.as_ref().unwrap().wait();
-                // so we trigger all cbs
-                self.set_status(&mut lock, CL_RUNNING as cl_int);
-                self.set_status(&mut lock, CL_COMPLETE as cl_int);
-            } else {
-                lock = self
-                    .cv
-                    .wait_timeout(lock, Duration::from_millis(50))
-                    .unwrap()
-                    .0;
-            }
+        while lock.status >= CL_RUNNING as cl_int {
+            lock = self
+                .cv
+                .wait_timeout(lock, Duration::from_secs(1))
+                .unwrap()
+                .0;
         }
         lock.status
     }
@@ -158,32 +198,45 @@ impl Event {
     // We always assume that work here simply submits stuff to the hardware even if it's just doing
     // sw emulation or nothing at all.
     // If anything requets waiting, we will update the status through fencing later.
-    pub fn call(&self, ctx: &PipeContext) -> cl_int {
+    pub fn call(&self, ctx: &QueueContext) {
         let mut lock = self.state();
         let status = lock.status;
+        let queue = self.queue.as_ref().unwrap();
+        let profiling_enabled = queue.is_profiling_enabled();
         if status == CL_QUEUED as cl_int {
-            let work = lock.work.take();
-            let new = work.as_ref().map_or(
+            if profiling_enabled {
+                // We already have the lock so can't call set_time on the event
+                lock.time_submit = queue.device.screen().get_timestamp();
+            }
+            let mut query_start = None;
+            let mut query_end = None;
+            let new = lock.work.take().map_or(
                 // if there is no work
                 CL_SUBMITTED as cl_int,
                 |w| {
-                    let res = w(self.queue.as_ref().unwrap(), ctx).err().map_or(
+                    if profiling_enabled {
+                        query_start =
+                            PipeQueryGen::<{ pipe_query_type::PIPE_QUERY_TIMESTAMP }>::new(ctx);
+                    }
+
+                    let res = w(queue, ctx).err().map_or(
                         // if there is an error, negate it
                         CL_SUBMITTED as cl_int,
                         |e| e,
                     );
-                    lock.fence = Some(ctx.flush());
+                    if profiling_enabled {
+                        query_end =
+                            PipeQueryGen::<{ pipe_query_type::PIPE_QUERY_TIMESTAMP }>::new(ctx);
+                    }
                     res
                 },
             );
-            // we have to make sure that the work object is dropped before we notify about the
-            // status change. It's probably fine to move the value above, but we have to be
-            // absolutely sure it happens before the status update.
-            drop(work);
-            self.set_status(&mut lock, new);
-            new
-        } else {
-            status
+
+            if profiling_enabled {
+                lock.time_start = query_start.unwrap().read_blocked();
+                lock.time_end = query_end.unwrap().read_blocked();
+            }
+            self.set_status(lock, new);
         }
     }
 
@@ -218,6 +271,27 @@ impl Event {
             .iter()
             .filter_map(|e| e.queue.clone())
             .collect()
+    }
+}
+
+impl Drop for Event {
+    // implement drop in order to prevent stack overflows of long dependency chains.
+    //
+    // This abuses the fact that `Arc::into_inner` only succeeds when there is one strong reference
+    // so we turn a recursive drop chain into a drop list for events having no other references.
+    fn drop(&mut self) {
+        if self.deps.is_empty() {
+            return;
+        }
+
+        let mut deps_list = vec![mem::take(&mut self.deps)];
+        while let Some(deps) = deps_list.pop() {
+            for dep in deps {
+                if let Some(mut dep) = Arc::into_inner(dep) {
+                    deps_list.push(mem::take(&mut dep.deps));
+                }
+            }
+        }
     }
 }
 

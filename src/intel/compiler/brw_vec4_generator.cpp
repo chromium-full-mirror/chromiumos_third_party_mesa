@@ -93,6 +93,7 @@ generate_math2_gfx4(struct brw_codegen *p,
    brw_push_insn_state(p);
    brw_set_default_saturate(p, false);
    brw_set_default_predicate_control(p, BRW_PREDICATE_NONE);
+   brw_set_default_flag_reg(p, 0, 0);
    brw_MOV(p, retype(brw_message_reg(inst->base_mrf + 1), op1.type), op1);
    brw_pop_insn_state(p);
 
@@ -1198,7 +1199,9 @@ generate_scratch_write(struct brw_codegen *p,
    /* If the instruction is predicated, we'll predicate the send, not
     * the header setup.
     */
+   brw_push_insn_state(p);
    brw_set_default_predicate_control(p, BRW_PREDICATE_NONE);
+   brw_set_default_flag_reg(p, 0, 0);
 
    gfx6_resolve_implied_move(p, &header, inst->base_mrf);
 
@@ -1208,6 +1211,8 @@ generate_scratch_write(struct brw_codegen *p,
    brw_MOV(p,
 	   retype(brw_message_reg(inst->base_mrf + 2), BRW_REGISTER_TYPE_D),
 	   retype(src, BRW_REGISTER_TYPE_D));
+
+   brw_pop_insn_state(p);
 
    uint32_t msg_type;
 
@@ -1513,7 +1518,7 @@ generate_zero_oob_push_regs(struct brw_codegen *p,
 static void
 generate_code(struct brw_codegen *p,
               const struct brw_compiler *compiler,
-              void *log_data,
+              const struct brw_compile_params *params,
               const nir_shader *nir,
               struct brw_vue_prog_data *prog_data,
               const struct cfg_t *cfg,
@@ -2231,17 +2236,23 @@ generate_code(struct brw_codegen *p,
    brw_compact_instructions(p, 0, disasm_info);
    int after_size = p->next_insn_offset;
 
-   if (unlikely(debug_enabled)) {
-      unsigned char sha1[21];
-      char sha1buf[41];
+   bool dump_shader_bin = brw_should_dump_shader_bin();
+   unsigned char sha1[21];
+   char sha1buf[41];
 
+   if (unlikely(debug_enabled || dump_shader_bin)) {
       _mesa_sha1_compute(p->store, p->next_insn_offset, sha1);
       _mesa_sha1_format(sha1buf, sha1);
+   }
 
-      fprintf(stderr, "Native code for %s %s shader %s (sha1 %s):\n",
+   if (unlikely(dump_shader_bin))
+      brw_dump_shader_bin(p->store, 0, p->next_insn_offset, sha1buf);
+
+   if (unlikely(debug_enabled)) {
+      fprintf(stderr, "Native code for %s %s shader %s (src_hash 0x%08x) (sha1 %s):\n",
             nir->info.label ? nir->info.label : "unnamed",
             _mesa_shader_stage_to_string(nir->info.stage), nir->info.name,
-            sha1buf);
+            params->source_hash, sha1buf);
 
       fprintf(stderr, "%s vec4 shader: %d instructions. %d loops. %u cycles. %d:%d "
                      "spills:fills, %u sends. Compacted %d to %d bytes (%.0f%%)\n",
@@ -2260,7 +2271,7 @@ generate_code(struct brw_codegen *p,
    ralloc_free(disasm_info);
    assert(validated);
 
-   brw_shader_debug_log(compiler, log_data,
+   brw_shader_debug_log(compiler, params->log_data,
                         "%s vec4 shader: %d inst, %d loops, %u cycles, "
                         "%d:%d spills:fills, %u sends, "
                         "compacted %d to %d bytes.\n",
@@ -2281,21 +2292,20 @@ generate_code(struct brw_codegen *p,
 
 extern "C" const unsigned *
 brw_vec4_generate_assembly(const struct brw_compiler *compiler,
-                           void *log_data,
-                           void *mem_ctx,
+                           const struct brw_compile_params *params,
                            const nir_shader *nir,
                            struct brw_vue_prog_data *prog_data,
                            const struct cfg_t *cfg,
                            const performance &perf,
-                           struct brw_compile_stats *stats,
                            bool debug_enabled)
 {
-   struct brw_codegen *p = rzalloc(mem_ctx, struct brw_codegen);
-   brw_init_codegen(&compiler->isa, p, mem_ctx);
+   struct brw_codegen *p = rzalloc(params->mem_ctx, struct brw_codegen);
+   brw_init_codegen(&compiler->isa, p, params->mem_ctx);
    brw_set_default_access_mode(p, BRW_ALIGN_16);
 
-   generate_code(p, compiler, log_data, nir, prog_data, cfg, perf, stats,
-                 debug_enabled);
+   generate_code(p, compiler, params,
+                 nir, prog_data, cfg, perf,
+                 params->stats, debug_enabled);
 
    assert(prog_data->base.const_data_size == 0);
    if (nir->constant_data_size > 0) {

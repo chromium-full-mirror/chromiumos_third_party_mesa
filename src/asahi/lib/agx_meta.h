@@ -11,6 +11,7 @@
 #include "pool.h"
 
 struct agx_meta_cache {
+   struct agx_device *dev;
    struct agx_pool pool;
 
    /* Map from agx_meta_key to agx_meta_shader */
@@ -27,6 +28,7 @@ enum agx_meta_op {
 struct agx_meta_key {
    struct agx_tilebuffer_layout tib;
    enum agx_meta_op op[8];
+   unsigned reserved_preamble;
 };
 
 struct agx_meta_shader {

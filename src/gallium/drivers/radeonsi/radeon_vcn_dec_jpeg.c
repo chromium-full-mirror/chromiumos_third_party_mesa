@@ -1,27 +1,8 @@
 /**************************************************************************
  *
  * Copyright 2018 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR
- * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  *
  **************************************************************************/
 
@@ -35,9 +16,9 @@
 #include <assert.h>
 #include <stdio.h>
 
-static struct pb_buffer *radeon_jpeg_get_decode_param(struct radeon_decoder *dec,
-                                                      struct pipe_video_buffer *target,
-                                                      struct pipe_picture_desc *picture)
+static struct pb_buffer_lean *radeon_jpeg_get_decode_param(struct radeon_decoder *dec,
+                                                           struct pipe_video_buffer *target,
+                                                           struct pipe_picture_desc *picture)
 {
    struct si_texture *luma = (struct si_texture *)((struct vl_video_buffer *)target)->resources[0];
    struct si_texture *chroma, *chromav;
@@ -51,6 +32,7 @@ static struct pb_buffer *radeon_jpeg_get_decode_param(struct radeon_decoder *dec
       case PIPE_FORMAT_IYUV:
       case PIPE_FORMAT_YV12:
       case PIPE_FORMAT_Y8_U8_V8_444_UNORM:
+      case PIPE_FORMAT_R8_G8_B8_UNORM:
          chromav = (struct si_texture *)((struct vl_video_buffer *)target)->resources[2];
          dec->jpg.dt_chromav_top_offset = chromav->surface.u.gfx9.surf_offset;
          chroma = (struct si_texture *)((struct vl_video_buffer*)target)->resources[1];
@@ -80,7 +62,7 @@ static void set_reg_jpeg(struct radeon_decoder *dec, unsigned reg, unsigned cond
 }
 
 /* send a bitstream buffer command */
-static void send_cmd_bitstream(struct radeon_decoder *dec, struct pb_buffer *buf, uint32_t off,
+static void send_cmd_bitstream(struct radeon_decoder *dec, struct pb_buffer_lean *buf, uint32_t off,
                                unsigned usage, enum radeon_bo_domain domain)
 {
    uint64_t addr;
@@ -123,7 +105,7 @@ static void send_cmd_bitstream(struct radeon_decoder *dec, struct pb_buffer *buf
 }
 
 /* send a target buffer command */
-static void send_cmd_target(struct radeon_decoder *dec, struct pb_buffer *buf, uint32_t off,
+static void send_cmd_target(struct radeon_decoder *dec, struct pb_buffer_lean *buf, uint32_t off,
                             unsigned usage, enum radeon_bo_domain domain)
 {
    uint64_t addr;
@@ -202,7 +184,7 @@ static void send_cmd_target(struct radeon_decoder *dec, struct pb_buffer *buf, u
 }
 
 /* send a bitstream buffer command */
-static void send_cmd_bitstream_direct(struct radeon_decoder *dec, struct pb_buffer *buf,
+static void send_cmd_bitstream_direct(struct radeon_decoder *dec, struct pb_buffer_lean *buf,
                                       uint32_t off, unsigned usage,
                                       enum radeon_bo_domain domain)
 {
@@ -242,7 +224,7 @@ static void send_cmd_bitstream_direct(struct radeon_decoder *dec, struct pb_buff
 }
 
 /* send a target buffer command */
-static void send_cmd_target_direct(struct radeon_decoder *dec, struct pb_buffer *buf, uint32_t off,
+static void send_cmd_target_direct(struct radeon_decoder *dec, struct pb_buffer_lean *buf, uint32_t off,
                                    unsigned usage, enum radeon_bo_domain domain,
                                    enum pipe_format buffer_format)
 {
@@ -252,16 +234,20 @@ static void send_cmd_target_direct(struct radeon_decoder *dec, struct pb_buffer 
    uint32_t fc_sps_info_val = 0;
 
    switch (buffer_format) {
-         case PIPE_FORMAT_R8G8B8A8_UNORM:
-            format_convert = true;
-            fc_sps_info_val = 1 | (1 << 4) | (0xff << 8);
-            break;
-         case PIPE_FORMAT_A8R8G8B8_UNORM:
-            format_convert = true;
-            fc_sps_info_val = 1 | (1 << 4) | (1 << 5) | (0xff << 8);
-            break;
-         default:
-            break;
+      case PIPE_FORMAT_R8G8B8A8_UNORM:
+         format_convert = true;
+         fc_sps_info_val = 1 | (1 << 4) | (0xff << 8);
+         break;
+      case PIPE_FORMAT_A8R8G8B8_UNORM:
+         format_convert = true;
+         fc_sps_info_val = 1 | (1 << 4) | (1 << 5) | (0xff << 8);
+         break;
+      case PIPE_FORMAT_R8_G8_B8_UNORM:
+         format_convert = true;
+         fc_sps_info_val = 1 | (1 << 5) | (0xff << 8);
+         break;
+      default:
+         break;
    }
 
    if (dec->jpg_reg.version == RDECODE_JPEG_REG_VER_V3 && format_convert) {
@@ -374,7 +360,7 @@ static void send_cmd_target_direct(struct radeon_decoder *dec, struct pb_buffer 
 void send_cmd_jpeg(struct radeon_decoder *dec, struct pipe_video_buffer *target,
                    struct pipe_picture_desc *picture)
 {
-   struct pb_buffer *dt;
+   struct pb_buffer_lean *dt;
    struct rvid_buffer *bs_buf;
 
    bs_buf = &dec->bs_buffers[dec->cur_buffer];

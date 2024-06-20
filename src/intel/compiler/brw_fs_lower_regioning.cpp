@@ -107,16 +107,16 @@ namespace {
     * the sources.
     */
    unsigned
-   required_dst_byte_offset(const fs_inst *inst)
+   required_dst_byte_offset(const intel_device_info *devinfo, const fs_inst *inst)
    {
       for (unsigned i = 0; i < inst->sources; i++) {
          if (!is_uniform(inst->src[i]) && !inst->is_control_source(i))
-            if (reg_offset(inst->src[i]) % REG_SIZE !=
-                reg_offset(inst->dst) % REG_SIZE)
+            if (reg_offset(inst->src[i]) % (reg_unit(devinfo) * REG_SIZE) !=
+                reg_offset(inst->dst) % (reg_unit(devinfo) * REG_SIZE))
                return 0;
       }
 
-      return reg_offset(inst->dst) % REG_SIZE;
+      return reg_offset(inst->dst) % (reg_unit(devinfo) * REG_SIZE);
    }
 
    /*
@@ -190,20 +190,46 @@ namespace {
          else
             return brw_int_type(type_sz(t), false);
 
-      case SHADER_OPCODE_BROADCAST:
-      case SHADER_OPCODE_MOV_INDIRECT:
-         if (((devinfo->verx10 == 70 ||
-               devinfo->platform == INTEL_PLATFORM_CHV ||
-               intel_device_info_is_9lp(devinfo) ||
-               devinfo->verx10 >= 125) && type_sz(inst->src[0].type) > 4) ||
-             (devinfo->verx10 >= 125 &&
-              brw_reg_type_is_floating_point(inst->src[0].type)))
-            return brw_int_type(type_sz(t), false);
-         else
-            return t;
-
       default:
          return t;
+      }
+   }
+
+   /*
+    * Return the stride between channels of the specified register in
+    * byte units, or ~0u if the region cannot be represented with a
+    * single one-dimensional stride.
+    */
+   unsigned
+   byte_stride(const fs_reg &reg)
+   {
+      switch (reg.file) {
+      case BAD_FILE:
+      case UNIFORM:
+      case IMM:
+      case VGRF:
+      case MRF:
+      case ATTR:
+         return reg.stride * type_sz(reg.type);
+      case ARF:
+      case FIXED_GRF:
+         if (reg.is_null()) {
+            return 0;
+         } else {
+            const unsigned hstride = reg.hstride ? 1 << (reg.hstride - 1) : 0;
+            const unsigned vstride = reg.vstride ? 1 << (reg.vstride - 1) : 0;
+            const unsigned width = 1 << reg.width;
+
+            if (width == 1) {
+               return vstride * type_sz(reg.type);
+            } else if (hstride * width == vstride) {
+               return hstride * type_sz(reg.type);
+            } else {
+               return ~0u;
+            }
+         }
+      default:
+         unreachable("Invalid register file");
       }
    }
 
@@ -215,8 +241,10 @@ namespace {
    has_invalid_src_region(const intel_device_info *devinfo, const fs_inst *inst,
                           unsigned i)
    {
-      if (is_send(inst) || inst->is_math() || inst->is_control_source(i))
+      if (is_send(inst) || inst->is_math() || inst->is_control_source(i) ||
+          inst->opcode == BRW_OPCODE_DPAS) {
          return false;
+      }
 
       /* Empirical testing shows that Broadwell has a bug affecting half-float
        * MAD instructions when any of its sources has a non-zero offset, such
@@ -236,15 +264,12 @@ namespace {
          return true;
       }
 
-      const unsigned dst_byte_stride = inst->dst.stride * type_sz(inst->dst.type);
-      const unsigned src_byte_stride = inst->src[i].stride *
-         type_sz(inst->src[i].type);
-      const unsigned dst_byte_offset = reg_offset(inst->dst) % REG_SIZE;
-      const unsigned src_byte_offset = reg_offset(inst->src[i]) % REG_SIZE;
+      const unsigned dst_byte_offset = reg_offset(inst->dst) % (reg_unit(devinfo) * REG_SIZE);
+      const unsigned src_byte_offset = reg_offset(inst->src[i]) % (reg_unit(devinfo) * REG_SIZE);
 
       return has_dst_aligned_region_restriction(devinfo, inst) &&
              !is_uniform(inst->src[i]) &&
-             (src_byte_stride != dst_byte_stride ||
+             (byte_stride(inst->src[i]) != byte_stride(inst->dst) ||
               src_byte_offset != dst_byte_offset);
    }
 
@@ -260,16 +285,15 @@ namespace {
          return false;
       } else {
          const brw_reg_type exec_type = get_exec_type(inst);
-         const unsigned dst_byte_offset = reg_offset(inst->dst) % REG_SIZE;
-         const unsigned dst_byte_stride = inst->dst.stride * type_sz(inst->dst.type);
+         const unsigned dst_byte_offset = reg_offset(inst->dst) % (reg_unit(devinfo) * REG_SIZE);
          const bool is_narrowing_conversion = !is_byte_raw_mov(inst) &&
             type_sz(inst->dst.type) < type_sz(exec_type);
 
          return (has_dst_aligned_region_restriction(devinfo, inst) &&
-                 (required_dst_byte_stride(inst) != dst_byte_stride ||
-                  required_dst_byte_offset(inst) != dst_byte_offset)) ||
+                 (required_dst_byte_stride(inst) != byte_stride(inst->dst) ||
+                  required_dst_byte_offset(devinfo, inst) != dst_byte_offset)) ||
                 (is_narrowing_conversion &&
-                 required_dst_byte_stride(inst) != dst_byte_stride);
+                 required_dst_byte_stride(inst) != byte_stride(inst->dst));
       }
    }
 
@@ -535,6 +559,12 @@ namespace {
       for (unsigned j = 0; j < n; j++)
          ibld.at(block, inst->next).MOV(subscript(inst->dst, raw_type, j),
                                         subscript(tmp, raw_type, j));
+
+      /* If the destination was an accumulator, after lowering it will be a
+       * GRF. Clear writes_accumulator for the instruction.
+       */
+      if (inst->dst.is_accumulator())
+         inst->writes_accumulator = false;
 
       /* Point the original instruction at the temporary, making sure to keep
        * any destination modifiers in the instruction.

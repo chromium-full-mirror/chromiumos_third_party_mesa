@@ -68,9 +68,8 @@
 #include "util/hash_table.h"
 #include "cso_cache/cso_context.h"
 #include "compiler/glsl/glsl_parser_extras.h"
-#include "nir/nir_to_tgsi.h"
 
-DEBUG_GET_ONCE_BOOL_OPTION(mesa_mvp_dp4, "MESA_MVP_DP4", FALSE)
+DEBUG_GET_ONCE_BOOL_OPTION(mesa_mvp_dp4, "MESA_MVP_DP4", false)
 
 /* The list of state update functions. */
 st_update_func_t st_update_functions[ST_NUM_ATOMS];
@@ -177,7 +176,8 @@ st_invalidate_state(struct gl_context *ctx)
       if (ctx->FragmentProgram._Current) {
          struct gl_program *fp = ctx->FragmentProgram._Current;
 
-         if (fp->ExternalSamplersUsed || fp->ati_fs)
+         if (fp->ExternalSamplersUsed || fp->ati_fs ||
+            (!fp->shader_program && fp->ShadowSamplers))
             ctx->NewDriverState |= ST_NEW_FS_STATE;
       }
    }
@@ -371,6 +371,7 @@ st_destroy_context_priv(struct st_context *st, bool destroy_pipe)
    if (st->pipe && destroy_pipe)
       st->pipe->destroy(st->pipe);
 
+   st->ctx->st = NULL;
    FREE(st);
 }
 
@@ -428,17 +429,6 @@ st_init_driver_flags(struct st_context *st)
 
    if (!st->has_hw_atomics && st->ctx->Const.ShaderStorageBufferOffsetAlignment > 4)
       f->NewAtomicBuffer |= ST_NEW_CONSTANTS;
-}
-
-static bool
-st_have_perfmon(struct st_context *st)
-{
-   struct pipe_screen *screen = st->screen;
-
-   if (!screen->get_driver_query_info || !screen->get_driver_query_group_info)
-      return false;
-
-   return screen->get_driver_query_group_info(screen, 0, NULL) != 0;
 }
 
 static bool
@@ -522,12 +512,15 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       st->util_velems.velems[0].src_offset = 0;
       st->util_velems.velems[0].vertex_buffer_index = 0;
       st->util_velems.velems[0].src_format = PIPE_FORMAT_R32G32B32_FLOAT;
+      st->util_velems.velems[0].src_stride = sizeof(struct st_util_vertex);
       st->util_velems.velems[1].src_offset = 3 * sizeof(float);
       st->util_velems.velems[1].vertex_buffer_index = 0;
       st->util_velems.velems[1].src_format = PIPE_FORMAT_R32G32B32A32_FLOAT;
+      st->util_velems.velems[1].src_stride = sizeof(struct st_util_vertex);
       st->util_velems.velems[2].src_offset = 7 * sizeof(float);
       st->util_velems.velems[2].vertex_buffer_index = 0;
       st->util_velems.velems[2].src_format = PIPE_FORMAT_R32G32_FLOAT;
+      st->util_velems.velems[2].src_stride = sizeof(struct st_util_vertex);
    }
 
    ctx->Const.PackedDriverUniformStorage =
@@ -602,7 +595,7 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       !screen->get_param(screen, PIPE_CAP_GL_CLAMP);
    st->has_time_elapsed =
       screen->get_param(screen, PIPE_CAP_QUERY_TIME_ELAPSED);
-   st->has_half_float_packing =
+   ctx->Const.GLSLHasHalfFloatPacking =
       screen->get_param(screen, PIPE_CAP_SHADER_PACK_HALF_FLOAT);
    st->has_multi_draw_indirect =
       screen->get_param(screen, PIPE_CAP_MULTI_DRAW_INDIRECT);
@@ -618,8 +611,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
       screen->get_param(screen, PIPE_CAP_INDEP_BLEND_ENABLE);
    st->has_indep_blend_func =
       screen->get_param(screen, PIPE_CAP_INDEP_BLEND_FUNC);
-   st->needs_rgb_dst_alpha_override =
-      screen->get_param(screen, PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND);
    st->can_dither =
       screen->get_param(screen, PIPE_CAP_DITHERING);
    st->lower_flatshade =
@@ -660,10 +651,6 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    st_init_limits(screen, &ctx->Const, &ctx->Extensions, ctx->API);
    st_init_extensions(screen, &ctx->Const,
                       &ctx->Extensions, &st->options, ctx->API);
-
-   if (st_have_perfmon(st)) {
-      ctx->Extensions.AMD_performance_monitor = GL_TRUE;
-   }
 
    if (st_have_perfquery(st)) {
       ctx->Extensions.INTEL_performance_query = GL_TRUE;
@@ -807,7 +794,7 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
 
    ctx->Const.DriverSupportedPrimMask = screen->get_param(screen, PIPE_CAP_SUPPORTED_PRIM_MODES) |
                                         /* patches is always supported */
-                                        BITFIELD_BIT(PIPE_PRIM_PATCHES);
+                                        BITFIELD_BIT(MESA_PRIM_PATCHES);
    st->active_states = _mesa_get_active_states(ctx);
 
    return st;
@@ -1000,16 +987,16 @@ st_destroy_context(struct st_context *st)
 
    st_destroy_program_variants(st);
 
-   st_context_free_zombie_objects(st);
-
-   simple_mtx_destroy(&st->zombie_sampler_views.mutex);
-   simple_mtx_destroy(&st->zombie_shaders.mutex);
-
    /* Do not release debug_output yet because it might be in use by other threads.
     * These threads will be terminated by _mesa_free_context_data and
     * st_destroy_context_priv.
     */
    _mesa_free_context_data(ctx, false);
+
+   st_context_free_zombie_objects(st);
+
+   simple_mtx_destroy(&st->zombie_sampler_views.mutex);
+   simple_mtx_destroy(&st->zombie_shaders.mutex);
 
    /* This will free the st_context too, so 'st' must not be accessed
     * afterwards. */
@@ -1032,14 +1019,5 @@ st_destroy_context(struct st_context *st)
 const struct nir_shader_compiler_options *
 st_get_nir_compiler_options(struct st_context *st, gl_shader_stage stage)
 {
-   const struct nir_shader_compiler_options *options =
-      st->ctx->Const.ShaderCompilerOptions[stage].NirOptions;
-
-   if (options) {
-      return options;
-   } else {
-      return nir_to_tgsi_get_compiler_options(st->screen,
-                                              PIPE_SHADER_IR_NIR,
-                                              pipe_shader_type_from_mesa(stage));
-   }
+   return st->ctx->Const.ShaderCompilerOptions[stage].NirOptions;
 }

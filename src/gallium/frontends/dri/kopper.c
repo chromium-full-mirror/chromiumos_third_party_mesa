@@ -31,7 +31,6 @@
 #include "pipe/p_context.h"
 #include "pipe-loader/pipe_loader.h"
 #include "state_tracker/st_context.h"
-#include "os/os_process.h"
 #include "zink/zink_public.h"
 #include "zink/zink_kopper.h"
 #include "driver_trace/tr_screen.h"
@@ -59,7 +58,7 @@ extern const __DRIimageExtension driVkImageExtensionSw;
 
 static struct dri_drawable *
 kopper_create_drawable(struct dri_screen *screen, const struct gl_config *visual,
-                       boolean isPixmap, void *loaderPrivate);
+                       bool isPixmap, void *loaderPrivate);
 
 static inline void
 kopper_invalidate_drawable(__DRIdrawable *dPriv)
@@ -116,6 +115,8 @@ kopper_init_screen(struct dri_screen *screen)
    const __DRIconfig **configs;
    struct pipe_screen *pscreen = NULL;
 
+   (void) mtx_init(&screen->opencl_func_mutex, mtx_plain);
+
    if (!screen->kopper_loader) {
       fprintf(stderr, "mesa: Kopper interface not found!\n"
                       "      Ensure the versions of %s built with this version of Zink are\n"
@@ -127,20 +128,20 @@ kopper_init_screen(struct dri_screen *screen)
 
    bool success;
    if (screen->fd != -1)
-      success = pipe_loader_drm_probe_fd(&screen->dev, screen->fd);
+      success = pipe_loader_drm_probe_fd(&screen->dev, screen->fd, false);
    else
       success = pipe_loader_vk_probe_dri(&screen->dev, NULL);
-   if (success) {
+
+   if (success)
       pscreen = pipe_loader_create_screen(screen->dev);
-      dri_init_options(screen);
-   }
 
    if (!pscreen)
-      goto fail;
+      return NULL;
 
+   dri_init_options(screen);
    screen->unwrapped_screen = trace_screen_unwrap(pscreen);
 
-   configs = dri_init_screen_helper(screen, pscreen);
+   configs = dri_init_screen(screen, pscreen);
    if (!configs)
       goto fail;
 
@@ -168,9 +169,7 @@ kopper_init_screen(struct dri_screen *screen)
 
    return configs;
 fail:
-   dri_destroy_screen_helper(screen);
-   if (screen->dev)
-      pipe_loader_release(&screen->dev, 1);
+   pipe_loader_release(&screen->dev, 1);
    return NULL;
 }
 
@@ -194,11 +193,20 @@ get_dri_format(enum pipe_format pf)
    case PIPE_FORMAT_R16G16B16X16_FLOAT:
       image_format = __DRI_IMAGE_FORMAT_XBGR16161616F;
       break;
+   case PIPE_FORMAT_B5G6R5_UNORM:
+      image_format = __DRI_IMAGE_FORMAT_RGB565;
+      break;
    case PIPE_FORMAT_B5G5R5A1_UNORM:
       image_format = __DRI_IMAGE_FORMAT_ARGB1555;
       break;
-   case PIPE_FORMAT_B5G6R5_UNORM:
-      image_format = __DRI_IMAGE_FORMAT_RGB565;
+   case PIPE_FORMAT_R5G5B5A1_UNORM:
+      image_format = __DRI_IMAGE_FORMAT_ABGR1555;
+      break;
+   case PIPE_FORMAT_B4G4R4A4_UNORM:
+      image_format = __DRI_IMAGE_FORMAT_ARGB4444;
+      break;
+   case PIPE_FORMAT_R4G4B4A4_UNORM:
+      image_format = __DRI_IMAGE_FORMAT_ABGR4444;
       break;
    case PIPE_FORMAT_BGRX8888_UNORM:
       image_format = __DRI_IMAGE_FORMAT_XRGB8888;
@@ -256,6 +264,10 @@ image_format_to_fourcc(int format)
    case __DRI_IMAGE_FORMAT_ABGR2101010: return DRM_FORMAT_ABGR2101010;
    case __DRI_IMAGE_FORMAT_XBGR16161616F: return DRM_FORMAT_XBGR16161616F;
    case __DRI_IMAGE_FORMAT_ABGR16161616F: return DRM_FORMAT_ABGR16161616F;
+   case __DRI_IMAGE_FORMAT_ARGB1555: return DRM_FORMAT_ARGB1555;
+   case __DRI_IMAGE_FORMAT_ABGR1555: return DRM_FORMAT_ABGR1555;
+   case __DRI_IMAGE_FORMAT_ARGB4444: return DRM_FORMAT_ARGB4444;
+   case __DRI_IMAGE_FORMAT_ABGR4444: return DRM_FORMAT_ABGR4444;
    }
    return 0;
 }
@@ -398,7 +410,7 @@ kopper_get_pixmap_buffer(struct dri_drawable *drawable,
    struct dri_screen *screen = drawable->screen;
 
 #ifdef HAVE_DRI3_MODIFIERS
-   if (screen->has_modifiers) {
+   if (drawable->has_modifiers) {
       xcb_dri3_buffers_from_pixmap_cookie_t bps_cookie;
       xcb_dri3_buffers_from_pixmap_reply_t *bps_reply;
       xcb_generic_error_t *error;
@@ -458,7 +470,7 @@ kopper_allocate_textures(struct dri_context *ctx,
    struct dri_screen *screen = drawable->screen;
    struct pipe_resource templ;
    unsigned width, height;
-   boolean resized;
+   bool resized;
    unsigned i;
    struct __DRIimageList images;
    const __DRIimageLoaderExtension *image = screen->image.loader;
@@ -557,8 +569,7 @@ XXX do this once swapinterval is hooked up
    /* pixmaps always have front buffers.
     * Exchange swaps also mandate fake front buffers.
     */
-   if (draw->type != LOADER_DRI3_DRAWABLE_WINDOW ||
-       draw->swap_method == __DRI_ATTRIB_SWAP_EXCHANGE)
+   if (draw->type != LOADER_DRI3_DRAWABLE_WINDOW)
       buffer_mask |= __DRI_IMAGE_BUFFER_FRONT;
 #endif
 
@@ -597,6 +608,7 @@ XXX do this once swapinterval is hooked up
             assert(data);
             drawable->textures[statts[i]] =
                screen->base.screen->resource_create_drawable(screen->base.screen, &templ, data);
+            drawable->window_valid = !!drawable->textures[statts[i]];
          }
 #ifdef VK_USE_PLATFORM_XCB_KHR
          else if (is_pixmap && statts[i] == ST_ATTACHMENT_FRONT_LEFT && !screen->is_sw) {
@@ -717,7 +729,7 @@ kopper_flush_frontbuffer(struct dri_context *ctx,
       }
       /* throttle on the previous fence */
       if (drawable->throttle_fence) {
-         screen->fence_finish(screen, NULL, drawable->throttle_fence, PIPE_TIMEOUT_INFINITE);
+         screen->fence_finish(screen, NULL, drawable->throttle_fence, OS_TIMEOUT_INFINITE);
          screen->fence_reference(screen, &drawable->throttle_fence, NULL);
       }
       drawable->throttle_fence = new_fence;
@@ -747,16 +759,16 @@ get_image_shm(struct dri_drawable *drawable, int x, int y, int width, int height
    whandle.type = WINSYS_HANDLE_TYPE_SHMID;
 
    if (loader->base.version < 4 || !loader->getImageShm)
-      return FALSE;
+      return false;
 
    if (!res->screen->resource_get_handle(res->screen, NULL, res, &whandle, PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE))
-      return FALSE;
+      return false;
 
    if (loader->base.version > 5 && loader->getImageShm2)
       return loader->getImageShm2(opaque_dri_drawable(drawable), x, y, width, height, whandle.handle, drawable->loaderPrivate);
 
    loader->getImageShm(opaque_dri_drawable(drawable), x, y, width, height, whandle.handle, drawable->loaderPrivate);
-   return TRUE;
+   return true;
 }
 
 static void
@@ -815,7 +827,7 @@ kopper_swap_buffers(struct dri_drawable *drawable);
 
 static struct dri_drawable *
 kopper_create_drawable(struct dri_screen *screen, const struct gl_config *visual,
-                       boolean isPixmap, void *loaderPrivate)
+                       bool isPixmap, void *loaderPrivate)
 {
    /* always pass !pixmap because it isn't "handled" or relevant */
    struct dri_drawable *drawable = dri_create_drawable(screen, visual, false,
@@ -896,13 +908,15 @@ static __DRIdrawable *
 kopperCreateNewDrawable(__DRIscreen *psp,
                         const __DRIconfig *config,
                         void *data,
-                        int is_pixmap)
+                        __DRIkopperDrawableInfo *info)
 {
     assert(data != NULL);
 
     struct dri_screen *screen = dri_screen(psp);
     struct dri_drawable *drawable =
-       screen->create_drawable(screen, &config->modes, is_pixmap, data);
+       screen->create_drawable(screen, &config->modes, info->is_pixmap, data);
+   if (drawable)
+      drawable->has_modifiers = screen->has_modifiers && info->multiplanes_available;
 
     return opaque_dri_drawable(drawable);
 }
@@ -917,6 +931,9 @@ kopperSetSwapInterval(__DRIdrawable *dPriv, int interval)
                                 drawable->textures[ST_ATTACHMENT_BACK_LEFT] :
                                 drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
 
+   /* can't set swap interval on non-windows */
+   if (!drawable->window_valid)
+      return;
    /* the conditional is because we can be called before buffer allocation.  If
     * we're before allocation, then the initial_swap_interval will be used when
     * the swapchain is eventually created.
@@ -934,6 +951,10 @@ kopperQueryBufferAge(__DRIdrawable *dPriv)
    struct pipe_resource *ptex = drawable->textures[ST_ATTACHMENT_BACK_LEFT] ?
                                 drawable->textures[ST_ATTACHMENT_BACK_LEFT] :
                                 drawable->textures[ST_ATTACHMENT_FRONT_LEFT];
+
+   /* can't get buffer age from non-window swapchain */
+   if (!drawable->window_valid)
+      return 0;
 
    /* Wait for glthread to finish because we can't use pipe_context from
     * multiple threads.

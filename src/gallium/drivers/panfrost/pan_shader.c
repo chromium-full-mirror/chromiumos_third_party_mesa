@@ -84,11 +84,11 @@ panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
     * happens at CSO create time regardless.
     */
    if (gl_shader_stage_is_compute(s->info.stage))
-      pan_shader_preprocess(s, dev->gpu_id);
+      pan_shader_preprocess(s, panfrost_device_gpu_id(dev));
 
    struct panfrost_compile_inputs inputs = {
       .debug = dbg,
-      .gpu_id = dev->gpu_id,
+      .gpu_id = panfrost_device_gpu_id(dev),
    };
 
    /* Lower this early so the backends don't have to worry about it */
@@ -130,7 +130,7 @@ panfrost_shader_compile(struct panfrost_screen *screen, const nir_shader *ir,
    if (dev->arch <= 5 && s->info.stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS_V(s, pan_lower_framebuffer, key->fs.rt_formats,
                  pan_raw_format_mask_midgard(key->fs.rt_formats), 0,
-                 dev->gpu_id < 0x700);
+                 panfrost_device_gpu_id(dev) < 0x700);
    }
 
    NIR_PASS_V(s, panfrost_nir_lower_sysvals, &out->sysvals);
@@ -218,7 +218,7 @@ panfrost_build_key(struct panfrost_context *ctx,
    }
 
    /* Point sprite lowering needed on Bifrost and newer */
-   if (dev->arch >= 6 && rast && ctx->active_prim == PIPE_PRIM_POINTS) {
+   if (dev->arch >= 6 && rast && ctx->active_prim == MESA_PRIM_POINTS) {
       key->fs.sprite_coord_enable = rast->sprite_coord_enable;
    }
 
@@ -369,13 +369,13 @@ panfrost_create_shader_state(struct pipe_context *pctx,
    if (nir->info.stage == MESA_SHADER_FRAGMENT &&
        nir->info.outputs_written & BITFIELD_BIT(FRAG_RESULT_COLOR)) {
 
-      NIR_PASS_V(nir, nir_lower_fragcolor, 8);
+      NIR_PASS_V(nir, nir_lower_fragcolor, nir->info.fs.color_is_dual_source ? 1 : 8);
       so->fragcolor_lowered = true;
    }
 
    /* Then run the suite of lowering and optimization, including I/O lowering */
    struct panfrost_device *dev = pan_device(pctx->screen);
-   pan_shader_preprocess(nir, dev->gpu_id);
+   pan_shader_preprocess(nir, panfrost_device_gpu_id(dev));
 
    /* If this shader uses transform feedback, compile the transform
     * feedback program. This is a special shader variant.
@@ -383,10 +383,6 @@ panfrost_create_shader_state(struct pipe_context *pctx,
    struct panfrost_context *ctx = pan_context(pctx);
 
    if (so->nir->xfb_info) {
-      nir_shader *xfb = nir_shader_clone(NULL, so->nir);
-      xfb->info.name = ralloc_asprintf(xfb, "%s@xfb", xfb->info.name);
-      xfb->info.internal = true;
-
       so->xfb = calloc(1, sizeof(struct panfrost_compiled_shader));
       so->xfb->key.vs_is_xfb = true;
 
@@ -470,6 +466,7 @@ panfrost_create_compute_state(struct pipe_context *pctx,
    /* The NIR becomes invalid after this. For compute kernels, we never
     * need to access it again. Don't keep a dangling pointer around.
     */
+   ralloc_free((void *)so->nir);
    so->nir = NULL;
 
    return so;
@@ -499,7 +496,8 @@ panfrost_get_compute_state_info(struct pipe_context *pipe, void *cso,
    info->max_threads =
       panfrost_max_thread_count(dev->arch, cs->info.work_reg_count);
    info->private_memory = cs->info.tls_size;
-   info->preferred_simd_size = pan_subgroup_size(dev->arch);
+   info->simd_sizes = pan_subgroup_size(dev->arch);
+   info->preferred_simd_size = info->simd_sizes;
 }
 
 void

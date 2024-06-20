@@ -111,7 +111,6 @@ private:
    bool m_out_misc_write{false};
    bool m_vs_out_layer{false};
    bool m_vs_as_gs_a{false};
-   int m_vs_prim_id_out{0};
    bool m_out_edgeflag{false};
    bool m_out_viewport{false};
    bool m_out_point_size{false};
@@ -159,7 +158,7 @@ class VertexShader : public VertexStageShader {
 public:
    VertexShader(const pipe_stream_output_info *so_info,
                 r600_shader *gs_shader,
-                r600_shader_key& key);
+                const r600_shader_key& key);
 
    bool load_input(nir_intrinsic_instr *intr) override;
    bool store_output(nir_intrinsic_instr *intr) override;
@@ -178,7 +177,7 @@ private:
    void do_get_shader_info(r600_shader *sh_info) override;
 
    VertexExportStage *m_export_stage{nullptr};
-   int m_last_vertex_atribute_register{0};
+   int m_last_vertex_attribute_register{0};
    PRegister m_vertex_id{nullptr};
    PRegister m_instance_id{nullptr};
    PRegister m_rel_vertex_id{nullptr};

@@ -46,7 +46,7 @@ setup_reduce_temp(Program* program)
    for (Block& block : program->blocks) {
       for (aco_ptr<Instruction>& instr : block.instructions) {
          if (instr->opcode == aco_opcode::p_interp_gfx11 ||
-             instr->opcode == aco_opcode::p_bpermute_gfx11w64) {
+             instr->opcode == aco_opcode::p_bpermute_permlane) {
             maxSize = MAX2(maxSize, 1);
             hasReductions[block.index] = true;
          } else if (instr->format == Format::PSEUDO_REDUCTION) {
@@ -79,7 +79,7 @@ setup_reduce_temp(Program* program)
           * Here, the linear vgpr is used before any phi copies, so this isn't necessary.
           */
          if (inserted_at >= 0) {
-            aco_ptr<Instruction> end{create_instruction<Instruction>(
+            aco_ptr<Instruction> end{create_instruction<Pseudo_instruction>(
                aco_opcode::p_end_linear_vgpr, Format::PSEUDO, vtmp_inserted_at >= 0 ? 2 : 1, 0)};
             end->operands[0] = Operand(reduceTmp);
             if (vtmp_inserted_at >= 0)
@@ -101,7 +101,7 @@ setup_reduce_temp(Program* program)
          Instruction* instr = (*it).get();
          if (instr->format != Format::PSEUDO_REDUCTION &&
              instr->opcode != aco_opcode::p_interp_gfx11 &&
-             instr->opcode != aco_opcode::p_bpermute_gfx11w64)
+             instr->opcode != aco_opcode::p_bpermute_permlane)
             continue;
 
          if ((int)last_top_level_block_idx != inserted_at) {
@@ -118,11 +118,16 @@ setup_reduce_temp(Program* program)
                 * would insert at the end instead of using this one. */
             } else {
                assert(last_top_level_block_idx < block.index);
-               /* insert before the branch at last top level block */
+               /* insert after p_logical_end of the last top-level block */
                std::vector<aco_ptr<Instruction>>& instructions =
                   program->blocks[last_top_level_block_idx].instructions;
-               instructions.insert(std::next(instructions.begin(), instructions.size() - 1),
-                                   std::move(create));
+               auto insert_point =
+                  std::find_if(instructions.rbegin(), instructions.rend(),
+                               [](const auto& iter) {
+                                  return iter->opcode == aco_opcode::p_logical_end;
+                               })
+                     .base();
+               instructions.insert(insert_point, std::move(create));
                inserted_at = last_top_level_block_idx;
             }
          }
@@ -161,8 +166,13 @@ setup_reduce_temp(Program* program)
                assert(last_top_level_block_idx < block.index);
                std::vector<aco_ptr<Instruction>>& instructions =
                   program->blocks[last_top_level_block_idx].instructions;
-               instructions.insert(std::next(instructions.begin(), instructions.size() - 1),
-                                   std::move(create));
+               auto insert_point =
+                  std::find_if(instructions.rbegin(), instructions.rend(),
+                               [](const auto& iter) {
+                                  return iter->opcode == aco_opcode::p_logical_end;
+                               })
+                     .base();
+               instructions.insert(insert_point, std::move(create));
                vtmp_inserted_at = last_top_level_block_idx;
             }
          }
@@ -173,7 +183,7 @@ setup_reduce_temp(Program* program)
                instr->operands[2] = Operand(vtmp);
          } else {
             assert(instr->opcode == aco_opcode::p_interp_gfx11 ||
-                   instr->opcode == aco_opcode::p_bpermute_gfx11w64);
+                   instr->opcode == aco_opcode::p_bpermute_permlane);
             instr->operands[0] = Operand(reduceTmp);
             instr->operands[0].setLateKill(true);
          }

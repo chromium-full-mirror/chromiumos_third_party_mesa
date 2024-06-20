@@ -28,7 +28,7 @@
 
 #include "vk_util.h"
 
-#include "pan_cs.h"
+#include "pan_desc.h"
 #include "pan_earlyzs.h"
 #include "pan_encoder.h"
 #include "pan_pool.h"
@@ -116,6 +116,7 @@ panvk_emit_varying(const struct panvk_device *dev,
       cfg.buffer_index = varyings->varying[loc].buf;
       cfg.offset = varyings->varying[loc].offset;
       cfg.format = panvk_varying_hw_format(dev, varyings, stage, idx);
+      cfg.offset_enable = false;
    }
 }
 
@@ -286,6 +287,7 @@ panvk_emit_attrib(const struct panvk_device *dev,
    pan_pack(attrib, ATTRIBUTE, cfg) {
       cfg.buffer_index = buf_idx * 2;
       cfg.offset = attribs->attrib[idx].offset + (bufs[buf_idx].address & 63);
+      cfg.offset_enable = true;
 
       if (buf_info->per_instance)
          cfg.offset += draw->first_instance * buf_info->stride;
@@ -829,10 +831,10 @@ panvk_per_arch(emit_tiler_context)(const struct panvk_device *dev,
    const struct panfrost_device *pdev = &dev->physical_device->pdev;
 
    pan_pack(descs->cpu + pan_size(TILER_CONTEXT), TILER_HEAP, cfg) {
-      cfg.size = pdev->tiler_heap->size;
+      cfg.size = panfrost_bo_size(pdev->tiler_heap);
       cfg.base = pdev->tiler_heap->ptr.gpu;
       cfg.bottom = pdev->tiler_heap->ptr.gpu;
-      cfg.top = pdev->tiler_heap->ptr.gpu + pdev->tiler_heap->size;
+      cfg.top = pdev->tiler_heap->ptr.gpu + panfrost_bo_size(pdev->tiler_heap);
    }
 
    pan_pack(descs->cpu, TILER_CONTEXT, cfg) {

@@ -7,9 +7,6 @@ Compilation and Installation Using Meson
 For general information about Meson see the `Meson
 website <https://mesonbuild.com/>`__.
 
-**Mesa's Meson build system is generally considered stable and ready for
-production.**
-
 .. note::
 
    Mesa requires Meson >= 0.60.0 to build.
@@ -69,7 +66,7 @@ Then install Meson using pip
 
 .. code-block:: console
 
-   py -3 -m pip install meson mako
+   py -3 -m pip install meson packaging mako
 
 You may need to add the Python 3 scripts directory to your path for
 Meson.

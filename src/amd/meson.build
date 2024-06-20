@@ -28,9 +28,10 @@ if with_amd_vk or with_gallium_radeonsi
   else
     libamd_common_llvm = []
   endif
-endif
-if with_amd_vk
   subdir('compiler')
+endif
+
+if with_amd_vk
   subdir('vulkan')
   if with_aco_tests
     subdir('compiler/tests')
@@ -39,4 +40,8 @@ endif
 
 if with_tools.contains('drm-shim')
   subdir('drm-shim')
+endif
+
+if with_gallium_radeonsi
+  subdir('vpelib')
 endif

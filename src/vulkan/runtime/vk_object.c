@@ -25,6 +25,7 @@
 
 #include "vk_alloc.h"
 #include "vk_common_entrypoints.h"
+#include "vk_instance.h"
 #include "vk_device.h"
 #include "util/hash_table.h"
 #include "util/ralloc.h"
@@ -38,6 +39,20 @@ vk_object_base_init(struct vk_device *device,
    base->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
    base->type = obj_type;
    base->device = device;
+   base->instance = NULL;
+   base->client_visible = false;
+   base->object_name = NULL;
+   util_sparse_array_init(&base->private_data, sizeof(uint64_t), 8);
+}
+
+void vk_object_base_instance_init(struct vk_instance *instance,
+                                  struct vk_object_base *base,
+                                  VkObjectType obj_type)
+{
+   base->_loader_data.loaderMagic = ICD_LOADER_MAGIC;
+   base->type = obj_type;
+   base->device = NULL;
+   base->instance = instance;
    base->client_visible = false;
    base->object_name = NULL;
    util_sparse_array_init(&base->private_data, sizeof(uint64_t), 8);
@@ -48,8 +63,14 @@ vk_object_base_finish(struct vk_object_base *base)
 {
    util_sparse_array_finish(&base->private_data);
 
-   if (base->object_name != NULL)
+   if (base->object_name == NULL)
+      return;
+
+   assert(base->device != NULL || base->instance != NULL);
+   if (base->device)
       vk_free(&base->device->alloc, base->object_name);
+   else
+      vk_free(&base->instance->alloc, base->object_name);
 }
 
 void
@@ -219,7 +240,7 @@ vk_object_base_private_data(struct vk_device *device,
     * VK_EXT_private_data extension, we have to handle VkSwapchainKHR in the
     * driver as a special case.  On future versions of Android where the
     * loader does understand VK_EXT_private_data, we'll never see a
-    * vkGet/SetPrivateDataEXT call on a swapchain because the loader will
+    * vkGet/SetPrivateData call on a swapchain because the loader will
     * handle it.
     */
 #ifdef ANDROID
@@ -281,10 +302,10 @@ vk_object_base_get_private_data(struct vk_device *device,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-vk_common_CreatePrivateDataSlotEXT(VkDevice _device,
-                                   const VkPrivateDataSlotCreateInfo *pCreateInfo,
-                                   const VkAllocationCallbacks *pAllocator,
-                                   VkPrivateDataSlot *pPrivateDataSlot)
+vk_common_CreatePrivateDataSlot(VkDevice _device,
+                                const VkPrivateDataSlotCreateInfo *pCreateInfo,
+                                const VkAllocationCallbacks *pAllocator,
+                                VkPrivateDataSlot *pPrivateDataSlot)
 {
    VK_FROM_HANDLE(vk_device, device, _device);
    return vk_private_data_slot_create(device, pCreateInfo, pAllocator,
@@ -292,20 +313,20 @@ vk_common_CreatePrivateDataSlotEXT(VkDevice _device,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-vk_common_DestroyPrivateDataSlotEXT(VkDevice _device,
-                                    VkPrivateDataSlot privateDataSlot,
-                                    const VkAllocationCallbacks *pAllocator)
+vk_common_DestroyPrivateDataSlot(VkDevice _device,
+                                 VkPrivateDataSlot privateDataSlot,
+                                 const VkAllocationCallbacks *pAllocator)
 {
    VK_FROM_HANDLE(vk_device, device, _device);
    vk_private_data_slot_destroy(device, privateDataSlot, pAllocator);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
-vk_common_SetPrivateDataEXT(VkDevice _device,
-                            VkObjectType objectType,
-                            uint64_t objectHandle,
-                            VkPrivateDataSlot privateDataSlot,
-                            uint64_t data)
+vk_common_SetPrivateData(VkDevice _device,
+                         VkObjectType objectType,
+                         uint64_t objectHandle,
+                         VkPrivateDataSlot privateDataSlot,
+                         uint64_t data)
 {
    VK_FROM_HANDLE(vk_device, device, _device);
    return vk_object_base_set_private_data(device,
@@ -314,11 +335,11 @@ vk_common_SetPrivateDataEXT(VkDevice _device,
 }
 
 VKAPI_ATTR void VKAPI_CALL
-vk_common_GetPrivateDataEXT(VkDevice _device,
-                            VkObjectType objectType,
-                            uint64_t objectHandle,
-                            VkPrivateDataSlot privateDataSlot,
-                            uint64_t *pData)
+vk_common_GetPrivateData(VkDevice _device,
+                         VkObjectType objectType,
+                         uint64_t objectHandle,
+                         VkPrivateDataSlot privateDataSlot,
+                         uint64_t *pData)
 {
    VK_FROM_HANDLE(vk_device, device, _device);
    vk_object_base_get_private_data(device,

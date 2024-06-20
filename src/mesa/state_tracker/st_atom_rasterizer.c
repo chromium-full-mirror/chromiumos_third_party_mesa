@@ -222,7 +222,7 @@ st_update_rasterizer(struct st_context *st)
 
       raster->point_quad_rasterization = 1;
 
-      raster->point_tri_clip = _mesa_is_gles2(st->ctx);
+      raster->point_line_tri_clip = _mesa_is_gles2(st->ctx);
    }
 
    /* ST_NEW_VERTEX_PROGRAM
@@ -294,6 +294,10 @@ st_update_rasterizer(struct st_context *st)
       if (raster->fill_back != PIPE_POLYGON_MODE_FILL)
          raster->cull_face |= PIPE_FACE_BACK;
    }
+
+   /* Disable two-sided colors if back faces are culled. */
+   if (raster->cull_face & PIPE_FACE_BACK)
+      raster->light_twoside = 0;
 
    /* _NEW_TRANSFORM */
    raster->depth_clip_near = !ctx->Transform.DepthClampNear;

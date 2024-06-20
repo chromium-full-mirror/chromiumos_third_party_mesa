@@ -93,6 +93,17 @@ struct fdl_explicit_layout {
 };
 
 /**
+ * Metadata shared between vk and gallium driver for interop.
+ *
+ * NOTE: EXT_external_objects requires app to check device and driver
+ * UUIDs to ensure that the vk and gl driver are compatible.  So for
+ * now we don't need any additional versioning of the metadata.
+ */
+struct fdl_metadata {
+   uint64_t modifier;
+};
+
+/**
  * Encapsulates the layout of a resource, including position of given 2d
  * surface (layer, level) within.  Or rather all the information needed
  * to derive this.
@@ -274,6 +285,7 @@ enum fdl_chroma_location {
 };
 
 struct fdl_view_args {
+   uint32_t chip;
    uint64_t iova;
    uint32_t base_miplevel;
    uint32_t level_count;
@@ -294,6 +306,8 @@ struct fdl6_view {
    uint32_t layer_size;
    uint32_t ubwc_layer_size;
 
+   uint32_t offset;
+
    uint32_t width, height;
    bool need_y2_align;
 
@@ -308,8 +322,9 @@ struct fdl6_view {
     */
    uint32_t storage_descriptor[FDL6_TEX_CONST_DWORDS];
 
+   uint32_t pitch;
+
    /* pre-filled register values */
-   uint32_t PITCH;
    uint32_t FLAG_BUFFER_PITCH;
 
    uint32_t RB_MRT_BUF_INFO;

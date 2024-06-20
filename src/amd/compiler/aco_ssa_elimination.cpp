@@ -133,6 +133,7 @@ insert_parallelcopies(ssa_elimination_ctx& ctx)
       }
       pc->tmp_in_scc = block.scc_live_out;
       pc->scratch_sgpr = scratch_sgpr;
+      pc->needs_scratch_reg = true;
       block.instructions.insert(it, std::move(pc));
    }
 }
@@ -397,6 +398,10 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
                                    regs_intersect(Definition(exec, ctx.program->lane_mask), def);
                          }))
             break;
+
+         if (instr->isPseudo() && instr->pseudo().needs_scratch_reg &&
+             regs_intersect(exec_copy_def, Definition(instr->pseudo().scratch_sgpr, s1)))
+            break;
       }
    }
 
@@ -436,6 +441,9 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
          for (const Definition& def : instr->definitions)
             if (regs_intersect(exec_copy_def, def))
                return;
+         if (instr->isPseudo() && instr->pseudo().needs_scratch_reg &&
+             regs_intersect(exec_copy_def, Definition(instr->pseudo().scratch_sgpr, s1)))
+            return;
       }
 
       /* Check if the instruction may implicitly read VCC, eg. v_cndmask or add with carry.
@@ -547,24 +555,29 @@ eliminate_useless_exec_writes_in_block(ssa_elimination_ctx& ctx, Block& block)
 {
    /* Check if any successor needs the outgoing exec mask from the current block. */
 
-   bool copy_to_exec = false;
-   bool copy_from_exec = false;
-
-   for (const auto& successor_phi_info : ctx.linear_phi_info[block.index]) {
-      copy_to_exec |= successor_phi_info.def.physReg() == exec;
-      copy_from_exec |= successor_phi_info.op.physReg() == exec;
-   }
-
    bool exec_write_used;
-   if (copy_from_exec)
+   if (block.kind & block_kind_end_with_regs) {
+      /* Last block of a program with succeed shader part should respect final exec write. */
       exec_write_used = true;
-   else if (copy_to_exec)
-      exec_write_used = false;
-   else
-      /* blocks_incoming_exec_used is initialized to true, so this is correct even for loops. */
-      exec_write_used =
-         std::any_of(block.linear_succs.begin(), block.linear_succs.end(),
-                     [&ctx](int succ_idx) { return ctx.blocks_incoming_exec_used[succ_idx]; });
+   } else {
+      bool copy_to_exec = false;
+      bool copy_from_exec = false;
+
+      for (const auto& successor_phi_info : ctx.linear_phi_info[block.index]) {
+         copy_to_exec |= successor_phi_info.def.physReg() == exec;
+         copy_from_exec |= successor_phi_info.op.physReg() == exec;
+      }
+
+      if (copy_from_exec)
+         exec_write_used = true;
+      else if (copy_to_exec)
+         exec_write_used = false;
+      else
+         /* blocks_incoming_exec_used is initialized to true, so this is correct even for loops. */
+         exec_write_used =
+            std::any_of(block.linear_succs.begin(), block.linear_succs.end(),
+                        [&ctx](int succ_idx) { return ctx.blocks_incoming_exec_used[succ_idx]; });
+   }
 
    /* Collect information about the branching sequence. */
 

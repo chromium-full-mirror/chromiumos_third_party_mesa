@@ -7,6 +7,7 @@
 #include "util/format/u_format.h"
 #include "util/format/u_format_s3tc.h"
 #include "util/u_string.h"
+#include "util/hex.h"
 
 #include "util/os_mman.h"
 #include "util/os_time.h"
@@ -79,7 +80,8 @@ nouveau_screen_fence_ref(struct pipe_screen *pscreen,
                          struct pipe_fence_handle **ptr,
                          struct pipe_fence_handle *pfence)
 {
-   nouveau_fence_ref(nouveau_fence(pfence), (struct nouveau_fence **)ptr);
+   nouveau_fence_ref((pfence ? nouveau_fence(pfence) : NULL),
+                     (ptr ? (struct nouveau_fence **)ptr : NULL));
 }
 
 static bool
@@ -182,12 +184,9 @@ nouveau_disk_cache_create(struct nouveau_screen *screen)
       return;
 
    _mesa_sha1_final(&ctx, sha1);
-   disk_cache_format_hex_id(cache_id, sha1, 20 * 2);
+   mesa_bytes_to_hex(cache_id, sha1, 20);
 
-   if (screen->prefer_nir)
-      driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_NIR;
-   else
-      driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_TGSI;
+   driver_flags |= NOUVEAU_SHADER_CACHE_FLAGS_IR_NIR;
 
    screen->disk_shader_cache =
       disk_cache_create(nouveau_screen_get_name(&screen->base),
@@ -293,16 +292,13 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    void *data;
    union nouveau_bo_config mm_config;
 
+   glsl_type_singleton_init_or_ref();
+
    char *nv_dbg = getenv("NOUVEAU_MESA_DEBUG");
    if (nv_dbg)
       nouveau_mesa_debug = atoi(nv_dbg);
 
-   screen->prefer_nir = !debug_get_bool_option("NV50_PROG_USE_TGSI", false);
-
    screen->force_enable_cl = debug_get_bool_option("NOUVEAU_ENABLE_CL", false);
-   if (screen->force_enable_cl)
-      glsl_type_singleton_init_or_ref();
-
    screen->disable_fences = debug_get_bool_option("NOUVEAU_DISABLE_FENCES", false);
 
    /* These must be set before any failure is possible, as the cleanup
@@ -328,7 +324,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    bool enable_svm = debug_get_bool_option("NOUVEAU_SVM", false);
    screen->has_svm = false;
    /* we only care about HMM with OpenCL enabled */
-   if (dev->chipset > 0x130 && screen->force_enable_cl && enable_svm) {
+   if (dev->chipset > 0x130 && enable_svm) {
       /* Before being able to enable SVM we need to carve out some memory for
        * driver bo allocations. Let's just base the size on the available VRAM.
        *
@@ -448,6 +444,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
                                        NOUVEAU_BO_GART | NOUVEAU_BO_MAP,
                                        &mm_config);
    screen->mm_VRAM = nouveau_mm_create(dev, NOUVEAU_BO_VRAM, &mm_config);
+
    return 0;
 
 err:
@@ -461,8 +458,7 @@ nouveau_screen_fini(struct nouveau_screen *screen)
 {
    int fd = screen->drm->fd;
 
-   if (screen->force_enable_cl)
-      glsl_type_singleton_decref();
+   glsl_type_singleton_decref();
    if (screen->has_svm)
       os_munmap(screen->svm_cutout, screen->svm_cutout_size);
 

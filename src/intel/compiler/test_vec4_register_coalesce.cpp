@@ -23,7 +23,6 @@
 
 #include <gtest/gtest.h>
 #include "brw_vec4.h"
-#include "program/program.h"
 
 using namespace brw;
 
@@ -35,6 +34,7 @@ class register_coalesce_vec4_test : public ::testing::Test {
 
 public:
    struct brw_compiler *compiler;
+   struct brw_compile_params params;
    struct intel_device_info *devinfo;
    void *ctx;
    struct gl_shader_program *shader_prog;
@@ -47,10 +47,10 @@ class register_coalesce_vec4_visitor : public vec4_visitor
 {
 public:
    register_coalesce_vec4_visitor(struct brw_compiler *compiler,
-                                  void *mem_ctx,
+                                  struct brw_compile_params *params,
                                   nir_shader *shader,
                                   struct brw_vue_prog_data *prog_data)
-      : vec4_visitor(compiler, NULL, NULL, prog_data, shader, mem_ctx,
+      : vec4_visitor(compiler, params, NULL, prog_data, shader,
                      false /* no_spills */, false)
    {
       prog_data->dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
@@ -98,10 +98,13 @@ void register_coalesce_vec4_test::SetUp()
 
    prog_data = ralloc(ctx, struct brw_vue_prog_data);
 
+   params = {};
+   params.mem_ctx = ctx;
+
    nir_shader *shader =
       nir_shader_create(ctx, MESA_SHADER_VERTEX, NULL, NULL);
 
-   v = new register_coalesce_vec4_visitor(compiler, ctx, shader, prog_data);
+   v = new register_coalesce_vec4_visitor(compiler, &params, shader, prog_data);
 
    devinfo->ver = 4;
    devinfo->verx10 = devinfo->ver * 10;
@@ -137,8 +140,8 @@ _register_coalesce(vec4_visitor *v, const char *func)
 
 TEST_F(register_coalesce_vec4_test, test_compute_to_mrf)
 {
-   src_reg something = src_reg(v, glsl_type::float_type);
-   dst_reg temp = dst_reg(v, glsl_type::float_type);
+   src_reg something = src_reg(v, glsl_float_type());
+   dst_reg temp = dst_reg(v, glsl_float_type());
    dst_reg init;
 
    dst_reg m0 = dst_reg(MRF, 0);
@@ -156,8 +159,8 @@ TEST_F(register_coalesce_vec4_test, test_compute_to_mrf)
 
 TEST_F(register_coalesce_vec4_test, test_multiple_use)
 {
-   src_reg something = src_reg(v, glsl_type::float_type);
-   dst_reg temp = dst_reg(v, glsl_type::vec4_type);
+   src_reg something = src_reg(v, glsl_float_type());
+   dst_reg temp = dst_reg(v, glsl_vec4_type());
    dst_reg init;
 
    dst_reg m0 = dst_reg(MRF, 0);
@@ -182,15 +185,15 @@ TEST_F(register_coalesce_vec4_test, test_multiple_use)
 
 TEST_F(register_coalesce_vec4_test, test_dp4_mrf)
 {
-   src_reg some_src_1 = src_reg(v, glsl_type::vec4_type);
-   src_reg some_src_2 = src_reg(v, glsl_type::vec4_type);
+   src_reg some_src_1 = src_reg(v, glsl_vec4_type());
+   src_reg some_src_2 = src_reg(v, glsl_vec4_type());
    dst_reg init;
 
    dst_reg m0 = dst_reg(MRF, 0);
    m0.writemask = WRITEMASK_Y;
    m0.type = BRW_REGISTER_TYPE_F;
 
-   dst_reg temp = dst_reg(v, glsl_type::float_type);
+   dst_reg temp = dst_reg(v, glsl_float_type());
 
    vec4_instruction *dp4 = v->emit(v->DP4(temp, some_src_1, some_src_2));
    v->emit(v->MOV(m0, src_reg(temp)));
@@ -203,12 +206,12 @@ TEST_F(register_coalesce_vec4_test, test_dp4_mrf)
 
 TEST_F(register_coalesce_vec4_test, test_dp4_grf)
 {
-   src_reg some_src_1 = src_reg(v, glsl_type::vec4_type);
-   src_reg some_src_2 = src_reg(v, glsl_type::vec4_type);
+   src_reg some_src_1 = src_reg(v, glsl_vec4_type());
+   src_reg some_src_2 = src_reg(v, glsl_vec4_type());
    dst_reg init;
 
-   dst_reg to = dst_reg(v, glsl_type::vec4_type);
-   dst_reg temp = dst_reg(v, glsl_type::float_type);
+   dst_reg to = dst_reg(v, glsl_vec4_type());
+   dst_reg temp = dst_reg(v, glsl_float_type());
 
    vec4_instruction *dp4 = v->emit(v->DP4(temp, some_src_1, some_src_2));
    to.writemask = WRITEMASK_Y;
@@ -229,12 +232,12 @@ TEST_F(register_coalesce_vec4_test, test_dp4_grf)
 
 TEST_F(register_coalesce_vec4_test, test_channel_mul_grf)
 {
-   src_reg some_src_1 = src_reg(v, glsl_type::vec4_type);
-   src_reg some_src_2 = src_reg(v, glsl_type::vec4_type);
+   src_reg some_src_1 = src_reg(v, glsl_vec4_type());
+   src_reg some_src_2 = src_reg(v, glsl_vec4_type());
    dst_reg init;
 
-   dst_reg to = dst_reg(v, glsl_type::vec4_type);
-   dst_reg temp = dst_reg(v, glsl_type::float_type);
+   dst_reg to = dst_reg(v, glsl_vec4_type());
+   dst_reg temp = dst_reg(v, glsl_float_type());
 
    vec4_instruction *mul = v->emit(v->MUL(temp, some_src_1, some_src_2));
    to.writemask = WRITEMASK_Y;

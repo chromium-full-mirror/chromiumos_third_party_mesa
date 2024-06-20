@@ -24,7 +24,7 @@
 #ifndef MESA_CLC_HELPERS_H
 #define MESA_CLC_HELPERS_H
 
-#include "nir_types.h"
+#include "glsl_types.h"
 
 #include "clc.h"
 #include "util/u_string.h"
@@ -75,7 +75,8 @@ clc_link_spirv_binaries(const struct clc_linker_args *args,
 
 bool
 clc_validate_spirv(const struct clc_binary *spirv,
-                   const struct clc_logger *logger);
+                   const struct clc_logger *logger,
+                   const struct clc_validator_options *options);
 
 int
 clc_spirv_specialize(const struct clc_binary *in_spirv,

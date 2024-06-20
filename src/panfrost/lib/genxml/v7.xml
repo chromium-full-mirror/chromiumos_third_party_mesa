@@ -677,10 +677,18 @@
     <field name="Pointer" size="64" start="0:0" type="address"/>
   </struct>
 
-  <struct name="Surface With Stride" align="8">
+  <struct name="Surface With Stride" align="16">
     <field name="Pointer" size="64" start="0:0" type="address"/>
     <field name="Row stride" size="32" start="2:0" type="int"/>
     <field name="Surface stride" size="32" start="3:0" type="int"/>
+  </struct>
+
+  <struct name="Multiplanar Surface" align="32">
+    <field name="Plane 0 Pointer" size="64" start="0:0" type="address"/>
+    <field name="Plane 0 Row Stride" size="32" start="2:0" type="int"/>
+    <field name="Plane 1/2 Row Stride" size="32" start="3:0" type="int"/>
+    <field name="Plane 1 Pointer" size="64" start="4:0" type="address"/>
+    <field name="Plane 2 Pointer" size="64" start="6:0" type="address"/>
   </struct>
 
   <struct name="Sampler" size="8" align="32">
@@ -688,7 +696,7 @@
     <field name="Wrap Mode R" size="4" start="0:8" type="Wrap Mode" default="Clamp to Edge"/>
     <field name="Wrap Mode T" size="4" start="0:12" type="Wrap Mode" default="Clamp to Edge"/>
     <field name="Wrap Mode S" size="4" start="0:16" type="Wrap Mode" default="Clamp to Edge"/>
-    <field name="Round to nearest even" size="1" start="0:21" type="bool" default="false"/>
+    <field name="Round to nearest even" size="1" start="0:21" type="bool" default="true"/>
     <!--- Disable sRGB-to-linear conversion (assume linear) -->
     <field name="sRGB override" size="1" start="0:22" type="bool" default="false"/>
     <field name="Seamless Cube Map" size="1" start="0:23" type="bool" default="true"/>

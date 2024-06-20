@@ -196,7 +196,7 @@ struct d3d12_context {
    unsigned num_vbs;
    float flip_y;
    bool need_zero_one_depth_range;
-   enum pipe_prim_type initial_api_prim;
+   enum mesa_prim initial_api_prim;
    struct pipe_viewport_state viewport_states[PIPE_MAX_VIEWPORTS];
    D3D12_VIEWPORT viewports[PIPE_MAX_VIEWPORTS];
    unsigned num_viewports;
@@ -257,10 +257,11 @@ struct d3d12_context {
 
    uint64_t submit_id;
    ID3D12GraphicsCommandList *cmdlist;
+   ID3D12GraphicsCommandList2 *cmdlist2;
+   ID3D12GraphicsCommandList8 *cmdlist8;
    ID3D12GraphicsCommandList *state_fixup_cmdlist;
 
    struct list_head active_queries;
-   struct util_dynarray ended_queries;
    bool queries_disabled;
 
    struct d3d12_descriptor_pool *sampler_pool;
@@ -276,8 +277,9 @@ struct d3d12_context {
 
    struct d3d12_resource *current_predication;
    bool predication_condition;
+   bool queries_suspended;
 
-   uint32_t transform_state_vars[4];
+   uint32_t transform_state_vars[8];
 
 #ifdef __cplusplus
    ResourceStateManager *resource_state_manager;
@@ -332,6 +334,7 @@ enum d3d12_transition_flags {
    D3D12_TRANSITION_FLAG_NONE = 0,
    D3D12_TRANSITION_FLAG_INVALIDATE_BINDINGS = 1,
    D3D12_TRANSITION_FLAG_ACCUMULATE_STATE = 2,
+   D3D12_TRANSITION_FLAG_PENDING_MEMORY_BARRIER = 4,
 };
 
 void
