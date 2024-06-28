@@ -79,6 +79,7 @@ static const driOptionDescription anv_dri_options[] = {
       DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS(0)
       DRI_CONF_ANV_DISABLE_FCV(false)
       DRI_CONF_ANV_EXTERNAL_MEMORY_IMPLICIT_SYNC(true)
+      DRI_CONF_ANV_FORCE_GUC_LOW_LATENCY(false)
       DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(false)
       DRI_CONF_ANV_FORCE_FILTER_ADDR_ROUNDING(false)
       DRI_CONF_ANV_FP64_WORKAROUND_ENABLED(false)
@@ -2645,6 +2646,7 @@ anv_init_dri_options(struct anv_instance *instance)
             driQueryOptionb(&instance->dri_options, "anv_external_memory_implicit_sync");
     instance->compression_control_enabled =
        driQueryOptionb(&instance->dri_options, "compression_control_enabled");
+    instance->force_guc_low_latency = driQueryOptionb(&instance->dri_options, "force_guc_low_latency");
 }
 
 VkResult anv_CreateInstance(
