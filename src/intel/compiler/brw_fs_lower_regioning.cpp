@@ -375,6 +375,22 @@ namespace {
       }
    }
 
+   /**
+    * Return whether the instruction has an unsupported type conversion
+    * that must be handled by expanding the source operand.
+    */
+   bool
+   has_invalid_src_conversion(const intel_device_info *devinfo,
+                              const fs_inst *inst)
+   {
+      /* Scalar byte to float conversion is not allowed on DG2+ */
+      return devinfo->verx10 >= 125 &&
+             inst->opcode == BRW_OPCODE_MOV &&
+             brw_reg_type_is_floating_point(inst->dst.type) &&
+             type_sz(inst->src[0].type) == 1 &&
+             is_uniform(inst->src[0]);
+   }
+
    /*
     * Return whether the instruction has unsupported source modifiers
     * specified for the i-th source region.
@@ -387,7 +403,8 @@ namespace {
               (inst->src[i].negate || inst->src[i].abs)) ||
              ((has_invalid_exec_type(devinfo, inst) & (1u << i)) &&
               (inst->src[i].negate || inst->src[i].abs ||
-               inst->src[i].type != get_exec_type(inst)));
+               inst->src[i].type != get_exec_type(inst))) ||
+             has_invalid_src_conversion(devinfo, inst);
    }
 
    /*
