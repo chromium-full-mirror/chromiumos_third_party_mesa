@@ -736,10 +736,16 @@ vn_GetImageSparseMemoryRequirements2(
 }
 
 static void
-vn_image_bind_wsi_memory(struct vn_image *img, struct vn_device_memory *mem)
+vn_image_bind_wsi_memory(ASSERTED struct vn_image *img,
+                         ASSERTED struct vn_device_memory *mem)
 {
-   assert(img->wsi.is_wsi && !img->wsi.memory);
+   assert(img->wsi.is_wsi);
+#ifdef ANDROID
+   assert(img->wsi.memory == mem);
+#else
+   assert(!img->wsi.memory);
    img->wsi.memory = mem;
+#endif
 }
 
 VkResult
