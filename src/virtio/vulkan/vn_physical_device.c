@@ -1124,7 +1124,7 @@ vn_physical_device_get_passthrough_extensions(
       .EXT_ycbcr_2plane_444_formats = true,
 
       /* KHR */
-      .KHR_pipeline_library = false,
+      .KHR_pipeline_library = true,
       .KHR_push_descriptor = true,
       .KHR_shader_clock = true,
 
@@ -1137,11 +1137,11 @@ vn_physical_device_get_passthrough_extensions(
       .EXT_custom_border_color = true,
       .EXT_depth_clip_control = true,
       .EXT_depth_clip_enable = true,
-      .EXT_extended_dynamic_state3 = false,
+      .EXT_extended_dynamic_state3 = true,
       .EXT_dynamic_rendering_unused_attachments = true,
       .EXT_external_memory_acquire_unmodified = true,
       .EXT_fragment_shader_interlock = true,
-      .EXT_graphics_pipeline_library = false,
+      .EXT_graphics_pipeline_library = VN_DEBUG(GPL),
       .EXT_image_2d_view_of_3d = true,
       .EXT_image_drm_format_modifier = true,
       .EXT_image_view_min_lod = true,
@@ -1181,7 +1181,7 @@ vn_physical_device_get_passthrough_extensions(
       .EXT_shader_subgroup_ballot = true,
       .EXT_transform_feedback = true,
       .EXT_vertex_attribute_divisor = true,
-      .EXT_vertex_input_dynamic_state = false,
+      .EXT_vertex_input_dynamic_state = true,
 
       /* vendor */
       .VALVE_mutable_descriptor_type = true,
