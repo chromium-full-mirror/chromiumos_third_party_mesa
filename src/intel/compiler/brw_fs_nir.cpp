@@ -8366,8 +8366,6 @@ fs_nir_emit_texture(nir_to_brw_state &ntb,
       header_bits |= instr->component << 16;
    }
 
-   fs_reg nir_def_reg = get_nir_def(ntb, instr->def);
-
    fs_reg dst = bld.vgrf(brw_type_for_nir_type(devinfo, instr->dest_type), 4 + instr->is_sparse);
    fs_inst *inst = bld.emit(opcode, dst, srcs, ARRAY_SIZE(srcs));
    inst->offset = header_bits;
@@ -8412,6 +8410,8 @@ fs_nir_emit_texture(nir_to_brw_state &ntb,
       /* See opt_zero_samples(). */
       inst->keep_payload_trailing_zeros = true;
    }
+
+   fs_reg nir_def_reg = get_nir_def(ntb, instr->def);
 
    if (instr->op != nir_texop_query_levels && !instr->is_sparse) {
       /* In most cases we can write directly to the result. */
