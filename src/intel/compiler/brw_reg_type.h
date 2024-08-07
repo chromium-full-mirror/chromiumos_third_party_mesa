@@ -66,8 +66,7 @@ enum PACKED brw_reg_type {
    /** @} */
 
    BRW_REGISTER_TYPE_LAST = BRW_REGISTER_TYPE_UV,
-   BRW_TYPE_D  = 0b00110,
-   BRW_TYPE_SIZE_MASK  = 0b00011
+   BRW_TYPE_D  = 0b00110
 };
 
 static inline bool
