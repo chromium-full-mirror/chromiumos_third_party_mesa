@@ -21,11 +21,11 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
+#if defined(GLX_DIRECT_RENDERING) && (!defined(GLX_USE_APPLEGL) || defined(GLX_USE_APPLE))
 
 #include "glxclient.h"
 #include "glx_error.h"
-#include "GL/internal/dri_interface.h"
+#include "mesa_interface.h"
 #include "dri2_priv.h"
 #if defined(HAVE_DRI3)
 #include "dri3_priv.h"

@@ -102,6 +102,7 @@ enum fd_debug_flag {
    FD_DBG_NOFP16       = BITFIELD_BIT(27),
    FD_DBG_NOHW         = BITFIELD_BIT(28),
    FD_DBG_NOSBIN       = BITFIELD_BIT(29),
+   FD_DBG_STOMP        = BITFIELD_BIT(30),
 };
 /* clang-format on */
 
@@ -172,7 +173,7 @@ struct __perf_time_state {
        ? os_time_get_nano()                                                    \
        : 0)
 
-#define DEFINE_CAST(parent, child)                                             \
+#define FD_DEFINE_CAST(parent, child)                                          \
    static inline struct child *child(struct parent *x)                         \
    {                                                                           \
       return (struct child *)x;                                                \
@@ -401,7 +402,7 @@ __OUT_IB5(struct fd_ringbuffer *ring, struct fd_ringbuffer *target)
  */
 #define HW_QUERY_BASE_REG REG_AXXX_CP_SCRATCH_REG4
 
-#ifdef DEBUG
+#if MESA_DEBUG
 #define __EMIT_MARKER 1
 #else
 #define __EMIT_MARKER 0

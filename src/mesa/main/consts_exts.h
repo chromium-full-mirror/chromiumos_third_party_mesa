@@ -189,6 +189,7 @@ struct gl_extensions
    GLboolean EXT_shader_samples_identical;
    GLboolean EXT_sRGB;
    GLboolean EXT_stencil_two_side;
+   GLboolean EXT_shadow_samplers;
    GLboolean EXT_texture_array;
    GLboolean EXT_texture_buffer_object;
    GLboolean EXT_texture_compression_latc;
@@ -225,6 +226,7 @@ struct gl_extensions
    GLboolean AMD_compressed_ATC_texture;
    GLboolean AMD_framebuffer_multisample_advanced;
    GLboolean AMD_depth_clamp_separate;
+   GLboolean AMD_gpu_shader_half_float;
    GLboolean AMD_performance_monitor;
    GLboolean AMD_pinned_memory;
    GLboolean AMD_seamless_cubemap_per_texture;
@@ -313,10 +315,6 @@ struct gl_shader_compiler_options
    /** Driver-selectable options: */
    GLboolean EmitNoCont;                  /**< Emit CONT opcode? */
    GLboolean EmitNoMainReturn;            /**< Emit CONT/RET opcodes? */
-   GLboolean LowerCombinedClipCullDistance; /** Lower gl_ClipDistance and
-                                              * gl_CullDistance together from
-                                              * float[8] to vec4[2]
-                                              **/
    GLbitfield LowerBuiltinVariablesXfb;   /**< Which builtin variables should
                                            * be lowered for transform feedback
                                            **/
@@ -956,9 +954,6 @@ struct gl_constants
 
    bool HasFBFetch;
 
-   /** Whether the backend supports reading from outputs */
-   bool SupportsReadingOutputs;
-
    bool CombinedClipCullDistanceArrays;
 
    bool PointSizeFixed;
@@ -972,8 +967,11 @@ struct gl_constants
    /** Whether out-of-order draw (Begin/End) optimizations are allowed. */
    bool AllowDrawOutOfOrder;
 
-   /** Whether to allow the fast path for frequently updated VAOs. */
-   bool AllowDynamicVAOFastPath;
+   /** Whether to force the fast path for binding VAOs. It has much lower
+    *  overhead due to not spending CPU cycles on trying to find interleaved
+    *  vertex attribs and binding them.
+    */
+   bool UseVAOFastPath;
 
    /** Whether the driver can support primitive restart with a fixed index.
     * This is essentially a subset of NV_primitive_restart with enough support
@@ -981,9 +979,6 @@ struct gl_constants
     * full NV extension with arbitrary restart indices.
     */
    bool PrimitiveRestartFixedIndex;
-
-   /** GL_ARB_gl_spirv */
-   struct spirv_supported_capabilities SpirVCapabilities;
 
    /** GL_ARB_spirv_extensions */
    struct spirv_supported_extensions *SpirVExtensions;
@@ -1018,5 +1013,9 @@ struct gl_constants
 
    /** Allow GLThread to convert glBuffer */
    bool AllowGLThreadBufferSubDataOpt;
+
+   /** Whether pipe_context::draw_vertex_state is supported. */
+   bool HasDrawVertexState;
 };
+
 #endif

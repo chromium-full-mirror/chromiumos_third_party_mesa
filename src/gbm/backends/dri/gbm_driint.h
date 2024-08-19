@@ -34,9 +34,8 @@
 #include "gbmint.h"
 #include "c11/threads.h"
 
-#include <GL/gl.h> /* dri_interface needs GL types */
-#include "GL/internal/dri_interface.h"
-#include "GL/internal/mesa_interface.h"
+#include <GL/gl.h> /* mesa_interface needs GL types */
+#include "mesa_interface.h"
 #include "kopper_interface.h"
 
 struct gbm_dri_surface;
@@ -45,25 +44,11 @@ struct gbm_dri_bo;
 struct gbm_dri_visual {
    uint32_t gbm_format;
    int dri_image_format;
-   struct {
-      int red;
-      int green;
-      int blue;
-      int alpha;
-   } rgba_shifts;
-   struct {
-      unsigned int red;
-      unsigned int green;
-      unsigned int blue;
-      unsigned int alpha;
-   } rgba_sizes;
-   bool is_float;
 };
 
 struct gbm_dri_device {
    struct gbm_device base;
 
-   void *driver;
    char *driver_name; /* Name of the DRI module, without the _dri suffix */
    bool software; /* A software driver was loaded */
 
@@ -83,7 +68,6 @@ struct gbm_dri_device {
    const __DRIextension **loader_extensions;
    const __DRIextension **driver_extensions;
 
-   __DRIimage *(*lookup_image)(__DRIscreen *screen, void *image, void *data);
    GLboolean (*validate_image)(void *image, void *data);
    __DRIimage *(*lookup_image_validated)(void *image, void *data);
    void *lookup_user_data;

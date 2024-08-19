@@ -152,9 +152,9 @@ fd_set_constant_buffer(struct pipe_context *pctx, enum pipe_shader_type shader,
    util_copy_constant_buffer(&so->cb[index], cb, take_ownership);
 
    /* Note that gallium frontends can unbind constant buffers by
-    * passing NULL here.
+    * passing a NULL cb, or a cb with no buffer:
     */
-   if (unlikely(!cb)) {
+   if (!cb || !(cb->user_buffer || cb->buffer)) {
       so->enabled_mask &= ~(1 << index);
       return;
    }
@@ -468,9 +468,7 @@ fd_set_viewport_states(struct pipe_context *pctx, unsigned start_slot,
 }
 
 static void
-fd_set_vertex_buffers(struct pipe_context *pctx,
-                      unsigned count, unsigned unbind_num_trailing_slots,
-                      bool take_ownership,
+fd_set_vertex_buffers(struct pipe_context *pctx, unsigned count,
                       const struct pipe_vertex_buffer *vb) in_dt
 {
    struct fd_context *ctx = fd_context(pctx);
@@ -492,9 +490,8 @@ fd_set_vertex_buffers(struct pipe_context *pctx,
       }
    }
 
-   util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb,
-                                count, unbind_num_trailing_slots,
-                                take_ownership);
+   util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb, count,
+                                true);
    so->count = util_last_bit(so->enabled_mask);
 
    if (!vb)

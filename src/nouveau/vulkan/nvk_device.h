@@ -10,44 +10,44 @@
 #include "nvk_descriptor_table.h"
 #include "nvk_heap.h"
 #include "nvk_queue.h"
+#include "nvk_upload_queue.h"
 #include "vk_device.h"
 #include "vk_meta.h"
 #include "vk_queue.h"
 
-struct novueau_ws_context;
 struct nvk_physical_device;
+struct nvkmd_dev;
+struct nvkmd_mem;
 struct vk_pipeline_cache;
 
 struct nvk_slm_area {
    simple_mtx_t mutex;
-   struct nouveau_ws_bo *bo;
+   struct nvkmd_mem *mem;
    uint32_t bytes_per_warp;
    uint32_t bytes_per_tpc;
 };
 
-struct nouveau_ws_bo *
-nvk_slm_area_get_bo_ref(struct nvk_slm_area *area,
-                        uint32_t *bytes_per_warp_out,
-                        uint32_t *bytes_per_mp_out);
+struct nvkmd_mem *
+nvk_slm_area_get_mem_ref(struct nvk_slm_area *area,
+                         uint32_t *bytes_per_warp_out,
+                         uint32_t *bytes_per_mp_out);
 
 struct nvk_device {
    struct vk_device vk;
-   struct nvk_physical_device *pdev;
 
-   struct nouveau_ws_device *ws_dev;
-   struct nouveau_ws_context *ws_ctx;
+   struct nvkmd_dev *nvkmd;
+
+   struct nvk_upload_queue upload;
 
    struct nvk_descriptor_table images;
    struct nvk_descriptor_table samplers;
    struct nvk_heap shader_heap;
    struct nvk_heap event_heap;
    struct nvk_slm_area slm;
-   struct nouveau_ws_bo *zero_page;
-   struct nouveau_ws_bo *vab_memory;
+   struct nvkmd_mem *zero_page;
+   struct nvkmd_mem *vab_memory;
 
    struct nvk_queue queue;
-
-   struct vk_pipeline_cache *mem_cache;
 
    struct vk_meta_device meta;
 };

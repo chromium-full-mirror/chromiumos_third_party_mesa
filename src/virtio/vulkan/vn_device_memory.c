@@ -35,14 +35,14 @@ vn_device_memory_alloc_simple(struct vn_device *dev,
                                       alloc_info, NULL, &mem_handle);
    }
 
-   struct vn_ring_submit_command instance_submit;
+   struct vn_ring_submit_command ring_submit;
    vn_submit_vkAllocateMemory(dev->primary_ring, 0, dev_handle, alloc_info,
-                              NULL, &mem_handle, &instance_submit);
-   if (!instance_submit.ring_seqno_valid)
+                              NULL, &mem_handle, &ring_submit);
+   if (!ring_submit.ring_seqno_valid)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    mem->bo_ring_seqno_valid = true;
-   mem->bo_ring_seqno = instance_submit.ring_seqno;
+   mem->bo_ring_seqno = ring_submit.ring_seqno;
    return VK_SUCCESS;
 }
 
@@ -357,15 +357,6 @@ vn_AllocateMemory(VkDevice device,
                   VkDeviceMemory *pMemory)
 {
    struct vn_device *dev = vn_device_from_handle(device);
-
-   /* see vn_physical_device_init_memory_properties */
-   VkMemoryAllocateInfo local_info;
-   if (pAllocateInfo->memoryTypeIndex ==
-       dev->physical_device->incoherent_cached) {
-      local_info = *pAllocateInfo;
-      local_info.memoryTypeIndex = dev->physical_device->coherent_uncached;
-      pAllocateInfo = &local_info;
-   }
 
    const VkImportMemoryFdInfoKHR *import_fd_info = NULL;
    const VkMemoryDedicatedAllocateInfo *dedicated_info = NULL;

@@ -86,7 +86,7 @@ fn jump_thread(func: &mut Function) -> bool {
         rewrite_cfg(func);
     }
 
-    return progress;
+    progress
 }
 
 fn rewrite_cfg(func: &mut Function) {
@@ -143,7 +143,7 @@ impl Function {
     }
 }
 
-impl Shader {
+impl Shader<'_> {
     /// A simple jump threading pass
     ///
     /// Note that this can introduce critical edges, so it cannot be run before RA

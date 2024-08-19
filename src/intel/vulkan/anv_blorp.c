@@ -53,26 +53,29 @@ static bool
 upload_blorp_shader(struct blorp_batch *batch, uint32_t stage,
                     const void *key, uint32_t key_size,
                     const void *kernel, uint32_t kernel_size,
-                    const struct brw_stage_prog_data *prog_data,
+                    const void *prog_data,
                     uint32_t prog_data_size,
                     uint32_t *kernel_out, void *prog_data_out)
 {
    struct blorp_context *blorp = batch->blorp;
    struct anv_device *device = blorp->driver_ctx;
 
-   struct anv_pipeline_bind_map bind_map = {
-      .surface_count = 0,
-      .sampler_count = 0,
+   struct anv_pipeline_bind_map empty_bind_map = {};
+   struct anv_push_descriptor_info empty_push_desc_info = {};
+   struct anv_shader_upload_params upload_params = {
+      .stage               = stage,
+      .key_data            = key,
+      .key_size            = key_size,
+      .kernel_data         = kernel,
+      .kernel_size         = kernel_size,
+      .prog_data           = prog_data,
+      .prog_data_size      = prog_data_size,
+      .bind_map            = &empty_bind_map,
+      .push_desc_info      = &empty_push_desc_info,
    };
-   struct anv_push_descriptor_info push_desc_info = {};
 
    struct anv_shader_bin *bin =
-      anv_device_upload_kernel(device, device->internal_cache, stage,
-                               key, key_size, kernel, kernel_size,
-                               prog_data, prog_data_size,
-                               NULL, 0, NULL, &bind_map,
-                               &push_desc_info,
-                               0 /* dynamic_push_values */);
+      anv_device_upload_kernel(device, device->internal_cache, &upload_params);
 
    if (!bin)
       return false;
@@ -88,6 +91,18 @@ upload_blorp_shader(struct blorp_batch *batch, uint32_t stage,
    return true;
 }
 
+static void
+upload_dynamic_state(struct blorp_context *context,
+                     const void *data, uint32_t size,
+                     uint32_t alignment, enum blorp_dynamic_state name)
+{
+   struct anv_device *device = context->driver_ctx;
+
+   device->blorp.dynamic_states[name] =
+      anv_state_pool_emit_data(&device->dynamic_state_pool,
+                               size, alignment, data);
+}
+
 void
 anv_device_init_blorp(struct anv_device *device)
 {
@@ -95,20 +110,33 @@ anv_device_init_blorp(struct anv_device *device)
       .use_mesh_shading = device->vk.enabled_extensions.EXT_mesh_shader,
       .use_unrestricted_depth_range =
          device->vk.enabled_extensions.EXT_depth_range_unrestricted,
+      .use_cached_dynamic_states = true,
    };
 
-   blorp_init(&device->blorp, device, &device->isl_dev, &config);
-   device->blorp.compiler = device->physical->compiler;
-   device->blorp.lookup_shader = lookup_blorp_shader;
-   device->blorp.upload_shader = upload_blorp_shader;
-   device->blorp.enable_tbimr = device->physical->instance->enable_tbimr;
-   device->blorp.exec = anv_genX(device->info, blorp_exec);
+   blorp_init_brw(&device->blorp.context, device, &device->isl_dev,
+                  device->physical->compiler, &config);
+   device->blorp.context.lookup_shader = lookup_blorp_shader;
+   device->blorp.context.upload_shader = upload_blorp_shader;
+   device->blorp.context.enable_tbimr = device->physical->instance->enable_tbimr;
+   device->blorp.context.exec = anv_genX(device->info, blorp_exec);
+   device->blorp.context.upload_dynamic_state = upload_dynamic_state;
+
+   anv_genX(device->info, blorp_init_dynamic_states)(&device->blorp.context);
 }
 
 void
 anv_device_finish_blorp(struct anv_device *device)
 {
-   blorp_finish(&device->blorp);
+#ifdef HAVE_VALGRIND
+   /* We only need to free these to prevent valgrind errors.  The backing
+    * BO will go away in a couple of lines so we don't actually leak.
+    */
+   for (uint32_t i = 0; i < ARRAY_SIZE(device->blorp.dynamic_states); i++) {
+      anv_state_pool_free(&device->dynamic_state_pool,
+                          device->blorp.dynamic_states[i]);
+   }
+#endif
+   blorp_finish(&device->blorp.context);
 }
 
 static void
@@ -127,7 +155,11 @@ anv_blorp_batch_init(struct anv_cmd_buffer *cmd_buffer,
       unreachable("unknown queue family");
    }
 
-   blorp_batch_init(&cmd_buffer->device->blorp, batch, cmd_buffer, flags);
+   /* Can't have both flags at the same time. */
+   assert((flags & BLORP_BATCH_USE_BLITTER) == 0 ||
+          (flags & BLORP_BATCH_USE_COMPUTE) == 0);
+
+   blorp_batch_init(&cmd_buffer->device->blorp.context, batch, cmd_buffer, flags);
 }
 
 static void
@@ -138,7 +170,7 @@ anv_blorp_batch_finish(struct blorp_batch *batch)
 
 static isl_surf_usage_flags_t
 get_usage_flag_for_cmd_buffer(const struct anv_cmd_buffer *cmd_buffer,
-                              bool is_dest)
+                              bool is_dest, bool protected)
 {
    isl_surf_usage_flags_t usage;
 
@@ -159,6 +191,9 @@ get_usage_flag_for_cmd_buffer(const struct anv_cmd_buffer *cmd_buffer,
       unreachable("Unhandled engine class");
    }
 
+   if (protected)
+      usage |= ISL_SURF_USAGE_PROTECTED_BIT;
+
    return usage;
 }
 
@@ -167,13 +202,13 @@ get_blorp_surf_for_anv_address(struct anv_cmd_buffer *cmd_buffer,
                                struct anv_address address,
                                uint32_t width, uint32_t height,
                                uint32_t row_pitch, enum isl_format format,
-                               bool is_dest,
+                               bool is_dest, bool protected,
                                struct blorp_surf *blorp_surf,
                                struct isl_surf *isl_surf)
 {
    bool ok UNUSED;
    isl_surf_usage_flags_t usage =
-      get_usage_flag_for_cmd_buffer(cmd_buffer, is_dest);
+      get_usage_flag_for_cmd_buffer(cmd_buffer, is_dest, protected);
 
    *blorp_surf = (struct blorp_surf) {
       .surf = isl_surf,
@@ -211,7 +246,8 @@ get_blorp_surf_for_anv_buffer(struct anv_cmd_buffer *cmd_buffer,
    get_blorp_surf_for_anv_address(cmd_buffer,
                                   anv_address_add(buffer->address, offset),
                                   width, height, row_pitch, format,
-                                  is_dest, blorp_surf, isl_surf);
+                                  is_dest, anv_buffer_is_protected(buffer),
+                                  blorp_surf, isl_surf);
 }
 
 /* Pick something high enough that it won't be used in core and low enough it
@@ -249,7 +285,8 @@ get_blorp_surf_for_anv_image(const struct anv_cmd_buffer *cmd_buffer,
 
    isl_surf_usage_flags_t isl_usage =
       get_usage_flag_for_cmd_buffer(cmd_buffer,
-                                    usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                                    usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                    anv_image_is_protected(image));
    const struct anv_surface *surface = &image->planes[plane].primary_surface;
    const struct anv_address address =
       anv_image_address(image, &surface->memory_range);
@@ -749,8 +786,12 @@ anv_add_buffer_write_pending_bits(struct anv_cmd_buffer *cmd_buffer,
 {
    const struct intel_device_info *devinfo = cmd_buffer->device->info;
 
+   if (anv_cmd_buffer_is_blitter_queue(cmd_buffer))
+      return;
+
    cmd_buffer->state.queries.buffer_write_bits |=
-      (cmd_buffer->queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 ?
+      (cmd_buffer->state.current_pipeline ==
+       cmd_buffer->device->physical->gpgpu_pipeline_value) ?
       ANV_QUERY_COMPUTE_WRITES_PENDING_BITS :
       ANV_QUERY_RENDER_TARGET_WRITES_PENDING_BITS(devinfo);
 }
@@ -1006,13 +1047,15 @@ copy_buffer(struct anv_device *device,
       .buffer = src_buffer->address.bo,
       .offset = src_buffer->address.offset + region->srcOffset,
       .mocs = anv_mocs(device, src_buffer->address.bo,
-                       blorp_batch_isl_copy_usage(batch, false /* is_dest */)),
+                       blorp_batch_isl_copy_usage(batch, false /* is_dest */,
+                                                  anv_buffer_is_protected(src_buffer))),
    };
    struct blorp_address dst = {
       .buffer = dst_buffer->address.bo,
       .offset = dst_buffer->address.offset + region->dstOffset,
       .mocs = anv_mocs(device, dst_buffer->address.bo,
-                       blorp_batch_isl_copy_usage(batch, true /* is_dest */)),
+                       blorp_batch_isl_copy_usage(batch, true /* is_dest */,
+                                                  anv_buffer_is_protected(dst_buffer))),
    };
 
    blorp_buffer_copy(batch, src, dst, region->size);
@@ -1027,7 +1070,10 @@ void anv_CmdCopyBuffer2(
    ANV_FROM_HANDLE(anv_buffer, dst_buffer, pCopyBufferInfo->dstBuffer);
 
    struct blorp_batch batch;
-   anv_blorp_batch_init(cmd_buffer, &batch, 0);
+   anv_blorp_batch_init(cmd_buffer, &batch,
+                        cmd_buffer->state.current_pipeline ==
+                        cmd_buffer->device->physical->gpgpu_pipeline_value ?
+                        BLORP_BATCH_USE_COMPUTE : 0);
 
    for (unsigned r = 0; r < pCopyBufferInfo->regionCount; r++) {
       copy_buffer(cmd_buffer->device, &batch, src_buffer, dst_buffer,
@@ -1051,7 +1097,10 @@ void anv_CmdUpdateBuffer(
    ANV_FROM_HANDLE(anv_buffer, dst_buffer, dstBuffer);
 
    struct blorp_batch batch;
-   anv_blorp_batch_init(cmd_buffer, &batch, 0);
+   anv_blorp_batch_init(cmd_buffer, &batch,
+                        cmd_buffer->state.current_pipeline ==
+                        cmd_buffer->device->physical->gpgpu_pipeline_value ?
+                        BLORP_BATCH_USE_COMPUTE : 0);
 
    /* We can't quite grab a full block because the state stream needs a
     * little data at the top to build its linked list.
@@ -1072,23 +1121,28 @@ void anv_CmdUpdateBuffer(
       const uint32_t copy_size = MIN2(dataSize, max_update_size);
 
       struct anv_state tmp_data =
-         anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, copy_size, 64);
+         anv_cmd_buffer_alloc_temporary_state(cmd_buffer, copy_size, 64);
+      struct anv_address tmp_addr =
+         anv_cmd_buffer_temporary_state_address(cmd_buffer, tmp_data);
 
       memcpy(tmp_data.map, pData, copy_size);
 
       struct blorp_address src = {
-         .buffer = cmd_buffer->device->dynamic_state_pool.block_pool.bo,
-         .offset = tmp_data.offset,
+         .buffer = tmp_addr.bo,
+         .offset = tmp_addr.offset,
          .mocs = anv_mocs(cmd_buffer->device, NULL,
                           get_usage_flag_for_cmd_buffer(cmd_buffer,
-                                                        false /* is_dest */))
+                                                        false /* is_dest */,
+                                                        false /* protected */)),
       };
       struct blorp_address dst = {
          .buffer = dst_buffer->address.bo,
          .offset = dst_buffer->address.offset + dstOffset,
          .mocs = anv_mocs(cmd_buffer->device, dst_buffer->address.bo,
-                          get_usage_flag_for_cmd_buffer(cmd_buffer,
-                                                        true /* is_dest */)),
+                          get_usage_flag_for_cmd_buffer(
+                             cmd_buffer,
+                             true /* is_dest */,
+                             anv_buffer_is_protected(dst_buffer))),
       };
 
       blorp_buffer_copy(&batch, src, dst, copy_size);
@@ -1107,13 +1161,17 @@ void
 anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                          struct anv_address address,
                          VkDeviceSize size,
-                         uint32_t data)
+                         uint32_t data,
+                         bool protected)
 {
    struct blorp_surf surf;
    struct isl_surf isl_surf;
 
    struct blorp_batch batch;
-   anv_blorp_batch_init(cmd_buffer, &batch, 0);
+   anv_blorp_batch_init(cmd_buffer, &batch,
+                        cmd_buffer->state.current_pipeline ==
+                        cmd_buffer->device->physical->gpgpu_pipeline_value ?
+                        BLORP_BATCH_USE_COMPUTE : 0);
 
    /* First, we compute the biggest format that can be used with the
     * given offsets and size.
@@ -1136,7 +1194,7 @@ anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                                      },
                                      MAX_SURFACE_DIM, MAX_SURFACE_DIM,
                                      MAX_SURFACE_DIM * bs, isl_format,
-                                     true /* is_dest */,
+                                     true /* is_dest */, protected,
                                      &surf, &isl_surf);
 
       blorp_clear(&batch, &surf, isl_format, ISL_SWIZZLE_IDENTITY,
@@ -1156,7 +1214,7 @@ anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                                      },
                                      MAX_SURFACE_DIM, height,
                                      MAX_SURFACE_DIM * bs, isl_format,
-                                     true /* is_dest */,
+                                     true /* is_dest */, protected,
                                      &surf, &isl_surf);
 
       blorp_clear(&batch, &surf, isl_format, ISL_SWIZZLE_IDENTITY,
@@ -1174,7 +1232,7 @@ anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                                      },
                                      width, 1,
                                      width * bs, isl_format,
-                                     true /* is_dest */,
+                                     true /* is_dest */, protected,
                                      &surf, &isl_surf);
 
       blorp_clear(&batch, &surf, isl_format, ISL_SWIZZLE_IDENTITY,
@@ -1209,7 +1267,8 @@ void anv_CmdFillBuffer(
 
    anv_cmd_buffer_fill_area(cmd_buffer,
                             anv_address_add(dst_buffer->address, dstOffset),
-                            fillSize, data);
+                            fillSize, data,
+                            anv_buffer_is_protected(dst_buffer));
 
    anv_add_buffer_write_pending_bits(cmd_buffer, "after fill buffer");
 }
@@ -1371,7 +1430,7 @@ anv_cmd_buffer_alloc_blorp_binding_table(struct anv_cmd_buffer *cmd_buffer,
       /* Re-emit state base addresses so we get the new surface state base
        * address before we start emitting binding tables etc.
        */
-      anv_cmd_buffer_emit_state_base_address(cmd_buffer);
+      anv_cmd_buffer_emit_bt_pool_base_address(cmd_buffer);
 
       *bt_state = anv_cmd_buffer_alloc_binding_table(cmd_buffer, num_entries,
                                                      state_offset);
@@ -1501,10 +1560,20 @@ exec_ccs_op(struct anv_cmd_buffer *cmd_buffer,
     * that the contents of the previous draw hit the render target before we
     * resolve and then use a second PIPE_CONTROL after the resolve to ensure
     * that it is completed before any additional drawing occurs.
+    *
+    * Bspec 57340 (r59562):
+    *
+    *   Synchronization:
+    *      Due to interaction of scaled clearing rectangle with pixel
+    *      scoreboard, we require one of the following commands to be issued.
+    *      (Rows of PIPE_CONTROL command in the table)
+    *
+    * Requiring tile cache flush bit has been dropped since Xe2.
     */
    anv_add_pending_pipe_bits(cmd_buffer,
                              ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
-                             ANV_PIPE_TILE_CACHE_FLUSH_BIT |
+                             (devinfo->verx10 < 200 ?
+                                ANV_PIPE_TILE_CACHE_FLUSH_BIT : 0) |
                              (devinfo->verx10 == 120 ?
                                 ANV_PIPE_DEPTH_STALL_BIT : 0) |
                              (devinfo->verx10 == 125 ?
@@ -1655,10 +1724,20 @@ exec_mcs_op(struct anv_cmd_buffer *cmd_buffer,
     * that the contents of the previous draw hit the render target before we
     * resolve and then use a second PIPE_CONTROL after the resolve to ensure
     * that it is completed before any additional drawing occurs.
+    *
+    * Bspec 57340 (r59562):
+    *
+    *   Synchronization:
+    *      Due to interaction of scaled clearing rectangle with pixel
+    *      scoreboard, we require one of the following commands to be issued.
+    *      (Rows of PIPE_CONTROL command in the table)
+    *
+    * Requiring tile cache flush bit has been dropped since Xe2.
     */
    anv_add_pending_pipe_bits(cmd_buffer,
                              ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
-                             ANV_PIPE_TILE_CACHE_FLUSH_BIT |
+                             (devinfo->verx10 < 200 ?
+                                ANV_PIPE_TILE_CACHE_FLUSH_BIT : 0) |
                              (devinfo->verx10 == 120 ?
                                 ANV_PIPE_DEPTH_STALL_BIT : 0) |
                              (devinfo->verx10 == 125 ?
@@ -1789,12 +1868,14 @@ clear_color_attachment(struct anv_cmd_buffer *cmd_buffer,
                      &clear_color);
       }
 
-      anv_cmd_buffer_mark_image_fast_cleared(cmd_buffer, iview->image,
-                                             iview->planes[0].isl.format,
-                                             clear_color);
-      anv_cmd_buffer_load_clear_color_from_image(cmd_buffer,
-                                                 att->surface_state.state,
-                                                 iview->image);
+      if (cmd_buffer->device->info->ver < 20) {
+         anv_cmd_buffer_mark_image_fast_cleared(cmd_buffer, iview->image,
+                                                iview->planes[0].isl.format,
+                                                clear_color);
+         anv_cmd_buffer_load_clear_color_from_image(cmd_buffer,
+                                                    att->surface_state.state,
+                                                    iview->image);
+      }
       return;
    }
 

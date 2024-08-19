@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <xf86drm.h>
+#include "util/libdrm.h"
 #include <sys/stat.h>
 #include <sys/types.h>
 
@@ -37,6 +37,7 @@
 #include "eglglobals.h"
 #include "kopper_interface.h"
 #include "loader.h"
+#include "loader_dri_helper.h"
 
 static __DRIimage *
 surfaceless_alloc_image(struct dri2_egl_display *dri2_dpy,
@@ -44,7 +45,7 @@ surfaceless_alloc_image(struct dri2_egl_display *dri2_dpy,
 {
    return dri2_dpy->image->createImage(
       dri2_dpy->dri_screen_render_gpu, dri2_surf->base.Width,
-      dri2_surf->base.Height, dri2_surf->visual, 0, NULL);
+      dri2_surf->base.Height, dri2_surf->visual, NULL, 0, 0, NULL);
 }
 
 static void
@@ -134,7 +135,7 @@ dri2_surfaceless_create_surface(_EGLDisplay *disp, EGLint type,
    }
 
    dri2_surf->visual = dri2_image_format_for_pbuffer_config(dri2_dpy, config);
-   if (dri2_surf->visual == __DRI_IMAGE_FORMAT_NONE)
+   if (dri2_surf->visual == PIPE_FORMAT_NONE)
       goto cleanup_surface;
 
    if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
@@ -188,6 +189,8 @@ surfaceless_get_capability(void *loaderPrivate, enum dri_loader_cap cap)
    /* Note: loaderPrivate is _EGLDisplay* */
    switch (cap) {
    case DRI_LOADER_CAP_FP16:
+      return 1;
+   case DRI_LOADER_CAP_RGBA_ORDERING:
       return 1;
    default:
       return 0;
@@ -360,10 +363,7 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
 #endif
    dri2_set_WL_bind_wayland_display(disp);
 
-   if (!dri2_add_pbuffer_configs_for_visuals(disp)) {
-      err = "DRI2: failed to add configs";
-      goto cleanup;
-   }
+   dri2_add_pbuffer_configs_for_visuals(disp);
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.

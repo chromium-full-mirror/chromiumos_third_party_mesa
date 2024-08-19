@@ -59,8 +59,7 @@ struct zwp_linux_dmabuf_feedback_v1;
 #endif
 
 #include <GL/gl.h>
-#include <GL/internal/dri_interface.h>
-#include <GL/internal/mesa_interface.h>
+#include "mesa_interface.h"
 #include "kopper_interface.h"
 
 #ifdef HAVE_DRM_PLATFORM
@@ -96,6 +95,7 @@ struct zwp_linux_dmabuf_feedback_v1;
 #include "util/bitset.h"
 #include "util/u_dynarray.h"
 #include "util/u_vector.h"
+#include "util/format/u_format.h"
 
 struct wl_buffer;
 
@@ -217,6 +217,12 @@ struct dmabuf_feedback {
 };
 #endif
 
+enum dri2_egl_driver_fail {
+   DRI2_EGL_DRIVER_LOADED = 0,
+   DRI2_EGL_DRIVER_FAILED = 1,
+   DRI2_EGL_DRIVER_PREFER_ZINK = 2,
+};
+
 struct dri2_egl_display {
    const struct dri2_egl_display_vtbl *vtbl;
 
@@ -234,7 +240,6 @@ struct dri2_egl_display {
    __DRIscreen *dri_screen_display_gpu;
    bool own_dri_screen;
    const __DRIconfig **driver_configs;
-   void *driver;
    const __DRIcoreExtension *core;
    const __DRImesaCoreExtension *mesa;
    const __DRIimageDriverExtension *image_driver;
@@ -284,10 +289,6 @@ struct dri2_egl_display {
    bool swap_available;
 #ifdef HAVE_DRI3
    bool multibuffers_available;
-   int dri3_major_version;
-   int dri3_minor_version;
-   int present_major_version;
-   int present_minor_version;
    struct loader_dri3_extensions loader_dri3_ext;
    struct loader_screen_resources screen_resources;
 #endif
@@ -407,7 +408,7 @@ struct dri2_egl_surface {
 
    /* surfaceless and device */
    __DRIimage *front;
-   unsigned int visual;
+   enum pipe_format visual;
 
    int out_fence_fd;
    EGLBoolean enable_out_fence;
@@ -497,9 +498,6 @@ dri2_validate_egl_image(void *image, void *data);
 __DRIimage *
 dri2_lookup_egl_image_validated(void *image, void *data);
 
-__DRIimage *
-dri2_lookup_egl_image(__DRIscreen *screen, void *image, void *data);
-
 void
 dri2_get_shifts_and_sizes(const __DRIcoreExtension *core,
                           const __DRIconfig *config, int *shifts,
@@ -509,17 +507,22 @@ void
 dri2_get_render_type_float(const __DRIcoreExtension *core,
                            const __DRIconfig *config, bool *is_float);
 
-unsigned int
+enum pipe_format
 dri2_image_format_for_pbuffer_config(struct dri2_egl_display *dri2_dpy,
                                      const __DRIconfig *config);
 
 struct dri2_egl_config *
-dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
-                EGLint surface_type, const EGLint *attr_list,
-                const int *rgba_shifts, const unsigned int *rgba_sizes);
+dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config,
+                EGLint surface_type, const EGLint *attr_list);
 
-EGLBoolean
+void
 dri2_add_pbuffer_configs_for_visuals(_EGLDisplay *disp);
+
+EGLint
+dri2_from_dri_compression_rate(enum __DRIFixedRateCompression rate);
+
+enum __DRIFixedRateCompression
+dri2_to_dri_compression_rate(EGLint rate);
 
 _EGLImage *
 dri2_create_image_khr(_EGLDisplay *disp, _EGLContext *ctx, EGLenum target,

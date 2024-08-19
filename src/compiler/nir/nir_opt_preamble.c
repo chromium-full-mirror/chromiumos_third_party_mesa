@@ -151,7 +151,6 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_load_work_dim:
    case nir_intrinsic_load_num_workgroups:
    case nir_intrinsic_load_ray_launch_size:
-   case nir_intrinsic_load_ray_launch_size_addr_amd:
    case nir_intrinsic_load_sbt_base_amd:
    case nir_intrinsic_load_is_indexed_draw:
    case nir_intrinsic_load_viewport_scale:
@@ -967,8 +966,7 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
    }
 
    nir_metadata_preserve(impl,
-                         nir_metadata_block_index |
-                            nir_metadata_dominance);
+                         nir_metadata_control_flow);
 
    ralloc_free(remap_table);
    free(ctx.states);

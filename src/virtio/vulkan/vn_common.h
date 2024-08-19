@@ -28,6 +28,7 @@
 #include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/compiler.h"
+#include "util/detect_os.h"
 #include "util/libsync.h"
 #include "util/list.h"
 #include "util/macros.h"
@@ -110,7 +111,7 @@ enum vn_debug {
    VN_DEBUG_LOG_CTX_INFO = 1ull << 5,
    VN_DEBUG_CACHE = 1ull << 6,
    VN_DEBUG_NO_SPARSE = 1ull << 7,
-   VN_DEBUG_GPL = 1ull << 8,
+   VN_DEBUG_NO_GPL = 1ull << 8,
 };
 
 enum vn_perf {
@@ -551,7 +552,7 @@ vn_object_get_id(const void *obj, VkObjectType type)
 static inline pid_t
 vn_gettid(void)
 {
-#ifdef ANDROID
+#if DETECT_OS_ANDROID
    return gettid();
 #else
    return syscall(SYS_gettid);

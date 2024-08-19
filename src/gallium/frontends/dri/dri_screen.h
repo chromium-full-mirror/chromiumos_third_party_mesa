@@ -104,19 +104,12 @@ struct dri_screen
    struct pipe_loader_device *dev;
 
    /* gallium */
-   bool d_depth_bits_last;
-   bool sd_depth_bits_last;
    bool auto_fake_front;
    bool has_reset_status_query;
    bool has_protected_context;
    enum pipe_texture_target target;
 
    bool swrast_no_present;
-
-   /* hooks filled in by dri2 & drisw */
-   __DRIimage * (*lookup_egl_image)(struct dri_screen *ctx, void *handle);
-   bool (*validate_egl_image)(struct dri_screen *ctx, void *handle);
-   __DRIimage * (*lookup_egl_image_validated)(struct dri_screen *ctx, void *handle);
 
    /* DRI exts that vary based on gallium pipe_screen caps. */
    __DRIimageExtension image_extension;

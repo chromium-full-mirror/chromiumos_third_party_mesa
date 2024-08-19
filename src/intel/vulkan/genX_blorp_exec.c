@@ -26,13 +26,13 @@
 #include "anv_private.h"
 #include "anv_measure.h"
 
-/* These are defined in anv_private.h and blorp_genX_exec.h */
+/* These are defined in anv_private.h and blorp_genX_exec_brw.h */
 #undef __gen_address_type
 #undef __gen_user_data
 #undef __gen_combine_address
 
 #include "common/intel_l3_config.h"
-#include "blorp/blorp_genX_exec.h"
+#include "blorp/blorp_genX_exec_brw.h"
 
 #include "ds/intel_tracepoints.h"
 
@@ -57,7 +57,8 @@ static void blorp_measure_end(struct blorp_batch *_batch,
                          params->num_samples,
                          params->shader_pipeline,
                          params->dst.view.format,
-                         params->src.view.format);
+                         params->src.view.format,
+                         (_batch->flags & BLORP_BATCH_PREDICATE_ENABLE));
 }
 
 static void *
@@ -114,6 +115,14 @@ blorp_get_surface_base_address(struct blorp_batch *batch)
    };
 }
 #endif
+
+static uint32_t
+blorp_get_dynamic_state(struct blorp_batch *batch,
+                        enum blorp_dynamic_state name)
+{
+   struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
+   return cmd_buffer->device->blorp.dynamic_states[name].offset;
+}
 
 static void *
 blorp_alloc_dynamic_state(struct blorp_batch *batch,
@@ -192,10 +201,9 @@ blorp_alloc_vertex_buffer(struct blorp_batch *batch, uint32_t size,
 {
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
    struct anv_state vb_state =
-      anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, size, 64);
+      anv_cmd_buffer_alloc_temporary_state(cmd_buffer, size, 64);
    struct anv_address vb_addr =
-      anv_state_pool_state_address(&cmd_buffer->device->dynamic_state_pool,
-                                   vb_state);
+      anv_cmd_buffer_temporary_state_address(cmd_buffer, vb_state);
 
    *addr = (struct blorp_address) {
       .buffer = vb_addr.bo,
@@ -254,6 +262,18 @@ blorp_flush_range(struct blorp_batch *batch, void *start, size_t size)
     */
 }
 
+static void
+blorp_pre_emit_urb_config(struct blorp_batch *blorp_batch,
+                          struct intel_urb_config *urb_cfg)
+{
+   struct anv_cmd_buffer *cmd_buffer = blorp_batch->driver_batch;
+   genX(urb_workaround)(cmd_buffer, urb_cfg);
+
+   /* Update urb config. */
+   memcpy(&cmd_buffer->state.gfx.urb_cfg, urb_cfg,
+          sizeof(struct intel_urb_config));
+}
+
 static const struct intel_l3_config *
 blorp_get_l3_config(struct blorp_batch *batch)
 {
@@ -294,15 +314,15 @@ blorp_exec_on_render(struct blorp_batch *batch,
    }
 #endif
 
-#if GFX_VERx10 >= 125
+#if INTEL_WA_18019816803_GFX_VER
    /* Check if blorp ds state matches ours. */
    if (intel_needs_workaround(cmd_buffer->device->info, 18019816803)) {
       bool blorp_ds_state = params->depth.enabled || params->stencil.enabled;
-      if (cmd_buffer->state.gfx.ds_write_state != blorp_ds_state) {
+      if (hw_state->ds_write_state != blorp_ds_state) {
          /* Flag the change in ds_write_state so that the next pipeline use
           * will trigger a PIPE_CONTROL too.
           */
-         cmd_buffer->state.gfx.ds_write_state = blorp_ds_state;
+         hw_state->ds_write_state = blorp_ds_state;
          BITSET_SET(hw_state->dirty, ANV_GFX_STATE_WA_18019816803);
 
          /* Add the stall that will flush prior to the blorp operation by
@@ -313,6 +333,10 @@ blorp_exec_on_render(struct blorp_batch *batch,
                                    "Wa_18019816803");
       }
    }
+#endif
+
+#if INTEL_WA_14018283232_GFX_VER
+   genX(cmd_buffer_ensure_wa_14018283232)(cmd_buffer, false);
 #endif
 
    if (params->depth.enabled &&
@@ -364,7 +388,7 @@ blorp_exec_on_render(struct blorp_batch *batch,
 #if GFX_VER >= 12
    BITSET_SET(hw_state->dirty, ANV_GFX_STATE_PRIMITIVE_REPLICATION);
 #endif
-   BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VIEWPORT_CC);
+   BITSET_SET(hw_state->dirty, ANV_GFX_STATE_VIEWPORT_CC_PTR);
    BITSET_SET(hw_state->dirty, ANV_GFX_STATE_STREAMOUT);
    BITSET_SET(hw_state->dirty, ANV_GFX_STATE_RASTER);
    BITSET_SET(hw_state->dirty, ANV_GFX_STATE_CLIP);
@@ -383,13 +407,13 @@ blorp_exec_on_render(struct blorp_batch *batch,
    BITSET_SET(hw_state->dirty, ANV_GFX_STATE_GS);
    BITSET_SET(hw_state->dirty, ANV_GFX_STATE_PS);
    BITSET_SET(hw_state->dirty, ANV_GFX_STATE_PS_EXTRA);
-   BITSET_SET(hw_state->dirty, ANV_GFX_STATE_BLEND_STATE_POINTERS);
+   BITSET_SET(hw_state->dirty, ANV_GFX_STATE_BLEND_STATE_PTR);
    if (batch->blorp->config.use_mesh_shading) {
       BITSET_SET(hw_state->dirty, ANV_GFX_STATE_MESH_CONTROL);
       BITSET_SET(hw_state->dirty, ANV_GFX_STATE_TASK_CONTROL);
    }
    if (params->wm_prog_data) {
-      BITSET_SET(hw_state->dirty, ANV_GFX_STATE_CC_STATE);
+      BITSET_SET(hw_state->dirty, ANV_GFX_STATE_CC_STATE_PTR);
       BITSET_SET(hw_state->dirty, ANV_GFX_STATE_PS_BLEND);
    }
 
@@ -429,7 +453,7 @@ blorp_exec_on_blitter(struct blorp_batch *batch,
    assert(batch->flags & BLORP_BATCH_USE_BLITTER);
 
    struct anv_cmd_buffer *cmd_buffer = batch->driver_batch;
-   assert(cmd_buffer->queue_family->queueFlags == VK_QUEUE_TRANSFER_BIT);
+   assert(anv_cmd_buffer_is_blitter_queue(cmd_buffer));
 
    blorp_exec(batch, params);
 }
@@ -478,4 +502,10 @@ blorp_emit_post_draw(struct blorp_batch *batch, const struct blorp_params *param
 
    genX(emit_breakpoint)(&cmd_buffer->batch, cmd_buffer->device, false);
    blorp_measure_end(batch, params);
+}
+
+void
+genX(blorp_init_dynamic_states)(struct blorp_context *context)
+{
+   blorp_init_dynamic_states(context);
 }

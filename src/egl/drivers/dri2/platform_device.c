@@ -50,7 +50,7 @@ device_alloc_image(struct dri2_egl_display *dri2_dpy,
 {
    return dri2_dpy->image->createImage(
       dri2_dpy->dri_screen_render_gpu, dri2_surf->base.Width,
-      dri2_surf->base.Height, dri2_surf->visual, 0, NULL);
+      dri2_surf->base.Height, dri2_surf->visual, NULL, 0, 0, NULL);
 }
 
 static void
@@ -139,7 +139,7 @@ dri2_device_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
    }
 
    dri2_surf->visual = dri2_image_format_for_pbuffer_config(dri2_dpy, config);
-   if (dri2_surf->visual == __DRI_IMAGE_FORMAT_NONE)
+   if (dri2_surf->visual == PIPE_FORMAT_NONE)
       goto cleanup_surface;
 
    if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
@@ -340,22 +340,20 @@ device_probe_device_sw(_EGLDisplay *disp)
 EGLBoolean
 dri2_initialize_device(_EGLDisplay *disp)
 {
-   _EGLDevice *dev;
    const char *err;
    struct dri2_egl_display *dri2_dpy = dri2_display_create();
    if (!dri2_dpy)
       return EGL_FALSE;
 
    /* Extension requires a PlatformDisplay - the EGLDevice. */
-   dev = disp->PlatformDisplay;
+   disp->Device = disp->PlatformDisplay;
 
-   disp->Device = dev;
    disp->DriverData = (void *)dri2_dpy;
    err = "DRI2: failed to load driver";
-   if (_eglDeviceSupports(dev, _EGL_DEVICE_DRM)) {
+   if (_eglDeviceSupports(disp->Device, _EGL_DEVICE_DRM)) {
       if (!device_probe_device(disp))
          goto cleanup;
-   } else if (_eglDeviceSupports(dev, _EGL_DEVICE_SOFTWARE)) {
+   } else if (_eglDeviceSupports(disp->Device, _EGL_DEVICE_SOFTWARE)) {
       if (!device_probe_device_sw(disp))
          goto cleanup;
    } else {
@@ -381,10 +379,7 @@ dri2_initialize_device(_EGLDisplay *disp)
 #endif
    dri2_set_WL_bind_wayland_display(disp);
 
-   if (!dri2_add_pbuffer_configs_for_visuals(disp)) {
-      err = "DRI2: failed to add configs";
-      goto cleanup;
-   }
+   dri2_add_pbuffer_configs_for_visuals(disp);
 
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.

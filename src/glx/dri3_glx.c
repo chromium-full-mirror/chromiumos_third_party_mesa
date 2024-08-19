@@ -78,6 +78,7 @@
 #include "loader.h"
 #include "loader_dri_helper.h"
 #include "dri2.h"
+#include "util/u_debug.h"
 
 static struct dri3_drawable *
 loader_drawable_to_dri3_drawable(struct loader_dri3_drawable *draw) {
@@ -789,7 +790,7 @@ static const struct glx_screen_vtable dri3_screen_vtable = {
  */
 
 static struct glx_screen *
-dri3_create_screen(int screen, struct glx_display * priv)
+dri3_create_screen(int screen, struct glx_display * priv, bool driver_name_is_inferred)
 {
    xcb_connection_t *c = XGetXCBConnection(priv->dpy);
    const __DRIconfig **driver_configs;
@@ -800,6 +801,7 @@ dri3_create_screen(int screen, struct glx_display * priv)
    __GLXDRIscreen *psp;
    struct glx_config *configs = NULL, *visuals = NULL;
    char *driverName, *driverNameDisplayGPU, *tmp;
+   bool return_zink = false;
 
    psc = calloc(1, sizeof *psc);
    if (psc == NULL)
@@ -835,14 +837,19 @@ dri3_create_screen(int screen, struct glx_display * priv)
       goto handle_error;
    }
 
-   extensions = driOpenDriver(driverName, &psc->driver);
+   if (!strcmp(driverName, "zink") && !debug_get_bool_option("LIBGL_KOPPER_DISABLE", false)) {
+      return_zink = true;
+      goto handle_error;
+   }
+
+   extensions = driOpenDriver(driverName, driver_name_is_inferred);
    if (extensions == NULL)
       goto handle_error;
 
    static const struct dri_extension_match exts[] = {
        { __DRI_CORE, 1, offsetof(struct dri3_screen, core), false },
-       { __DRI_IMAGE_DRIVER, 1, offsetof(struct dri3_screen, image_driver), false },
-       { __DRI_MESA, 1, offsetof(struct dri3_screen, mesa), false },
+       { __DRI_IMAGE_DRIVER, 2, offsetof(struct dri3_screen, image_driver), false },
+       { __DRI_MESA, 2, offsetof(struct dri3_screen, mesa), false },
    };
    if (!loader_bind_extensions(psc, exts, ARRAY_SIZE(exts), extensions))
       goto handle_error;
@@ -858,10 +865,10 @@ dri3_create_screen(int screen, struct glx_display * priv)
           */
          if (strcmp(driverName, driverNameDisplayGPU) == 0) {
             psc->driScreenDisplayGPU =
-               psc->image_driver->createNewScreen2(screen, psc->fd_display_gpu,
+               psc->image_driver->createNewScreen3(screen, psc->fd_display_gpu,
                                                    pdp->loader_extensions,
                                                    extensions,
-                                                   &driver_configs, psc);
+                                                   &driver_configs, driver_name_is_inferred, psc);
          }
 
          free(driverNameDisplayGPU);
@@ -869,10 +876,10 @@ dri3_create_screen(int screen, struct glx_display * priv)
    }
 
    psc->driScreenRenderGPU =
-      psc->image_driver->createNewScreen2(screen, psc->fd_render_gpu,
+      psc->image_driver->createNewScreen3(screen, psc->fd_render_gpu,
                                           pdp->loader_extensions,
                                           extensions,
-                                          &driver_configs, psc);
+                                          &driver_configs, driver_name_is_inferred, psc);
 
    if (psc->driScreenRenderGPU == NULL) {
       ErrorMessageF("glx: failed to create dri3 screen\n");
@@ -884,8 +891,8 @@ dri3_create_screen(int screen, struct glx_display * priv)
 
    dri3_bind_extensions(psc, priv, driverName);
 
-   if (!psc->image || psc->image->base.version < 7 || !psc->image->createImageFromFds) {
-      ErrorMessageF("Version 7 or imageFromFds image extension not found\n");
+   if (!psc->image || !psc->image->createImageFromDmaBufs) {
+      ErrorMessageF("Version 7 or imageFromDmaBufs image extension not found\n");
       goto handle_error;
    }
 
@@ -1009,7 +1016,8 @@ dri3_create_screen(int screen, struct glx_display * priv)
    return &psc->base;
 
 handle_error:
-   CriticalErrorMessageF("failed to load driver: %s\n", driverName ? driverName : "(null)");
+   if (!return_zink)
+      CriticalErrorMessageF("failed to load driver: %s\n", driverName ? driverName : "(null)");
 
    if (configs)
        glx_config_destroy_list(configs);
@@ -1025,14 +1033,12 @@ handle_error:
       close(psc->fd_display_gpu);
    if (psc->fd_render_gpu >= 0)
       close(psc->fd_render_gpu);
-   if (psc->driver)
-      dlclose(psc->driver);
 
    free(driverName);
    glx_screen_cleanup(&psc->base);
    free(psc);
 
-   return NULL;
+   return return_zink ? GLX_LOADER_USE_ZINK : NULL;
 }
 
 /** dri_destroy_display
@@ -1043,78 +1049,6 @@ static void
 dri3_destroy_display(__GLXDRIdisplay * dpy)
 {
    free(dpy);
-}
-
-/* Only request versions of these protocols which we actually support. */
-#define DRI3_SUPPORTED_MAJOR 1
-#define PRESENT_SUPPORTED_MAJOR 1
-
-#ifdef HAVE_DRI3_MODIFIERS
-#define DRI3_SUPPORTED_MINOR 2
-#define PRESENT_SUPPORTED_MINOR 2
-#else
-#define PRESENT_SUPPORTED_MINOR 0
-#define DRI3_SUPPORTED_MINOR 0
-#endif
-
-
-bool
-dri3_check_multibuffer(Display * dpy, bool *err)
-{
-   xcb_connection_t                     *c = XGetXCBConnection(dpy);
-   xcb_dri3_query_version_cookie_t      dri3_cookie;
-   xcb_dri3_query_version_reply_t       *dri3_reply;
-   xcb_present_query_version_cookie_t   present_cookie;
-   xcb_present_query_version_reply_t    *present_reply;
-   xcb_generic_error_t                  *error;
-   const xcb_query_extension_reply_t    *extension;
-
-   xcb_prefetch_extension_data(c, &xcb_dri3_id);
-   xcb_prefetch_extension_data(c, &xcb_present_id);
-
-   extension = xcb_get_extension_data(c, &xcb_dri3_id);
-   if (!(extension && extension->present))
-      goto error;
-
-   extension = xcb_get_extension_data(c, &xcb_present_id);
-   if (!(extension && extension->present))
-      goto error;
-
-   dri3_cookie = xcb_dri3_query_version(c,
-                                        DRI3_SUPPORTED_MAJOR,
-                                        DRI3_SUPPORTED_MINOR);
-   present_cookie = xcb_present_query_version(c,
-                                              PRESENT_SUPPORTED_MAJOR,
-                                              PRESENT_SUPPORTED_MINOR);
-
-   dri3_reply = xcb_dri3_query_version_reply(c, dri3_cookie, &error);
-   if (!dri3_reply) {
-      free(error);
-      goto error;
-   }
-
-   int dri3Major = dri3_reply->major_version;
-   int dri3Minor = dri3_reply->minor_version;
-   free(dri3_reply);
-
-   present_reply = xcb_present_query_version_reply(c, present_cookie, &error);
-   if (!present_reply) {
-      free(error);
-      goto error;
-   }
-   int presentMajor = present_reply->major_version;
-   int presentMinor = present_reply->minor_version;
-   free(present_reply);
-
-#ifdef HAVE_DRI3_MODIFIERS
-   if ((dri3Major > 1 || (dri3Major == 1 && dri3Minor >= 2)) &&
-       (presentMajor > 1 || (presentMajor == 1 && presentMinor >= 2)))
-      return true;
-#endif
-   return false;
-error:
-   *err = true;
-   return false;
 }
 
 /** dri3_create_display
@@ -1129,7 +1063,7 @@ dri3_create_display(Display * dpy)
 {
    struct dri3_display                  *pdp;
    bool err = false;
-   bool has_multibuffer = dri3_check_multibuffer(dpy, &err);
+   bool has_multibuffer = loader_dri3_check_multibuffer(XGetXCBConnection(dpy), &err);
    if (err)
       return NULL;
 

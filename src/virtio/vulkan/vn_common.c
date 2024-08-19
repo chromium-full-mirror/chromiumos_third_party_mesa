@@ -31,7 +31,7 @@ static const struct debug_control vn_debug_options[] = {
    { "log_ctx_info", VN_DEBUG_LOG_CTX_INFO },
    { "cache", VN_DEBUG_CACHE },
    { "no_sparse", VN_DEBUG_NO_SPARSE },
-   { "gpl", VN_DEBUG_GPL },
+   { "no_gpl", VN_DEBUG_NO_GPL },
    { NULL, 0 },
    /* clang-format on */
 };
@@ -86,7 +86,7 @@ vn_env_init(void)
 void
 vn_trace_init(void)
 {
-#ifdef ANDROID
+#if DETECT_OS_ANDROID
    atrace_init();
 #else
    util_cpu_trace_init();

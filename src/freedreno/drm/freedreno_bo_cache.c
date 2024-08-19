@@ -25,6 +25,7 @@
  */
 
 #include "freedreno_drmif.h"
+#include "freedreno_drm_perfetto.h"
 #include "freedreno_priv.h"
 
 #define FD_BO_CACHE_STATS 0
@@ -122,13 +123,13 @@ fd_bo_cache_init(struct fd_bo_cache *cache, int coarse, const char *name)
     * width/height alignment and rounding of sizes to pages will
     * get us useful cache hit rates anyway)
     */
-   add_bucket(cache, 4096);
-   add_bucket(cache, 4096 * 2);
+   add_bucket(cache, os_page_size);
+   add_bucket(cache, os_page_size * 2);
    if (!coarse)
-      add_bucket(cache, 4096 * 3);
+      add_bucket(cache, os_page_size * 3);
 
    /* Initialize the linked lists for BO reuse cache. */
-   for (size = 4 * 4096; size <= cache_max_size; size *= 2) {
+   for (size = 4 * os_page_size; size <= cache_max_size; size *= 2) {
       add_bucket(cache, size);
       if (!coarse) {
          add_bucket(cache, size + size * 1 / 4);
@@ -172,6 +173,7 @@ fd_bo_cache_cleanup(struct fd_bo_cache *cache, time_t time)
          bo_remove_from_bucket(bucket, bo);
          bucket->expired++;
          list_addtail(&bo->node, &freelist);
+         fd_alloc_log(bo, FD_ALLOC_CACHE, FD_ALLOC_NONE);
 
          cnt++;
       }
@@ -239,7 +241,7 @@ fd_bo_cache_alloc(struct fd_bo_cache *cache, uint32_t *size, uint32_t flags)
    struct fd_bo *bo = NULL;
    struct fd_bo_bucket *bucket;
 
-   *size = align(*size, 4096);
+   *size = align(*size, os_page_size);
    bucket = get_bucket(cache, *size);
 
    struct list_head freelist;
@@ -258,11 +260,13 @@ retry:
          if (bo->funcs->madvise(bo, true) <= 0) {
             /* we've lost the backing pages, delete and try again: */
             list_addtail(&bo->node, &freelist);
+            fd_alloc_log(bo, FD_ALLOC_CACHE, FD_ALLOC_NONE);
             goto retry;
          }
          p_atomic_set(&bo->refcnt, 1);
          bo->reloc_flags = FD_RELOC_FLAGS_INIT;
          bucket->hits++;
+         fd_alloc_log(bo, FD_ALLOC_CACHE, FD_ALLOC_ACTIVE);
          return bo;
       }
       bucket->misses++;
@@ -301,6 +305,7 @@ fd_bo_cache_free(struct fd_bo_cache *cache, struct fd_bo *bo)
       bucket->count++;
       simple_mtx_unlock(&cache->lock);
 
+      fd_alloc_log(bo, FD_ALLOC_ACTIVE, FD_ALLOC_CACHE);
       fd_bo_cache_cleanup(cache, time.tv_sec);
 
       return 0;

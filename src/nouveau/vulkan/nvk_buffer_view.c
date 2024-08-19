@@ -4,8 +4,7 @@
  */
 #include "nvk_buffer_view.h"
 
-#include "nil_format.h"
-#include "nil_image.h"
+#include "nil.h"
 #include "nvk_buffer.h"
 #include "nvk_entrypoints.h"
 #include "nvk_device.h"
@@ -13,6 +12,8 @@
 #include "nvk_physical_device.h"
 
 #include "vk_format.h"
+
+#include "clb097.h"
 
 VkFormatFeatureFlags2
 nvk_get_buffer_format_features(struct nvk_physical_device *pdev,
@@ -30,6 +31,8 @@ nvk_get_buffer_format_features(struct nvk_physical_device *pdev,
       if (nil_format_supports_storage(&pdev->info, p_format)) {
          features |= VK_FORMAT_FEATURE_2_STORAGE_TEXEL_BUFFER_BIT |
                      VK_FORMAT_FEATURE_2_STORAGE_WRITE_WITHOUT_FORMAT_BIT;
+         if (pdev->info.cls_eng3d >= MAXWELL_A)
+            features |= VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT;
       }
 
       if (p_format == PIPE_FORMAT_R32_UINT || p_format == PIPE_FORMAT_R32_SINT)
@@ -58,8 +61,8 @@ nvk_CreateBufferView(VkDevice _device,
    uint32_t desc[8];
    nil_buffer_fill_tic(&nvk_device_physical(device)->info,
                        nvk_buffer_address(buffer, view->vk.offset),
-                       vk_format_to_pipe_format(view->vk.format),
-                       view->vk.elements, desc);
+                       nil_format(vk_format_to_pipe_format(view->vk.format)),
+                       view->vk.elements, &desc);
 
    result = nvk_descriptor_table_add(device, &device->images,
                                      desc, sizeof(desc), &view->desc_index);
