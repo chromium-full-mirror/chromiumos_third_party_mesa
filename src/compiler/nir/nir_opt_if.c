@@ -853,6 +853,7 @@ clone_alu_and_replace_src_defs(nir_builder *b, const nir_alu_instr *alu,
 {
    nir_alu_instr *nalu = nir_alu_instr_create(b->shader, alu->op);
    nalu->exact = alu->exact;
+   nalu->fp_fast_math = alu->fp_fast_math;
 
    nir_def_init(&nalu->instr, &nalu->def,
                 alu->def.num_components,
@@ -1163,13 +1164,6 @@ opt_if_merge(nir_if *nif)
           nir_block_ends_in_jump(nir_if_last_else_block(nif)))
          return false;
 
-      /* This optimization is not prepared to handle updating phis other than
-       * immediately after the second if-statement.
-       */
-      if (nir_block_ends_in_jump(nir_if_last_then_block(next_if)) ||
-          nir_block_ends_in_jump(nir_if_last_else_block(next_if)))
-         return false;
-
       simple_merge_if(nif, next_if, true, true);
       simple_merge_if(nif, next_if, false, false);
 
@@ -1330,11 +1324,9 @@ nir_opt_if(nir_shader *shader, nir_opt_if_options options)
    nir_foreach_function_impl(impl, shader) {
       nir_builder b = nir_builder_create(impl);
 
-      nir_metadata_require(impl, nir_metadata_block_index |
-                                    nir_metadata_dominance);
+      nir_metadata_require(impl, nir_metadata_control_flow);
       progress = opt_if_safe_cf_list(&b, &impl->body, options);
-      nir_metadata_preserve(impl, nir_metadata_block_index |
-                                     nir_metadata_dominance);
+      nir_metadata_preserve(impl, nir_metadata_control_flow);
 
       bool preserve = true;
 

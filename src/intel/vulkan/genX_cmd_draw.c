@@ -37,15 +37,7 @@
 
 #include "ds/intel_tracepoints.h"
 
-/* We reserve :
- *    - GPR 14 for secondary command buffer returns
- *    - GPR 15 for conditional rendering
- */
-#define MI_BUILDER_NUM_ALLOC_GPRS 14
-#define __gen_get_batch_dwords anv_batch_emit_dwords
-#define __gen_address_offset anv_address_add
-#define __gen_get_batch_address(b, a) anv_batch_address(b, a)
-#include "common/mi_builder.h"
+#include "genX_mi_builder.h"
 
 static void
 cmd_buffer_alloc_gfx_push_constants(struct anv_cmd_buffer *cmd_buffer)
@@ -389,16 +381,54 @@ cmd_buffer_emit_push_constant(struct anv_cmd_buffer *cmd_buffer,
 
 #if GFX_VER >= 12
 static void
+emit_null_push_constant_tbimr_workaround(struct anv_cmd_buffer *cmd_buffer)
+{
+   /* Pass a single-register push constant payload for the PS
+    * stage even if empty, since PS invocations with zero push
+    * constant cycles have been found to cause hangs with TBIMR
+    * enabled.  See HSDES #22020184996.
+    *
+    * XXX - Use workaround infrastructure and final workaround
+    *       when provided by hardware team.
+    */
+   const struct anv_address null_addr = {
+      .bo = cmd_buffer->device->workaround_bo,
+      .offset = 1024,
+   };
+   uint32_t *dw = anv_batch_emitn(
+      &cmd_buffer->batch, 4,
+      GENX(3DSTATE_CONSTANT_ALL),
+      .ShaderUpdateEnable = (1 << MESA_SHADER_FRAGMENT),
+      .PointerBufferMask = 1,
+      .MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0, false));
+   GENX(3DSTATE_CONSTANT_ALL_DATA_pack)(
+      &cmd_buffer->batch, dw + 2,
+      &(struct GENX(3DSTATE_CONSTANT_ALL_DATA)) {
+         .PointerToConstantBuffer = null_addr,
+         .ConstantBufferReadLength = 1,
+      });
+}
+
+static void
 cmd_buffer_emit_push_constant_all(struct anv_cmd_buffer *cmd_buffer,
                                   uint32_t shader_mask,
                                   struct anv_address *buffers,
                                   uint32_t buffer_count)
 {
    if (buffer_count == 0) {
-      anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CONSTANT_ALL), c) {
-         c.ShaderUpdateEnable = shader_mask;
-         c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0, false);
+      if (cmd_buffer->device->info->needs_null_push_constant_tbimr_workaround &&
+          (shader_mask & (1 << MESA_SHADER_FRAGMENT))) {
+         emit_null_push_constant_tbimr_workaround(cmd_buffer);
+         shader_mask &= ~(1 << MESA_SHADER_FRAGMENT);
       }
+
+      if (shader_mask) {
+         anv_batch_emit(&cmd_buffer->batch, GENX(3DSTATE_CONSTANT_ALL), c) {
+            c.ShaderUpdateEnable = shader_mask;
+            c.MOCS = isl_mocs(&cmd_buffer->device->isl_dev, 0, false);
+         }
+      }
+
       return;
    }
 
@@ -659,7 +689,11 @@ genX(emit_ds)(struct anv_cmd_buffer *cmd_buffer)
    if (!anv_pipeline_has_stage(pipeline, MESA_SHADER_TESS_EVAL))
       return;
 
-   anv_batch_emit_pipeline_state(&cmd_buffer->batch, pipeline, final.ds);
+   const bool protected = cmd_buffer->vk.pool->flags &
+                          VK_COMMAND_POOL_CREATE_PROTECTED_BIT;
+
+   anv_batch_emit_pipeline_state_protected(&cmd_buffer->batch, pipeline,
+                                           final.ds, protected);
 #endif
 }
 
@@ -968,9 +1002,6 @@ void genX(CmdDraw)(
     */
    genX(flush_pipeline_select_3d)(cmd_buffer);
 
-   if (cmd_buffer->state.conditional_render_enabled)
-      genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
-
 #if GFX_VER < 11
    cmd_buffer_emit_vertex_constants_and_flush(cmd_buffer,
                                               get_vs_prog_data(pipeline),
@@ -980,6 +1011,9 @@ void genX(CmdDraw)(
 
    genX(cmd_buffer_flush_gfx_state)(cmd_buffer);
    genX(emit_ds)(cmd_buffer);
+
+   if (cmd_buffer->state.conditional_render_enabled)
+      genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
 
    genX(emit_breakpoint)(&cmd_buffer->batch, cmd_buffer->device, true);
 
@@ -1149,9 +1183,6 @@ void genX(CmdDrawIndexed)(
     */
    genX(flush_pipeline_select_3d)(cmd_buffer);
 
-   if (cmd_buffer->state.conditional_render_enabled)
-      genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
-
 #if GFX_VER < 11
    const struct brw_vs_prog_data *vs_prog_data = get_vs_prog_data(pipeline);
    cmd_buffer_emit_vertex_constants_and_flush(cmd_buffer, vs_prog_data,
@@ -1160,6 +1191,10 @@ void genX(CmdDrawIndexed)(
 #endif
 
    genX(cmd_buffer_flush_gfx_state)(cmd_buffer);
+
+   if (cmd_buffer->state.conditional_render_enabled)
+      genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
+
    genX(emit_breakpoint)(&cmd_buffer->batch, cmd_buffer->device, true);
 
    anv_batch_emit(&cmd_buffer->batch, _3DPRIMITIVE_DIRECT, prim) {
@@ -1456,9 +1491,6 @@ void genX(CmdDrawIndirectByteCountEXT)(
     */
    genX(flush_pipeline_select_3d)(cmd_buffer);
 
-   if (cmd_buffer->state.conditional_render_enabled)
-      genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
-
 #if GFX_VER < 11
    const struct brw_vs_prog_data *vs_prog_data = get_vs_prog_data(pipeline);
    if (vs_prog_data->uses_firstvertex ||
@@ -1469,6 +1501,9 @@ void genX(CmdDrawIndirectByteCountEXT)(
 #endif
 
    genX(cmd_buffer_flush_gfx_state)(cmd_buffer);
+
+   if (cmd_buffer->state.conditional_render_enabled)
+      genX(cmd_emit_conditional_render_predicate)(cmd_buffer);
 
    struct mi_builder b;
    mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
