@@ -215,6 +215,19 @@ P_DUMP_${nvcl}_MTHD_DATA(FILE *fp, uint16_t idx, uint32_t data,
 }
 """)
 
+def removeprefix(text, prefix):
+    if text.startswith(prefix):
+        return text[len(prefix):]  # Slice from after the prefix
+    else:
+        return text  # Return original if prefix not found
+
+
+def removesuffix(text, suffix):
+    if text.endswith(suffix):
+        return text[:-len(suffix)]  # Slice up to before the suffix
+    else:
+        return text  # Return original if suffix not found
+
 def glob_match(glob, name):
     if glob.endswith('*'):
         return name.startswith(glob[:-1])
@@ -274,7 +287,7 @@ def parse_header(nvcl, f):
                 if ":" in list[2]:
                     state = 1
                 elif teststr in list[1]:
-                    curmthd.field_defs[curfield][list[1].removeprefix(teststr)] = list[2]
+                    curmthd.field_defs[curfield][removeprefix(list[1], (teststr))] = list[2]
                 else:
                     state = 1
 
@@ -284,7 +297,7 @@ def parse_header(nvcl, f):
                     if ("0x" in list[2]):
                         state = 1
                     else:
-                        field = list[1].removeprefix(teststr)
+                        field = removeprefix(list[1], (teststr))
                         bitfield = list[2].split(":")
                         curmthd.field_name_start[field] = bitfield[1]
                         curmthd.field_name_end[field] = bitfield[0]
@@ -305,13 +318,13 @@ def parse_header(nvcl, f):
                 is_array = 0
                 if (':' in list[2]):
                     continue
-                name = list[1].removeprefix(teststr)
+                name = removeprefix(list[1],(teststr))
                 if name.endswith("(i)"):
                     is_array = 1
-                    name = name.removesuffix("(i)")
+                    name = removesuffix(name, "(i)")
                 if name.endswith("(j)"):
                     is_array = 1
-                    name = name.removesuffix("(j)")
+                    name = removesuffix(name, "(j)")
                 x = method()
                 x.name = name
                 x.addr = list[2]
@@ -337,8 +350,8 @@ def main():
 
     clheader = os.path.basename(args.in_h)
     nvcl = clheader
-    nvcl = nvcl.removeprefix("cl")
-    nvcl = nvcl.removesuffix(".h")
+    nvcl = removeprefix(nvcl, ("cl"))
+    nvcl = removesuffix(nvcl, (".h"))
     nvcl = nvcl.upper()
     nvcl = "NV" + nvcl
 
