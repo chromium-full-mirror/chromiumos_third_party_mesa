@@ -121,7 +121,19 @@ load_glsl(unsigned num_files, char *const *files, gl_shader_stage stage)
    if (!prog)
       errx(1, "couldn't parse `%s'", files[0]);
 
-   nir_shader *nir = glsl_to_nir(&local_ctx.Const, prog, stage, nir_options);
+   nir_shader *nir = glsl_to_nir(&local_ctx.Const,
+                                 &prog->_LinkedShaders[stage]->ir,
+                                 &prog->_LinkedShaders[stage]->Program->info,
+                                 stage, nir_options);
+
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      nir->info.fs.pixel_center_integer =
+         prog->_LinkedShaders[stage]->Program->info.fs.pixel_center_integer;
+      nir->info.fs.origin_upper_left =
+         prog->_LinkedShaders[stage]->Program->info.fs.origin_upper_left;
+      nir->info.fs.advanced_blend_modes =
+         prog->_LinkedShaders[stage]->Program->info.fs.advanced_blend_modes;
+   }
 
    gl_nir_inline_functions(nir);
 
@@ -131,7 +143,8 @@ load_glsl(unsigned num_files, char *const *files, gl_shader_stage stage)
        nir->info.stage == MESA_SHADER_GEOMETRY) {
       NIR_PASS_V(nir, nir_lower_io_to_temporaries,
                  nir_shader_get_entrypoint(nir), true, true);
-   } else if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+   } else if (nir->info.stage == MESA_SHADER_TESS_EVAL ||
+              nir->info.stage == MESA_SHADER_FRAGMENT) {
       NIR_PASS_V(nir, nir_lower_io_to_temporaries,
                  nir_shader_get_entrypoint(nir), true, false);
    }

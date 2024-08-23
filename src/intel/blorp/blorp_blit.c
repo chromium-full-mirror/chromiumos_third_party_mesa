@@ -1195,7 +1195,7 @@ blorp_build_nir_shader(struct blorp_context *blorp,
       key->base.shader_pipeline == BLORP_SHADER_PIPELINE_COMPUTE;
    gl_shader_stage stage =
       compute ? MESA_SHADER_COMPUTE : MESA_SHADER_FRAGMENT;
-   blorp_nir_init_shader(&b, mem_ctx, stage, NULL);
+   blorp_nir_init_shader(&b, blorp, mem_ctx, stage, NULL);
 
    struct blorp_blit_vars v;
    blorp_blit_vars_init(&b, &v, key);
@@ -2880,7 +2880,8 @@ blorp_copy_get_formats(const struct isl_device *isl_dev,
       *src_view_format =
       *dst_view_format =
          get_copy_format_for_bpb(isl_dev, dst_fmtl->bpb);
-   } else if (isl_format_supports_ccs_e(isl_dev->info, dst_surf->format)) {
+   } else if (ISL_GFX_VER(isl_dev) < 20 &&
+              isl_format_supports_ccs_e(isl_dev->info, dst_surf->format)) {
       *dst_view_format = get_ccs_compatible_copy_format(dst_fmtl);
       if (isl_format_supports_ccs_e(isl_dev->info, src_surf->format)) {
          *src_view_format = get_ccs_compatible_copy_format(src_fmtl);
@@ -2889,7 +2890,8 @@ blorp_copy_get_formats(const struct isl_device *isl_dev,
       } else {
          *src_view_format = get_copy_format_for_bpb(isl_dev, src_fmtl->bpb);
       }
-   } else if (isl_format_supports_ccs_e(isl_dev->info, src_surf->format)) {
+   } else if (ISL_GFX_VER(isl_dev) < 20 &&
+              isl_format_supports_ccs_e(isl_dev->info, src_surf->format)) {
       *src_view_format = get_ccs_compatible_copy_format(src_fmtl);
       if (src_fmtl->bpb == dst_fmtl->bpb) {
          *dst_view_format = *src_view_format;
@@ -2971,24 +2973,14 @@ blorp_copy(struct blorp_batch *batch,
 
    if (isl_aux_usage_has_fast_clears(params.src.aux_usage) &&
        isl_dev->ss.clear_color_state_size > 0) {
-      /* For 32bpc formats, the sampler fetches the raw clear color dwords
-       * used for rendering instead of the converted pixel dwords typically
-       * used for sampling. The CLEAR_COLOR struct page documents this for
-       * 128bpp formats, but not for 32bpp and 64bpp formats.
-       *
-       * Note that although the sampler doesn't use the converted clear color
-       * field with 32bpc formats, the Clear Color Conversion hardware feature
-       * still occurs when the format sizes are less than 128bpp.
-       *
-       * The sampler changing its clear color fetching location can be a
-       * problem in some cases, but we won't run into them here. When using an
-       * indirect clear color, we won't create 32bpc views of non-32bpc
-       * surfaces (and vice-versa).
+      /* Depending on the format, the sampler may change the location from
+       * which it fetches the clear color. This can be a problem in some
+       * cases, so make sure that the view format won't change the location.
        */
-      const struct isl_format_layout *src_view_fmtl =
-         isl_format_get_layout(params.src.view.format);
-      assert((src_fmtl->channels.r.bits == 32) ==
-             (src_view_fmtl->channels.r.bits == 32));
+      ASSERTED enum isl_format src_view_fmt = params.src.view.format;
+      ASSERTED enum isl_format src_surf_fmt = params.src.surf.format;
+      assert(isl_get_sampler_clear_field_offset(devinfo, src_view_fmt) ==
+             isl_get_sampler_clear_field_offset(devinfo, src_surf_fmt));
    }
 
    if (params.src.view.format != params.dst.view.format) {

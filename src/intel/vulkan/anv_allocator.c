@@ -777,6 +777,10 @@ anv_state_pool_return_blocks(struct anv_state_pool *pool,
    }
 
    uint32_t block_bucket = anv_state_pool_get_bucket(block_size);
+
+   if (block_bucket >= ARRAY_SIZE(pool->buckets))
+      return;
+
    anv_free_list_push(&pool->buckets[block_bucket].free_list,
                       &pool->table, st_idx, count);
 }
@@ -838,6 +842,9 @@ anv_state_pool_alloc_no_vg(struct anv_state_pool *pool,
                            uint32_t size, uint32_t align)
 {
    uint32_t bucket = anv_state_pool_get_bucket(MAX2(size, align));
+
+   if (bucket >= ARRAY_SIZE(pool->buckets))
+      return ANV_STATE_NULL;
 
    struct anv_state *state;
    uint32_t alloc_size = anv_state_pool_get_bucket_size(bucket);
@@ -948,6 +955,9 @@ anv_state_pool_free_no_vg(struct anv_state_pool *pool, struct anv_state state)
    unsigned bucket = anv_state_pool_get_bucket(state.alloc_size);
 
    assert(state.offset >= pool->start_offset);
+
+   if (bucket >= ARRAY_SIZE(pool->buckets))
+      return;
 
    anv_free_list_push(&pool->buckets[bucket].free_list,
                       &pool->table, state.idx, 1);
@@ -1297,9 +1307,13 @@ anv_bo_pool_free(struct anv_bo_pool *pool, struct anv_bo *bo)
 // Scratch pool
 
 void
-anv_scratch_pool_init(struct anv_device *device, struct anv_scratch_pool *pool)
+anv_scratch_pool_init(struct anv_device *device, struct anv_scratch_pool *pool,
+                      bool protected)
 {
    memset(pool, 0, sizeof(*pool));
+   pool->alloc_flags = ANV_BO_ALLOC_INTERNAL |
+      (protected ? ANV_BO_ALLOC_PROTECTED : 0) |
+      (device->info->verx10 < 125 ? ANV_BO_ALLOC_32BIT_ADDRESS : 0);
 }
 
 void
@@ -1367,11 +1381,8 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
     *
     * so nothing will ever touch the top page.
     */
-   const enum anv_bo_alloc_flags alloc_flags =
-      ANV_BO_ALLOC_INTERNAL |
-      (devinfo->verx10 < 125 ? ANV_BO_ALLOC_32BIT_ADDRESS : 0);
    VkResult result = anv_device_alloc_bo(device, "scratch", size,
-                                         alloc_flags,
+                                         pool->alloc_flags,
                                          0 /* explicit_address */,
                                          &bo);
    if (result != VK_SUCCESS)
@@ -1413,10 +1424,14 @@ anv_scratch_pool_get_surf(struct anv_device *device,
       anv_state_pool_alloc(&device->scratch_surface_state_pool,
                            device->isl_dev.ss.size, 64);
 
+   isl_surf_usage_flags_t usage =
+      (pool->alloc_flags & ANV_BO_ALLOC_PROTECTED) ?
+      ISL_SURF_USAGE_PROTECTED_BIT : 0;
+
    isl_buffer_fill_state(&device->isl_dev, state.map,
                          .address = anv_address_physical(addr),
                          .size_B = bo->size,
-                         .mocs = anv_mocs(device, bo, 0),
+                         .mocs = anv_mocs(device, bo, usage),
                          .format = ISL_FORMAT_RAW,
                          .swizzle = ISL_SWIZZLE_IDENTITY,
                          .stride_B = per_thread_scratch,
@@ -1575,12 +1590,6 @@ anv_device_alloc_bo(struct anv_device *device,
    assert((alloc_flags & ANV_BO_ALLOC_MAPPED) == 0 ||
           (alloc_flags & (ANV_BO_ALLOC_HOST_CACHED | ANV_BO_ALLOC_HOST_COHERENT)));
 
-   /* KMD requires a valid PAT index, so setting HOST_COHERENT/WC to bos that
-    * don't need CPU access
-    */
-   if ((alloc_flags & ANV_BO_ALLOC_MAPPED) == 0)
-      alloc_flags |= ANV_BO_ALLOC_HOST_COHERENT;
-
    /* In platforms with LLC we can promote all bos to cached+coherent for free */
    const enum anv_bo_alloc_flags not_allowed_promotion = ANV_BO_ALLOC_SCANOUT |
                                                          ANV_BO_ALLOC_EXTERNAL |
@@ -1597,7 +1606,7 @@ anv_device_alloc_bo(struct anv_device *device,
    const uint64_t ccs_offset = size;
    if (alloc_flags & ANV_BO_ALLOC_AUX_CCS) {
       assert(device->info->has_aux_map);
-      size += DIV_ROUND_UP(size, intel_aux_get_main_to_aux_ratio(device->aux_map_ctx));
+      size += size / INTEL_AUX_MAP_MAIN_SIZE_SCALEDOWN;
       size = align64(size, 4096);
    }
 

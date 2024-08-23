@@ -1344,6 +1344,7 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
          nir_variable_mode mode = nir_var_mem_generic;
          switch (instr->intrinsic) {
          case nir_intrinsic_load_input:
+         case nir_intrinsic_load_per_primitive_input:
          case nir_intrinsic_load_interpolated_input:
          case nir_intrinsic_load_per_vertex_input:
          case nir_intrinsic_load_input_vertex:
@@ -1369,9 +1370,6 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
                                             buf);
 
          fprintf(fp, "io location=%s slots=%u", loc, io.num_slots);
-
-         if (io.per_primitive)
-            fprintf(fp, " per_primitive");
 
          if (io.interp_explicit_strict)
             fprintf(fp, " explicit_strict");
@@ -1622,6 +1620,7 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
       var_mode = nir_var_uniform;
       break;
    case nir_intrinsic_load_input:
+   case nir_intrinsic_load_per_primitive_input:
    case nir_intrinsic_load_interpolated_input:
    case nir_intrinsic_load_per_vertex_input:
       var_mode = nir_var_shader_in;
@@ -1797,6 +1796,14 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
          break;
       case nir_tex_src_ddy:
          fprintf(fp, "(ddy)");
+         break;
+      case nir_tex_src_sampler_deref_intrinsic:
+         has_texture_deref = true;
+         fprintf(fp, "(sampler_deref_intrinsic)");
+         break;
+      case nir_tex_src_texture_deref_intrinsic:
+         has_texture_deref = true;
+         fprintf(fp, "(texture_deref_intrinsic)");
          break;
       case nir_tex_src_texture_deref:
          has_texture_deref = true;
@@ -2093,8 +2100,9 @@ print_block(nir_block *block, print_state *state, unsigned tabs)
       state->padding_for_no_dest = 0;
 
    print_indentation(tabs, fp);
-   fprintf(fp, "%s block b%u:",
-           block->divergent ? "div" : "con", block->index);
+   fprintf(fp, "%sblock b%u:",
+           divergence_status(state, block->divergent),
+           block->index);
 
    const bool empty_block = exec_list_is_empty(&block->instr_list);
    if (empty_block) {
@@ -2166,7 +2174,7 @@ print_loop(nir_loop *loop, print_state *state, unsigned tabs)
    FILE *fp = state->fp;
 
    print_indentation(tabs, fp);
-   fprintf(fp, "loop {\n");
+   fprintf(fp, "%sloop {\n", divergence_status(state, loop->divergent));
    foreach_list_typed(nir_cf_node, node, node, &loop->body) {
       print_cf_node(node, state, tabs + 1);
    }
@@ -2560,7 +2568,6 @@ print_shader_info(const struct shader_info *info, FILE *fp)
 
    case MESA_SHADER_FRAGMENT:
       print_nz_bool(fp, "uses_discard", info->fs.uses_discard);
-      print_nz_bool(fp, "uses_demote", info->fs.uses_demote);
       print_nz_bool(fp, "uses_fbfetch_output", info->fs.uses_fbfetch_output);
       print_nz_bool(fp, "color_is_dual_source", info->fs.color_is_dual_source);
 

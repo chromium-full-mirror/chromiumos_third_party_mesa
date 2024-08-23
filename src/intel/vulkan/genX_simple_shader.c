@@ -30,6 +30,7 @@
 
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
+#include "common/intel_compute_slm.h"
 #include "common/intel_genX_state_brw.h"
 
 static void
@@ -109,7 +110,8 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
 
    genX(emit_l3_config)(batch, device, state->l3_config);
 
-   state->cmd_buffer->state.current_l3_config = state->l3_config;
+   if (state->cmd_buffer)
+      state->cmd_buffer->state.current_l3_config = state->l3_config;
 
    enum intel_urb_deref_block_size deref_block_size;
    genX(emit_urb_setup)(device, batch, state->l3_config,
@@ -212,6 +214,13 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
       ps.MaximumNumberofThreadsPerPSD = device->info->max_threads_per_psd - 1;
    }
 
+#if INTEL_WA_18038825448_GFX_VER
+   const bool needs_ps_dependency =
+      state->cmd_buffer != NULL &&
+      genX(cmd_buffer_set_coarse_pixel_active)
+         (state->cmd_buffer, ANV_COARSE_PIXEL_STATE_DISABLED);
+#endif
+
    anv_batch_emit(batch, GENX(3DSTATE_PS_EXTRA), psx) {
       psx.PixelShaderValid = true;
 #if GFX_VER < 20
@@ -220,6 +229,10 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
       psx.PixelShaderIsPerSample = prog_data->persample_dispatch;
       psx.PixelShaderComputedDepthMode = prog_data->computed_depth_mode;
       psx.PixelShaderComputesStencil = prog_data->computed_stencil;
+
+#if INTEL_WA_18038825448_GFX_VER
+      psx.EnablePSDependencyOnCPsizeChange = needs_ps_dependency;
+#endif
    }
 
    anv_batch_emit(batch, GENX(3DSTATE_VIEWPORT_STATE_POINTERS_CC), cc) {
@@ -306,6 +319,10 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
    state->cmd_buffer->state.descriptors_dirty |= VK_SHADER_STAGE_FRAGMENT_BIT;
 #endif
 
+#if INTEL_WA_14018283232_GFX_VER
+   genX(cmd_buffer_ensure_wa_14018283232)(state->cmd_buffer, false);
+#endif
+
    /* Flag all the instructions emitted by the memcpy. */
    struct anv_gfx_dynamic_state *hw_state =
       &state->cmd_buffer->state.gfx.dyn_state;
@@ -352,7 +369,10 @@ genX(emit_simpler_shader_init_fragment)(struct anv_simple_shader *state)
 
    state->cmd_buffer->state.gfx.vb_dirty = BITFIELD_BIT(0);
    state->cmd_buffer->state.gfx.dirty |= ~(ANV_CMD_DIRTY_INDEX_BUFFER |
-                                           ANV_CMD_DIRTY_XFB_ENABLE);
+                                           ANV_CMD_DIRTY_XFB_ENABLE |
+                                           ANV_CMD_DIRTY_OCCLUSION_QUERY_ACTIVE |
+                                           ANV_CMD_DIRTY_FS_MSAA_FLAGS |
+                                           ANV_CMD_DIRTY_RESTART_INDEX);
    state->cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_FRAGMENT_BIT;
    state->cmd_buffer->state.gfx.push_constant_stages = VK_SHADER_STAGE_FRAGMENT_BIT;
 }
@@ -580,8 +600,8 @@ genX(emit_simple_shader_dispatch)(struct anv_simple_shader *state,
             .BindingTablePointer               = 0,
             .BindingTableEntryCount            = 0,
             .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
-            .SharedLocalMemorySize             = encode_slm_size(GFX_VER,
-                                                                 prog_data->base.total_shared),
+            .SharedLocalMemorySize             = intel_compute_slm_encode_size(GFX_VER,
+                                                                               prog_data->base.total_shared),
             .NumberOfBarriers                  = prog_data->uses_barrier,
          };
       }
@@ -649,8 +669,8 @@ genX(emit_simple_shader_dispatch)(struct anv_simple_shader *state,
          .SamplerCount                          = 0,
          .BindingTableEntryCount                = 0,
          .BarrierEnable                         = prog_data->uses_barrier,
-         .SharedLocalMemorySize                 = encode_slm_size(GFX_VER,
-                                                                  prog_data->base.total_shared),
+         .SharedLocalMemorySize                 = intel_compute_slm_encode_size(GFX_VER,
+                                                                                prog_data->base.total_shared),
 
          .ConstantURBEntryReadOffset            = 0,
          .ConstantURBEntryReadLength            = prog_data->push.per_thread.regs,
@@ -690,6 +710,7 @@ genX(emit_simple_shader_dispatch)(struct anv_simple_shader *state,
          ggw.RightExecutionMask           = dispatch.right_mask;
          ggw.BottomExecutionMask          = 0xffffffff;
       }
+      anv_batch_emit(batch, GENX(MEDIA_STATE_FLUSH), msf);
 #endif
    }
 }

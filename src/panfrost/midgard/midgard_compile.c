@@ -31,8 +31,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#include "compiler/glsl_types.h"
 #include "compiler/glsl/glsl_to_nir.h"
+#include "compiler/glsl_types.h"
 #include "compiler/nir/nir_builder.h"
 #include "util/half_float.h"
 #include "util/list.h"
@@ -271,7 +271,7 @@ midgard_nir_lower_global_load(nir_shader *shader)
 {
    return nir_shader_intrinsics_pass(
       shader, midgard_nir_lower_global_load_instr,
-      nir_metadata_block_index | nir_metadata_dominance, NULL);
+      nir_metadata_control_flow, NULL);
 }
 
 static bool
@@ -622,14 +622,6 @@ mir_copy_src(midgard_instruction *ins, nir_alu_instr *instr, unsigned i,
 static void
 emit_alu(compiler_context *ctx, nir_alu_instr *instr)
 {
-   /* Derivatives end up emitted on the texture pipe, not the ALUs. This
-    * is handled elsewhere */
-
-   if (instr->op == nir_op_fddx || instr->op == nir_op_fddy) {
-      midgard_emit_derivatives(ctx, instr);
-      return;
-   }
-
    unsigned nr_components = instr->def.num_components;
    unsigned nr_inputs = nir_op_infos[instr->op].num_inputs;
    unsigned op = 0;
@@ -705,6 +697,7 @@ emit_alu(compiler_context *ctx, nir_alu_instr *instr)
       ALU_CASE_CMP(b2f32, iand);
       ALU_CASE_CMP(b2f16, iand);
       ALU_CASE_CMP(b2i32, iand);
+      ALU_CASE_CMP(b2i16, iand);
 
       ALU_CASE(frcp, frcp);
       ALU_CASE(frsq, frsqrt);
@@ -1570,9 +1563,9 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
       break;
    }
 
-   case nir_intrinsic_discard_if:
-   case nir_intrinsic_discard: {
-      bool conditional = instr->intrinsic == nir_intrinsic_discard_if;
+   case nir_intrinsic_terminate_if:
+   case nir_intrinsic_terminate: {
+      bool conditional = instr->intrinsic == nir_intrinsic_terminate_if;
       struct midgard_instruction discard = v_branch(conditional, false);
       discard.branch.target_type = TARGET_DISCARD;
 
@@ -1926,6 +1919,11 @@ emit_intrinsic(compiler_context *ctx, nir_intrinsic_instr *instr)
    case nir_intrinsic_global_atomic:
    case nir_intrinsic_global_atomic_swap:
       emit_atomic(ctx, instr);
+      break;
+
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddy:
+      midgard_emit_derivatives(ctx, instr);
       break;
 
    default:

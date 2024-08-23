@@ -580,10 +580,14 @@ anv_get_image_format_features2(const struct anv_physical_device *physical_device
 
    assert(aspects & VK_IMAGE_ASPECT_ANY_COLOR_BIT_ANV);
 
-   if (physical_device->video_decode_enabled &&
-       anv_format->can_video) {
-      flags |= VK_FORMAT_FEATURE_2_VIDEO_DECODE_OUTPUT_BIT_KHR |
-               VK_FORMAT_FEATURE_2_VIDEO_DECODE_DPB_BIT_KHR;
+   if (anv_format->can_video) {
+      flags |= physical_device->video_decode_enabled ?
+                  VK_FORMAT_FEATURE_2_VIDEO_DECODE_OUTPUT_BIT_KHR |
+                  VK_FORMAT_FEATURE_2_VIDEO_DECODE_DPB_BIT_KHR : 0;
+
+      flags |= physical_device->video_encode_enabled ?
+                  VK_FORMAT_FEATURE_2_VIDEO_ENCODE_INPUT_BIT_KHR |
+                  VK_FORMAT_FEATURE_2_VIDEO_ENCODE_DPB_BIT_KHR : 0;
    }
 
    const struct anv_format_plane plane_format =
@@ -1840,6 +1844,10 @@ void anv_GetPhysicalDeviceSparseImageFormatProperties2(
                                        &img_info, &img_props) != VK_SUCCESS)
       return;
 
+   if ((pFormatInfo->samples &
+        img_props.imageFormatProperties.sampleCounts) == 0)
+      return;
+
    if (anv_sparse_image_check_support(physical_device,
                                       VK_IMAGE_CREATE_SPARSE_BINDING_BIT |
                                       VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT,
@@ -1903,6 +1911,7 @@ void anv_GetPhysicalDeviceSparseImageFormatProperties2(
       VkSparseImageFormatProperties format_props =
          anv_sparse_calc_image_format_properties(physical_device, aspect,
                                                  pFormatInfo->type,
+                                                 pFormatInfo->samples,
                                                  &isl_surf);
 
       /* If both depth and stencil are the same, unify them if possible. */

@@ -18,7 +18,8 @@ INSTALL=$(realpath -s "$PWD"/install)
 # Set up the driver environment.
 export LD_LIBRARY_PATH="$INSTALL"/lib/:$LD_LIBRARY_PATH
 export EGL_PLATFORM=surfaceless
-export VK_DRIVER_FILES="$PWD"/install/share/vulkan/icd.d/"$VK_DRIVER"_icd.${VK_CPU:-$(uname -m)}.json
+ARCH=$(uname -m)
+export VK_DRIVER_FILES="$PWD"/install/share/vulkan/icd.d/"$VK_DRIVER"_icd."$ARCH".json
 export OCL_ICD_VENDORS="$PWD"/install/etc/OpenCL/vendors/
 
 if [ -n "$USE_ANGLE" ]; then
@@ -202,7 +203,7 @@ else
         --skips $INSTALL/all-skips.txt $DEQP_SKIPS \
         --flakes $INSTALL/$GPU_VERSION-flakes.txt \
         --testlog-to-xml /deqp/executor/testlog-to-xml \
-        --fraction-start $CI_NODE_INDEX \
+        --fraction-start ${CI_NODE_INDEX:-1} \
         --fraction $((CI_NODE_TOTAL * ${DEQP_FRACTION:-1})) \
         --jobs ${FDO_CI_CONCURRENT:-4} \
         $DEQP_RUNNER_OPTIONS

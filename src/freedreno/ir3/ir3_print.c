@@ -53,14 +53,14 @@ type_name(type_t type)
 {
    static const char *type_names[] = {
       /* clang-format off */
-      [TYPE_F16] = "f16",
-      [TYPE_F32] = "f32",
-      [TYPE_U16] = "u16",
-      [TYPE_U32] = "u32",
-      [TYPE_S16] = "s16",
-      [TYPE_S32] = "s32",
-      [TYPE_U8]  = "u8", 
-      [TYPE_S8]  = "s8",
+      [TYPE_F16]   = "f16",
+      [TYPE_F32]   = "f32",
+      [TYPE_U16]   = "u16",
+      [TYPE_U32]   = "u32",
+      [TYPE_S16]   = "s16",
+      [TYPE_S32]   = "s32",
+      [TYPE_U8]    = "u8",
+      [TYPE_U8_32] = "u8_32",
       /* clang-format on */
    };
    return type_names[type];
@@ -96,6 +96,8 @@ print_instr_name(struct log_stream *stream, struct ir3_instruction *instr,
          mesa_log_stream_printf(stream, "(nop%d)", instr->nop);
       if (instr->flags & IR3_INSTR_UL)
          mesa_log_stream_printf(stream, "(ul)");
+      if (instr->flags & IR3_INSTR_SAT)
+         mesa_log_stream_printf(stream, "(sat)");
    } else {
       mesa_log_stream_printf(stream, " ");
    }
@@ -200,6 +202,8 @@ print_instr_name(struct log_stream *stream, struct ir3_instruction *instr,
          mesa_log_stream_printf(stream, ".p");
       if (instr->flags & IR3_INSTR_S)
          mesa_log_stream_printf(stream, ".s");
+      if (instr->flags & IR3_INSTR_V)
+         mesa_log_stream_printf(stream, ".v");
       if (instr->flags & IR3_INSTR_A1EN)
          mesa_log_stream_printf(stream, ".a1en");
       if (instr->flags & IR3_INSTR_U)
@@ -303,6 +307,13 @@ print_reg_name(struct log_stream *stream, struct ir3_instruction *instr,
    if (reg->tied)
       mesa_log_stream_printf(stream, "(tied)");
 
+   if (instr->opc == OPC_BR || instr->opc == OPC_BRAA ||
+       instr->opc == OPC_BRAO) {
+      bool inv = reg == instr->srcs[0] ? instr->cat0.inv1 : instr->cat0.inv2;
+      if (inv)
+         mesa_log_stream_printf(stream, "!");
+   }
+
    if (reg->flags & IR3_REG_SHARED)
       mesa_log_stream_printf(stream, "s");
    if (reg->flags & IR3_REG_HALF)
@@ -379,6 +390,22 @@ print_instr(struct log_stream *stream, struct ir3_instruction *instr, int lvl)
       mesa_log_stream_printf(stream, " ");
    }
 
+   if (opc_cat(instr->opc) == 1) {
+      switch (instr->cat1.round) {
+      case ROUND_ZERO:
+         break;
+      case ROUND_EVEN:
+         mesa_log_stream_printf(stream, "(even)");
+         break;
+      case ROUND_POS_INF:
+         mesa_log_stream_printf(stream, "(pos_infinity)");
+         break;
+      case ROUND_NEG_INF:
+         mesa_log_stream_printf(stream, "(neg_infinity)");
+         break;
+      }
+   }
+
    bool first = true;
    foreach_dst (reg, instr) {
       if (reg->wrmask == 0)
@@ -418,6 +445,8 @@ print_instr(struct log_stream *stream, struct ir3_instruction *instr, int lvl)
          stream, " dst_offset=%d, src_offset = %d, src_size = %d",
          instr->push_consts.dst_base, instr->push_consts.src_base,
          instr->push_consts.src_size);
+   } else if (instr->opc == OPC_SPILL_MACRO) {
+      mesa_log_stream_printf(stream, " dst_offset=%d", instr->cat6.dst_offset);
    }
 
    if (is_flow(instr) && instr->cat0.target) {
@@ -435,6 +464,17 @@ print_instr(struct log_stream *stream, struct ir3_instruction *instr, int lvl)
             mesa_log_stream_printf(stream, ", ");
          mesa_log_stream_printf(stream, SYN_SSA("ssa_%u"),
                                 instr->deps[i]->serialno);
+      }
+   }
+
+   if (ir3_instr_is_rpt(instr)) {
+      mesa_log_stream_printf(stream, ", rpt: ");
+
+      if (ir3_instr_is_first_rpt(instr)) {
+         mesa_log_stream_printf(stream, "first");
+      } else {
+         mesa_log_stream_printf(stream, "%u",
+                                ir3_instr_prev_rpt(instr)->serialno);
       }
    }
 
@@ -508,6 +548,9 @@ print_block(struct ir3_block *block, int lvl)
       if (block->successors[1]) {
          mesa_log_stream_printf(stream, ", block%u",
                                 block_id(block->successors[1]));
+
+         mesa_log_stream_printf(stream, " (%s)",
+                                block->divergent_condition ? "div" : "con");
       }
       mesa_log_stream_printf(stream, " */\n");
    }

@@ -241,7 +241,7 @@ static hw_src
 const_src(struct etna_compile *c, nir_const_value *value, unsigned num_components)
 {
    /* use inline immediates if possible */
-   if (c->specs->halti >= 2 && num_components == 1 &&
+   if (c->info->halti >= 2 && num_components == 1 &&
        value[0].u64 >> 32 == ETNA_UNIFORM_CONSTANT) {
       uint32_t bits = value[0].u32;
 
@@ -561,10 +561,10 @@ emit_intrinsic(struct etna_compile *c, nir_intrinsic_instr * intr)
    case nir_intrinsic_store_deref:
       etna_emit_output(c, nir_src_as_deref(intr->src[0])->var, get_src(c, &intr->src[1]));
       break;
-   case nir_intrinsic_discard_if:
+   case nir_intrinsic_terminate_if:
       etna_emit_discard(c, get_src(c, &intr->src[0]));
       break;
-   case nir_intrinsic_discard:
+   case nir_intrinsic_terminate:
       etna_emit_discard(c, SRC_DISABLE);
       break;
    case nir_intrinsic_load_uniform: {
@@ -599,7 +599,7 @@ emit_intrinsic(struct etna_compile *c, nir_intrinsic_instr * intr)
          .type = ISA_TYPE_U32,
          .dst = ra_def(c, &intr->def, &dst_swiz),
          .src[0] = get_src(c, &intr->src[1]),
-         .src[1] = const_src(c, &CONST_VAL(ETNA_UNIFORM_UBO0_ADDR + idx, 0), 1),
+         .src[1] = const_src(c, &CONST_VAL(ETNA_UNIFORM_UBO_ADDR, idx), 1),
       });
    } break;
    case nir_intrinsic_load_front_face:
@@ -880,8 +880,7 @@ lower_alu(struct etna_compile *c, nir_alu_instr *alu)
       nir_def *def = nir_build_imm(&b, num_components, 32, value);
 
       if (num_components == info->num_inputs) {
-         nir_def_rewrite_uses(&alu->def, def);
-         nir_instr_remove(&alu->instr);
+         nir_def_replace(&alu->def, def);
          return;
       }
 
@@ -967,7 +966,7 @@ emit_shader(struct etna_compile *c, unsigned *num_temps, unsigned *num_consts)
 
             unsigned base = nir_intrinsic_base(intr);
             /* pre halti2 uniform offset will be float */
-            if (c->specs->halti < 2)
+            if (c->info->halti < 2)
                base += (unsigned) off[0].f32;
             else
                base += off[0].u32;
@@ -1114,6 +1113,7 @@ etna_compile_shader(struct etna_shader_variant *v)
       return false;
 
    c->variant = v;
+   c->info = v->shader->info;
    c->specs = v->shader->specs;
    c->nir = nir_shader_clone(NULL, v->shader->nir);
 
@@ -1174,7 +1174,7 @@ etna_compile_shader(struct etna_shader_variant *v)
    NIR_PASS_V(s, etna_nir_lower_texture, &v->key);
 
    NIR_PASS_V(s, nir_lower_alu_to_scalar, etna_alu_to_scalar_filter_cb, specs);
-   if (c->specs->halti >= 2) {
+   if (c->info->halti >= 2) {
       nir_lower_idiv_options idiv_options = {
          .allow_fp16 = true,
       };
@@ -1196,7 +1196,7 @@ etna_compile_shader(struct etna_shader_variant *v)
       NIR_PASS_V(s, nir_lower_clip_halfz);
 
    /* lower pre-halti2 to float (halti0 has integers, but only scalar..) */
-   if (c->specs->halti < 2) {
+   if (c->info->halti < 2) {
       /* use opt_algebraic between int_to_float and boot_to_float because
        * int_to_float emits ftrunc, and ftrunc lowering generates bool ops
        */
@@ -1246,7 +1246,7 @@ etna_compile_shader(struct etna_shader_variant *v)
    uint32_t *code = MALLOC(c->inst_ptr * 16);
    for (unsigned i = 0; i < c->inst_ptr; i++) {
       struct etna_inst *inst = &c->code[i];
-      if (inst->opcode == ISA_OPC_BRANCH)
+      if (inst->opcode == ISA_OPC_BRANCH || inst->opcode == ISA_OPC_BRANCH_UNARY || inst->opcode == ISA_OPC_BRANCH_BINARY)
          inst->imm = block_ptr[inst->imm];
 
       etna_assemble(&code[i * 4], inst, specs->has_no_oneconst_limit);

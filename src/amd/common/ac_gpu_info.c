@@ -895,10 +895,13 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
       case FAMILY_GFX1103:
          identify_chip(GFX1103_R1);
          identify_chip(GFX1103_R2);
+         identify_chip2(GFX1103_R1X, GFX1103_R1);
+         identify_chip2(GFX1103_R2X, GFX1103_R2);
          break;
       case FAMILY_GFX1150:
          identify_chip(GFX1150);
          identify_chip(GFX1151);
+         identify_chip(GFX1152);
          break;
       case FAMILY_GFX12:
          identify_chip(GFX1200);
@@ -1066,7 +1069,9 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->memory_freq_mhz_effective *= ac_memory_ops_per_clock(info->vram_type);
 
    info->has_userptr = true;
+   info->has_syncobj = true;
    info->has_timeline_syncobj = has_timeline_syncobj(fd);
+   info->has_fence_to_handle = true;
    info->has_local_buffers = true;
    info->has_bo_metadata = true;
    info->has_eqaa_surface_allocator = info->gfx_level < GFX11;
@@ -1221,6 +1226,12 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->has_dcc_constant_encode =
       info->family == CHIP_RAVEN2 || info->family == CHIP_RENOIR || info->gfx_level >= GFX10;
 
+   /* TC-compat HTILE is only available for GFX8-GFX11.5. */
+   info->has_tc_compatible_htile = info->gfx_level >= GFX8 && info->gfx_level < GFX12;
+
+   info->has_etc_support = info->family == CHIP_STONEY || info->family == CHIP_VEGA10 ||
+                           info->family == CHIP_RAVEN || info->family == CHIP_RAVEN2;
+
    info->has_rbplus = info->family == CHIP_STONEY || info->gfx_level >= GFX9;
 
    /* Some chips have RB+ registers, but don't support RB+. Those must
@@ -1336,6 +1347,12 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
 
    info->has_export_conflict_bug = info->gfx_level == GFX11;
 
+   /* When LLVM is fixed to handle multiparts shaders, this value will depend
+    * on the known good versions of LLVM. Until then, enable the equivalent WA
+    * in the nir -> llvm backend.
+    */
+   info->needs_llvm_wait_wa = info->gfx_level == GFX11;
+
    /* Convert the SDMA version in the current GPU to an enum. */
    info->sdma_ip_version =
       (enum sdma_version)SDMA_VERSION_VALUE(info->ip[AMD_IP_SDMA].ver_major,
@@ -1424,8 +1441,9 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    info->pte_fragment_size = alignment_info.size_local;
    info->gart_page_size = alignment_info.size_remote;
 
-   if (info->gfx_level == GFX6)
-      info->gfx_ib_pad_with_type2 = true;
+   info->gfx_ib_pad_with_type2 = info->gfx_level == GFX6;
+   /* CDNA starting with GFX940 shouldn't use CP DMA. */
+   info->has_cp_dma = info->has_graphics || info->family < CHIP_GFX940;
 
    if (info->gfx_level >= GFX11 && info->gfx_level < GFX12) {
       /* With num_cu = 4 in gfx11 measured power for idle, video playback and observed
@@ -1579,6 +1597,8 @@ bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,
    const unsigned max_waves_per_tg = 32; /* 1024 threads in Wave32 */
    info->max_scratch_waves = MAX2(32 * info->min_good_cu_per_sa * info->max_sa_per_se * info->num_se,
                                   max_waves_per_tg);
+   info->has_scratch_base_registers = info->gfx_level >= GFX11 ||
+                                      (!info->has_graphics && info->family >= CHIP_GFX940);
    info->max_gflops = (info->gfx_level >= GFX11 ? 256 : 128) * info->num_cu * info->max_gpu_freq_mhz / 1000;
    info->memory_bandwidth_gbps = DIV_ROUND_UP(info->memory_freq_mhz_effective * info->memory_bus_width / 8, 1000);
    info->has_pcie_bandwidth_info = info->drm_minor >= 51;
@@ -1896,6 +1916,7 @@ void ac_print_gpu_info(const struct radeon_info *info, FILE *f)
 
    fprintf(f, "CP info:\n");
    fprintf(f, "    gfx_ib_pad_with_type2 = %i\n", info->gfx_ib_pad_with_type2);
+   fprintf(f, "    has_cp_dma = %i\n", info->has_cp_dma);
    fprintf(f, "    me_fw_version = %i\n", info->me_fw_version);
    fprintf(f, "    me_fw_feature = %i\n", info->me_fw_feature);
    fprintf(f, "    mec_fw_version = %i\n", info->mec_fw_version);
@@ -2016,6 +2037,7 @@ void ac_print_gpu_info(const struct radeon_info *info, FILE *f)
    fprintf(f, "    max_vgpr_alloc = %i\n", info->max_vgpr_alloc);
    fprintf(f, "    wave64_vgpr_alloc_granularity = %i\n", info->wave64_vgpr_alloc_granularity);
    fprintf(f, "    max_scratch_waves = %i\n", info->max_scratch_waves);
+   fprintf(f, "    has_scratch_base_registers = %i\n", info->has_scratch_base_registers);
    fprintf(f, "Ring info:\n");
    fprintf(f, "    attribute_ring_size_per_se = %u KB\n",
            DIV_ROUND_UP(info->attribute_ring_size_per_se, 1024));

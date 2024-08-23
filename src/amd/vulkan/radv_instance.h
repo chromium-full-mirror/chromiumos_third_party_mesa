@@ -11,8 +11,9 @@
 #ifndef RADV_INSTANCE_H
 #define RADV_INSTANCE_H
 
+#include "util/simple_mtx.h"
 #include "util/xmlconfig.h"
-
+#include "radv_radeon_winsys.h"
 #include "vk_instance.h"
 
 #ifdef ANDROID_STRICT
@@ -37,8 +38,11 @@ struct radv_instance {
 
    VkAllocationCallbacks alloc;
 
+   simple_mtx_t shader_dump_mtx;
+
    uint64_t debug_flags;
    uint64_t perftest_flags;
+   enum radeon_ctx_pstate profile_pstate;
 
    struct {
       struct driOptionCache options;

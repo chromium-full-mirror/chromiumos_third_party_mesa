@@ -49,9 +49,10 @@ struct pipe_draw_info;
 struct pipe_grid_info;
 struct pipe_draw_start_count_bias;
 
-static inline void
+static inline int
 GENX(jm_init_context)(struct panfrost_context *ctx)
 {
+   return 0;
 }
 
 static inline void
@@ -83,6 +84,10 @@ void GENX(jm_launch_draw)(struct panfrost_batch *batch,
                           unsigned drawid_offset,
                           const struct pipe_draw_start_count_bias *draw,
                           unsigned vertex_count);
+void GENX(jm_launch_draw_indirect)(struct panfrost_batch *batch,
+                                   const struct pipe_draw_info *info,
+                                   unsigned drawid_offset,
+                                   const struct pipe_draw_indirect_info *indirect);
 
 #endif /* PAN_ARCH < 10 */
 

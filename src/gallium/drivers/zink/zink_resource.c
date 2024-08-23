@@ -732,7 +732,8 @@ init_ici(struct zink_screen *screen, VkImageCreateInfo *ici, const struct pipe_r
       ici->imageType = VK_IMAGE_TYPE_3D;
       if (!(templ->flags & PIPE_RESOURCE_FLAG_SPARSE))
          ici->flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
-      if (screen->info.have_EXT_image_2d_view_of_3d)
+      if (screen->info.have_EXT_image_2d_view_of_3d &&
+          (screen->driver_workarounds.can_2d_view_sparse || !(templ->flags & PIPE_RESOURCE_FLAG_SPARSE)))
          ici->flags |= VK_IMAGE_CREATE_2D_VIEW_COMPATIBLE_BIT_EXT;
       break;
 
@@ -1584,6 +1585,7 @@ resource_create(struct pipe_screen *pscreen,
    res->base.b = *templ;
 
    bool allow_cpu_storage = (templ->target == PIPE_BUFFER) &&
+                            (templ->usage != PIPE_USAGE_STREAM) &&
                             (templ->width0 < 0x1000);
    threaded_resource_init(&res->base.b, allow_cpu_storage);
    pipe_reference_init(&res->base.b.reference, 1);
@@ -1616,7 +1618,7 @@ resource_create(struct pipe_screen *pscreen,
           */
          res->base.b.flags |= PIPE_RESOURCE_FLAG_DONT_MAP_DIRECTLY;
       }
-      if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB || zink_debug & ZINK_DEBUG_DGC)
+      if (zink_descriptor_mode == ZINK_DESCRIPTOR_MODE_DB)
          zink_resource_get_address(screen, res);
    } else {
       if (templ->flags & PIPE_RESOURCE_FLAG_SPARSE)
@@ -2393,10 +2395,12 @@ overwrite:
          zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_RW);
       } else
          zink_resource_usage_wait(ctx, res, ZINK_RESOURCE_ACCESS_WRITE);
-      res->obj->access = 0;
-      res->obj->access_stage = 0;
-      res->obj->last_write = 0;
-      zink_resource_copies_reset(res);
+      if (!res->real_buffer_range) {
+         res->obj->access = 0;
+         res->obj->access_stage = 0;
+         res->obj->last_write = 0;
+         zink_resource_copies_reset(res);
+      }
    }
 
    if (!ptr) {
@@ -2432,8 +2436,14 @@ overwrite:
       }
    }
    trans->base.b.usage = usage;
-   if (usage & PIPE_MAP_WRITE)
+   if (usage & PIPE_MAP_WRITE) {
       util_range_add(&res->base.b, &res->valid_buffer_range, box->x, box->x + box->width);
+
+      struct zink_resource *orig_res = zink_resource(trans->base.b.resource);
+      util_range_add(&orig_res->base.b, &orig_res->valid_buffer_range, box->x, box->x + box->width);
+      if (orig_res->real_buffer_range)
+         util_range_add(&orig_res->base.b, orig_res->real_buffer_range, box->x, box->x + box->width);
+   }
 
 success:
    /* ensure the copy context gets unlocked */

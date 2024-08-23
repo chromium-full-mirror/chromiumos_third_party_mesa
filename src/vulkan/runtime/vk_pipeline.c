@@ -56,6 +56,15 @@ vk_pipeline_shader_stage_is_null(const VkPipelineShaderStageCreateInfo *info)
    return true;
 }
 
+bool
+vk_pipeline_shader_stage_has_identifier(const VkPipelineShaderStageCreateInfo *info)
+{
+   const VkPipelineShaderStageModuleIdentifierCreateInfoEXT *id_info =
+      vk_find_struct_const(info->pNext, PIPELINE_SHADER_STAGE_MODULE_IDENTIFIER_CREATE_INFO_EXT);
+
+   return id_info && id_info->identifierSize != 0;
+}
+
 static nir_shader *
 get_builtin_nir(const VkPipelineShaderStageCreateInfo *info)
 {
@@ -286,6 +295,8 @@ vk_pipeline_robustness_state_fill(const struct vk_device *device,
    rs->storage_buffers = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT;
    rs->vertex_inputs = VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DEVICE_DEFAULT_EXT;
    rs->images = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_DEVICE_DEFAULT_EXT;
+   rs->null_uniform_buffer_descriptor = device->enabled_features.nullDescriptor;
+   rs->null_storage_buffer_descriptor = device->enabled_features.nullDescriptor;
 
    const VkPipelineRobustnessCreateInfoEXT *shader_info =
       vk_find_struct_const(shader_stage_pNext,

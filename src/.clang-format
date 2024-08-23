@@ -186,6 +186,8 @@ ForEachMacros:
 # asahi
   - foreach_active
   - foreach_submitted
+  - hk_foreach_view
+  - hk_foreach_variant
   - AGX_BATCH_FOREACH_BO_HANDLE
   - agx_pack
   - agx_push
@@ -273,6 +275,9 @@ ForEachMacros:
   - perf_time_ctx
   - foreach_submit
   - foreach_submit_safe
+  - foreach_instr_rpt
+  - foreach_instr_rpt_excl
+  - foreach_instr_rpt_excl_safe
 
 # panfrost
   - foreach_batch
@@ -304,6 +309,7 @@ ForEachMacros:
   - bi_foreach_instr_in_tuple
   - bi_foreach_predecessor
   - bi_foreach_src
+  - bi_foreach_ssa_dest
   - bi_foreach_ssa_src
   - bi_foreach_successor
   - cs_emit

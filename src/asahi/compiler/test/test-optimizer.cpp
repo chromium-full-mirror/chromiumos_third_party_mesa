@@ -293,6 +293,33 @@ TEST_F(Optimizer, BallotMultipleUses)
       });
 }
 
+/*
+ * We had a bug where the ballot optimization didn't check the agx_index's type
+ * so would fuse constants with overlapping values. An unrelated common code
+ * change surfaced this in CTS case:
+ *
+ *    dEQP-VK.subgroups.vote.frag_helper.subgroupallequal_bool_fragment
+ *
+ * We passed Vulkan CTS without hitting it though, hence the targeted test.
+ */
+TEST_F(Optimizer, BallotConstant)
+{
+   CASE32(
+      {
+         agx_index cmp = agx_fcmp(b, wx, wy, AGX_FCOND_GT, false);
+         agx_index ballot = agx_quad_ballot(b, agx_immediate(cmp.value));
+         agx_index ballot2 = agx_quad_ballot(b, cmp);
+         agx_fadd_to(b, out, ballot, agx_fadd(b, ballot2, cmp));
+      },
+      {
+         agx_index cmp = agx_fcmp(b, wx, wy, AGX_FCOND_GT, false);
+         agx_index ballot = agx_quad_ballot(b, agx_immediate(cmp.value));
+         agx_index ballot2 =
+            agx_fcmp_quad_ballot(b, wx, wy, AGX_FCOND_GT, false);
+         agx_fadd_to(b, out, ballot, agx_fadd(b, ballot2, cmp));
+      });
+}
+
 TEST_F(Optimizer, IfCondition)
 {
    CASE_NO_RETURN(agx_if_icmp(b, agx_icmp(b, wx, wy, AGX_ICOND_UEQ, true),
@@ -325,4 +352,40 @@ TEST_F(Optimizer, SelectCondition)
    CASE32(agx_icmpsel_to(b, out, agx_fcmp(b, wx, wy, AGX_FCOND_LT, true),
                          agx_zero(), wz, wx, AGX_ICOND_UEQ),
           agx_fcmpsel_to(b, out, wx, wy, wz, wx, AGX_FCOND_LT));
+}
+
+TEST_F(Optimizer, IfInverted)
+{
+   CASE_NO_RETURN(
+      agx_if_icmp(b, agx_xor(b, hx, agx_immediate(1)), agx_zero(), 1,
+                  AGX_ICOND_UEQ, true, NULL),
+      agx_if_icmp(b, hx, agx_zero(), 1, AGX_ICOND_UEQ, false, NULL));
+
+   CASE_NO_RETURN(agx_if_icmp(b, agx_xor(b, hx, agx_immediate(1)), agx_zero(),
+                              1, AGX_ICOND_UEQ, false, NULL),
+                  agx_if_icmp(b, hx, agx_zero(), 1, AGX_ICOND_UEQ, true, NULL));
+}
+
+TEST_F(Optimizer, IfInvertedCondition)
+{
+   CASE_NO_RETURN(
+      agx_if_icmp(
+         b,
+         agx_xor(b, agx_icmp(b, wx, wy, AGX_ICOND_UEQ, true), agx_immediate(1)),
+         agx_zero(), 1, AGX_ICOND_UEQ, true, NULL),
+      agx_if_icmp(b, wx, wy, 1, AGX_ICOND_UEQ, false, NULL));
+
+   CASE_NO_RETURN(
+      agx_if_icmp(
+         b,
+         agx_xor(b, agx_fcmp(b, wx, wy, AGX_FCOND_EQ, true), agx_immediate(1)),
+         agx_zero(), 1, AGX_ICOND_UEQ, true, NULL),
+      agx_if_fcmp(b, wx, wy, 1, AGX_FCOND_EQ, false, NULL));
+
+   CASE_NO_RETURN(
+      agx_if_icmp(
+         b,
+         agx_xor(b, agx_fcmp(b, hx, hy, AGX_FCOND_LT, false), agx_immediate(1)),
+         agx_zero(), 1, AGX_ICOND_UEQ, true, NULL),
+      agx_if_fcmp(b, hx, hy, 1, AGX_FCOND_LT, true, NULL));
 }

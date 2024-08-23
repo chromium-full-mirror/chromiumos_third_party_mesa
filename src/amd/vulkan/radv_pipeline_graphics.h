@@ -68,8 +68,6 @@ struct radv_sqtt_shaders_reloc {
 struct radv_graphics_pipeline {
    struct radv_pipeline base;
 
-   struct radv_pipeline_layout layout;
-
    bool uses_drawid;
    bool uses_baseinstance;
 
@@ -108,8 +106,6 @@ struct radv_graphics_pipeline {
 
    unsigned rast_prim;
 
-   /* For vk_graphics_pipeline_state */
-   void *state_data;
 
    /* Custom blend mode for internal operations. */
    unsigned custom_blend_mode;
@@ -125,9 +121,6 @@ struct radv_graphics_pipeline {
 
    /* Whether the pipeline uses VRS coarse shading internally. */
    bool uses_vrs_coarse_shading;
-
-   /* For graphics pipeline library */
-   bool retain_shaders;
 
    /* For relocation of shaders with RGP. */
    struct radv_sqtt_shaders_reloc *sqtt_shaders_reloc;
@@ -148,6 +141,11 @@ struct radv_graphics_lib_pipeline {
    struct radv_graphics_pipeline base;
 
    struct vk_graphics_pipeline_state graphics_state;
+
+   /* For vk_graphics_pipeline_state */
+   void *state_data;
+
+   struct radv_pipeline_layout layout;
 
    VkGraphicsPipelineLibraryFlagsEXT lib_flags;
 
@@ -562,10 +560,6 @@ radv_normalize_blend_factor(VkBlendOp op, VkBlendFactor *src_factor, VkBlendFact
    }
 }
 
-bool radv_pipeline_has_ngg(const struct radv_graphics_pipeline *pipeline);
-
-bool radv_pipeline_has_gs_copy_shader(const struct radv_pipeline *pipeline);
-
 void radv_blend_remove_dst(VkBlendOp *func, VkBlendFactor *src_factor, VkBlendFactor *dst_factor,
                            VkBlendFactor expected_dst, VkBlendFactor replacement_src);
 
@@ -635,7 +629,6 @@ struct radv_graphics_pipeline_create_info {
    bool db_stencil_clear;
    bool depth_compress_disable;
    bool stencil_compress_disable;
-   bool resummarize_enable;
    uint32_t custom_blend_mode;
 };
 

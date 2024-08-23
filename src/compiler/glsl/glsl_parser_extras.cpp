@@ -771,6 +771,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(EXT_shader_integer_mix),
    EXT_AEP(EXT_shader_io_blocks),
    EXT(EXT_shader_samples_identical),
+   EXT(EXT_shadow_samplers),
    EXT(EXT_tessellation_point_size),
    EXT_AEP(EXT_tessellation_shader),
    EXT(EXT_texture_array),
@@ -959,16 +960,14 @@ _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
 
 bool
 _mesa_glsl_can_implicitly_convert(const glsl_type *from, const glsl_type *desired,
-                                  _mesa_glsl_parse_state *state)
+                                  bool has_implicit_conversions,
+                                  bool has_implicit_int_to_uint_conversion)
 {
    if (from == desired)
       return true;
 
-   /* GLSL 1.10 and ESSL do not allow implicit conversions. If there is no
-    * state, we're doing intra-stage function linking where these checks have
-    * already been done.
-    */
-   if (state && !state->has_implicit_conversions())
+   /* GLSL 1.10 and ESSL do not allow implicit conversions. */
+   if (!has_implicit_conversions)
       return false;
 
    /* There is no conversion among matrix types. */
@@ -990,16 +989,16 @@ _mesa_glsl_can_implicitly_convert(const glsl_type *from, const glsl_type *desire
     * state-dependent checks have already happened though, so allow anything
     * that's allowed in any shader version.
     */
-   if ((!state || state->has_implicit_int_to_uint_conversion()) &&
-         desired->base_type == GLSL_TYPE_UINT && from->base_type == GLSL_TYPE_INT)
+   if (has_implicit_int_to_uint_conversion &&
+       desired->base_type == GLSL_TYPE_UINT && from->base_type == GLSL_TYPE_INT)
       return true;
 
    /* No implicit conversions from double. */
-   if ((!state || state->has_double()) && glsl_type_is_double(from))
+   if (glsl_type_is_double(from))
       return false;
 
    /* Conversions from different types to double. */
-   if ((!state || state->has_double()) && glsl_type_is_double(desired)) {
+   if (glsl_type_is_double(desired)) {
       if (glsl_type_is_float_16_32(from))
          return true;
       if (glsl_type_is_integer_32(from))
@@ -2399,6 +2398,9 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    shader->InfoLog = state->info_log;
    shader->Version = state->language_version;
    shader->IsES = state->es_shader;
+   shader->has_implicit_conversions = state->has_implicit_conversions();
+   shader->has_implicit_int_to_uint_conversion =
+      state->has_implicit_int_to_uint_conversion();
 
    struct gl_shader_compiler_options *options =
       &ctx->Const.ShaderCompilerOptions[shader->Stage];

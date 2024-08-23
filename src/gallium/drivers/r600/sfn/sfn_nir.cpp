@@ -238,6 +238,7 @@ private:
          auto store = nir_store_output(b, clip_i, intr->src[1].ssa);
          nir_intrinsic_set_write_mask(store, 0xf);
          nir_intrinsic_set_base(store, clip_vertex_index);
+         nir_intrinsic_set_src_type(store, nir_type_float32);
          nir_io_semantics semantic = nir_intrinsic_io_semantics(intr);
          semantic.location = VARYING_SLOT_CLIP_DIST0 + i;
          semantic.no_varying = 1;
@@ -443,8 +444,7 @@ r600_nir_lower_atomics(nir_shader *shader)
    }
 
    return nir_shader_intrinsics_pass(shader, r600_lower_deref_instr,
-                                     nir_metadata_block_index | nir_metadata_dominance,
-                                     NULL);
+                                     nir_metadata_control_flow, NULL);
 }
 using r600::r600_lower_fs_out_to_vector;
 using r600::r600_lower_scratch_addresses;
@@ -679,12 +679,6 @@ r600_lower_to_scalar_instr_filter(const nir_instr *instr, const void *)
    case nir_op_fdot2:
    case nir_op_fdot3:
    case nir_op_fdot4:
-   case nir_op_fddx:
-   case nir_op_fddx_coarse:
-   case nir_op_fddx_fine:
-   case nir_op_fddy:
-   case nir_op_fddy_coarse:
-   case nir_op_fddy_fine:
       return nir_src_bit_size(alu->src[0].src) == 64;
    default:
       return true;
@@ -847,6 +841,7 @@ r600_lower_and_optimize_nir(nir_shader *sh,
               nir_lower_vars_to_scratch,
               nir_var_function_temp,
               40,
+              r600_get_natural_size_align_bytes,
               r600_get_natural_size_align_bytes);
 
    while (optimize_once(sh))

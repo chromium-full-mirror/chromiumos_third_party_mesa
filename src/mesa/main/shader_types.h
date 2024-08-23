@@ -152,6 +152,8 @@ struct gl_shader
    GLchar *Label;   /**< GL_KHR_debug */
    GLboolean DeletePending;
    bool IsES;              /**< True if this shader uses GLSL ES */
+   bool has_implicit_conversions;
+   bool has_implicit_int_to_uint_conversion;
 
    enum gl_compile_status CompileStatus;
 
@@ -445,16 +447,6 @@ struct gl_shader_program
     * Total number of explicit uniform location including inactive uniforms.
     */
    unsigned NumExplicitUniformLocations;
-
-   /**
-    * Map of active uniform names to locations
-    *
-    * Maps any active uniform that is not an array element to a location.
-    * Each active uniform, including individual structure members will appear
-    * in this map.  This roughly corresponds to the set of names that would be
-    * enumerated by \c glGetActiveUniform.
-    */
-   struct string_to_uint_map *UniformHash;
 
    GLboolean SamplersValidated; /**< Samplers validated against texture units? */
 

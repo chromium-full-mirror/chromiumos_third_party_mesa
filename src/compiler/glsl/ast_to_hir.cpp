@@ -6448,6 +6448,8 @@ ast_function::hir(exec_list *instructions,
                continue;
 
             tsig = fn->matching_signature(state, &sig->parameters,
+                                          state->has_implicit_conversions(),
+                                          state->has_implicit_int_to_uint_conversion(),
                                           false);
             if (!tsig) {
                _mesa_glsl_error(& loc, state, "subroutine type mismatch '%s' - signatures do not match\n", decl->identifier);
@@ -7152,7 +7154,9 @@ ast_case_label::hir(exec_list *instructions,
 
          /* Check if int->uint implicit conversion is supported. */
          bool integer_conversion_supported =
-            _mesa_glsl_can_implicitly_convert(&glsl_type_builtin_int, &glsl_type_builtin_uint, state);
+            _mesa_glsl_can_implicitly_convert(&glsl_type_builtin_int, &glsl_type_builtin_uint,
+                                              state->has_implicit_conversions(),
+                                              state->has_implicit_int_to_uint_conversion());
 
          if ((!glsl_type_is_integer_32(type_a) || !glsl_type_is_integer_32(type_b)) ||
               !integer_conversion_supported) {
@@ -7902,7 +7906,11 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
 
                   fields[i].image_format = qual->image_format;
                } else {
-                  if (!qual->flags.q.write_only) {
+                  if (state->has_image_load_formatted()) {
+                     if (state->EXT_shader_image_load_formatted_warn) {
+                        _mesa_glsl_warning(&loc, state, "GL_EXT_image_load_formatted used");
+                     }
+                  } else if (!qual->flags.q.write_only) {
                      _mesa_glsl_error(&loc, state, "image not qualified with "
                                       "`writeonly' must have a format layout "
                                       "qualifier");

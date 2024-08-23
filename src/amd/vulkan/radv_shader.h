@@ -32,6 +32,7 @@ struct radv_shader_args;
 struct radv_vs_input_state;
 struct radv_shader_args;
 struct radv_serialized_shader_arena_block;
+struct vk_pipeline_robustness_state;
 
 enum {
    RADV_GRAPHICS_STAGE_BITS =
@@ -78,12 +79,16 @@ struct radv_shader_stage_key {
 
    uint8_t optimisations_disabled : 1;
    uint8_t keep_statistic_info : 1;
+   uint8_t view_index_from_device_index : 1;
 
    /* Shader version (up to 8) to force re-compilation when RADV_BUILD_ID_OVERRIDE is enabled. */
    uint8_t version : 3;
 
    /* Whether the mesh shader is used with a task shader. */
    uint8_t has_task_shader : 1;
+
+   /* Whether the shader is used with indirect pipeline binds. */
+   uint8_t indirect_bindable : 1;
 };
 
 struct radv_ps_epilog_key {
@@ -108,6 +113,7 @@ struct radv_ps_epilog_key {
 struct radv_spirv_to_nir_options {
    uint32_t lower_view_index_to_zero : 1;
    uint32_t fix_dual_src_mrt1_export : 1;
+   uint32_t lower_view_index_to_device_index : 1;
 };
 
 struct radv_graphics_state_key {
@@ -141,7 +147,6 @@ struct radv_graphics_state_key {
 
    struct {
       uint32_t provoking_vtx_last : 1;
-      uint32_t line_smooth_enabled : 1;
    } rs;
 
    struct {
@@ -583,7 +588,8 @@ unsigned radv_get_max_scratch_waves(const struct radv_device *device, struct rad
 
 const char *radv_get_shader_name(const struct radv_shader_info *info, gl_shader_stage stage);
 
-unsigned radv_compute_spi_ps_input(const struct radv_graphics_state_key *gfx_state,
+unsigned radv_compute_spi_ps_input(const struct radv_physical_device *pdev,
+                                   const struct radv_graphics_state_key *gfx_state,
                                    const struct radv_shader_info *info);
 
 bool radv_can_dump_shader(struct radv_device *device, nir_shader *nir, bool meta_shader);
@@ -707,9 +713,16 @@ void radv_shader_combine_cfg_vs_gs(const struct radv_shader *vs, const struct ra
 void radv_shader_combine_cfg_tes_gs(const struct radv_shader *tes, const struct radv_shader *gs, uint32_t *rsrc1_out,
                                     uint32_t *rsrc2_out);
 
-const struct radv_userdata_info *radv_get_user_sgpr(const struct radv_shader *shader, int idx);
+const struct radv_userdata_info *radv_get_user_sgpr_info(const struct radv_shader *shader, int idx);
+
+uint32_t radv_get_user_sgpr_loc(const struct radv_shader *shader, int idx);
+
+uint32_t radv_get_user_sgpr(const struct radv_shader *shader, int idx);
 
 void radv_precompute_registers_hw_ngg(struct radv_device *device, const struct ac_shader_config *config,
                                       struct radv_shader_info *info);
+
+void radv_set_stage_key_robustness(const struct vk_pipeline_robustness_state *rs, gl_shader_stage stage,
+                                   struct radv_shader_stage_key *key);
 
 #endif /* RADV_SHADER_H */

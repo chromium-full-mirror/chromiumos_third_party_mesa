@@ -1574,6 +1574,22 @@ v3dX(cmd_buffer_emit_line_width)(struct v3dv_cmd_buffer *cmd_buffer)
 }
 
 void
+v3dX(cmd_buffer_emit_default_point_size)(struct v3dv_cmd_buffer *cmd_buffer)
+{
+   struct v3dv_job *job = cmd_buffer->state.job;
+   assert(job);
+
+   v3dv_cl_ensure_space_with_branch(&job->bcl, cl_packet_length(POINT_SIZE));
+   v3dv_return_if_oom(cmd_buffer, NULL);
+
+   cl_emit(&job->bcl, POINT_SIZE, point) {
+     point.point_size = 1.0f;
+   }
+
+   job->emitted_default_point_size = true;
+}
+
+void
 v3dX(cmd_buffer_emit_sample_state)(struct v3dv_cmd_buffer *cmd_buffer)
 {
    struct v3dv_pipeline *pipeline = cmd_buffer->state.gfx.pipeline;
@@ -2431,6 +2447,13 @@ v3dX(cmd_buffer_emit_gl_shader_state)(struct v3dv_cmd_buffer *cmd_buffer)
 
    uint32_t shader_state_record_length =
       cl_packet_length(GL_SHADER_STATE_RECORD);
+#if V3D_VERSION >= 71
+   if (v3d_device_has_draw_index(&pipeline->device->devinfo)) {
+      shader_state_record_length =
+         cl_packet_length(GL_SHADER_STATE_RECORD_DRAW_INDEX);
+   }
+#endif
+
    if (pipeline->has_gs) {
       shader_state_record_length +=
          cl_packet_length(GEOMETRY_SHADER_STATE_RECORD) +
@@ -2478,39 +2501,64 @@ v3dX(cmd_buffer_emit_gl_shader_state)(struct v3dv_cmd_buffer *cmd_buffer)
       pipeline->device->default_attribute_float;
 #endif
 
-   cl_emit_with_prepacked(&job->indirect, GL_SHADER_STATE_RECORD,
-                          pipeline->shader_state_record, shader) {
-
-      /* FIXME: we are setting this values here and during the
-       * prepacking. This is because both cl_emit_with_prepacked and v3dvx_pack
-       * asserts for minimum values of these. It would be good to get
-       * v3dvx_pack to assert on the final value if possible
-       */
-      shader.min_coord_shader_input_segments_required_in_play =
-         pipeline->vpm_cfg_bin.As;
-      shader.min_vertex_shader_input_segments_required_in_play =
-         pipeline->vpm_cfg.As;
-
-      shader.coordinate_shader_code_address =
-         v3dv_cl_address(assembly_bo, vs_bin_variant->assembly_offset);
-      shader.vertex_shader_code_address =
-         v3dv_cl_address(assembly_bo, vs_variant->assembly_offset);
-      shader.fragment_shader_code_address =
-         v3dv_cl_address(assembly_bo, fs_variant->assembly_offset);
-
-      shader.coordinate_shader_uniforms_address = cmd_buffer->state.uniforms.vs_bin;
-      shader.vertex_shader_uniforms_address = cmd_buffer->state.uniforms.vs;
-      shader.fragment_shader_uniforms_address = cmd_buffer->state.uniforms.fs;
-
-#if V3D_VERSION == 42
-      shader.address_of_default_attribute_values =
-         v3dv_cl_address(default_attribute_values, 0);
+#if V3D_VERSION >= 71
+   if (v3d_device_has_draw_index(&pipeline->device->devinfo)) {
+      cl_emit_with_prepacked(&job->indirect, GL_SHADER_STATE_RECORD_DRAW_INDEX,
+                             pipeline->shader_state_record, shader) {
+         shader.min_coord_shader_input_segments_required_in_play =
+            pipeline->vpm_cfg_bin.As;
+         shader.min_vertex_shader_input_segments_required_in_play =
+            pipeline->vpm_cfg.As;
+         shader.coordinate_shader_code_address =
+            v3dv_cl_address(assembly_bo, vs_bin_variant->assembly_offset);
+         shader.vertex_shader_code_address =
+            v3dv_cl_address(assembly_bo, vs_variant->assembly_offset);
+         shader.fragment_shader_code_address =
+            v3dv_cl_address(assembly_bo, fs_variant->assembly_offset);
+         shader.coordinate_shader_uniforms_address = cmd_buffer->state.uniforms.vs_bin;
+         shader.vertex_shader_uniforms_address = cmd_buffer->state.uniforms.vs;
+         shader.fragment_shader_uniforms_address = cmd_buffer->state.uniforms.fs;
+         shader.any_shader_reads_hardware_written_primitive_id =
+            (pipeline->has_gs && prog_data_gs->uses_pid) || prog_data_fs->uses_pid;
+         shader.insert_primitive_id_as_first_varying_to_fragment_shader =
+            !pipeline->has_gs && prog_data_fs->uses_pid;
+      }
+   } else
 #endif
+   {
+      cl_emit_with_prepacked(&job->indirect, GL_SHADER_STATE_RECORD,
+                             pipeline->shader_state_record, shader) {
+         /* FIXME: we are setting this values here and during the
+          * prepacking. This is because both cl_emit_with_prepacked and v3dvx_pack
+          * asserts for minimum values of these. It would be good to get
+          * v3dvx_pack to assert on the final value if possible
+          */
+         shader.min_coord_shader_input_segments_required_in_play =
+            pipeline->vpm_cfg_bin.As;
+         shader.min_vertex_shader_input_segments_required_in_play =
+            pipeline->vpm_cfg.As;
 
-      shader.any_shader_reads_hardware_written_primitive_id =
-         (pipeline->has_gs && prog_data_gs->uses_pid) || prog_data_fs->uses_pid;
-      shader.insert_primitive_id_as_first_varying_to_fragment_shader =
-         !pipeline->has_gs && prog_data_fs->uses_pid;
+         shader.coordinate_shader_code_address =
+            v3dv_cl_address(assembly_bo, vs_bin_variant->assembly_offset);
+         shader.vertex_shader_code_address =
+            v3dv_cl_address(assembly_bo, vs_variant->assembly_offset);
+         shader.fragment_shader_code_address =
+            v3dv_cl_address(assembly_bo, fs_variant->assembly_offset);
+
+         shader.coordinate_shader_uniforms_address = cmd_buffer->state.uniforms.vs_bin;
+         shader.vertex_shader_uniforms_address = cmd_buffer->state.uniforms.vs;
+         shader.fragment_shader_uniforms_address = cmd_buffer->state.uniforms.fs;
+
+   #if V3D_VERSION == 42
+         shader.address_of_default_attribute_values =
+            v3dv_cl_address(default_attribute_values, 0);
+   #endif
+
+         shader.any_shader_reads_hardware_written_primitive_id =
+            (pipeline->has_gs && prog_data_gs->uses_pid) || prog_data_fs->uses_pid;
+         shader.insert_primitive_id_as_first_varying_to_fragment_shader =
+            !pipeline->has_gs && prog_data_fs->uses_pid;
+      }
    }
 
    /* Upload vertex element attributes (SHADER_STATE_ATTRIBUTE_RECORD) */
@@ -2572,7 +2620,9 @@ v3dX(cmd_buffer_emit_gl_shader_state)(struct v3dv_cmd_buffer *cmd_buffer)
 
          attr.stride =
             cmd_buffer->vk.dynamic_graphics_state.vi_binding_strides[binding];
-         attr.maximum_index = 0xffffff;
+
+         attr.maximum_index = attr.stride == 0 ?
+                              1u : MIN2(0xffffffu, c_vb->size / attr.stride);
       }
 
       emitted_va_count++;
@@ -2692,11 +2742,12 @@ v3dX(cmd_buffer_emit_index_buffer)(struct v3dv_cmd_buffer *cmd_buffer)
          &job->bcl, cl_packet_length(INDEX_BUFFER_SETUP));
       v3dv_return_if_oom(cmd_buffer, NULL);
 
-      const uint32_t offset = cmd_buffer->state.index_buffer.offset;
+      const uint32_t offset = ibuffer->mem_offset +
+                              cmd_buffer->state.index_buffer.offset;
+      assert(ibuffer->mem->bo->size >= offset);
       cl_emit(&job->bcl, INDEX_BUFFER_SETUP, ib) {
-         ib.address = v3dv_cl_address(ibuffer->mem->bo,
-                                      ibuffer->mem_offset + offset);
-         ib.size = ibuffer->mem->bo->size;
+         ib.address = v3dv_cl_address(ibuffer->mem->bo, offset);
+         ib.size = cmd_buffer->state.index_buffer.size;
       }
    }
 

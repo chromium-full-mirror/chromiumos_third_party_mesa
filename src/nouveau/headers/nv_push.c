@@ -5,12 +5,15 @@
 #include <inttypes.h>
 
 #include "nv_push_cl902d.h"
+#include "nv_push_cl9039.h"
 #include "nv_push_cl906f.h"
 #include "nv_push_cl9097.h"
 #include "nv_push_cl90b5.h"
 #include "nv_push_cla097.h"
 #include "nv_push_cla0b5.h"
+#include "nv_push_cla040.h"
 #include "nv_push_cla0c0.h"
+#include "nv_push_cla140.h"
 #include "nv_push_clb197.h"
 #include "nv_push_clc0c0.h"
 #include "nv_push_clc1b5.h"
@@ -20,6 +23,7 @@
 #include "nv_push_clc5c0.h"
 #include "nv_push_clc697.h"
 #include "nv_push_clc6c0.h"
+#include "nv_push_clc797.h"
 #include "nv_push_clc7c0.h"
 
 #ifndef NDEBUG
@@ -154,7 +158,9 @@ vk_push_print(FILE *fp, const struct nv_push *push,
             } else {
                switch (subchan) {
                case 0:
-                  if (devinfo->cls_eng3d >= 0xc697)
+                  if (devinfo->cls_eng3d >= 0xc797)
+                     mthd_name = P_PARSE_NVC797_MTHD(mthd);
+                  else if (devinfo->cls_eng3d >= 0xc697)
                      mthd_name = P_PARSE_NVC697_MTHD(mthd);
                   else if (devinfo->cls_eng3d >= 0xc597)
                      mthd_name = P_PARSE_NVC597_MTHD(mthd);
@@ -180,6 +186,14 @@ vk_push_print(FILE *fp, const struct nv_push *push,
                      mthd_name = P_PARSE_NVC0C0_MTHD(mthd);
                   else
                      mthd_name = P_PARSE_NVA0C0_MTHD(mthd);
+                  break;
+               case 2:
+                  if (devinfo->cls_m2mf >= 0xa140)
+                     mthd_name = P_PARSE_NVA140_MTHD(mthd);
+                  else if (devinfo->cls_m2mf >= 0xa040)
+                     mthd_name = P_PARSE_NVA040_MTHD(mthd);
+                  else if (devinfo->cls_m2mf >= 0x9039)
+                     mthd_name = P_PARSE_NV9039_MTHD(mthd);
                   break;
                case 3:
                   mthd_name = P_PARSE_NV902D_MTHD(mthd);

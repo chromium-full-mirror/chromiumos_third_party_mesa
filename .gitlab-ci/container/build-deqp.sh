@@ -3,9 +3,9 @@
 
 # When changing this file, you need to bump the following
 # .gitlab-ci/image-tags.yml tags:
-# DEBIAN_X86_64_TEST_ANDROID_TAG
-# DEBIAN_X86_64_TEST_GL_TAG
-# DEBIAN_X86_64_TEST_VK_TAG
+# DEBIAN_TEST_ANDROID_TAG
+# DEBIAN_TEST_GL_TAG
+# DEBIAN_TEST_VK_TAG
 # KERNEL_ROOTFS_TAG
 
 set -ex -o pipefail
@@ -16,9 +16,9 @@ set -ex -o pipefail
 # - the GL release produces `glcts`, and
 # - the GLES release produces `deqp-gles*` and `deqp-egl`
 
-DEQP_VK_VERSION=1.3.8.2
-DEQP_GL_VERSION=4.6.4.0
-DEQP_GLES_VERSION=3.2.10.0
+DEQP_VK_VERSION=1.3.9.0
+DEQP_GL_VERSION=4.6.4.1
+DEQP_GLES_VERSION=3.2.10.1
 
 # Patches to VulkanCTS may come from commits in their repo (listed in
 # cts_commits_to_backport) or patch files stored in our repo (in the patch
@@ -28,14 +28,11 @@ DEQP_GLES_VERSION=3.2.10.0
 
 # shellcheck disable=SC2034
 vk_cts_commits_to_backport=(
-    # Fix more ASAN errors due to missing virtual destructors
-    dd40bcfef1b4035ea55480b6fd4d884447120768
+  # Add missing NonUniform decoration in variable pointers test
+  cd262587a42dcd20951c22f66d7525c76cf64af4
 
-    # Remove "unused shader stages" tests
-    7dac86c6bbd15dec91d7d9a98cd6dd57c11092a7
-
-    # Emit point size from "many indirect draws" test
-    771e56d1c4d03e073ddb7f1200ad6d57e0a0c979
+  # Allow extra invocations in the pipeline stats
+  78f6618e147c0a745754b9e73ae10113a1ebde29
 )
 
 # shellcheck disable=SC2034
@@ -67,14 +64,10 @@ fi
 # shellcheck disable=SC2034
 # GLES builds also EGL
 gles_cts_commits_to_backport=(
-  # Implement support for the EGL_EXT_config_select_group extension
-  88ba9ac270db5be600b1ecacbc6d9db0c55d5be4
 )
 
 # shellcheck disable=SC2034
 gles_cts_patch_files=(
-  # Correct detection mechanism for EGL_EXT_config_select_group extension
-  build-deqp-egl_Correct-EGL_EXT_config_select_group-extension-query.patch
 )
 
 if [ "${DEQP_TARGET}" = 'android' ]; then

@@ -1193,10 +1193,6 @@ ntr_emit_alu(struct ntr_compile *c, nir_alu_instr *instr)
       [nir_op_sne] = TGSI_OPCODE_SNE,
 
       [nir_op_ftrunc] = TGSI_OPCODE_TRUNC,
-      [nir_op_fddx] = TGSI_OPCODE_DDX,
-      [nir_op_fddy] = TGSI_OPCODE_DDY,
-      [nir_op_fddx_coarse] = TGSI_OPCODE_DDX,
-      [nir_op_fddy_coarse] = TGSI_OPCODE_DDY,
       [nir_op_fadd] = TGSI_OPCODE_ADD,
       [nir_op_fmul] = TGSI_OPCODE_MUL,
 
@@ -1621,11 +1617,11 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
       ntr_emit_load_output(c, instr);
       break;
 
-   case nir_intrinsic_discard:
+   case nir_intrinsic_terminate:
       ntr_KILL(c);
       break;
 
-   case nir_intrinsic_discard_if: {
+   case nir_intrinsic_terminate_if: {
       struct ureg_src cond = ureg_scalar(ntr_get_src(c, instr->src[0]), 0);
       /* For !native_integers, the bool got lowered to 1.0 or 0.0. */
       ntr_KILL_IF(c, ureg_negate(cond));
@@ -1643,6 +1639,15 @@ ntr_emit_intrinsic(struct ntr_compile *c, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_barycentric_at_offset:
       ntr_store(c, &instr->def, ntr_get_src(c, instr->src[0]));
       break;
+
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_coarse:
+      ntr_DDX(c, ntr_get_dest(c, &instr->def), ntr_get_src(c, instr->src[0]));
+      return;
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_coarse:
+      ntr_DDY(c, ntr_get_dest(c, &instr->def), ntr_get_src(c, instr->src[0]));
+      return;
 
    case nir_intrinsic_decl_reg:
    case nir_intrinsic_load_reg:
@@ -2280,8 +2285,7 @@ nir_to_rc_lower_tex(nir_shader *s)
 {
    return nir_shader_instructions_pass(s,
                                        nir_to_rc_lower_tex_instr,
-                                       nir_metadata_block_index |
-                                       nir_metadata_dominance,
+                                       nir_metadata_control_flow,
                                        NULL);
 }
 

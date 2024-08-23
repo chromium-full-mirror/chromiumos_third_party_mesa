@@ -98,14 +98,9 @@ upload_dynamic_state(struct blorp_context *context,
 {
    struct anv_device *device = context->driver_ctx;
 
-   device->blorp.dynamic_states[name].state =
+   device->blorp.dynamic_states[name] =
       anv_state_pool_emit_data(&device->dynamic_state_pool,
                                size, alignment, data);
-   if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
-      device->blorp.dynamic_states[name].db_state =
-         anv_state_pool_emit_data(&device->dynamic_state_db_pool,
-                                  size, alignment, data);
-   }
 }
 
 void
@@ -138,12 +133,7 @@ anv_device_finish_blorp(struct anv_device *device)
     */
    for (uint32_t i = 0; i < ARRAY_SIZE(device->blorp.dynamic_states); i++) {
       anv_state_pool_free(&device->dynamic_state_pool,
-                          device->blorp.dynamic_states[i].state);
-      if (device->vk.enabled_extensions.EXT_descriptor_buffer) {
-         anv_state_pool_free(&device->dynamic_state_db_pool,
-                             device->blorp.dynamic_states[i].db_state);
-      }
-
+                          device->blorp.dynamic_states[i]);
    }
 #endif
    blorp_finish(&device->blorp.context);
@@ -180,7 +170,7 @@ anv_blorp_batch_finish(struct blorp_batch *batch)
 
 static isl_surf_usage_flags_t
 get_usage_flag_for_cmd_buffer(const struct anv_cmd_buffer *cmd_buffer,
-                              bool is_dest)
+                              bool is_dest, bool protected)
 {
    isl_surf_usage_flags_t usage;
 
@@ -201,6 +191,9 @@ get_usage_flag_for_cmd_buffer(const struct anv_cmd_buffer *cmd_buffer,
       unreachable("Unhandled engine class");
    }
 
+   if (protected)
+      usage |= ISL_SURF_USAGE_PROTECTED_BIT;
+
    return usage;
 }
 
@@ -209,13 +202,13 @@ get_blorp_surf_for_anv_address(struct anv_cmd_buffer *cmd_buffer,
                                struct anv_address address,
                                uint32_t width, uint32_t height,
                                uint32_t row_pitch, enum isl_format format,
-                               bool is_dest,
+                               bool is_dest, bool protected,
                                struct blorp_surf *blorp_surf,
                                struct isl_surf *isl_surf)
 {
    bool ok UNUSED;
    isl_surf_usage_flags_t usage =
-      get_usage_flag_for_cmd_buffer(cmd_buffer, is_dest);
+      get_usage_flag_for_cmd_buffer(cmd_buffer, is_dest, protected);
 
    *blorp_surf = (struct blorp_surf) {
       .surf = isl_surf,
@@ -253,7 +246,8 @@ get_blorp_surf_for_anv_buffer(struct anv_cmd_buffer *cmd_buffer,
    get_blorp_surf_for_anv_address(cmd_buffer,
                                   anv_address_add(buffer->address, offset),
                                   width, height, row_pitch, format,
-                                  is_dest, blorp_surf, isl_surf);
+                                  is_dest, anv_buffer_is_protected(buffer),
+                                  blorp_surf, isl_surf);
 }
 
 /* Pick something high enough that it won't be used in core and low enough it
@@ -291,7 +285,8 @@ get_blorp_surf_for_anv_image(const struct anv_cmd_buffer *cmd_buffer,
 
    isl_surf_usage_flags_t isl_usage =
       get_usage_flag_for_cmd_buffer(cmd_buffer,
-                                    usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+                                    usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                                    anv_image_is_protected(image));
    const struct anv_surface *surface = &image->planes[plane].primary_surface;
    const struct anv_address address =
       anv_image_address(image, &surface->memory_range);
@@ -791,8 +786,12 @@ anv_add_buffer_write_pending_bits(struct anv_cmd_buffer *cmd_buffer,
 {
    const struct intel_device_info *devinfo = cmd_buffer->device->info;
 
+   if (anv_cmd_buffer_is_blitter_queue(cmd_buffer))
+      return;
+
    cmd_buffer->state.queries.buffer_write_bits |=
-      (cmd_buffer->queue_family->queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 ?
+      (cmd_buffer->state.current_pipeline ==
+       cmd_buffer->device->physical->gpgpu_pipeline_value) ?
       ANV_QUERY_COMPUTE_WRITES_PENDING_BITS :
       ANV_QUERY_RENDER_TARGET_WRITES_PENDING_BITS(devinfo);
 }
@@ -1048,13 +1047,15 @@ copy_buffer(struct anv_device *device,
       .buffer = src_buffer->address.bo,
       .offset = src_buffer->address.offset + region->srcOffset,
       .mocs = anv_mocs(device, src_buffer->address.bo,
-                       blorp_batch_isl_copy_usage(batch, false /* is_dest */)),
+                       blorp_batch_isl_copy_usage(batch, false /* is_dest */,
+                                                  anv_buffer_is_protected(src_buffer))),
    };
    struct blorp_address dst = {
       .buffer = dst_buffer->address.bo,
       .offset = dst_buffer->address.offset + region->dstOffset,
       .mocs = anv_mocs(device, dst_buffer->address.bo,
-                       blorp_batch_isl_copy_usage(batch, true /* is_dest */)),
+                       blorp_batch_isl_copy_usage(batch, true /* is_dest */,
+                                                  anv_buffer_is_protected(dst_buffer))),
    };
 
    blorp_buffer_copy(batch, src, dst, region->size);
@@ -1131,14 +1132,17 @@ void anv_CmdUpdateBuffer(
          .offset = tmp_addr.offset,
          .mocs = anv_mocs(cmd_buffer->device, NULL,
                           get_usage_flag_for_cmd_buffer(cmd_buffer,
-                                                        false /* is_dest */)),
+                                                        false /* is_dest */,
+                                                        false /* protected */)),
       };
       struct blorp_address dst = {
          .buffer = dst_buffer->address.bo,
          .offset = dst_buffer->address.offset + dstOffset,
          .mocs = anv_mocs(cmd_buffer->device, dst_buffer->address.bo,
-                          get_usage_flag_for_cmd_buffer(cmd_buffer,
-                                                        true /* is_dest */)),
+                          get_usage_flag_for_cmd_buffer(
+                             cmd_buffer,
+                             true /* is_dest */,
+                             anv_buffer_is_protected(dst_buffer))),
       };
 
       blorp_buffer_copy(&batch, src, dst, copy_size);
@@ -1157,7 +1161,8 @@ void
 anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                          struct anv_address address,
                          VkDeviceSize size,
-                         uint32_t data)
+                         uint32_t data,
+                         bool protected)
 {
    struct blorp_surf surf;
    struct isl_surf isl_surf;
@@ -1189,7 +1194,7 @@ anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                                      },
                                      MAX_SURFACE_DIM, MAX_SURFACE_DIM,
                                      MAX_SURFACE_DIM * bs, isl_format,
-                                     true /* is_dest */,
+                                     true /* is_dest */, protected,
                                      &surf, &isl_surf);
 
       blorp_clear(&batch, &surf, isl_format, ISL_SWIZZLE_IDENTITY,
@@ -1209,7 +1214,7 @@ anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                                      },
                                      MAX_SURFACE_DIM, height,
                                      MAX_SURFACE_DIM * bs, isl_format,
-                                     true /* is_dest */,
+                                     true /* is_dest */, protected,
                                      &surf, &isl_surf);
 
       blorp_clear(&batch, &surf, isl_format, ISL_SWIZZLE_IDENTITY,
@@ -1227,7 +1232,7 @@ anv_cmd_buffer_fill_area(struct anv_cmd_buffer *cmd_buffer,
                                      },
                                      width, 1,
                                      width * bs, isl_format,
-                                     true /* is_dest */,
+                                     true /* is_dest */, protected,
                                      &surf, &isl_surf);
 
       blorp_clear(&batch, &surf, isl_format, ISL_SWIZZLE_IDENTITY,
@@ -1262,7 +1267,8 @@ void anv_CmdFillBuffer(
 
    anv_cmd_buffer_fill_area(cmd_buffer,
                             anv_address_add(dst_buffer->address, dstOffset),
-                            fillSize, data);
+                            fillSize, data,
+                            anv_buffer_is_protected(dst_buffer));
 
    anv_add_buffer_write_pending_bits(cmd_buffer, "after fill buffer");
 }
@@ -1516,7 +1522,6 @@ exec_ccs_op(struct anv_cmd_buffer *cmd_buffer,
           anv_image_aux_layers(image, aspect, level));
 
    const uint32_t plane = anv_image_aspect_to_plane(image, aspect);
-   const struct intel_device_info *devinfo = cmd_buffer->device->info;
 
    struct blorp_surf surf;
    get_blorp_surf_for_anv_image(cmd_buffer, image, aspect,
@@ -1534,97 +1539,8 @@ exec_ccs_op(struct anv_cmd_buffer *cmd_buffer,
    if (clear_value)
       surf.clear_color = *clear_value;
 
-   char flush_reason[64];
-   int ret =
-      snprintf(flush_reason, sizeof(flush_reason),
-               "ccs op start: %s", isl_aux_op_to_name(ccs_op));
-   assert(ret < sizeof(flush_reason));
-
-   /* From the Sky Lake PRM Vol. 7, "Render Target Fast Clear":
-    *
-    *    "After Render target fast clear, pipe-control with color cache
-    *    write-flush must be issued before sending any DRAW commands on
-    *    that render target."
-    *
-    * This comment is a bit cryptic and doesn't really tell you what's going
-    * or what's really needed.  It appears that fast clear ops are not
-    * properly synchronized with other drawing.  This means that we cannot
-    * have a fast clear operation in the pipe at the same time as other
-    * regular drawing operations.  We need to use a PIPE_CONTROL to ensure
-    * that the contents of the previous draw hit the render target before we
-    * resolve and then use a second PIPE_CONTROL after the resolve to ensure
-    * that it is completed before any additional drawing occurs.
-    */
-   anv_add_pending_pipe_bits(cmd_buffer,
-                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
-                             ANV_PIPE_TILE_CACHE_FLUSH_BIT |
-                             (devinfo->verx10 == 120 ?
-                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
-                             (devinfo->verx10 == 125 ?
-                                ANV_PIPE_HDC_PIPELINE_FLUSH_BIT |
-                                ANV_PIPE_DATA_CACHE_FLUSH_BIT : 0) |
-                             ANV_PIPE_PSS_STALL_SYNC_BIT |
-                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
-                             flush_reason);
-
    switch (ccs_op) {
    case ISL_AUX_OP_FAST_CLEAR:
-      /* From the ICL PRMs, Volume 9: Render Engine, State Caching :
-       *
-       *    "Any values referenced by pointers within the RENDER_SURFACE_STATE
-       *     or SAMPLER_STATE (e.g. Clear Color Pointer, Border Color or
-       *     Indirect State Pointer) are considered to be part of that state
-       *     and any changes to these referenced values requires an
-       *     invalidation of the L1 state cache to ensure the new values are
-       *     being used as part of the state. In the case of surface data
-       *     pointed to by the Surface Base Address in RENDER SURFACE STATE,
-       *     the Texture Cache must be invalidated if the surface data
-       *     changes."
-       *
-       * and From the Render Target Fast Clear section,
-       *
-       *   "HwManaged FastClear allows SW to store FastClearValue in separate
-       *   graphics allocation, instead of keeping them in
-       *   RENDER_SURFACE_STATE. This behavior can be enabled by setting
-       *   ClearValueAddressEnable in RENDER_SURFACE_STATE.
-       *
-       *    Proper sequence of commands is as follows:
-       *
-       *       1. Storing clear color to allocation
-       *       2. Ensuring that step 1. is finished and visible for TextureCache
-       *       3. Performing FastClear
-       *
-       *    Step 2. is required on products with ClearColorConversion feature.
-       *    This feature is enabled by setting ClearColorConversionEnable.
-       *    This causes HW to read stored color from ClearColorAllocation and
-       *    write back with the native format or RenderTarget - and clear
-       *    color needs to be present and visible. Reading is done from
-       *    TextureCache, writing is done to RenderCache."
-       *
-       * We're going to change the clear color. Invalidate the texture cache
-       * now to ensure the clear color conversion feature works properly.
-       * Although the docs seem to require invalidating the texture cache
-       * after updating the clear color allocation, we can do this beforehand
-       * so long as we ensure:
-       *
-       *    1. Step 1 is complete before the texture cache is accessed in step 3
-       *    2. We don't access the texture cache between invalidation and step 3
-       *
-       * The second requirement is satisfied because we'll be performing step
-       * 1 and 3 right after invalidating. The first is satisfied because
-       * BLORP updates the clear color before performing the fast clear and it
-       * performs the synchronizations suggested by the Render Target Fast
-       * Clear section (not quoted here) to ensure its completion.
-       *
-       * While we're here, also invalidate the state cache as suggested.
-       */
-      if (devinfo->ver >= 11) {
-         anv_add_pending_pipe_bits(cmd_buffer,
-                                   ANV_PIPE_STATE_CACHE_INVALIDATE_BIT |
-                                   ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT,
-                                   "before blorp clear color update");
-      }
-
       blorp_fast_clear(batch, &surf, format, swizzle,
                        level, base_layer, layer_count,
                        0, 0, level_width, level_height);
@@ -1654,15 +1570,6 @@ exec_ccs_op(struct anv_cmd_buffer *cmd_buffer,
    default:
       unreachable("Unsupported CCS operation");
    }
-
-   anv_add_pending_pipe_bits(cmd_buffer,
-                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
-                             (devinfo->verx10 == 120 ?
-                                ANV_PIPE_TILE_CACHE_FLUSH_BIT |
-                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
-                             ANV_PIPE_PSS_STALL_SYNC_BIT |
-                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
-                             "ccs op finish");
 }
 
 static void
@@ -1681,7 +1588,6 @@ exec_mcs_op(struct anv_cmd_buffer *cmd_buffer,
    /* Multisampling with multi-planar formats is not supported */
    assert(image->n_planes == 1);
 
-   const struct intel_device_info *devinfo = cmd_buffer->device->info;
    struct blorp_surf surf;
    get_blorp_surf_for_anv_image(cmd_buffer, image, aspect,
                                 0, ANV_IMAGE_LAYOUT_EXPLICIT_AUX,
@@ -1694,91 +1600,8 @@ exec_mcs_op(struct anv_cmd_buffer *cmd_buffer,
    if (clear_value)
       surf.clear_color = *clear_value;
 
-   /* From the Sky Lake PRM Vol. 7, "Render Target Fast Clear":
-    *
-    *    "After Render target fast clear, pipe-control with color cache
-    *    write-flush must be issued before sending any DRAW commands on
-    *    that render target."
-    *
-    * This comment is a bit cryptic and doesn't really tell you what's going
-    * or what's really needed.  It appears that fast clear ops are not
-    * properly synchronized with other drawing.  This means that we cannot
-    * have a fast clear operation in the pipe at the same time as other
-    * regular drawing operations.  We need to use a PIPE_CONTROL to ensure
-    * that the contents of the previous draw hit the render target before we
-    * resolve and then use a second PIPE_CONTROL after the resolve to ensure
-    * that it is completed before any additional drawing occurs.
-    */
-   anv_add_pending_pipe_bits(cmd_buffer,
-                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
-                             ANV_PIPE_TILE_CACHE_FLUSH_BIT |
-                             (devinfo->verx10 == 120 ?
-                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
-                             (devinfo->verx10 == 125 ?
-                                ANV_PIPE_HDC_PIPELINE_FLUSH_BIT |
-                                ANV_PIPE_DATA_CACHE_FLUSH_BIT : 0) |
-                             ANV_PIPE_PSS_STALL_SYNC_BIT |
-                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
-                             "before fast clear mcs");
-
    switch (mcs_op) {
    case ISL_AUX_OP_FAST_CLEAR:
-      /* From the ICL PRMs, Volume 9: Render Engine, State Caching :
-       *
-       *    "Any values referenced by pointers within the RENDER_SURFACE_STATE
-       *     or SAMPLER_STATE (e.g. Clear Color Pointer, Border Color or
-       *     Indirect State Pointer) are considered to be part of that state
-       *     and any changes to these referenced values requires an
-       *     invalidation of the L1 state cache to ensure the new values are
-       *     being used as part of the state. In the case of surface data
-       *     pointed to by the Surface Base Address in RENDER SURFACE STATE,
-       *     the Texture Cache must be invalidated if the surface data
-       *     changes."
-       *
-       * and From the Render Target Fast Clear section,
-       *
-       *   "HwManaged FastClear allows SW to store FastClearValue in separate
-       *   graphics allocation, instead of keeping them in
-       *   RENDER_SURFACE_STATE. This behavior can be enabled by setting
-       *   ClearValueAddressEnable in RENDER_SURFACE_STATE.
-       *
-       *    Proper sequence of commands is as follows:
-       *
-       *       1. Storing clear color to allocation
-       *       2. Ensuring that step 1. is finished and visible for TextureCache
-       *       3. Performing FastClear
-       *
-       *    Step 2. is required on products with ClearColorConversion feature.
-       *    This feature is enabled by setting ClearColorConversionEnable.
-       *    This causes HW to read stored color from ClearColorAllocation and
-       *    write back with the native format or RenderTarget - and clear
-       *    color needs to be present and visible. Reading is done from
-       *    TextureCache, writing is done to RenderCache."
-       *
-       * We're going to change the clear color. Invalidate the texture cache
-       * now to ensure the clear color conversion feature works properly.
-       * Although the docs seem to require invalidating the texture cache
-       * after updating the clear color allocation, we can do this beforehand
-       * so long as we ensure:
-       *
-       *    1. Step 1 is complete before the texture cache is accessed in step 3
-       *    2. We don't access the texture cache between invalidation and step 3
-       *
-       * The second requirement is satisfied because we'll be performing step
-       * 1 and 3 right after invalidating. The first is satisfied because
-       * BLORP updates the clear color before performing the fast clear and it
-       * performs the synchronizations suggested by the Render Target Fast
-       * Clear section (not quoted here) to ensure its completion.
-       *
-       * While we're here, also invalidate the state cache as suggested.
-       */
-      if (devinfo->ver >= 11) {
-         anv_add_pending_pipe_bits(cmd_buffer,
-                                   ANV_PIPE_STATE_CACHE_INVALIDATE_BIT |
-                                   ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT,
-                                   "before blorp clear color update");
-      }
-
       blorp_fast_clear(batch, &surf, format, swizzle,
                        0, base_layer, layer_count,
                        0, 0, image->vk.extent.width, image->vk.extent.height);
@@ -1794,15 +1617,6 @@ exec_mcs_op(struct anv_cmd_buffer *cmd_buffer,
    default:
       unreachable("Unsupported MCS operation");
    }
-
-   anv_add_pending_pipe_bits(cmd_buffer,
-                             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT |
-                             (devinfo->verx10 == 120 ?
-                                ANV_PIPE_TILE_CACHE_FLUSH_BIT |
-                                ANV_PIPE_DEPTH_STALL_BIT : 0) |
-                             ANV_PIPE_PSS_STALL_SYNC_BIT |
-                             ANV_PIPE_END_OF_PIPE_SYNC_BIT,
-                             "after fast clear mcs");
 }
 
 static void
@@ -1842,12 +1656,14 @@ clear_color_attachment(struct anv_cmd_buffer *cmd_buffer,
                      &clear_color);
       }
 
-      anv_cmd_buffer_mark_image_fast_cleared(cmd_buffer, iview->image,
-                                             iview->planes[0].isl.format,
-                                             clear_color);
-      anv_cmd_buffer_load_clear_color_from_image(cmd_buffer,
-                                                 att->surface_state.state,
-                                                 iview->image);
+      if (cmd_buffer->device->info->ver < 20) {
+         anv_cmd_buffer_mark_image_fast_cleared(cmd_buffer, iview->image,
+                                                iview->planes[0].isl.format,
+                                                clear_color);
+         anv_cmd_buffer_load_clear_color_from_image(cmd_buffer,
+                                                    att->surface_state.state,
+                                                    iview->image);
+      }
       return;
    }
 

@@ -332,7 +332,6 @@ typedef struct shader_info {
 
       struct {
          bool uses_discard:1;
-         bool uses_demote:1;
          bool uses_fbfetch_output:1;
          bool fbfetch_coherent:1;
          bool color_is_dual_source:1;
@@ -458,6 +457,15 @@ typedef struct shader_info {
           * SPV_KHR_cooperative_matrix.
           */
          bool has_cooperative_matrix:1;
+
+         /**
+          * Number of bytes of shared imageblock memory per thread. Currently,
+          * this requires that the workgroup size is 32x32x1 and that
+          * shared_size = 0. These requirements could be lifted in the future.
+          * However, there is no current OpenGL/Vulkan API support for
+          * imageblocks. This is only used internally to accelerate blit/copy.
+          */
+         uint8_t image_block_size_per_thread_agx;
 
          /**
           * pointer size is:

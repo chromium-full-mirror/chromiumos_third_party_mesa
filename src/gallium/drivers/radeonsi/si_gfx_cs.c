@@ -152,7 +152,7 @@ void si_flush_gfx_cs(struct si_context *ctx, unsigned flags, struct pipe_fence_h
 
    /* Make sure CP DMA is idle at the end of IBs after L2 prefetches
     * because the kernel doesn't wait for it. */
-   if (ctx->gfx_level >= GFX7)
+   if (ctx->gfx_level >= GFX7 && ctx->screen->info.has_cp_dma)
       si_cp_dma_wait_for_idle(ctx, &ctx->gfx_cs);
 
    /* If we use s_sendmsg to set tess factors to all 0 or all 1 instead of writing to the tess
@@ -511,7 +511,7 @@ void si_begin_new_gfx_cs(struct si_context *ctx, bool first_cs)
       struct si_pm4_state *preamble = is_secure ? ctx->cs_preamble_state_tmz :
                                                   ctx->cs_preamble_state;
       radeon_begin(&ctx->gfx_cs);
-      radeon_emit_array(preamble->pm4, preamble->ndw);
+      radeon_emit_array(preamble->base.pm4, preamble->base.ndw);
       radeon_end();
    }
 
@@ -949,6 +949,7 @@ void gfx10_emit_cache_flush(struct si_context *ctx, struct radeon_cmdbuf *cs)
          }
 
          gcr_cntl = 0; /* all done */
+         /* ACQUIRE_MEM in PFP is implemented as ACQUIRE_MEM in ME + PFP_SYNC_ME. */
          flags &= ~SI_CONTEXT_PFP_SYNC_ME;
       } else {
          /* GFX10 */
@@ -1002,6 +1003,7 @@ void gfx10_emit_cache_flush(struct si_context *ctx, struct radeon_cmdbuf *cs)
 
    /* Ignore fields that only modify the behavior of other fields. */
    if (gcr_cntl & C_586_GL1_RANGE & C_586_GL2_RANGE & C_586_SEQ) {
+      /* ACQUIRE_MEM in PFP is implemented as ACQUIRE_MEM in ME + PFP_SYNC_ME. */
       unsigned dont_sync_pfp = (!(flags & SI_CONTEXT_PFP_SYNC_ME)) << 31;
 
       /* Flush caches and wait for the caches to assert idle.

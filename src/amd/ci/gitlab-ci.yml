@@ -311,6 +311,9 @@ radv-fossils:
     # RDNA3 (GFX11)
     - AMDGPU_GPU_ID="NAVI31"
       ./install/fossilize-runner.sh
+    # RDNA3.5 (GFX1150)
+    - AMDGPU_GPU_ID="GFX1150"
+      ./install/fossilize-runner.sh
 
 ############### vkd3d-proton
 
@@ -321,9 +324,7 @@ vkd3d-tahiti-valve:
     - .tahiti-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-tahiti
-    # These vkd3d-proton tests are skipped because they trigger GPU hangs.
-    VKD3D_TEST_EXCLUDE: test_execute_indirect_state,test_execute_indirect_state_predication,test_undefined_descriptor_heap_mismatch_types
+    GPU_VERSION: radv-tahiti
 
 vkd3d-polaris10-valve:
   extends:
@@ -332,7 +333,7 @@ vkd3d-polaris10-valve:
     - .polaris10-test-valve-kws
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-polaris10
+    GPU_VERSION: radv-polaris10
 
 vkd3d-vega10-valve:
   extends:
@@ -341,7 +342,7 @@ vkd3d-vega10-valve:
     - .vega10-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-vega10
+    GPU_VERSION: radv-vega10
 
 vkd3d-renoir-valve:
   extends:
@@ -350,7 +351,7 @@ vkd3d-renoir-valve:
     - .renoir-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-renoir
+    GPU_VERSION: radv-renoir
 
 vkd3d-navi10-valve:
   extends:
@@ -359,7 +360,7 @@ vkd3d-navi10-valve:
     - .navi10-test-valve-mupuf
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-navi10
+    GPU_VERSION: radv-navi10
 
 vkd3d-navi21-valve:
   extends:
@@ -368,7 +369,7 @@ vkd3d-navi21-valve:
     - .navi21-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-navi21
+    GPU_VERSION: radv-navi21
 
 vkd3d-vangogh-valve:
   extends:
@@ -377,7 +378,7 @@ vkd3d-vangogh-valve:
     - .vangogh-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-vangogh
+    GPU_VERSION: radv-vangogh
 
 vkd3d-navi31-valve:
   extends:
@@ -386,4 +387,4 @@ vkd3d-navi31-valve:
     - .navi31-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-navi31
+    GPU_VERSION: radv-navi31

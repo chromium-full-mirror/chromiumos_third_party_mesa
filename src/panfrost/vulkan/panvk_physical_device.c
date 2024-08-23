@@ -17,7 +17,9 @@
 #include "vk_device.h"
 #include "vk_drm_syncobj.h"
 #include "vk_format.h"
+#include "vk_limits.h"
 #include "vk_log.h"
+#include "vk_shader_module.h"
 #include "vk_util.h"
 
 #include "panvk_device.h"
@@ -57,37 +59,39 @@ get_cache_uuid(uint16_t family, void *uuid)
 }
 
 static void
-get_driver_uuid(void *uuid)
-{
-   memset(uuid, 0, VK_UUID_SIZE);
-   snprintf(uuid, VK_UUID_SIZE, "panfrost");
-}
-
-static void
-get_device_uuid(void *uuid)
-{
-   memset(uuid, 0, VK_UUID_SIZE);
-}
-
-static void
 get_device_extensions(const struct panvk_physical_device *device,
                       struct vk_device_extension_table *ext)
 {
    *ext = (struct vk_device_extension_table){
+      .KHR_buffer_device_address = true,
       .KHR_copy_commands2 = true,
-      .KHR_shader_expect_assume = true,
-      .KHR_storage_buffer_storage_class = true,
+      .KHR_device_group = true,
       .KHR_descriptor_update_template = true,
       .KHR_driver_properties = true,
+      .KHR_maintenance3 = true,
+      .KHR_pipeline_executable_properties = true,
+      .KHR_pipeline_library = true,
       .KHR_push_descriptor = true,
+      .KHR_sampler_mirror_clamp_to_edge = true,
+      .KHR_shader_expect_assume = true,
+      .KHR_storage_buffer_storage_class = true,
 #ifdef PANVK_USE_WSI_PLATFORM
       .KHR_swapchain = true,
 #endif
       .KHR_synchronization2 = true,
       .KHR_variable_pointers = true,
+      .EXT_buffer_device_address = true,
       .EXT_custom_border_color = true,
+      .EXT_graphics_pipeline_library = true,
       .EXT_index_type_uint8 = true,
+      .EXT_pipeline_creation_cache_control = true,
+      .EXT_pipeline_creation_feedback = true,
+      .EXT_private_data = true,
+      .EXT_shader_module_identifier = true,
       .EXT_vertex_attribute_divisor = true,
+      .GOOGLE_decorate_string = true,
+      .GOOGLE_hlsl_functionality1 = true,
+      .GOOGLE_user_type = true,
    };
 }
 
@@ -107,6 +111,7 @@ get_features(const struct panvk_physical_device *device,
       .largePoints = true,
       .textureCompressionETC2 = true,
       .textureCompressionASTC_LDR = true,
+      .samplerAnisotropy = true,
       .shaderUniformBufferArrayDynamicIndexing = true,
       .shaderSampledImageArrayDynamicIndexing = true,
       .shaderStorageBufferArrayDynamicIndexing = true,
@@ -127,7 +132,7 @@ get_features(const struct panvk_physical_device *device,
       .shaderDrawParameters = false,
 
       /* Vulkan 1.2 */
-      .samplerMirrorClampToEdge = false,
+      .samplerMirrorClampToEdge = true,
       .drawIndirectCount = false,
       .storageBuffer8BitAccess = false,
       .uniformAndStorageBuffer8BitAccess = false,
@@ -181,7 +186,7 @@ get_features(const struct panvk_physical_device *device,
       .robustImageAccess = false,
       .inlineUniformBlock = false,
       .descriptorBindingInlineUniformBlockUpdateAfterBind = false,
-      .pipelineCreationCacheControl = false,
+      .pipelineCreationCacheControl = true,
       .privateData = true,
       .shaderDemoteToHelperInvocation = false,
       .shaderTerminateInvocation = false,
@@ -193,6 +198,9 @@ get_features(const struct panvk_physical_device *device,
       .dynamicRendering = false,
       .shaderIntegerDotProduct = false,
       .maintenance4 = false,
+
+      /* VK_EXT_graphics_pipeline_library */
+      .graphicsPipelineLibrary = true,
 
       /* VK_EXT_index_type_uint8 */
       .indexTypeUint8 = true,
@@ -218,13 +226,20 @@ get_features(const struct panvk_physical_device *device,
        */
       .customBorderColorWithoutFormat = arch != 7,
 
+      /* VK_KHR_pipeline_executable_properties */
+      .pipelineExecutableInfo = true,
+
       /* VK_KHR_shader_expect_assume */
       .shaderExpectAssume = true,
+
+      /* VK_EXT_shader_module_identifier */
+      .shaderModuleIdentifier = true,
    };
 }
 
 static void
-get_device_properties(const struct panvk_physical_device *device,
+get_device_properties(const struct panvk_instance *instance,
+                      const struct panvk_physical_device *device,
                       struct vk_properties *properties)
 {
    /* HW supports MSAA 4, 8 and 16, but we limit ourselves to MSAA 4 for now. */
@@ -233,6 +248,11 @@ get_device_properties(const struct panvk_physical_device *device,
 
    uint64_t os_page_size = 4096;
    os_get_page_size(&os_page_size);
+
+   unsigned arch = pan_arch(device->kmod.props.gpu_prod_id);
+
+   /* Ensure that the max threads count per workgroup is valid for Bifrost */
+   assert(arch > 8 || device->kmod.props.max_threads_per_wg <= 1024);
 
    *properties = (struct vk_properties){
       .apiVersion = panvk_get_vk_version(),
@@ -278,16 +298,19 @@ get_device_properties(const struct panvk_physical_device *device,
       .bufferImageGranularity = 64,
       /* Sparse binding not supported yet. */
       .sparseAddressSpaceSize = 0,
-      /* Software limit. Pick the minimum required by Vulkan, because Bifrost
-       * GPUs don't have unified descriptor tables, which forces us to
-       * agregatte all descriptors from all sets and dispatch them to per-type
-       * descriptor tables emitted at draw/dispatch time.
-       * The more sets we support the more copies we are likely to have to do
-       * at draw time.
+      /* On Bifrost, this is a software limit. We pick the minimum required by
+       * Vulkan, because Bifrost GPUs don't have unified descriptor tables,
+       * which forces us to agregatte all descriptors from all sets and dispatch
+       * them to per-type descriptor tables emitted at draw/dispatch time. The
+       * more sets we support the more copies we are likely to have to do at
+       * draw time.
+       *
+       * Valhall has native support for descriptor sets, and allows a maximum
+       * of 16 sets, but we reserve one for our internal use, so we have 15
+       * left.
        */
-      .maxBoundDescriptorSets = 4,
+      .maxBoundDescriptorSets = arch <= 7 ? 4 : 15,
       /* MALI_RENDERER_STATE::sampler_count is 16-bit. */
-      .maxPerStageDescriptorSamplers = UINT16_MAX,
       .maxDescriptorSetSamplers = UINT16_MAX,
       /* MALI_RENDERER_STATE::uniform_buffer_count is 8-bit. We reserve 32 slots
        * for our internal UBOs.
@@ -301,25 +324,31 @@ get_device_properties(const struct panvk_physical_device *device,
        * a minus(1) modifier, which gives a maximum of 2^12 SSBO
        * descriptors.
        */
-      .maxPerStageDescriptorStorageBuffers = 1 << 12,
       .maxDescriptorSetStorageBuffers = 1 << 12,
       /* MALI_RENDERER_STATE::sampler_count is 16-bit. */
-      .maxPerStageDescriptorSampledImages = UINT16_MAX,
       .maxDescriptorSetSampledImages = UINT16_MAX,
       /* MALI_ATTRIBUTE::buffer_index is 9-bit, and each image takes two
        * MALI_ATTRIBUTE_BUFFER slots, which gives a maximum of (1 << 8) images.
        */
-      .maxPerStageDescriptorStorageImages = 1 << 8,
       .maxDescriptorSetStorageImages = 1 << 8,
       /* A maximum of 8 color render targets, and one depth-stencil render
        * target.
        */
-      .maxPerStageDescriptorInputAttachments = 9,
       .maxDescriptorSetInputAttachments = 9,
-      /* Could be the sum of all maxPerStageXxx values, but we limit ourselves
-       * to 2^16 to make things simpler.
+
+      /* We could theoretically use the maxDescriptor values here (except for
+       * UBOs where we're really limited to 256 on the shader side), but on
+       * Bifrost we have to copy some tables around, which comes at an extra
+       * memory/processing cost, so let's pick something smaller.
        */
-      .maxPerStageResources = 1 << 16,
+      .maxPerStageDescriptorInputAttachments = 9,
+      .maxPerStageDescriptorSampledImages = 256,
+      .maxPerStageDescriptorSamplers = 128,
+      .maxPerStageDescriptorStorageBuffers = 64,
+      .maxPerStageDescriptorStorageImages = 32,
+      .maxPerStageDescriptorUniformBuffers = 64,
+      .maxPerStageResources = 9 + 256 + 128 + 64 + 32 + 64,
+
       /* Software limits to keep VkCommandBuffer tracking sane. */
       .maxDescriptorSetUniformBuffersDynamic = 16,
       .maxDescriptorSetStorageBuffersDynamic = 8,
@@ -331,7 +360,7 @@ get_device_properties(const struct panvk_physical_device *device,
       /* MALI_ATTRIBUTE::offset is 32-bit. */
       .maxVertexInputAttributeOffset = UINT32_MAX,
       /* MALI_ATTRIBUTE_BUFFER::stride is 32-bit. */
-      .maxVertexInputBindingStride = UINT32_MAX,
+      .maxVertexInputBindingStride = MESA_VK_MAX_VERTEX_BINDING_STRIDE,
       /* 32 vec4 varyings. */
       .maxVertexOutputComponents = 128,
       /* Tesselation shaders not supported. */
@@ -369,11 +398,14 @@ get_device_properties(const struct panvk_physical_device *device,
        * dispatch in several jobs if it's too big.
        */
       .maxComputeWorkGroupCount = {65535, 65535, 65535},
-      /* We have 10 bits to encode the local-size, and there's a minus(1)
-       * modifier, so, a size of 1 takes no bit.
+
+      /* We could also split into serveral jobs but this has many limitations.
+       * As such we limit to the max threads per workgroup supported by the GPU.
        */
-      .maxComputeWorkGroupInvocations = 1 << 10,
-      .maxComputeWorkGroupSize = {1 << 10, 1 << 10, 1 << 10},
+      .maxComputeWorkGroupInvocations = device->kmod.props.max_threads_per_wg,
+      .maxComputeWorkGroupSize = {device->kmod.props.max_threads_per_wg,
+                                  device->kmod.props.max_threads_per_wg,
+                                  device->kmod.props.max_threads_per_wg},
       /* 8-bit subpixel precision. */
       .subPixelPrecisionBits = 8,
       .subTexelPrecisionBits = 8,
@@ -425,7 +457,7 @@ get_device_properties(const struct panvk_physical_device *device,
       .maxClipDistances = 0,
       .maxCullDistances = 0,
       .maxCombinedClipAndCullDistances = 0,
-      .discreteQueuePriorities = 1,
+      .discreteQueuePriorities = 2,
       .pointSizeRange = {0.125, 4095.9375},
       .lineWidthRange = {0.0, 7.9921875},
       .pointSizeGranularity = (1.0 / 16.0),
@@ -458,9 +490,7 @@ get_device_properties(const struct panvk_physical_device *device,
       .maxMultiviewViewCount = 0,
       .maxMultiviewInstanceIndex = 0,
       .protectedNoFault = false,
-      /* Make sure everything is addressable by a signed 32-bit int, and
-       * our largest descriptors are 96 bytes. */
-      .maxPerSetDescriptors = (1ull << 31) / 96,
+      .maxPerSetDescriptors = UINT16_MAX,
       /* Our buffer size fields allow only this much */
       .maxMemoryAllocationSize = UINT32_MAX,
 
@@ -559,6 +589,10 @@ get_device_properties(const struct panvk_physical_device *device,
       /* VK_EXT_custom_border_color */
       .maxCustomBorderColorSamplers = 32768,
 
+      /* VK_EXT_graphics_pipeline_library */
+      .graphicsPipelineLibraryFastLinking = true,
+      .graphicsPipelineLibraryIndependentInterpolationDecoration = true,
+
       /* VK_KHR_vertex_attribute_divisor */
       /* We will have to restrict this a bit for multiview */
       .maxVertexAttribDivisor = UINT32_MAX,
@@ -573,12 +607,30 @@ get_device_properties(const struct panvk_physical_device *device,
 
    memcpy(properties->pipelineCacheUUID, device->cache_uuid, VK_UUID_SIZE);
 
-   memcpy(properties->driverUUID, device->driver_uuid, VK_UUID_SIZE);
-   memcpy(properties->deviceUUID, device->device_uuid, VK_UUID_SIZE);
+   const struct {
+      uint16_t vendor_id;
+      uint32_t device_id;
+      uint8_t pad[8];
+   } dev_uuid = {
+      .vendor_id = ARM_VENDOR_ID,
+      .device_id = device->model->gpu_id,
+   };
+
+   STATIC_ASSERT(sizeof(dev_uuid) == VK_UUID_SIZE);
+   memcpy(properties->deviceUUID, &dev_uuid, VK_UUID_SIZE);
+   STATIC_ASSERT(sizeof(instance->driver_build_sha) >= VK_UUID_SIZE);
+   memcpy(properties->driverUUID, instance->driver_build_sha, VK_UUID_SIZE);
 
    snprintf(properties->driverName, VK_MAX_DRIVER_NAME_SIZE, "panvk");
    snprintf(properties->driverInfo, VK_MAX_DRIVER_INFO_SIZE,
             "Mesa " PACKAGE_VERSION MESA_GIT_SHA1);
+
+   /* VK_EXT_shader_module_identifier */
+   STATIC_ASSERT(sizeof(vk_shaderModuleIdentifierAlgorithmUUID) ==
+                 sizeof(properties->shaderModuleIdentifierAlgorithmUUID));
+   memcpy(properties->shaderModuleIdentifierAlgorithmUUID,
+          vk_shaderModuleIdentifierAlgorithmUUID,
+          sizeof(properties->shaderModuleIdentifierAlgorithmUUID));
 }
 
 void
@@ -604,13 +656,6 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    int fd;
    int master_fd = -1;
 
-   if (!getenv("PAN_I_WANT_A_BROKEN_VULKAN_DRIVER")) {
-      return vk_errorf(
-         instance, VK_ERROR_INCOMPATIBLE_DRIVER,
-         "WARNING: panvk is not a conformant vulkan implementation, "
-         "pass PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1 if you know what you're doing.");
-   }
-
    fd = open(path, O_RDWR | O_CLOEXEC);
    if (fd < 0) {
       return vk_errorf(instance, VK_ERROR_INCOMPATIBLE_DRIVER,
@@ -635,12 +680,29 @@ panvk_physical_device_init(struct panvk_physical_device *device,
 
    drmFreeVersion(version);
 
+   if (!getenv("PAN_I_WANT_A_BROKEN_VULKAN_DRIVER")) {
+      close(fd);
+      return vk_errorf(
+         instance, VK_ERROR_INCOMPATIBLE_DRIVER,
+         "WARNING: panvk is not a conformant vulkan implementation, "
+         "pass PAN_I_WANT_A_BROKEN_VULKAN_DRIVER=1 if you know what you're doing.");
+   }
+
    if (instance->debug_flags & PANVK_DEBUG_STARTUP)
       vk_logi(VK_LOG_NO_OBJS(instance), "Found compatible device '%s'.", path);
 
    device->kmod.dev = pan_kmod_dev_create(fd, PAN_KMOD_DEV_FLAG_OWNS_FD,
                                           &instance->kmod.allocator);
+
+   if (!device->kmod.dev) {
+      result = vk_errorf(instance, panvk_errno_to_vk_error(), "cannot create device");
+      goto fail;
+   }
+
    pan_kmod_dev_query_props(device->kmod.dev, &device->kmod.props);
+
+   device->model = panfrost_get_model(device->kmod.props.gpu_prod_id,
+                                      device->kmod.props.gpu_variant);
 
    unsigned arch = pan_arch(device->kmod.props.gpu_prod_id);
 
@@ -659,8 +721,6 @@ panvk_physical_device_init(struct panvk_physical_device *device,
 
    device->master_fd = master_fd;
 
-   device->model = panfrost_get_model(device->kmod.props.gpu_prod_id,
-                                      device->kmod.props.gpu_variant);
    device->formats.all = panfrost_format_table(arch);
    device->formats.blendable = panfrost_blendable_format_table(arch);
 
@@ -674,9 +734,6 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    }
 
    vk_warn_non_conformant_implementation("panvk");
-
-   get_driver_uuid(&device->driver_uuid);
-   get_device_uuid(&device->device_uuid);
 
    device->drm_syncobj_type = vk_drm_syncobj_get_type(device->kmod.dev->fd);
    /* We don't support timelines in the uAPI yet and we don't want it getting
@@ -692,7 +749,7 @@ panvk_physical_device_init(struct panvk_physical_device *device,
    get_features(device, &supported_features);
 
    struct vk_properties properties;
-   get_device_properties(device, &properties);
+   get_device_properties(instance, device, &properties);
 
    struct vk_physical_device_dispatch_table dispatch_table;
    vk_physical_device_dispatch_table_from_entrypoints(
@@ -869,26 +926,47 @@ panvk_DestroyDevice(VkDevice _device, const VkAllocationCallbacks *pAllocator)
    panvk_arch_dispatch(arch, destroy_device, device, pAllocator);
 }
 
+static bool
+format_is_supported(struct panvk_physical_device *physical_device,
+                    const struct panfrost_format fmt)
+{
+   /* If the format ID is zero, it's not supported. */
+   if (!fmt.hw)
+      return false;
+
+   /* Compressed formats (ID < 32) are optional. We need to check against
+    * the supported formats reported by the GPU. */
+   unsigned idx = MALI_EXTRACT_INDEX(fmt.hw);
+   if (MALI_EXTRACT_TYPE(idx) == MALI_FORMAT_COMPRESSED) {
+      uint32_t supported_compr_fmts =
+         panfrost_query_compressed_formats(&physical_device->kmod.props);
+
+      assert(idx < 32);
+
+      if (!(BITFIELD_BIT(idx) & supported_compr_fmts))
+         return false;
+   }
+
+   return true;
+}
+
 static void
 get_format_properties(struct panvk_physical_device *physical_device,
                       VkFormat format, VkFormatProperties *out_properties)
 {
    VkFormatFeatureFlags tex = 0, buffer = 0;
    enum pipe_format pfmt = vk_format_to_pipe_format(format);
+
+   if (pfmt == PIPE_FORMAT_NONE)
+      goto end;
+
    const struct panfrost_format fmt = physical_device->formats.all[pfmt];
 
-   if (!pfmt || !fmt.hw)
+   if (!format_is_supported(physical_device, fmt))
       goto end;
 
    /* 3byte formats are not supported by the buffer <-> image copy helpers. */
    if (util_format_get_blocksize(pfmt) == 3)
-      goto end;
-
-   /* We don't support compressed formats yet: this is causing trouble when
-    * doing a vkCmdCopyImage() between a compressed and a non-compressed format
-    * on a tiled/AFBC resource.
-    */
-   if (util_format_is_compressed(pfmt))
       goto end;
 
    buffer |=
@@ -1017,10 +1095,6 @@ get_image_format_properties(struct panvk_physical_device *physical_device,
    }
 
    if (format_feature_flags == 0)
-      goto unsupported;
-
-   if (info->type != VK_IMAGE_TYPE_2D &&
-       util_format_is_depth_or_stencil(format))
       goto unsupported;
 
    switch (info->type) {

@@ -30,6 +30,7 @@
 
 #include "blorp_priv.h"
 #include "dev/intel_device_info.h"
+#include "common/intel_compute_slm.h"
 #include "common/intel_sample_positions.h"
 #include "common/intel_l3_config.h"
 #include "genxml/gen_macros.h"
@@ -1878,16 +1879,10 @@ blorp_uses_bti_rt_writes(const struct blorp_batch *batch, const struct blorp_par
 static void
 blorp_exec_3d(struct blorp_batch *batch, const struct blorp_params *params)
 {
-   if (!(batch->flags & BLORP_BATCH_NO_UPDATE_CLEAR_COLOR)) {
-      if (params->fast_clear_op == ISL_AUX_OP_FAST_CLEAR &&
-          params->dst.clear_color_addr.buffer != NULL) {
-         blorp_update_clear_color(batch, &params->dst);
-      }
-
-      if (params->hiz_op == ISL_AUX_OP_FAST_CLEAR &&
-          params->depth.clear_color_addr.buffer != NULL) {
-         blorp_update_clear_color(batch, &params->depth);
-      }
+   if (!(batch->flags & BLORP_BATCH_NO_UPDATE_CLEAR_COLOR) &&
+       params->fast_clear_op == ISL_AUX_OP_FAST_CLEAR &&
+       params->dst.clear_color_addr.buffer != NULL) {
+      blorp_update_clear_color(batch, &params->dst);
    }
 
 #if GFX_VER >= 8
@@ -2060,8 +2055,8 @@ blorp_exec_compute(struct blorp_batch *batch, const struct blorp_params *params)
       .BindingTablePointer = surfaces_offset,
       .ConstantURBEntryReadLength = cs_prog_data->push.per_thread.regs,
       .NumberofThreadsinGPGPUThreadGroup = dispatch.threads,
-      .SharedLocalMemorySize = elk_encode_slm_size(GFX_VER,
-                                                   prog_data->total_shared),
+      .SharedLocalMemorySize = intel_compute_slm_encode_size(GFX_VER,
+                                                             prog_data->total_shared),
       .BarrierEnable = cs_prog_data->uses_barrier,
 #if GFX_VER >= 8 || GFX_VERx10 == 75
       .CrossThreadConstantDataReadLength =

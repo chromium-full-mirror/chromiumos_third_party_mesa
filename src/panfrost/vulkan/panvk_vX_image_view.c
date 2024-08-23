@@ -78,10 +78,12 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
 {
    VK_FROM_HANDLE(panvk_device, device, _device);
    VK_FROM_HANDLE(panvk_image, image, pCreateInfo->image);
+   bool driver_internal =
+      (pCreateInfo->flags & VK_IMAGE_VIEW_CREATE_DRIVER_INTERNAL_BIT_MESA) != 0;
    struct panvk_image_view *view;
 
-   view = vk_image_view_create(&device->vk, false, pCreateInfo, pAllocator,
-                               sizeof(*view));
+   view = vk_image_view_create(&device->vk, driver_internal, pCreateInfo,
+                               pAllocator, sizeof(*view));
    if (view == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -101,22 +103,31 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
     * depth and stencil but the view only contains one of these components, so
     * we can ignore the component we don't use.
     */
-   if (image->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
-       view->vk.view_format != VK_FORMAT_D32_SFLOAT_S8_UINT)
-      view->pview.format = view->vk.view_format == VK_FORMAT_D32_SFLOAT
-                              ? PIPE_FORMAT_Z32_FLOAT_S8X24_UINT
-                              : PIPE_FORMAT_X32_S8X24_UINT;
+   if (vk_format_is_depth_or_stencil(view->vk.view_format)) {
+      if (image->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+          view->vk.view_format != VK_FORMAT_D32_SFLOAT_S8_UINT)
+         view->pview.format = view->vk.view_format == VK_FORMAT_D32_SFLOAT
+                                 ? PIPE_FORMAT_Z32_FLOAT_S8X24_UINT
+                                 : PIPE_FORMAT_X32_S8X24_UINT;
 
-   if (image->vk.format == VK_FORMAT_D24_UNORM_S8_UINT &&
-       view->vk.view_format == VK_FORMAT_S8_UINT)
-      view->pview.format = PIPE_FORMAT_X24S8_UINT;
+      if (image->vk.format == VK_FORMAT_D24_UNORM_S8_UINT &&
+          view->vk.view_format == VK_FORMAT_S8_UINT)
+         view->pview.format = PIPE_FORMAT_X24S8_UINT;
 
-   if (image->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
-       view->vk.view_format == VK_FORMAT_S8_UINT)
-      view->pview.format = PIPE_FORMAT_X32_S8X24_UINT;
+      if (image->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+          view->vk.view_format == VK_FORMAT_S8_UINT)
+         view->pview.format = PIPE_FORMAT_X32_S8X24_UINT;
+   }
 
-   if (view->vk.usage &
-       (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)) {
+   VkImageUsageFlags tex_usage_mask =
+      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+
+#if PAN_ARCH >= 9
+   /* Valhall passes a texture descriptor to LEA_TEX. */
+   tex_usage_mask |= VK_IMAGE_USAGE_STORAGE_BIT;
+#endif
+
+   if (view->vk.usage & tex_usage_mask) {
       /* Use a temporary pan_image_view so we can tweak it for texture
        * descriptor emission without changing the original definition.
        */
@@ -137,20 +148,22 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
          util_format_compose_swizzles(r001, view->pview.swizzle, pview.swizzle);
       }
 
-      unsigned bo_size =
-         GENX(panfrost_estimate_texture_payload_size)(&pview);
+      struct panvk_pool_alloc_info alloc_info = {
+         .alignment = pan_alignment(TEXTURE),
+         .size = GENX(panfrost_estimate_texture_payload_size)(&pview),
+      };
 
-      view->bo = panvk_priv_bo_create(device, bo_size, 0, pAllocator,
-                                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      view->mem = panvk_pool_alloc_mem(&device->mempools.rw, alloc_info);
 
       struct panfrost_ptr ptr = {
-         .gpu = view->bo->addr.dev,
-         .cpu = view->bo->addr.host,
+         .gpu = panvk_priv_mem_dev_addr(view->mem),
+         .cpu = panvk_priv_mem_host_addr(view->mem),
       };
 
       GENX(panfrost_new_texture)(&pview, view->descs.tex.opaque, &ptr);
    }
 
+#if PAN_ARCH <= 7
    if (view->vk.usage & VK_IMAGE_USAGE_STORAGE_BIT) {
       bool is_3d = image->pimage.layout.dim == MALI_TEXTURE_DIMENSION_3D;
       unsigned offset = image->pimage.data.offset;
@@ -160,23 +173,37 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
                                  is_3d ? view->pview.first_layer : 0);
 
       pan_pack(view->descs.img_attrib_buf[0].opaque, ATTRIBUTE_BUFFER, cfg) {
+         /* The format is the only thing we lack to emit attribute descriptors
+          * when copying from the set to the attribute tables. Instead of
+          * making the descriptor size to store an extra format, we pack
+          * the 22-bit format with the texel stride, which is expected to be
+          * fit in remaining 10 bits.
+          */
+         uint32_t fmt_blksize = util_format_get_blocksize(view->pview.format);
+         uint32_t hw_fmt =
+            GENX(panfrost_format_from_pipe_format)(view->pview.format)->hw;
+
+         assert(fmt_blksize < BITFIELD_MASK(10));
+         assert(hw_fmt < BITFIELD_MASK(22));
+
          cfg.type = image->pimage.layout.modifier == DRM_FORMAT_MOD_LINEAR
                        ? MALI_ATTRIBUTE_TYPE_3D_LINEAR
                        : MALI_ATTRIBUTE_TYPE_3D_INTERLEAVED;
          cfg.pointer = image->pimage.data.base + offset;
-         cfg.stride = util_format_get_blocksize(view->pview.format);
+         cfg.stride = fmt_blksize | (hw_fmt << 10);
          cfg.size = pan_kmod_bo_size(image->bo) - offset;
       }
 
       pan_pack(view->descs.img_attrib_buf[1].opaque,
                ATTRIBUTE_BUFFER_CONTINUATION_3D, cfg) {
          unsigned level = view->pview.first_level;
+         VkExtent3D extent = view->vk.extent;
 
-         cfg.s_dimension = u_minify(image->pimage.layout.width, level);
-         cfg.t_dimension = u_minify(image->pimage.layout.height, level);
+         cfg.s_dimension = extent.width;
+         cfg.t_dimension = extent.height;
          cfg.r_dimension =
             view->pview.dim == MALI_TEXTURE_DIMENSION_3D
-               ? u_minify(image->pimage.layout.depth, level)
+               ? extent.depth
                : (view->pview.last_layer - view->pview.first_layer + 1);
          cfg.row_stride = image->pimage.layout.slices[level].row_stride;
          if (cfg.r_dimension > 1) {
@@ -185,6 +212,7 @@ panvk_per_arch(CreateImageView)(VkDevice _device,
          }
       }
    }
+#endif
 
    *pView = panvk_image_view_to_handle(view);
    return VK_SUCCESS;
@@ -200,6 +228,6 @@ panvk_per_arch(DestroyImageView)(VkDevice _device, VkImageView _view,
    if (!view)
       return;
 
-   panvk_priv_bo_destroy(view->bo, NULL);
+   panvk_pool_free_mem(&device->mempools.rw, view->mem);
    vk_image_view_destroy(&device->vk, pAllocator, &view->vk);
 }

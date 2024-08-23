@@ -230,6 +230,13 @@ texture_external_es3(const _mesa_glsl_parse_state *state)
       state->is_version(0, 300);
 }
 
+static bool
+texture_shadow2Dext(const _mesa_glsl_parse_state *state)
+{
+   return state->es_shader &&
+      state->EXT_shadow_samplers_enable;
+}
+
 /** True if texturing functions with explicit LOD are allowed. */
 static bool
 lod_exists_in_stage(const _mesa_glsl_parse_state *state)
@@ -1454,7 +1461,10 @@ builtin_builder::find(_mesa_glsl_parse_state *state,
       return NULL;
 
    ir_function_signature *sig =
-      f->matching_signature(state, actual_parameters, true);
+      f->matching_signature(state, actual_parameters,
+                            state->has_implicit_conversions(),
+                            state->has_implicit_int_to_uint_conversion(),
+                            true);
    if (sig == NULL)
       return NULL;
 
@@ -4008,6 +4018,11 @@ builtin_builder::create_builtins()
                 _texture(ir_txb, v110_derivatives_only_deprecated_texture, &glsl_type_builtin_vec4,  &glsl_type_builtin_sampler2DShadow, &glsl_type_builtin_vec3),
                 NULL);
 
+   add_function("shadow2DEXT",
+                _texture(ir_tex, texture_shadow2Dext,                  &glsl_type_builtin_float,  &glsl_type_builtin_sampler2DShadow, &glsl_type_builtin_vec3),
+                _texture(ir_txb, texture_shadow2Dext, &glsl_type_builtin_float,  &glsl_type_builtin_sampler2DShadow, &glsl_type_builtin_vec3),
+                NULL);
+
    add_function("shadow2DArray",
                 _texture(ir_tex, texture_array,    &glsl_type_builtin_vec4,  &glsl_type_builtin_sampler2DArrayShadow, &glsl_type_builtin_vec4),
                 _texture(ir_txb, texture_array_derivs_only, &glsl_type_builtin_vec4,  &glsl_type_builtin_sampler2DArrayShadow, &glsl_type_builtin_vec4),
@@ -4031,6 +4046,11 @@ builtin_builder::create_builtins()
    add_function("shadow2DProj",
                 _texture(ir_tex, v110_deprecated_texture,                  &glsl_type_builtin_vec4,  &glsl_type_builtin_sampler2DShadow, &glsl_type_builtin_vec4, TEX_PROJECT),
                 _texture(ir_txb, v110_derivatives_only_deprecated_texture, &glsl_type_builtin_vec4,  &glsl_type_builtin_sampler2DShadow, &glsl_type_builtin_vec4, TEX_PROJECT),
+                NULL);
+
+   add_function("shadow2DProjEXT",
+                _texture(ir_tex, texture_shadow2Dext,                  &glsl_type_builtin_float,  &glsl_type_builtin_sampler2DShadow, &glsl_type_builtin_vec4, TEX_PROJECT),
+                _texture(ir_txb, texture_shadow2Dext, &glsl_type_builtin_float,  &glsl_type_builtin_sampler2DShadow, &glsl_type_builtin_vec4, TEX_PROJECT),
                 NULL);
 
    add_function("shadow1DLod",
@@ -9034,7 +9054,7 @@ _mesa_get_main_function_signature(glsl_symbol_table *symbols)
        * shaders) because that would have already been caught above.
        */
       ir_function_signature *sig =
-         f->matching_signature(NULL, &void_parameters, false);
+         f->matching_signature(NULL, &void_parameters, false, false, false);
       if ((sig != NULL) && sig->is_defined) {
          return sig;
       }

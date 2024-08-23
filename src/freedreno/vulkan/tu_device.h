@@ -12,7 +12,6 @@
 
 #include "tu_common.h"
 
-#include "vk_buffer.h"
 #include "vk_device_memory.h"
 
 #include "tu_autotune.h"
@@ -64,6 +63,15 @@ struct tu_memory_heap {
    alignas(8) VkDeviceSize used;
 };
 
+enum tu_kgsl_dma_type
+{
+   TU_KGSL_DMA_TYPE_ION_LEGACY,
+   TU_KGSL_DMA_TYPE_ION,
+   TU_KGSL_DMA_TYPE_DMAHEAP,
+};
+
+extern uint64_t os_page_size;
+
 struct tu_physical_device
 {
    struct vk_physical_device vk;
@@ -86,6 +94,9 @@ struct tu_physical_device
    bool has_master;
    int64_t master_major;
    int64_t master_minor;
+
+   int kgsl_dma_fd;
+   enum tu_kgsl_dma_type kgsl_dma_type;
 
    uint32_t gmem_size;
    uint64_t gmem_base;
@@ -175,6 +186,14 @@ struct tu_instance
     * See: https://github.com/doitsujin/dxvk/issues/3861
     */
    bool allow_oob_indirect_ubo_loads;
+
+   /* DXVK and VKD3D-Proton use customBorderColorWithoutFormat
+    * and have most of D24S8 images with USAGE_SAMPLED, in such case we
+    * disable UBWC for correctness. However, games don't use border color for
+    * depth-stencil images. So we elect to ignore this edge case and force
+    * UBWC to be enabled.
+    */
+   bool disable_d24s8_border_color_workaround;
 };
 VK_DEFINE_HANDLE_CASTS(tu_instance, vk.base, VkInstance,
                        VK_OBJECT_TYPE_INSTANCE)
@@ -420,16 +439,6 @@ struct tu_device_memory
 VK_DEFINE_NONDISP_HANDLE_CASTS(tu_device_memory, vk.base, VkDeviceMemory,
                                VK_OBJECT_TYPE_DEVICE_MEMORY)
 
-struct tu_buffer
-{
-   struct vk_buffer vk;
-
-   struct tu_bo *bo;
-   uint64_t iova;
-};
-VK_DEFINE_NONDISP_HANDLE_CASTS(tu_buffer, vk.base, VkBuffer,
-                               VK_OBJECT_TYPE_BUFFER)
-
 struct tu_attachment_info
 {
    struct tu_image_view *attachment;
@@ -476,22 +485,6 @@ struct tu_framebuffer
 VK_DEFINE_NONDISP_HANDLE_CASTS(tu_framebuffer, base, VkFramebuffer,
                                VK_OBJECT_TYPE_FRAMEBUFFER)
 
-struct tu_event
-{
-   struct vk_object_base base;
-   struct tu_bo *bo;
-};
-VK_DEFINE_NONDISP_HANDLE_CASTS(tu_event, base, VkEvent, VK_OBJECT_TYPE_EVENT)
-
-struct tu_sampler {
-   struct vk_object_base base;
-
-   uint32_t descriptor[A6XX_TEX_SAMP_DWORDS];
-   struct tu_sampler_ycbcr_conversion *ycbcr_sampler;
-};
-VK_DEFINE_NONDISP_HANDLE_CASTS(tu_sampler, base, VkSampler,
-                               VK_OBJECT_TYPE_SAMPLER)
-
 uint64_t
 tu_get_system_heap_size(struct tu_physical_device *physical_device);
 
@@ -524,10 +517,10 @@ void tu_setup_dynamic_framebuffer(struct tu_cmd_buffer *cmd_buffer,
                                   const VkRenderingInfo *pRenderingInfo);
 
 void
-tu_copy_timestamp_buffer(struct u_trace_context *utctx, void *cmdstream,
-                         void *ts_from, uint32_t from_offset,
-                         void *ts_to, uint32_t to_offset,
-                         uint32_t count);
+tu_copy_buffer(struct u_trace_context *utctx, void *cmdstream,
+               void *ts_from, uint64_t from_offset_B,
+               void *ts_to, uint64_t to_offset_B,
+               uint64_t size_B);
 
 
 VkResult

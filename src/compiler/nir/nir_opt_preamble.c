@@ -232,6 +232,7 @@ can_move_intrinsic(nir_intrinsic_instr *instr, opt_preamble_ctx *ctx)
    case nir_intrinsic_masked_swizzle_amd:
    case nir_intrinsic_load_ssbo_address:
    case nir_intrinsic_bindless_resource_ir3:
+   case nir_intrinsic_load_const_ir3:
    case nir_intrinsic_load_constant_agx:
       return can_move_srcs(&instr->instr, ctx);
 
@@ -966,8 +967,7 @@ nir_opt_preamble(nir_shader *shader, const nir_opt_preamble_options *options,
    }
 
    nir_metadata_preserve(impl,
-                         nir_metadata_block_index |
-                            nir_metadata_dominance);
+                         nir_metadata_control_flow);
 
    ralloc_free(remap_table);
    free(ctx.states);

@@ -633,6 +633,9 @@ struct ir3_shader_variant {
    /* Whether dual-source blending is enabled. */
    bool dual_src_blend;
 
+   /* Whether early preamble is enabled. */
+   bool early_preamble;
+
    /* Size in bytes of required shared memory */
    unsigned shared_size;
 
@@ -834,6 +837,7 @@ struct ir3_shader_variant {
       struct {
          unsigned req_input_mem;
          unsigned req_local_mem;
+         bool force_linear_dispatch;
       } cs;
    };
 
@@ -906,6 +910,7 @@ struct ir3_shader {
       struct {
          unsigned req_input_mem;    /* in dwords */
          unsigned req_local_mem;
+         bool force_linear_dispatch;
       } cs;
       /* For vertex shaders: */
       struct {
@@ -934,11 +939,18 @@ struct ir3_shader {
  * emit, for both binning and draw pass (a6xx+), the binning pass re-uses it's
  * corresponding draw pass shaders const_state.
  */
-static inline struct ir3_const_state *
+static inline const struct ir3_const_state *
 ir3_const_state(const struct ir3_shader_variant *v)
 {
    if (v->binning_pass)
       return v->nonbinning->const_state;
+   return v->const_state;
+}
+
+static inline struct ir3_const_state *
+ir3_const_state_mut(const struct ir3_shader_variant *v)
+{
+   assert(!v->binning_pass);
    return v->const_state;
 }
 
@@ -982,6 +994,9 @@ ir3_max_const(const struct ir3_shader_variant *v)
 {
    return _ir3_max_const(v, v->key.safe_constlen);
 }
+
+uint16_t ir3_const_find_imm(struct ir3_shader_variant *v, uint32_t imm);
+uint16_t ir3_const_add_imm(struct ir3_shader_variant *v, uint32_t imm);
 
 /* Return true if a variant may need to be recompiled due to exceeding the
  * maximum "safe" constlen.

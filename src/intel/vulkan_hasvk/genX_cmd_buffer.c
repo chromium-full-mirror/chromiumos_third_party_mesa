@@ -414,18 +414,33 @@ anv_can_hiz_clear_ds_view(struct anv_device *device,
                               VK_IMAGE_ASPECT_DEPTH_BIT,
                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                               layout);
-   if (!blorp_can_hiz_clear_depth(device->info,
-                                  &iview->image->planes[0].primary_surface.isl,
-                                  clear_aux_usage,
-                                  iview->planes[0].isl.base_level,
-                                  iview->planes[0].isl.base_array_layer,
-                                  render_area.offset.x,
-                                  render_area.offset.y,
-                                  render_area.offset.x +
-                                  render_area.extent.width,
-                                  render_area.offset.y +
-                                  render_area.extent.height))
+   if (!isl_aux_usage_has_fast_clears(clear_aux_usage))
       return false;
+
+   assert(GFX_VER == 8);
+   assert(iview->vk.format != VK_FORMAT_D16_UNORM_S8_UINT);
+   if (iview->vk.format == VK_FORMAT_D16_UNORM) {
+      /* From the BDW PRM, Vol 7, "Depth Buffer Clear":
+       *
+       *   The following restrictions apply only if the depth buffer surface
+       *   type is D16_UNORM and software does not use the “full surf clear”:
+       *
+       *   If Number of Multisamples is NUMSAMPLES_1, the rectangle must be
+       *   aligned to an 8x4 pixel block relative to the upper left corner of
+       *   the depth buffer, and contain an integer number of these pixel
+       *   blocks, and all 8x4 pixels must be lit.
+       *
+       * Simply disable partial clears for D16 on BDW.
+       */
+      if (render_area.offset.x > 0 ||
+          render_area.offset.y > 0 ||
+          render_area.extent.width !=
+          u_minify(iview->vk.extent.width, iview->vk.base_mip_level) ||
+          render_area.extent.height !=
+          u_minify(iview->vk.extent.height, iview->vk.base_mip_level)) {
+         return false;
+      }
+   }
 
    if (depth_clear_value != ANV_HZ_FC_VAL)
       return false;
@@ -4029,12 +4044,8 @@ void genX(CmdDrawIndexedIndirect)(
 static struct mi_value
 prepare_for_draw_count_predicate(struct anv_cmd_buffer *cmd_buffer,
                                  struct mi_builder *b,
-                                 struct anv_buffer *count_buffer,
-                                 uint64_t countBufferOffset)
+                                 struct anv_address count_address)
 {
-   struct anv_address count_address =
-         anv_address_add(count_buffer->address, countBufferOffset);
-
    struct mi_value ret = mi_imm(0);
 
    if (cmd_buffer->state.conditional_render_enabled) {
@@ -4160,9 +4171,10 @@ void genX(CmdDrawIndirectCount)(
 
    struct mi_builder b;
    mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
+   struct anv_address count_address =
+      anv_address_add(count_buffer->address, countBufferOffset);
    struct mi_value max =
-      prepare_for_draw_count_predicate(cmd_buffer, &b,
-                                       count_buffer, countBufferOffset);
+      prepare_for_draw_count_predicate(cmd_buffer, &b, count_address);
 
    for (uint32_t i = 0; i < maxDrawCount; i++) {
       struct anv_address draw = anv_address_add(buffer->address, offset);
@@ -4196,7 +4208,8 @@ void genX(CmdDrawIndirectCount)(
 
    mi_value_unref(&b, max);
 
-   trace_intel_end_draw_indirect_count(&cmd_buffer->trace, maxDrawCount);
+   trace_intel_end_draw_indirect_count(&cmd_buffer->trace,
+                                       anv_address_utrace(count_address));
 }
 
 void genX(CmdDrawIndexedIndirectCount)(
@@ -4228,9 +4241,10 @@ void genX(CmdDrawIndexedIndirectCount)(
 
    struct mi_builder b;
    mi_builder_init(&b, cmd_buffer->device->info, &cmd_buffer->batch);
+   struct anv_address count_address =
+      anv_address_add(count_buffer->address, countBufferOffset);
    struct mi_value max =
-      prepare_for_draw_count_predicate(cmd_buffer, &b,
-                                       count_buffer, countBufferOffset);
+      prepare_for_draw_count_predicate(cmd_buffer, &b, count_address);
 
    for (uint32_t i = 0; i < maxDrawCount; i++) {
       struct anv_address draw = anv_address_add(buffer->address, offset);
@@ -4265,8 +4279,8 @@ void genX(CmdDrawIndexedIndirectCount)(
 
    mi_value_unref(&b, max);
 
-   trace_intel_end_draw_indexed_indirect_count(&cmd_buffer->trace, maxDrawCount);
-
+   trace_intel_end_draw_indexed_indirect_count(&cmd_buffer->trace,
+                                               anv_address_utrace(count_address));
 }
 
 void genX(CmdBeginTransformFeedbackEXT)(
@@ -6032,4 +6046,15 @@ void genX(cmd_emit_timestamp)(struct anv_batch *batch,
    default:
       unreachable("invalid");
    }
+}
+
+void genX(cmd_capture_data)(struct anv_batch *batch,
+                            struct anv_device *device,
+                            struct anv_address dst_addr,
+                            struct anv_address src_addr,
+                            uint32_t size_B)
+{
+   struct mi_builder b;
+   mi_builder_init(&b, device->info, batch);
+   mi_memcpy(&b, dst_addr, src_addr, size_B);
 }

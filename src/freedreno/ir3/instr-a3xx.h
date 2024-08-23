@@ -428,7 +428,7 @@ typedef enum {
    TYPE_S16 = 4,
    TYPE_S32 = 5,
    TYPE_U8 = 6,
-   TYPE_S8 = 7, // XXX I assume?
+   TYPE_U8_32 = 7,
 } type_t;
 
 static inline uint32_t
@@ -437,6 +437,7 @@ type_size(type_t type)
    switch (type) {
    case TYPE_F32:
    case TYPE_U32:
+   case TYPE_U8_32:
    case TYPE_S32:
       return 32;
    case TYPE_F16:
@@ -444,7 +445,6 @@ type_size(type_t type)
    case TYPE_S16:
       return 16;
    case TYPE_U8:
-   case TYPE_S8:
       return 8;
    default:
       ir3_assert(0); /* invalid type */
@@ -487,13 +487,13 @@ type_float(type_t type)
 static inline int
 type_uint(type_t type)
 {
-   return (type == TYPE_U32) || (type == TYPE_U16) || (type == TYPE_U8);
+   return (type == TYPE_U32) || (type == TYPE_U16) || (type == TYPE_U8) || (type == TYPE_U8_32);
 }
 
 static inline int
 type_sint(type_t type)
 {
-   return (type == TYPE_S32) || (type == TYPE_S16) || (type == TYPE_S8);
+   return (type == TYPE_S32) || (type == TYPE_S16);
 }
 
 typedef enum {
@@ -523,6 +523,8 @@ regid(int num, int comp)
 #define REG_A0 61 /* address register */
 #define REG_P0 62 /* predicate register */
 #define REG_P0_X regid(REG_P0, 0) /* p0.x */
+
+#define INVALID_CONST_REG UINT16_MAX
 
 /* With is_bindless_s2en = 1, this determines whether bindless is enabled and
  * if so, how to get the (base, index) pair for both sampler and texture.

@@ -46,6 +46,21 @@ static const char *si_get_device_vendor(struct pipe_screen *pscreen)
    return "AMD";
 }
 
+static bool
+si_is_compute_copy_faster(struct pipe_screen *pscreen,
+                          enum pipe_format src_format,
+                          enum pipe_format dst_format,
+                          unsigned width,
+                          unsigned height,
+                          unsigned depth,
+                          bool cpu)
+{
+   if (cpu)
+      /* very basic for now */
+      return width * height * depth > 64 * 64;
+   return false;
+}
+
 static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 {
    struct si_screen *sscreen = (struct si_screen *)pscreen;
@@ -124,7 +139,6 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_STRING_MARKER:
    case PIPE_CAP_CULL_DISTANCE:
    case PIPE_CAP_SHADER_ARRAY_COMPONENTS:
-   case PIPE_CAP_SHADER_CAN_READ_OUTPUTS:
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
    case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
    case PIPE_CAP_DOUBLES:
@@ -168,13 +182,18 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_ALLOW_GLTHREAD_BUFFER_SUBDATA_OPT: /* TODO: remove if it's slow */
    case PIPE_CAP_NULL_TEXTURES:
    case PIPE_CAP_HAS_CONST_BW:
-   case PIPE_CAP_FENCE_SIGNAL:
-   case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_CL_GL_SHARING:
       return 1;
 
+   /* Tahiti and Verde only: reduction mode is unsupported due to a bug
+    * (it might work sometimes, but that's not enough)
+    */
+   case PIPE_CAP_SAMPLER_REDUCTION_MINMAX:
+   case PIPE_CAP_SAMPLER_REDUCTION_MINMAX_ARB:
+      return !(sscreen->info.family == CHIP_TAHITI || sscreen->info.family == CHIP_VERDE);
+
    case PIPE_CAP_TEXTURE_TRANSFER_MODES:
-      return PIPE_TEXTURE_TRANSFER_BLIT;
+      return PIPE_TEXTURE_TRANSFER_BLIT | PIPE_TEXTURE_TRANSFER_COMPUTE;
 
    case PIPE_CAP_DRAW_VERTEX_STATE:
       return !(sscreen->debug_flags & DBG(NO_FAST_DISPLAY_LIST));
@@ -287,8 +306,14 @@ static int si_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
              PIPE_CONTEXT_PRIORITY_MEDIUM |
              PIPE_CONTEXT_PRIORITY_HIGH;
 
+   case PIPE_CAP_FENCE_SIGNAL:
+      return sscreen->info.has_syncobj;
+
    case PIPE_CAP_CONSTBUF0_FLAGS:
       return SI_RESOURCE_FLAG_32BIT;
+
+   case PIPE_CAP_NATIVE_FENCE_FD:
+      return sscreen->info.has_fence_to_handle;
 
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_MULTI_DRAW_INDIRECT:
@@ -735,7 +760,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
 
       case PIPE_VIDEO_CAP_ENC_SLICES_STRUCTURE:
          if (sscreen->info.vcn_ip_version >= VCN_2_0_0) {
-            int value = (PIPE_VIDEO_CAP_SLICE_STRUCTURE_POWER_OF_TWO_ROWS |
+            int value = (PIPE_VIDEO_CAP_SLICE_STRUCTURE_ARBITRARY_MACROBLOCKS |
                          PIPE_VIDEO_CAP_SLICE_STRUCTURE_EQUAL_ROWS |
                          PIPE_VIDEO_CAP_SLICE_STRUCTURE_EQUAL_MULTI_ROWS);
             return value;
@@ -787,7 +812,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             union pipe_av1_enc_cap_features_ext2 attrib_ext2;
             attrib_ext2.value = 0;
 
-           attrib_ext2.bits.tile_size_bytes_minus1 = 1;
+           attrib_ext2.bits.tile_size_bytes_minus1 = 3;
            attrib_ext2.bits.obu_size_bytes_minus1 = 1;
            /**
             * tx_mode supported.
@@ -807,9 +832,6 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
             return 1;
          else
             return 0;
-      case PIPE_VIDEO_CAP_EFC_SUPPORTED:
-         return ((sscreen->info.family > CHIP_RENOIR) &&
-                 !(sscreen->debug_flags & DBG(NO_EFC)));
 
       case PIPE_VIDEO_CAP_ENC_MAX_REFERENCES_PER_FRAME:
          if (sscreen->info.vcn_ip_version >= VCN_3_0_0) {
@@ -853,6 +875,17 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
          }
          else
             return 0;
+
+      case PIPE_VIDEO_CAP_ENC_RATE_CONTROL_QVBR:
+         if (sscreen->info.vcn_ip_version >= VCN_3_0_0 &&
+             sscreen->info.vcn_ip_version < VCN_4_0_0)
+            return sscreen->info.vcn_enc_minor_version >= 30;
+
+         if (sscreen->info.vcn_ip_version >= VCN_4_0_0 &&
+             sscreen->info.vcn_ip_version < VCN_5_0_0)
+            return sscreen->info.vcn_enc_minor_version >= 15;
+
+         return 0;
 
       default:
          return 0;
@@ -1093,6 +1126,58 @@ static bool si_vid_is_format_supported(struct pipe_screen *screen, enum pipe_for
       return format == PIPE_FORMAT_NV12;
 
    return vl_video_buffer_is_format_supported(screen, format, profile, entrypoint);
+}
+
+static bool si_vid_is_target_buffer_supported(struct pipe_screen *screen,
+                                              enum pipe_format format,
+                                              struct pipe_video_buffer *target,
+                                              enum pipe_video_profile profile,
+                                              enum pipe_video_entrypoint entrypoint)
+{
+   struct si_screen *sscreen = (struct si_screen *)screen;
+   struct si_texture *tex = (struct si_texture *)((struct vl_video_buffer *)target)->resources[0];
+   const bool is_dcc = tex->surface.meta_offset;
+   const bool is_format_conversion = format != target->buffer_format;
+
+   switch (entrypoint) {
+   case PIPE_VIDEO_ENTRYPOINT_BITSTREAM:
+      return !is_dcc && !is_format_conversion;
+
+   case PIPE_VIDEO_ENTRYPOINT_ENCODE:
+      if (is_dcc)
+         return false;
+
+      /* EFC */
+      if (is_format_conversion) {
+         const bool input_8bit =
+            target->buffer_format == PIPE_FORMAT_B8G8R8A8_UNORM ||
+            target->buffer_format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+            target->buffer_format == PIPE_FORMAT_R8G8B8A8_UNORM ||
+            target->buffer_format == PIPE_FORMAT_R8G8B8X8_UNORM;
+         const bool input_10bit =
+            target->buffer_format == PIPE_FORMAT_B10G10R10A2_UNORM ||
+            target->buffer_format == PIPE_FORMAT_B10G10R10X2_UNORM ||
+            target->buffer_format == PIPE_FORMAT_R10G10B10A2_UNORM ||
+            target->buffer_format == PIPE_FORMAT_R10G10B10X2_UNORM;
+
+         if (sscreen->info.vcn_ip_version < VCN_2_0_0 ||
+             sscreen->info.vcn_ip_version >= VCN_5_0_0 ||
+             sscreen->debug_flags & DBG(NO_EFC))
+            return false;
+
+         if (input_8bit)
+            return format == PIPE_FORMAT_NV12;
+         else if (input_10bit)
+            return format == PIPE_FORMAT_NV12 || format == PIPE_FORMAT_P010;
+         else
+            return false;
+      }
+
+      return true;
+
+   default:
+      return !is_format_conversion;
+   }
 }
 
 static unsigned get_max_threads_per_block(struct si_screen *screen, enum pipe_shader_ir ir_type)
@@ -1338,7 +1423,7 @@ static void si_init_renderer_string(struct si_screen *sscreen)
       snprintf(kernel_version, sizeof(kernel_version), ", %s", uname_data.release);
 
    const char *compiler_name =
-#if LLVM_AVAILABLE
+#if AMD_LLVM_AVAILABLE
       !sscreen->use_aco ? "LLVM " MESA_LLVM_VERSION_STRING :
 #endif
       "ACO";
@@ -1487,6 +1572,19 @@ static unsigned si_varying_estimate_instr_cost(nir_instr *instr)
    }
 }
 
+
+static void
+si_driver_thread_add_job(struct pipe_screen *screen, void *data,
+                         struct util_queue_fence *fence,
+                         pipe_driver_thread_func execute,
+                         pipe_driver_thread_func cleanup,
+                         const size_t job_size)
+{
+   struct si_screen *sscreen = (struct si_screen *)screen;
+   util_queue_add_job(&sscreen->shader_compiler_queue, data, fence, execute, cleanup, job_size);
+}
+
+
 void si_init_screen_get_functions(struct si_screen *sscreen)
 {
    sscreen->b.get_name = si_get_name;
@@ -1494,6 +1592,8 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
    sscreen->b.get_device_vendor = si_get_device_vendor;
    sscreen->b.get_screen_fd = si_get_screen_fd;
    sscreen->b.get_param = si_get_param;
+   sscreen->b.is_compute_copy_faster = si_is_compute_copy_faster;
+   sscreen->b.driver_thread_add_job = si_driver_thread_add_job;
    sscreen->b.get_paramf = si_get_paramf;
    sscreen->b.get_compute_param = si_get_compute_param;
    sscreen->b.get_timestamp = si_get_timestamp;
@@ -1512,6 +1612,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
        sscreen->info.ip[AMD_IP_VPE].num_queues) {
       sscreen->b.get_video_param = si_get_video_param;
       sscreen->b.is_video_format_supported = si_vid_is_format_supported;
+      sscreen->b.is_video_target_buffer_supported = si_vid_is_target_buffer_supported;
    } else {
       sscreen->b.get_video_param = si_get_video_param_no_video_hw;
       sscreen->b.is_video_format_supported = vl_video_buffer_is_format_supported;
@@ -1543,6 +1644,7 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
       (sscreen->info.family >= CHIP_GFX940 && !sscreen->info.has_graphics) ||
       /* fma32 is too slow for gpu < gfx9, so apply the option only for gpu >= gfx9 */
       (sscreen->info.gfx_level >= GFX9 && sscreen->options.force_use_fma32);
+   bool has_mediump = sscreen->info.gfx_level >= GFX8 && sscreen->options.fp16;
 
    nir_shader_compiler_options *options = sscreen->nir_options;
    ac_set_nir_options(&sscreen->info, !sscreen->use_aco, options);
@@ -1569,11 +1671,10 @@ void si_init_screen_get_functions(struct si_screen *sscreen)
     * when execution mode is rtz instead of rtne.
     */
    options->force_f2f16_rtz = true;
-   options->io_options = nir_io_has_flexible_input_interpolation_except_flat |
-                         nir_io_glsl_lower_derefs |
-                         (sscreen->options.optimize_io ? nir_io_glsl_opt_varyings : 0);
-   options->lower_mediump_io = sscreen->info.gfx_level >= GFX8 && sscreen->options.fp16 ?
-                                  si_lower_mediump_io : NULL;
+   options->io_options |= (!has_mediump ? nir_io_mediump_is_32bit : 0) |
+                          nir_io_glsl_lower_derefs |
+                          (sscreen->options.optimize_io ? nir_io_glsl_opt_varyings : 0);
+   options->lower_mediump_io = has_mediump ? si_lower_mediump_io : NULL;
    /* HW supports indirect indexing for: | Enabled in driver
     * -------------------------------------------------------
     * TCS inputs                         | Yes

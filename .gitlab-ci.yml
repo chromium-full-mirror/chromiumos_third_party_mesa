@@ -148,14 +148,24 @@ stages:
   - build-misc
   - code-validation
   - amd
+  - amd-postmerge
   - intel
+  - intel-postmerge
   - nouveau
+  - nouveau-postmerge
   - arm
+  - arm-postmerge
   - broadcom
+  - broadcom-postmerge
   - freedreno
+  - freedreno-postmerge
   - etnaviv
+  - etnaviv-postmerge
   - software-renderer
+  - software-renderer-postmerge
   - layered-backends
+  - layered-backends-postmerge
+  - performance
   - deploy
 
 include:
@@ -297,9 +307,9 @@ sanity:
       image_tags=(
         DEBIAN_BASE_TAG
         DEBIAN_BUILD_TAG
-        DEBIAN_X86_64_TEST_ANDROID_TAG
-        DEBIAN_X86_64_TEST_GL_TAG
-        DEBIAN_X86_64_TEST_VK_TAG
+        DEBIAN_TEST_ANDROID_TAG
+        DEBIAN_TEST_GL_TAG
+        DEBIAN_TEST_VK_TAG
         ALPINE_X86_64_BUILD_TAG
         ALPINE_X86_64_LAVA_SSH_TAG
         FEDORA_X86_64_BUILD_TAG
@@ -348,4 +358,6 @@ mr-label-maker-test:
     - job: clang-format
       optional: true
     - job: rustfmt
+      optional: true
+    - job: toml-lint
       optional: true

@@ -344,7 +344,6 @@ static bool si_update_shaders(struct si_context *sctx)
           */
          struct si_resource *bo = si_aligned_buffer_create(
             &sctx->screen->b,
-            (sctx->screen->info.cpdma_prefetch_writes_memory ? 0 : SI_RESOURCE_FLAG_READ_ONLY) |
             SI_RESOURCE_FLAG_DRIVER_INTERNAL | SI_RESOURCE_FLAG_32BIT,
             PIPE_USAGE_IMMUTABLE, align(total_size, SI_CPDMA_ALIGNMENT), 256);
 
@@ -368,33 +367,20 @@ static bool si_update_shaders(struct si_context *sctx)
             for (int i = 0; i < SI_NUM_GRAPHICS_SHADERS; i++) {
                struct si_shader *shader = sctx->shaders[i].current;
                if (sctx->shaders[i].cso && shader) {
-                  struct ac_rtld_binary binary;
-                  si_shader_binary_open(sctx->screen, shader, &binary);
+                  si_resource_reference(&shader->bo, bo);
 
-                  struct ac_rtld_upload_info u = {};
-                  u.binary = &binary;
-                  u.get_external_symbol = si_get_external_symbol;
-                  u.cb_data = &scratch_va;
-                  u.rx_va = bo->gpu_address + offset;
-                  u.rx_ptr = ptr + offset;
-
-                  int size = ac_rtld_upload(&u);
-                  ac_rtld_close(&binary);
-
+                  int size = si_shader_binary_upload_at(sctx->screen, shader, scratch_va, offset);
                   pipeline->offset[i] = offset;
-
-                  shader->gpu_address = u.rx_va;
-
                   offset += align(size, 256);
 
                   struct si_pm4_state *pm4 = &shader->pm4;
 
-                  uint64_t va_low = (pipeline->bo->gpu_address + pipeline->offset[i]) >> 8;
-                  uint32_t reg = pm4->spi_shader_pgm_lo_reg;
-                  si_pm4_set_reg(&pipeline->pm4, reg, va_low);
+                  uint64_t va_low = shader->gpu_address >> 8;
+                  uint32_t reg = pm4->base.spi_shader_pgm_lo_reg;
+                  ac_pm4_set_reg(&pipeline->pm4.base, reg, va_low);
                }
             }
-            si_pm4_finalize(&pipeline->pm4);
+            ac_pm4_finalize(&pipeline->pm4.base);
             sctx->screen->ws->buffer_unmap(sctx->screen->ws, bo->buf);
 
             _mesa_hash_table_u64_insert(sctx->sqtt->pipeline_bos,
@@ -512,6 +498,7 @@ template<amd_gfx_level GFX_VERSION>
 static void si_cp_dma_prefetch_inline(struct si_context *sctx, uint64_t address, unsigned size)
 {
    assert(GFX_VERSION >= GFX7);
+   assert(sctx->screen->info.has_cp_dma);
 
    if (GFX_VERSION >= GFX11)
       size = MIN2(size, 32768 - SI_CPDMA_ALIGNMENT);
@@ -1696,7 +1683,7 @@ static void si_emit_draw_packets(struct si_context *sctx, const struct pipe_draw
 /* Return false if not bound. */
 template<amd_gfx_level GFX_VERSION>
 static void ALWAYS_INLINE si_set_vb_descriptor(struct si_vertex_elements *velems,
-                                               struct pipe_vertex_buffer *vb,
+                                               const struct pipe_vertex_buffer *vb,
                                                unsigned index, /* vertex element index */
                                                uint32_t *desc) /* where to upload descriptors */
 {
@@ -1727,7 +1714,7 @@ static void ALWAYS_INLINE si_set_vb_descriptor(struct si_vertex_elements *velems
 #if GFX_VER == 6 /* declare this function only once because it supports all chips. */
 
 void si_set_vertex_buffer_descriptor(struct si_screen *sscreen, struct si_vertex_elements *velems,
-                                     struct pipe_vertex_buffer *vb, unsigned element_index,
+                                     const struct pipe_vertex_buffer *vb, unsigned element_index,
                                      uint32_t *out)
 {
    switch (sscreen->info.gfx_level) {
@@ -1891,7 +1878,7 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx,
             /* the first iteration always executes */
             do {
                unsigned vbo_index = velems->vertex_buffer_index[i];
-               struct pipe_vertex_buffer *vb = &sctx->vertex_buffer[vbo_index];
+               const struct pipe_vertex_buffer *vb = &sctx->vertex_buffer[vbo_index];
                uint32_t *desc;
 
                radeon_emit_array_get_ptr(4, &desc);
@@ -1906,7 +1893,7 @@ static bool si_upload_and_prefetch_VB_descriptors(struct si_context *sctx,
             /* the first iteration always executes */
             do {
                unsigned vbo_index = velems->vertex_buffer_index[i];
-               struct pipe_vertex_buffer *vb = &sctx->vertex_buffer[vbo_index];
+               const struct pipe_vertex_buffer *vb = &sctx->vertex_buffer[vbo_index];
                uint32_t *desc = &ptr[(i - num_vbos_in_user_sgprs) * 4];
 
                si_set_vb_descriptor<GFX_VERSION>(velems, vb, i, desc);
@@ -2149,7 +2136,7 @@ static void si_draw(struct pipe_context *ctx,
                  si_resource(indexbuf)->TC_L2_dirty) {
          /* GFX8-GFX11 reads index buffers through TC L2, so it doesn't
           * need this. */
-         sctx->flags |= SI_CONTEXT_WB_L2;
+         sctx->flags |= SI_CONTEXT_WB_L2 | SI_CONTEXT_PFP_SYNC_ME;
          si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
          si_resource(indexbuf)->TC_L2_dirty = false;
       }
@@ -2162,14 +2149,14 @@ static void si_draw(struct pipe_context *ctx,
       /* Indirect buffers use TC L2 on GFX9-GFX11, but not other hw. */
       if (GFX_VERSION <= GFX8 || GFX_VERSION == GFX12) {
          if (indirect->buffer && si_resource(indirect->buffer)->TC_L2_dirty) {
-            sctx->flags |= SI_CONTEXT_WB_L2;
+            sctx->flags |= SI_CONTEXT_WB_L2 | SI_CONTEXT_PFP_SYNC_ME;
             si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
             si_resource(indirect->buffer)->TC_L2_dirty = false;
          }
 
          if (indirect->indirect_draw_count &&
              si_resource(indirect->indirect_draw_count)->TC_L2_dirty) {
-            sctx->flags |= SI_CONTEXT_WB_L2;
+            sctx->flags |= SI_CONTEXT_WB_L2 | SI_CONTEXT_PFP_SYNC_ME;
             si_mark_atom_dirty(sctx, &sctx->atoms.s.cache_flush);
             si_resource(indirect->indirect_draw_count)->TC_L2_dirty = false;
          }

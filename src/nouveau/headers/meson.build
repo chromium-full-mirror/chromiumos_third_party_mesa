@@ -5,8 +5,10 @@ nv_classes = [
   'cl9097',
   'cl90b5',
   'cl90c0',
+  'cla040',
   'cla0b5',
   'cla097',
+  'cla140',
   'cla297',
   'clb097',
   'clb0c0',
@@ -22,6 +24,7 @@ nv_classes = [
   'clc5c0',
   'clc697',
   'clc6c0',
+  'clc797',
   'clc7c0',
 ]
 
@@ -67,9 +70,6 @@ executable(
 
 # Only generate Rust bindings for NVK
 if with_nouveau_vk
-  add_languages('rust', required: true)
-  rust = import('rust')
-
   cl_rs_generated = []
   foreach cl : nv_classes
     cl_rs_generated += custom_target(
@@ -78,6 +78,14 @@ if with_nouveau_vk
       output : ['nvh_classes_'+cl+'.rs'],
       command : [prog_python, '@INPUT0@', '--in-h', '@INPUT1@',
                  '--out-rs', '@OUTPUT0@'],
+    )
+
+    cl_rs_generated += custom_target(
+      'nvh_' + cl + '_mthd.rs',
+      input : ['class_parser.py', 'nvidia/classes/'+cl+'.h'],
+      output : ['nvh_classes_'+cl+'_mthd.rs'],
+      command : [prog_python, '@INPUT0@', '--in-h', '@INPUT1@',
+                 '--out-rs-mthd', '@OUTPUT0@'],
     )
 
     fs = import('fs')
@@ -96,6 +104,15 @@ if with_nouveau_vk
         'nvh_classes_' + cl + '_tex.rs',
         input : ['struct_parser.py', 'nvidia/classes/'+cl+'tex.h'],
         output : ['nvh_classes_'+cl+'_tex.rs'],
+        command : [prog_python, '@INPUT0@', '--in-h', '@INPUT1@',
+                   '--out-rs', '@OUTPUT0@']
+      )
+    endif
+
+    if fs.is_file(f'nvidia/classes/@cl@sph.h')
+      cl_rs_generated += custom_target(
+        input : ['struct_parser.py', f'nvidia/classes/@cl@sph.h'],
+        output : [f'nvh_classes_@cl@_sph.rs'],
         command : [prog_python, '@INPUT0@', '--in-h', '@INPUT1@',
                    '--out-rs', '@OUTPUT0@']
       )
@@ -130,5 +147,17 @@ if with_nouveau_vk
 
   idep_nvidia_headers_rs = declare_dependency(
     link_with : _nvidia_headers_rs,
+  )
+
+  _libnv_push_rs = static_library(
+    'nv_push_rs',
+    files('nv_push_rs/lib.rs'),
+    gnu_symbol_visibility: 'hidden',
+    rust_abi: 'rust',
+    dependencies: [idep_nvidia_headers_rs],
+  )
+
+  idep_nv_push_rs = declare_dependency(
+    link_with : _libnv_push_rs,
   )
 endif

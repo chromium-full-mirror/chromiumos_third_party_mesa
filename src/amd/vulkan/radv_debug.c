@@ -18,6 +18,7 @@
 #include "util/mesa-sha1.h"
 #include "util/os_time.h"
 #include "ac_debug.h"
+#include "ac_descriptors.h"
 #include "radv_buffer.h"
 #include "radv_debug.h"
 #include "radv_descriptor_set.h"
@@ -230,7 +231,7 @@ radv_dump_descriptors(struct radv_device *device, FILE *f)
 struct radv_shader_inst {
    char text[160];  /* one disasm line */
    unsigned offset; /* instruction offset */
-   unsigned size;   /* instruction size = 4 or 8 */
+   unsigned size;   /* instruction size >= 4 */
 };
 
 /* Split a disassembly string into lines and add them to the array pointed
@@ -240,10 +241,29 @@ radv_add_split_disasm(const char *disasm, uint64_t start_addr, unsigned *num, st
 {
    struct radv_shader_inst *last_inst = *num ? &instructions[*num - 1] : NULL;
    char *next;
+   char *repeat = strstr(disasm, "then repeated");
 
    while ((next = strchr(disasm, '\n'))) {
       struct radv_shader_inst *inst = &instructions[*num];
       unsigned len = next - disasm;
+
+      if (repeat >= disasm && repeat < next) {
+         uint32_t repeat_count;
+         sscanf(repeat, "then repeated %u times", &repeat_count);
+
+         for (uint32_t i = 0; i < repeat_count; i++) {
+            inst = &instructions[*num];
+            memcpy(inst, last_inst, sizeof(struct radv_shader_inst));
+            inst->offset = last_inst->offset + last_inst->size * (i + 1);
+            (*num)++;
+         }
+
+         last_inst = inst;
+
+         disasm = next + 1;
+         repeat = strstr(disasm, "then repeated");
+         continue;
+      }
 
       if (!memchr(disasm, ';', len)) {
          /* Ignore everything that is not an instruction. */
@@ -258,8 +278,8 @@ radv_add_split_disasm(const char *disasm, uint64_t start_addr, unsigned *num, st
 
       const char *semicolon = strchr(disasm, ';');
       assert(semicolon);
-      /* More than 16 chars after ";" means the instruction is 8 bytes long. */
-      inst->size = next - semicolon > 16 ? 8 : 4;
+      /* 9 = 8 hex digits + a leading space */
+      inst->size = (next - semicolon) / 9 * 4;
 
       snprintf(inst->text + len, ARRAY_SIZE(inst->text) - len, " [PC=0x%" PRIx64 ", off=%u, size=%u]",
                start_addr + inst->offset, inst->offset, inst->size);
@@ -705,7 +725,7 @@ enum radv_device_fault_chunk {
    RADV_DEVICE_FAULT_CHUNK_COUNT,
 };
 
-void
+VkResult
 radv_check_gpu_hangs(struct radv_queue *queue, const struct radv_winsys_submit_info *submit_info)
 {
    enum amd_ip_type ring;
@@ -714,7 +734,7 @@ radv_check_gpu_hangs(struct radv_queue *queue, const struct radv_winsys_submit_i
 
    bool hang_occurred = radv_gpu_hang_occurred(queue, ring);
    if (!hang_occurred)
-      return;
+      return VK_SUCCESS;
 
    fprintf(stderr, "radv: GPU hang detected...\n");
 
@@ -848,6 +868,7 @@ radv_check_gpu_hangs(struct radv_queue *queue, const struct radv_winsys_submit_i
    }
 
 #endif
+   return VK_ERROR_DEVICE_LOST;
 }
 
 void
@@ -879,6 +900,7 @@ fail:
 bool
 radv_trap_handler_init(struct radv_device *device)
 {
+   const struct radv_physical_device *pdev = radv_device_physical(device);
    struct radeon_winsys *ws = device->ws;
    VkResult result;
 
@@ -912,12 +934,7 @@ radv_trap_handler_init(struct radv_device *device)
    uint64_t tma_va = radv_buffer_get_va(device->tma_bo) + 16;
    uint32_t desc[4];
 
-   desc[0] = tma_va;
-   desc[1] = S_008F04_BASE_ADDRESS_HI(tma_va >> 32);
-   desc[2] = TMA_BO_SIZE;
-   desc[3] = S_008F0C_DST_SEL_X(V_008F0C_SQ_SEL_X) | S_008F0C_DST_SEL_Y(V_008F0C_SQ_SEL_Y) |
-             S_008F0C_DST_SEL_Z(V_008F0C_SQ_SEL_Z) | S_008F0C_DST_SEL_W(V_008F0C_SQ_SEL_W) |
-             S_008F0C_DATA_FORMAT(V_008F0C_BUF_DATA_FORMAT_32);
+   ac_build_raw_buffer_descriptor(pdev->info.gfx_level, tma_va, TMA_BO_SIZE, desc);
 
    memcpy(device->tma_ptr, desc, sizeof(desc));
 

@@ -497,6 +497,7 @@ struct si_shader_info {
    bool uses_variable_block_size;
    bool uses_grid_size;
    bool uses_tg_size;
+   bool uses_atomic_ordered_add;
    bool writes_position;
    bool writes_psize;
    bool writes_clipvertex;
@@ -642,6 +643,7 @@ struct si_ps_epilog_bits {
 union si_shader_part_key {
    struct {
       struct si_ps_prolog_bits states;
+      unsigned use_aco : 1;
       unsigned wave32 : 1;
       unsigned num_input_sgprs : 6;
       /* Color interpolation and two-side color selection. */
@@ -654,6 +656,7 @@ union si_shader_part_key {
    } ps_prolog;
    struct {
       struct si_ps_epilog_bits states;
+      unsigned use_aco : 1;
       unsigned wave32 : 1;
       unsigned uses_discard : 1;
       unsigned colors_written : 8;
@@ -863,7 +866,10 @@ struct si_shader {
     * in use.
     */
    uint64_t gpu_address;
-   struct si_resource *scratch_bo;
+   /* Only used on GFX6-10 where the scratch address must be inserted into the shader binary.
+    * This is the scratch address that the current shader binary contains.
+    */
+   uint64_t scratch_va;
    union si_shader_key key;
    struct util_queue_fence ready;
    bool compilation_failed;
@@ -872,6 +878,7 @@ struct si_shader {
    bool is_binary_shared;
    bool is_gs_copy_shader;
    uint8_t wave_size;
+   unsigned complete_shader_binary_size;
 
    /* The following data is all that's needed for binary shaders. */
    struct si_shader_binary binary;
@@ -986,8 +993,10 @@ bool si_create_shader_variant(struct si_screen *sscreen, struct ac_llvm_compiler
                               struct si_shader *shader, struct util_debug_callback *debug);
 void si_shader_destroy(struct si_shader *shader);
 unsigned si_shader_io_get_unique_index(unsigned semantic);
-bool si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader,
-                             uint64_t scratch_va);
+int si_shader_binary_upload(struct si_screen *sscreen, struct si_shader *shader,
+                            uint64_t scratch_va);
+int si_shader_binary_upload_at(struct si_screen *sscreen, struct si_shader *shader,
+                               uint64_t scratch_va, int64_t bo_offset);
 bool si_can_dump_shader(struct si_screen *sscreen, gl_shader_stage stage,
                         enum si_shader_dump_type dump_type);
 void si_shader_dump(struct si_screen *sscreen, struct si_shader *shader,
@@ -1004,6 +1013,7 @@ bool si_shader_binary_open(struct si_screen *screen, struct si_shader *shader,
 bool si_get_external_symbol(enum amd_gfx_level gfx_level, void *data, const char *name,
                             uint64_t *value);
 unsigned si_get_shader_prefetch_size(struct si_shader *shader);
+unsigned si_get_shader_binary_size(struct si_screen *screen, struct si_shader *shader);
 
 /* si_shader_info.c */
 void si_nir_scan_shader(struct si_screen *sscreen,  const struct nir_shader *nir,
@@ -1018,6 +1028,7 @@ void si_nir_late_opts(struct nir_shader *nir);
 char *si_finalize_nir(struct pipe_screen *screen, void *nirptr);
 
 /* si_state_shaders.cpp */
+unsigned si_shader_num_alloc_param_exports(struct si_shader *shader);
 unsigned si_determine_wave_size(struct si_screen *sscreen, struct si_shader *shader);
 void gfx9_get_gs_info(struct si_shader_selector *es, struct si_shader_selector *gs,
                       struct gfx9_gs_info *out);

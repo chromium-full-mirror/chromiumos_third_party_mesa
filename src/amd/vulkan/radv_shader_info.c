@@ -88,9 +88,7 @@ gather_load_fs_input_info(const nir_shader *nir, const nir_intrinsic_instr *intr
    const bool per_primitive = nir->info.per_primitive_inputs & BITFIELD64_BIT(location);
 
    if (!per_primitive) {
-      if (intrin->intrinsic == nir_intrinsic_load_input) {
-         info->ps.flat_shaded_mask |= mapped_mask;
-      } else if (intrin->intrinsic == nir_intrinsic_load_input_vertex) {
+      if (intrin->intrinsic == nir_intrinsic_load_input_vertex) {
          if (io_sem.interp_explicit_strict)
             info->ps.explicit_strict_shaded_mask |= mapped_mask;
          else
@@ -100,6 +98,8 @@ gather_load_fs_input_info(const nir_shader *nir, const nir_intrinsic_instr *intr
             info->ps.float16_hi_shaded_mask |= mapped_mask;
          else
             info->ps.float16_shaded_mask |= mapped_mask;
+      } else if (intrin->intrinsic == nir_intrinsic_load_interpolated_input) {
+         info->ps.float32_shaded_mask |= mapped_mask;
       }
    }
 
@@ -294,18 +294,13 @@ gather_intrinsic_info(const nir_shader *nir, const nir_intrinsic_instr *instr, s
       break;
    }
    case nir_intrinsic_load_input:
+   case nir_intrinsic_load_per_primitive_input:
    case nir_intrinsic_load_interpolated_input:
    case nir_intrinsic_load_input_vertex:
       gather_intrinsic_load_input_info(nir, instr, info, gfx_state, stage_key);
       break;
    case nir_intrinsic_store_output:
       gather_intrinsic_store_output_info(nir, instr, info, consider_force_vrs);
-      break;
-   case nir_intrinsic_load_sbt_base_amd:
-      info->cs.is_rt_shader = true;
-      break;
-   case nir_intrinsic_load_rt_dynamic_callable_stack_base_amd:
-      info->cs.uses_dynamic_rt_callable_stack = true;
       break;
    case nir_intrinsic_bvh64_intersect_ray_amd:
       info->cs.uses_rt = true;
@@ -498,6 +493,9 @@ gather_shader_info_vs(struct radv_device *device, const nir_shader *nir,
       info->vs.dynamic_inputs = true;
    }
 
+   info->gs_inputs_read = ~0ULL;
+   info->vs.hs_inputs_read = ~0ULL;
+
    /* Use per-attribute vertex descriptors to prevent faults and for correct bounds checking. */
    info->vs.use_per_attribute_vb_descs = radv_use_per_attribute_vb_descs(nir, gfx_state, stage_key);
 
@@ -579,6 +577,7 @@ gather_shader_info_tcs(struct radv_device *device, const nir_shader *nir,
 static void
 gather_shader_info_tes(struct radv_device *device, const nir_shader *nir, struct radv_shader_info *info)
 {
+   info->gs_inputs_read = ~0ULL;
    info->tes._primitive_mode = nir->info.tess._primitive_mode;
    info->tes.spacing = nir->info.tess.spacing;
    info->tes.ccw = nir->info.tess.ccw;
@@ -587,9 +586,12 @@ gather_shader_info_tes(struct radv_device *device, const nir_shader *nir, struct
    info->tes.reads_tess_factors =
       !!(nir->info.inputs_read & (VARYING_BIT_TESS_LEVEL_INNER | VARYING_BIT_TESS_LEVEL_OUTER));
 
-   if (!info->inputs_linked)
+   if (!info->inputs_linked) {
       info->tes.num_linked_inputs = util_last_bit64(radv_gather_unlinked_io_mask(
          nir->info.inputs_read & ~(VARYING_BIT_TESS_LEVEL_OUTER | VARYING_BIT_TESS_LEVEL_INNER)));
+      info->tes.num_linked_patch_inputs = util_last_bit64(
+         radv_gather_unlinked_patch_io_mask(nir->info.inputs_read, nir->info.patch_inputs_read));
+   }
    if (!info->outputs_linked)
       info->tes.num_linked_outputs = util_last_bit64(radv_gather_unlinked_io_mask(nir->info.outputs_written));
 
@@ -873,6 +875,7 @@ gather_shader_info_fs(const struct radv_device *device, const nir_shader *nir,
    info->ps.post_depth_coverage = nir->info.fs.post_depth_coverage;
    info->ps.depth_layout = nir->info.fs.depth_layout;
    info->ps.uses_sample_shading = nir->info.fs.uses_sample_shading;
+   info->ps.uses_fbfetch_output = nir->info.fs.uses_fbfetch_output;
    info->ps.writes_memory = nir->info.writes_memory;
    info->ps.has_pcoord = nir->info.inputs_read & VARYING_BIT_PNTC;
    info->ps.prim_id_input = nir->info.inputs_read & VARYING_BIT_PRIMITIVE_ID;
@@ -905,7 +908,12 @@ gather_shader_info_fs(const struct radv_device *device, const nir_shader *nir,
    info->ps.pops_is_per_sample =
       info->ps.pops && (nir->info.fs.sample_interlock_ordered || nir->info.fs.sample_interlock_unordered);
 
-   info->ps.spi_ps_input = radv_compute_spi_ps_input(gfx_state, info);
+   info->ps.spi_ps_input_ena = radv_compute_spi_ps_input(pdev, gfx_state, info);
+   info->ps.spi_ps_input_addr = info->ps.spi_ps_input_ena;
+   if (pdev->info.gfx_level >= GFX12) {
+      /* Only SPI_PS_INPUT_ENA has this bit on GFX12. */
+      info->ps.spi_ps_input_addr &= C_02865C_COVERAGE_TO_SHADER_SELECT;
+   }
 
    info->has_epilog = gfx_state->ps.has_epilog && info->ps.colors_written;
 
@@ -1230,6 +1238,7 @@ radv_nir_shader_info_pass(struct radv_device *device, const struct nir_shader *n
 
    info->user_data_0 = radv_get_user_data_0(device, info);
    info->merged_shader_compiled_separately = radv_is_merged_shader_compiled_separately(device, info);
+   info->force_indirect_desc_sets = info->merged_shader_compiled_separately || stage_key->indirect_bindable;
 
    switch (nir->info.stage) {
    case MESA_SHADER_COMPUTE:
@@ -1722,11 +1731,17 @@ radv_link_shaders_info(struct radv_device *device, struct radv_shader_stage *pro
 
          es_info->workgroup_size = gs_info->workgroup_size;
       }
+
+      if (consumer && consumer->stage == MESA_SHADER_GEOMETRY) {
+         producer->info.gs_inputs_read = consumer->nir->info.inputs_read;
+      }
    }
 
    if (producer->stage == MESA_SHADER_VERTEX && consumer && consumer->stage == MESA_SHADER_TESS_CTRL) {
       struct radv_shader_stage *vs_stage = producer;
       struct radv_shader_stage *tcs_stage = consumer;
+
+      vs_stage->info.vs.hs_inputs_read = tcs_stage->nir->info.inputs_read;
 
       if (gfx_state->ts.patch_control_points) {
          vs_stage->info.workgroup_size =
