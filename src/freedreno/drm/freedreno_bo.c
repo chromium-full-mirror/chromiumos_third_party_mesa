@@ -627,6 +627,22 @@ fd_bo_get_metadata(struct fd_bo *bo, void *metadata, uint32_t metadata_size)
    return bo->funcs->get_metadata(bo, metadata, metadata_size);
 }
 
+static void *
+mkerrptr(struct fd_bo *bo, int loc)
+{
+   /* Mapped cmdstream buffers are dereferenced unconditionally.  For other
+    * buffers there are some corner cases where we handle the mmap failure
+    * (like resource_transfer_map_staging()... _assuming_ the staging buffer
+    * didn't also fail to map).
+    *
+    * So to be paranoid, limit the special error pointers to cmdstream BOs.
+    */
+   if (!(bo->alloc_flags & FD_BO_HINT_COMMAND))
+      return NULL;
+   uintptr_t err = errno | (loc << 12);
+   return (void *)err;
+}
+
 void *
 fd_bo_map_os_mmap(struct fd_bo *bo)
 {
@@ -634,7 +650,7 @@ fd_bo_map_os_mmap(struct fd_bo *bo)
    int ret;
    ret = bo->funcs->offset(bo, &offset);
    if (ret) {
-      return NULL;
+      return mkerrptr(bo, 1);
    }
    return os_mmap(0, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED,
                   bo->dev->fd, offset);
@@ -647,7 +663,7 @@ __fd_bo_map(struct fd_bo *bo)
       bo->map = bo->funcs->map(bo);
       if (bo->map == MAP_FAILED) {
          ERROR_MSG("mmap failed: %s", strerror(errno));
-         bo->map = NULL;
+         bo->map = mkerrptr(bo, 2);
       }
    }
 
