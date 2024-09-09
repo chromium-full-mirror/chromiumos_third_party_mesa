@@ -2330,6 +2330,15 @@ typedef enum nir_tex_src_type {
     */
    nir_tex_src_sampler_handle,
 
+   /** Tex src intrinsic
+    *
+    * This is an intrinsic used before function inlining i.e. before we know
+    * if a bindless value has been given as function param for use as a tex
+    * src.
+    */
+   nir_tex_src_sampler_deref_intrinsic,
+   nir_tex_src_texture_deref_intrinsic,
+
    /** Plane index for multi-plane YCbCr textures */
    nir_tex_src_plane,
 
@@ -6471,6 +6480,8 @@ bool nir_lower_continue_constructs(nir_shader *shader);
 bool nir_shader_uses_view_index(nir_shader *shader);
 bool nir_can_lower_multiview(nir_shader *shader);
 bool nir_lower_multiview(nir_shader *shader, uint32_t view_mask);
+
+bool nir_lower_view_index_to_device_index(nir_shader *shader);
 
 typedef enum {
    nir_lower_fp16_rtz = (1 << 0),

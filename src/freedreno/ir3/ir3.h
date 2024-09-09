@@ -1379,6 +1379,14 @@ is_reg_gpr(const struct ir3_register *reg)
    return true;
 }
 
+static inline bool
+is_reg_a0(const struct ir3_register *reg)
+{
+   if (reg->flags & (IR3_REG_CONST | IR3_REG_IMMED))
+      return false;
+   return reg->num == regid(REG_A0, 0);
+}
+
 /* is dst a normal temp register: */
 static inline bool
 is_dest_gpr(const struct ir3_register *dst)
