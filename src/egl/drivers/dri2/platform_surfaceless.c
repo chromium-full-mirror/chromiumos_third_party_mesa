@@ -34,7 +34,6 @@
 #include <sys/types.h>
 
 #include "egl_dri2.h"
-#include "eglglobals.h"
 #include "kopper_interface.h"
 #include "loader.h"
 
@@ -222,30 +221,32 @@ static const __DRIextension *swrast_loader_extensions[] = {
 static bool
 surfaceless_probe_device(_EGLDisplay *disp, bool swrast, bool zink)
 {
+#define MAX_DRM_DEVICES 64
    const unsigned node_type = swrast ? DRM_NODE_PRIMARY : DRM_NODE_RENDER;
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
-   _EGLDevice *dev_list = _eglGlobal.DeviceList;
-   drmDevicePtr device;
+   drmDevicePtr device, devices[MAX_DRM_DEVICES] = {NULL};
+   int i, num_devices;
 
-   while (dev_list) {
-      if (!_eglDeviceSupports(dev_list, _EGL_DEVICE_DRM))
-         goto next;
+   num_devices = drmGetDevices2(0, devices, ARRAY_SIZE(devices));
+   if (num_devices < 0)
+      return false;
 
-      if (_eglHasAttrib(disp, EGL_DEVICE_EXT) && dev_list != disp->Device) {
-         goto next;
-      }
-
-      device = _eglDeviceDrm(dev_list);
-      assert(device);
+   for (i = 0; i < num_devices; ++i) {
+      device = devices[i];
 
       if (!(device->available_nodes & (1 << node_type)))
-         goto next;
+         continue;
 
       dri2_dpy->fd_render_gpu = loader_open_device(device->nodes[node_type]);
       if (dri2_dpy->fd_render_gpu < 0)
-         goto next;
+         continue;
 
-      disp->Device = dev_list;
+      disp->Device = _eglFindDevice(dri2_dpy->fd_render_gpu, swrast);
+      if (!disp->Device) {
+         close(dri2_dpy->fd_render_gpu);
+         dri2_dpy->fd_render_gpu = -1;
+         continue;
+      }
 
       char *driver_name = loader_get_driver_for_fd(dri2_dpy->fd_render_gpu);
       if (swrast) {
@@ -263,25 +264,23 @@ surfaceless_probe_device(_EGLDisplay *disp, bool swrast, bool zink)
          dri2_dpy->driver_name = driver_name;
       }
 
-      if (dri2_dpy->driver_name && dri2_load_driver_dri3(disp)) {
-         if (swrast || zink)
-            dri2_dpy->loader_extensions = swrast_loader_extensions;
-         else
-            dri2_dpy->loader_extensions = image_loader_extensions;
+      if (dri2_dpy->driver_name && dri2_load_driver_dri3(disp))
          break;
-      }
 
       free(dri2_dpy->driver_name);
       dri2_dpy->driver_name = NULL;
       close(dri2_dpy->fd_render_gpu);
       dri2_dpy->fd_render_gpu = -1;
-
-   next:
-      dev_list = _eglDeviceNext(dev_list);
    }
+   drmFreeDevices(devices, num_devices);
 
-   if (!dev_list)
+   if (i == num_devices)
       return false;
+
+   if (swrast)
+      dri2_dpy->loader_extensions = swrast_loader_extensions;
+   else
+      dri2_dpy->loader_extensions = image_loader_extensions;
 
    return true;
 }
