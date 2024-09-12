@@ -157,6 +157,7 @@ bool
 lima_nir_lower_txp(nir_shader *shader)
 {
    return nir_shader_instructions_pass(shader, lima_nir_lower_txp_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                        NULL);
 }

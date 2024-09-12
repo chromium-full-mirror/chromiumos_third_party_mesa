@@ -49,7 +49,8 @@ static void lower_vulkan_resource_index(nir_builder *b,
                                nir_imm_int(b, desc_set),
                                nir_imm_int(b, binding),
                                nir_imm_int(b, desc_type));
-   nir_def_replace(&intr->def, def);
+   nir_def_rewrite_uses(&intr->def, def);
+   nir_instr_remove(&intr->instr);
 }
 
 static void lower_load_global_constant_to_scalar(nir_builder *b,
@@ -83,7 +84,9 @@ static void lower_load_global_constant_to_scalar(nir_builder *b,
       loads[i] = &chan_intr->def;
    }
 
-   nir_def_replace(&intr->def, nir_vec(b, loads, intr->num_components));
+   nir_def_rewrite_uses(&intr->def,
+                            nir_vec(b, loads, intr->num_components));
+   nir_instr_remove(&intr->instr);
 }
 
 static bool lower_intrinsic(nir_builder *b, nir_intrinsic_instr *instr)

@@ -71,7 +71,8 @@ nir_opt_combine_barriers_impl(nir_function_impl *impl,
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow |
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance |
                                      nir_metadata_live_defs);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
@@ -235,7 +236,8 @@ nir_opt_barrier_modes(nir_shader *shader)
                                  nir_metadata_instr_index);
 
       if (nir_opt_barrier_modes_impl(impl)) {
-         nir_metadata_preserve(impl, nir_metadata_control_flow |
+         nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance |
                                      nir_metadata_live_defs);
          progress = true;
       } else {

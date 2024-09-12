@@ -217,10 +217,12 @@ agx_nir_lower_sample_mask(nir_shader *shader)
       return false;
    }
 
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl,
+                         nir_metadata_block_index | nir_metadata_dominance);
 
    nir_shader_intrinsics_pass(shader, lower_discard_to_sample_mask_0,
-                              nir_metadata_control_flow, NULL);
+                              nir_metadata_block_index | nir_metadata_dominance,
+                              NULL);
 
    return true;
 }

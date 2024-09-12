@@ -436,7 +436,7 @@ fd6_sampler_view_update(struct fd_context *ctx,
       fdl6_buffer_view_init(so->descriptor, cso->format, swiz, iova, size);
    } else {
       struct fdl_view_args args = {
-         .chip = ctx->screen->gen,
+         .chip = A6XX,
 
          /* Using relocs for addresses still */
          .iova = 0,
@@ -455,7 +455,6 @@ fd6_sampler_view_update(struct fd_context *ctx,
          .type = fdl_type_from_pipe_target(cso->target),
          .chroma_offsets = {FDL_CHROMA_LOCATION_COSITED_EVEN,
                             FDL_CHROMA_LOCATION_COSITED_EVEN},
-         .ubwc_fc_mutable = false,
       };
 
       if (rsc->b.b.format == PIPE_FORMAT_R8_G8B8_420_UNORM) {

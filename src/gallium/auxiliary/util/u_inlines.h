@@ -128,8 +128,7 @@ pipe_surface_release(struct pipe_context *pipe, struct pipe_surface **ptr)
 {
    struct pipe_surface *old = *ptr;
 
-   if (pipe_reference_described(old ? &old->reference : NULL,
-                                NULL,
+   if (pipe_reference_described(&old->reference, NULL,
                                 (debug_reference_descriptor)
                                 debug_describe_surface))
       pipe->surface_destroy(pipe, old);

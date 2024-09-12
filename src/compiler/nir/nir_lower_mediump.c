@@ -39,7 +39,6 @@ get_io_intrinsic(nir_instr *instr, nir_variable_mode modes,
 
    switch (intr->intrinsic) {
    case nir_intrinsic_load_input:
-   case nir_intrinsic_load_per_primitive_input:
    case nir_intrinsic_load_input_vertex:
    case nir_intrinsic_load_interpolated_input:
    case nir_intrinsic_load_per_vertex_input:
@@ -91,7 +90,7 @@ nir_recompute_io_bases(nir_shader *nir, nir_variable_mode modes)
 
          if (mode == nir_var_shader_in) {
             for (unsigned i = 0; i < num_slots; i++) {
-               if (intr->intrinsic == nir_intrinsic_load_per_primitive_input)
+               if (sem.per_primitive)
                   BITSET_SET(per_prim_inputs, sem.location + i);
                else
                   BITSET_SET(inputs, sem.location + i);
@@ -124,7 +123,7 @@ nir_recompute_io_bases(nir_shader *nir, nir_variable_mode modes)
             num_slots = (num_slots + sem.high_16bits + 1) / 2;
 
          if (mode == nir_var_shader_in) {
-            if (intr->intrinsic == nir_intrinsic_load_per_primitive_input) {
+            if (sem.per_primitive) {
                nir_intrinsic_set_base(intr,
                                       num_normal_inputs +
                                       BITSET_PREFIX_SUM(per_prim_inputs, sem.location));
@@ -146,7 +145,8 @@ nir_recompute_io_bases(nir_shader *nir, nir_variable_mode modes)
    }
 
    if (changed) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_dominance |
+                                     nir_metadata_block_index);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -284,7 +284,8 @@ nir_lower_mediump_io(nir_shader *nir, nir_variable_mode modes,
       nir_recompute_io_bases(nir, modes);
 
    if (changed) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_dominance |
+                                     nir_metadata_block_index);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -345,7 +346,8 @@ nir_force_mediump_io(nir_shader *nir, nir_variable_mode modes,
    }
 
    if (changed) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_dominance |
+                                     nir_metadata_block_index);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -390,7 +392,8 @@ nir_unpack_16bit_varying_slots(nir_shader *nir, nir_variable_mode modes)
       nir_recompute_io_bases(nir, modes);
 
    if (changed) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_dominance |
+                                     nir_metadata_block_index);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -556,7 +559,8 @@ nir_lower_mediump_vars_impl(nir_function_impl *impl, nir_variable_mode modes,
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -691,7 +695,8 @@ nir_legalize_16bit_sampler_srcs(nir_shader *nir,
                                 nir_tex_src_type_constraints constraints)
 {
    return nir_shader_instructions_pass(nir, legalize_16bit_sampler_srcs,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_dominance |
+                                          nir_metadata_block_index,
                                        constraints);
 }
 
@@ -1101,6 +1106,6 @@ nir_opt_16bit_tex_image(nir_shader *nir,
 {
    return nir_shader_instructions_pass(nir,
                                        opt_16bit_tex_image,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index | nir_metadata_dominance,
                                        options);
 }

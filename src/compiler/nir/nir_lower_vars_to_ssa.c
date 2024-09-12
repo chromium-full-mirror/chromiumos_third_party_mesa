@@ -668,7 +668,8 @@ rename_variables(struct lower_variables_state *state)
                val = nir_vector_extract(&b, val, comp);
             }
 
-            nir_def_replace(&intrin->def, val);
+            nir_def_rewrite_uses(&intrin->def, val);
+            nir_instr_remove(&intrin->instr);
             break;
          }
 
@@ -862,7 +863,8 @@ nir_lower_vars_to_ssa_impl(nir_function_impl *impl)
 
    nir_phi_builder_finish(state.phi_builder);
 
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
 
    ralloc_free(state.dead_ctx);
 

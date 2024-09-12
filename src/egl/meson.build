@@ -1,20 +1,35 @@
 # Copyright © 2017-2019 Intel Corporation
-# SPDX-License-Identifier: MIT
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 inc_egl = include_directories('.', 'main')
 inc_egl_dri2 = include_directories('drivers/dri2')
 
 c_args_for_egl = [asan_c_args]
 cpp_args_for_egl = []
-link_for_egl = [libpipe_loader_dynamic]
-if with_dri
-  link_for_egl += libgallium_dri
-endif
-if with_platform_windows
-  link_for_egl += libgallium_wgl
-endif
+link_for_egl = []
 deps_for_egl = []
 incs_for_egl = [inc_include, inc_src, inc_egl]
+
+if with_gallium_softpipe
+  c_args_for_egl += '-DGALLIUM_SOFTPIPE'
+endif
 
 files_egl = files(
   'main/eglapi.c',
@@ -76,7 +91,7 @@ g_egldispatchstubs_h = custom_target(
   capture : true,
 )
 
-if with_dri
+if with_dri2
   files_egl += files(
     'drivers/dri2/egl_dri2.c',
     'drivers/dri2/egl_dri2.h',
@@ -85,7 +100,6 @@ if with_dri
   deps_for_egl += idep_xmlconfig
   link_for_egl += libloader
   incs_for_egl += inc_loader
-  incs_for_egl += inc_loader_x11
   incs_for_egl += inc_gallium
   incs_for_egl += inc_gallium_aux
   incs_for_egl += inc_mesa
@@ -100,9 +114,9 @@ if with_dri
     files_egl += files('drivers/dri2/platform_x11.c')
     if with_dri3
       files_egl += files('drivers/dri2/platform_x11_dri3.c')
-      link_for_egl += [libloader_x11]
+      link_for_egl += libloader_dri3_helper
     endif
-    deps_for_egl += [dep_x11_xcb, dep_xcb_dri2, dep_xcb_xrandr, dep_xcb_xfixes, dep_xcb_shm]
+    deps_for_egl += [dep_x11_xcb, dep_xcb_dri2, dep_xcb_xrandr, dep_xcb_xfixes]
   endif
   if with_gbm and not with_platform_android
     files_egl += files('drivers/dri2/platform_drm.c')

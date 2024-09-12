@@ -175,7 +175,8 @@ nir_split_per_member_structs(nir_shader *shader)
    }
 
    nir_shader_instructions_pass(shader, rewrite_deref_instr,
-                                nir_metadata_control_flow,
+                                nir_metadata_block_index |
+                                   nir_metadata_dominance,
                                 var_to_member_map);
 
    ralloc_free(dead_ctx);

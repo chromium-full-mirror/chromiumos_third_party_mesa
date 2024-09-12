@@ -133,6 +133,7 @@ int main(int argc, char **argv) {
   fclose(file);
 
   nv_push_init(&pushbuf, data, file_size / 4);
+  pushbuf.last_size = pushbuf.limit - 1;
   pushbuf.end = pushbuf.limit;
 
   vk_push_print(stdout, &pushbuf, &device_info);

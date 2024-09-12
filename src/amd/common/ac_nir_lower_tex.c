@@ -234,8 +234,7 @@ can_move_coord(nir_scalar scalar, coord_info *info)
       return false;
 
    nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(scalar.def->parent_instr);
-   if (intrin->intrinsic == nir_intrinsic_load_input ||
-       intrin->intrinsic == nir_intrinsic_load_per_primitive_input) {
+   if (intrin->intrinsic == nir_intrinsic_load_input) {
       info->bary = NULL;
       info->load = intrin;
       return true;
@@ -378,14 +377,27 @@ move_tex_coords(struct move_tex_coords_state *state, nir_function_impl *impl, ni
 }
 
 static bool
-move_ddxy(struct move_tex_coords_state *state, nir_function_impl *impl, nir_intrinsic_instr *instr)
+move_fddxy(struct move_tex_coords_state *state, nir_function_impl *impl, nir_alu_instr *instr)
 {
+   switch (instr->op) {
+   case nir_op_fddx:
+   case nir_op_fddy:
+   case nir_op_fddx_fine:
+   case nir_op_fddy_fine:
+   case nir_op_fddx_coarse:
+   case nir_op_fddy_coarse:
+      break;
+   default:
+      return false;
+   }
+
    unsigned num_components = instr->def.num_components;
    nir_scalar components[NIR_MAX_VEC_COMPONENTS];
    coord_info infos[NIR_MAX_VEC_COMPONENTS];
    bool can_move_all = true;
    for (unsigned i = 0; i < num_components; i++) {
-      components[i] = nir_scalar_resolved(instr->src[0].ssa, i);
+      components[i] = nir_scalar_chase_alu_src(nir_get_scalar(&instr->def, i), 0);
+      components[i] = nir_scalar_chase_movs(components[i]);
       can_move_all &= can_move_coord(components[i], &infos[i]);
    }
    if (!can_move_all || state->num_wqm_vgprs + num_components > state->options->max_wqm_vgprs)
@@ -397,8 +409,7 @@ move_ddxy(struct move_tex_coords_state *state, nir_function_impl *impl, nir_intr
    }
 
    nir_def *def = nir_vec_scalars(&state->toplevel_b, components, num_components);
-   def = _nir_build_ddx(&state->toplevel_b, def->bit_size, def);
-   nir_instr_as_intrinsic(def->parent_instr)->intrinsic = instr->intrinsic;
+   def = nir_build_alu1(&state->toplevel_b, instr->op, def);
    nir_def_rewrite_uses(&instr->def, def);
 
    state->num_wqm_vgprs += num_components;
@@ -424,25 +435,20 @@ move_coords_from_divergent_cf(struct move_tex_coords_state *state, nir_function_
 
             if (instr->type == nir_instr_type_tex && (divergent_cf || *divergent_discard)) {
                progress |= move_tex_coords(state, impl, instr);
+            } else if (instr->type == nir_instr_type_alu && (divergent_cf || *divergent_discard)) {
+               progress |= move_fddxy(state, impl, nir_instr_as_alu(instr));
             } else if (instr->type == nir_instr_type_intrinsic) {
                nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
                switch (intrin->intrinsic) {
+               case nir_intrinsic_discard:
                case nir_intrinsic_terminate:
                   if (divergent_cf)
                      *divergent_discard = true;
                   break;
+               case nir_intrinsic_discard_if:
                case nir_intrinsic_terminate_if:
                   if (divergent_cf || nir_src_is_divergent(intrin->src[0]))
                      *divergent_discard = true;
-                  break;
-               case nir_intrinsic_ddx:
-               case nir_intrinsic_ddy:
-               case nir_intrinsic_ddx_fine:
-               case nir_intrinsic_ddy_fine:
-               case nir_intrinsic_ddx_coarse:
-               case nir_intrinsic_ddy_coarse:
-                  if (divergent_cf || *divergent_discard)
-                     progress |= move_ddxy(state, impl, intrin);
                   break;
                default:
                   break;
@@ -495,13 +501,13 @@ ac_nir_lower_tex(nir_shader *nir, const ac_nir_lower_tex_options *options)
 
       bool divergent_discard = false;
       if (move_coords_from_divergent_cf(&state, impl, &impl->body, &divergent_discard, false))
-         nir_metadata_preserve(impl, nir_metadata_control_flow);
+         nir_metadata_preserve(impl, nir_metadata_block_index | nir_metadata_dominance);
       else
          nir_metadata_preserve(impl, nir_metadata_all);
    }
 
    progress |= nir_shader_instructions_pass(
-      nir, lower_tex, nir_metadata_control_flow, (void *)options);
+      nir, lower_tex, nir_metadata_block_index | nir_metadata_dominance, (void *)options);
 
    return progress;
 }

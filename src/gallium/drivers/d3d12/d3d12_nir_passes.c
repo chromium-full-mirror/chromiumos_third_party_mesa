@@ -101,7 +101,8 @@ d3d12_lower_yflip(nir_shader *nir)
          }
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
    }
 }
 
@@ -154,7 +155,8 @@ d3d12_lower_depth_range(nir_shader *nir)
          }
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
    }
 }
 
@@ -192,7 +194,7 @@ d3d12_lower_compute_state_vars(nir_shader *nir)
    assert(nir->info.stage == MESA_SHADER_COMPUTE);
    struct compute_state_vars vars = { 0 };
    return nir_shader_instructions_pass(nir, lower_compute_state_vars,
-      nir_metadata_control_flow, &vars);
+      nir_metadata_block_index | nir_metadata_dominance, &vars);
 }
 
 static bool
@@ -247,7 +249,8 @@ d3d12_lower_uint_cast(nir_shader *nir, bool is_signed)
          }
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
    }
 }
 
@@ -268,7 +271,8 @@ lower_load_draw_params(nir_builder *b, nir_intrinsic_instr *intr,
    unsigned channel = intr->intrinsic == nir_intrinsic_load_first_vertex ? 0 :
       intr->intrinsic == nir_intrinsic_load_base_instance ? 1 :
       intr->intrinsic == nir_intrinsic_load_draw_id ? 2 : 3;
-   nir_def_replace(&intr->def, nir_channel(b, load, channel));
+   nir_def_rewrite_uses(&intr->def, nir_channel(b, load, channel));
+   nir_instr_remove(&intr->instr);
 
    return true;
 }
@@ -281,7 +285,7 @@ d3d12_lower_load_draw_params(struct nir_shader *nir)
       return false;
 
    return nir_shader_intrinsics_pass(nir, lower_load_draw_params,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index | nir_metadata_dominance,
                                      &draw_params);
 }
 
@@ -296,7 +300,8 @@ lower_load_patch_vertices_in(nir_builder *b, nir_intrinsic_instr *intr,
    nir_def *load = b->shader->info.stage == MESA_SHADER_TESS_CTRL ?
       d3d12_get_state_var(b, D3D12_STATE_VAR_PATCH_VERTICES_IN, "d3d12_FirstVertex", glsl_uint_type(), _state) :
       nir_imm_int(b, b->shader->info.tess.tcs_vertices_out);
-   nir_def_replace(&intr->def, load);
+   nir_def_rewrite_uses(&intr->def, load);
+   nir_instr_remove(&intr->instr);
    return true;
 }
 
@@ -310,7 +315,7 @@ d3d12_lower_load_patch_vertices_in(struct nir_shader *nir)
       return false;
 
    return nir_shader_intrinsics_pass(nir, lower_load_patch_vertices_in,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index | nir_metadata_dominance,
                                      &var);
 }
 
@@ -412,7 +417,8 @@ d3d12_nir_invert_depth(nir_shader *shader, unsigned viewport_mask, bool clip_hal
          invert_depth_impl(&b, &state);
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
    }
 }
 
@@ -480,7 +486,10 @@ lower_instr(nir_intrinsic_instr *instr, nir_builder *b,
                    .range = ~0,
                    );
 
-   nir_def_replace(&instr->def, load);
+   nir_def_rewrite_uses(&instr->def, load);
+
+   /* Remove the old load_* instruction and any parent derefs */
+   nir_instr_remove(&instr->instr);
    for (nir_deref_instr *d = deref; d; d = nir_deref_instr_parent(d)) {
       /* If anyone is using this deref, leave it alone */
       if (!list_is_empty(&d->def.uses))
@@ -524,7 +533,8 @@ d3d12_lower_state_vars(nir_shader *nir, struct d3d12_shader *shader)
          }
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
    }
 
    if (progress) {
@@ -592,7 +602,8 @@ d3d12_add_missing_dual_src_target(struct nir_shader *s,
 
       nir_store_var(&b, out, zero, 0xf);
    }
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl, nir_metadata_block_index |
+                               nir_metadata_dominance);
 }
 
 void
@@ -971,7 +982,7 @@ d3d12_split_needed_varyings(nir_shader *s)
 
    if (progress) {
       nir_shader_intrinsics_pass(s, split_varying_accesses,
-                                 nir_metadata_control_flow,
+                                 nir_metadata_block_index | nir_metadata_dominance,
                                  &state);
    } else {
       nir_shader_preserve_all_metadata(s);
@@ -1030,6 +1041,6 @@ d3d12_write_0_to_new_varying(nir_shader *s, nir_variable *var)
          }
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index | nir_metadata_dominance);
    }
 }

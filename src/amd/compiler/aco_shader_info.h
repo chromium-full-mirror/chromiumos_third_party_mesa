@@ -141,6 +141,7 @@ struct aco_shader_info {
 };
 
 enum aco_compiler_debug_level {
+   ACO_COMPILER_DEBUG_LEVEL_PERFWARN,
    ACO_COMPILER_DEBUG_LEVEL_ERROR,
 };
 

@@ -68,7 +68,8 @@ agx_nir_lower_alpha_to_coverage(nir_shader *shader, uint8_t nr_samples)
    /* Discard samples that aren't covered */
    nir_discard_agx(b, nir_inot(b, mask));
    shader->info.fs.uses_discard = true;
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl,
+                         nir_metadata_dominance | nir_metadata_block_index);
    return true;
 }
 
@@ -118,7 +119,8 @@ agx_nir_lower_alpha_to_one(nir_shader *shader)
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl,
+                            nir_metadata_block_index | nir_metadata_dominance);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }

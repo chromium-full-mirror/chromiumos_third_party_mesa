@@ -97,8 +97,9 @@ agx_bo_cache_evict_stale_bos(struct agx_device *dev, unsigned tv_sec)
 }
 
 static void
-agx_bo_cache_put_locked(struct agx_device *dev, struct agx_bo *bo)
+agx_bo_cache_put_locked(struct agx_bo *bo)
 {
+   struct agx_device *dev = bo->dev;
    struct list_head *bucket = agx_bucket(dev, bo->size);
    struct timespec time;
 
@@ -131,13 +132,15 @@ agx_bo_cache_put_locked(struct agx_device *dev, struct agx_bo *bo)
 
 /* Tries to add a BO to the cache. Returns if it was successful */
 static bool
-agx_bo_cache_put(struct agx_device *dev, struct agx_bo *bo)
+agx_bo_cache_put(struct agx_bo *bo)
 {
+   struct agx_device *dev = bo->dev;
+
    if (bo->flags & AGX_BO_SHARED) {
       return false;
    } else {
       simple_mtx_lock(&dev->bo_cache.lock);
-      agx_bo_cache_put_locked(dev, bo);
+      agx_bo_cache_put_locked(bo);
       simple_mtx_unlock(&dev->bo_cache.lock);
 
       return true;
@@ -169,7 +172,7 @@ agx_bo_reference(struct agx_bo *bo)
 }
 
 void
-agx_bo_unreference(struct agx_device *dev, struct agx_bo *bo)
+agx_bo_unreference(struct agx_bo *bo)
 {
    if (!bo)
       return;
@@ -178,18 +181,20 @@ agx_bo_unreference(struct agx_device *dev, struct agx_bo *bo)
    if (p_atomic_dec_return(&bo->refcnt))
       return;
 
+   struct agx_device *dev = bo->dev;
+
    pthread_mutex_lock(&dev->bo_map_lock);
 
    /* Someone might have imported this BO while we were waiting for the
     * lock, let's make sure it's still not referenced before freeing it.
     */
    if (p_atomic_read(&bo->refcnt) == 0) {
-      assert(!p_atomic_read_relaxed(&bo->writer));
+      assert(!p_atomic_read_relaxed(&bo->writer_syncobj));
 
       if (dev->debug & AGX_DBG_TRACE)
-         agxdecode_track_free(dev->agxdecode, bo);
+         agxdecode_track_free(bo);
 
-      if (!agx_bo_cache_put(dev, bo))
+      if (!agx_bo_cache_put(bo))
          agx_bo_free(dev, bo);
    }
 
@@ -197,8 +202,8 @@ agx_bo_unreference(struct agx_device *dev, struct agx_bo *bo)
 }
 
 struct agx_bo *
-agx_bo_create(struct agx_device *dev, unsigned size, unsigned align,
-              enum agx_bo_flags flags, const char *label)
+agx_bo_create_aligned(struct agx_device *dev, unsigned size, unsigned align,
+                      enum agx_bo_flags flags, const char *label)
 {
    struct agx_bo *bo;
    assert(size > 0);
@@ -220,12 +225,12 @@ agx_bo_create(struct agx_device *dev, unsigned size, unsigned align,
     * flush the cache to make space for the new allocation.
     */
    if (!bo)
-      bo = dev->ops.bo_alloc(dev, size, align, flags);
+      bo = agx_bo_alloc(dev, size, align, flags);
    if (!bo)
       bo = agx_bo_cache_fetch(dev, size, align, flags, false);
    if (!bo) {
       agx_bo_cache_evict_all(dev);
-      bo = dev->ops.bo_alloc(dev, size, align, flags);
+      bo = agx_bo_alloc(dev, size, align, flags);
    }
 
    if (!bo) {
@@ -237,7 +242,7 @@ agx_bo_create(struct agx_device *dev, unsigned size, unsigned align,
    p_atomic_set(&bo->refcnt, 1);
 
    if (dev->debug & AGX_DBG_TRACE)
-      agxdecode_track_alloc(dev->agxdecode, bo);
+      agxdecode_track_alloc(bo);
 
    return bo;
 }

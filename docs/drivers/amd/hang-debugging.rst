@@ -29,8 +29,7 @@ trace markers and synchronization and check for hangs. The hang report will be
 saved to ``~/radv_dumps_<pid>_<time>``. Inside the directory of the hang report,
 there are a couple of files:
 
-* ``*.spv``: SPIR-V binaries of the pipeline that was bound when the hang
-  occurred.
+* ``*.spv``: SPIR-V binaries of the pipeline that was bound when the hang occured.
 * ``app_info.log``: ``VkApplicationInfo`` fields.
 * ``bo_history.log``: A list of every GPU memory allocation and deallocation.
   If the GPU hang was caused by a page fault, you can use
@@ -48,7 +47,7 @@ there are a couple of files:
 * ``umr_ring.log``: Similar to ``trace.log``.
 * ``umr_waves.log``: A list of waves that were active at the time of the hang,
   including register values.
-* ``vm_fault.log``: The page fault address if a page fault occurred.
+* ``vm_fault.log``: The page fault address if a page fault occured.
 
 Debugging Steam games
 ---------------------
@@ -77,4 +76,4 @@ disable GPU recovery by adding ``amdgpu.gpu_recovery=0`` to your kernel command
 line options. And then invoke UMR manually with
 ``umr --by-pci <pci_id> -O bits,halt_waves -go 0 -wa <ring> -go 1 2>&1`` for
 dumping the waves and ``umr --by-pci <pci_id> -RS <ring> 2>&1`` for dumping the
-rings once the GPU hang occurred.
+rings once the GPU hang occured.

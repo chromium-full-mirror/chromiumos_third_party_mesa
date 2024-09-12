@@ -142,15 +142,12 @@ initialize_texture_fields(struct gl_context *ctx,
                           struct gl_texture_object *texObj,
                           GLint levels,
                           GLsizei width, GLsizei height, GLsizei depth,
-                          GLenum internalFormat, mesa_format texFormat,
-                          GLint compression)
+                          GLenum internalFormat, mesa_format texFormat)
 {
    const GLenum target = texObj->Target;
    const GLuint numFaces = _mesa_num_tex_faces(target);
    GLint level, levelWidth = width, levelHeight = height, levelDepth = depth;
    GLuint face;
-
-   texObj->CompressionRate = compression;
 
    /* Set up all the texture object's gl_texture_images */
    for (level = 0; level < levels; level++) {
@@ -312,34 +309,6 @@ _mesa_is_legal_tex_storage_format(const struct gl_context *ctx,
    default:
       return _mesa_base_tex_format(ctx, internalformat) > 0;
    }
-}
-
-
-static GLboolean
-parse_attribs(const GLint *attribs, bool no_error,
-              GLint *compression)
-{
-   while (attribs[0] != GL_NONE) {
-      const GLint pname = attribs[0];
-      const GLint value = attribs[1];
-      attribs += 2;
-
-      switch (pname) {
-      case GL_SURFACE_COMPRESSION_EXT:
-         if (!no_error && (value < GL_SURFACE_COMPRESSION_FIXED_RATE_NONE_EXT ||
-                           value > GL_SURFACE_COMPRESSION_FIXED_RATE_12BPC_EXT))
-            return GL_FALSE;
-         *compression = value;
-         break;
-
-      default:
-         if (!no_error)
-            return GL_FALSE;
-         break;
-      };
-   }
-
-   return GL_TRUE;
 }
 
 
@@ -520,14 +489,12 @@ texture_storage(struct gl_context *ctx, GLuint dims,
                 struct gl_memory_object *memObj, GLenum target,
                 GLsizei levels, GLenum internalformat, GLsizei width,
                 GLsizei height, GLsizei depth, GLuint64 offset, bool dsa,
-                const GLint *attribs, bool no_error, const char *func)
+                bool no_error, const char *func)
 {
    GLboolean sizeOK = GL_TRUE, dimensionsOK = GL_TRUE;
    mesa_format texFormat;
-   GLint compression = GL_SURFACE_COMPRESSION_FIXED_RATE_NONE_EXT;
    const char* suffix = dsa ? (memObj ? "tureMem" : "ture") :
                               (memObj ? "Mem" : "");
-   const char* suffix2 = attribs ? "Attribs" : "";
 
    assert(texObj);
 
@@ -553,7 +520,7 @@ texture_storage(struct gl_context *ctx, GLuint dims,
    if (_mesa_is_proxy_texture(target)) {
       if (dimensionsOK && sizeOK) {
          initialize_texture_fields(ctx, texObj, levels, width, height, depth,
-                                   internalformat, texFormat, compression);
+                                   internalformat, texFormat);
       }
       else {
          /* clear all image fields for [levels] */
@@ -564,33 +531,24 @@ texture_storage(struct gl_context *ctx, GLuint dims,
       if (!no_error) {
          if (!dimensionsOK) {
             _mesa_error(ctx, GL_INVALID_VALUE,
-                        "glTex%sStorage%s%uD(invalid width, height or depth)",
-                        suffix, suffix2, dims);
+                        "glTex%sStorage%uD(invalid width, height or depth)",
+                        suffix, dims);
             return;
          }
 
          if (!sizeOK) {
             _mesa_error(ctx, GL_OUT_OF_MEMORY,
-                        "glTex%sStorage%s%uD(texture too large)",
-                        suffix, suffix2, dims);
+                        "glTex%sStorage%uD(texture too large)",
+                        suffix, dims);
             return;
          }
 
          if (texObj->IsSparse) {
             char func[32];
-            snprintf(func, 32, "glTex%sStorage%s%uD", suffix, suffix2, dims);
+            snprintf(func, 32, "glTex%sStorage%uD", suffix, dims);
             if (_mesa_sparse_texture_error_check(ctx, dims, texObj, texFormat, target,
                                                  levels, width, height, depth, func))
                return; /* error was recorded */
-         }
-      }
-
-      if (attribs) {
-         if (!parse_attribs(attribs, no_error, &compression) && !no_error) {
-            _mesa_error(ctx, GL_INVALID_VALUE,
-                  "glTex%sStorage%s%uD(invalid attrib value)",
-                  suffix, suffix2, dims);
-            return;
          }
       }
 
@@ -600,7 +558,7 @@ texture_storage(struct gl_context *ctx, GLuint dims,
       assert(depth > 0);
 
       if (!initialize_texture_fields(ctx, texObj, levels, width, height, depth,
-                                     internalformat, texFormat, compression)) {
+                                     internalformat, texFormat)) {
          return;
       }
 
@@ -624,8 +582,8 @@ texture_storage(struct gl_context *ctx, GLuint dims,
              * state but this puts things in a consistent state.
              */
             clear_texture_fields(ctx, texObj);
-            _mesa_error(ctx, GL_OUT_OF_MEMORY, "glTex%sStorage%s%uD",
-                        suffix, suffix2, dims);
+            _mesa_error(ctx, GL_OUT_OF_MEMORY, "glTex%sStorage%uD",
+                        suffix, dims);
             return;
          }
       }
@@ -642,11 +600,10 @@ texture_storage_error(struct gl_context *ctx, GLuint dims,
                       struct gl_texture_object *texObj,
                       GLenum target, GLsizei levels,
                       GLenum internalformat, GLsizei width,
-                      GLsizei height, GLsizei depth, bool dsa, const char *func,
-                      const GLint *attribs)
+                      GLsizei height, GLsizei depth, bool dsa, const char *func)
 {
    texture_storage(ctx, dims, texObj, NULL, target, levels, internalformat,
-                   width, height, depth, dsa, 0, attribs, false, func);
+                   width, height, depth, dsa, 0, false, func);
 }
 
 
@@ -655,21 +612,20 @@ texture_storage_no_error(struct gl_context *ctx, GLuint dims,
                          struct gl_texture_object *texObj,
                          GLenum target, GLsizei levels,
                          GLenum internalformat, GLsizei width,
-                         GLsizei height, GLsizei depth, bool dsa, const char *func,
-                         const GLint *attribs)
+                         GLsizei height, GLsizei depth, bool dsa, const char *func)
 {
    texture_storage(ctx, dims, texObj, NULL, target, levels, internalformat,
-                   width, height, depth, dsa, 0, attribs, true, func);
+                   width, height, depth, dsa, 0, true, func);
 }
 
 
 /**
- * Helper used by _mesa_TexStorage1/2/3D() and _mesa_TexStorageAttribs2/3D().
+ * Helper used by _mesa_TexStorage1/2/3D().
  */
 static void
 texstorage_error(GLuint dims, GLenum target, GLsizei levels,
                  GLenum internalformat, GLsizei width, GLsizei height,
-                 GLsizei depth, const GLint *attribs, const char *caller)
+                 GLsizei depth, const char *caller)
 {
    struct gl_texture_object *texObj;
    GET_CURRENT_CONTEXT(ctx);
@@ -702,21 +658,21 @@ texstorage_error(GLuint dims, GLenum target, GLsizei levels,
    if (!texObj)
       return;
 
-   texture_storage_error(ctx, dims, texObj, target, levels, internalformat,
-                         width, height, depth, false, caller, attribs);
+   texture_storage_error(ctx, dims, texObj, target, levels,
+                         internalformat, width, height, depth, false, caller);
 }
 
 
 static void
 texstorage_no_error(GLuint dims, GLenum target, GLsizei levels,
                     GLenum internalformat, GLsizei width, GLsizei height,
-                    GLsizei depth, const GLint *attribs, const char *caller)
+                    GLsizei depth, const char *caller)
 {
    GET_CURRENT_CONTEXT(ctx);
 
    struct gl_texture_object *texObj = _mesa_get_current_tex_object(ctx, target);
-   texture_storage_no_error(ctx, dims, texObj, target, levels, internalformat,
-                            width, height, depth, false, caller, attribs);
+   texture_storage_no_error(ctx, dims, texObj, target, levels,
+                            internalformat, width, height, depth, false, caller);
 }
 
 
@@ -759,8 +715,8 @@ texturestorage_error(GLuint dims, GLuint texture, GLsizei levels,
       return;
    }
 
-   texture_storage_error(ctx, dims, texObj, texObj->Target, levels,
-                         internalformat, width, height, depth, true, caller, NULL);
+   texture_storage_error(ctx, dims, texObj, texObj->Target,
+                         levels, internalformat, width, height, depth, true, caller);
 }
 
 
@@ -772,8 +728,8 @@ texturestorage_no_error(GLuint dims, GLuint texture, GLsizei levels,
    GET_CURRENT_CONTEXT(ctx);
 
    struct gl_texture_object *texObj = _mesa_lookup_texture(ctx, texture);
-   texture_storage_no_error(ctx, dims, texObj, texObj->Target, levels,
-                            internalformat, width, height, depth, true, caller, NULL);
+   texture_storage_no_error(ctx, dims, texObj, texObj->Target,
+                            levels, internalformat, width, height, depth, true, caller);
 }
 
 
@@ -781,7 +737,7 @@ void GLAPIENTRY
 _mesa_TexStorage1D_no_error(GLenum target, GLsizei levels,
                             GLenum internalformat, GLsizei width)
 {
-   texstorage_no_error(1, target, levels, internalformat, width, 1, 1, NULL,
+   texstorage_no_error(1, target, levels, internalformat, width, 1, 1,
                        "glTexStorage1D");
 }
 
@@ -790,7 +746,7 @@ void GLAPIENTRY
 _mesa_TexStorage1D(GLenum target, GLsizei levels, GLenum internalformat,
                    GLsizei width)
 {
-   texstorage_error(1, target, levels, internalformat, width, 1, 1, NULL,
+   texstorage_error(1, target, levels, internalformat, width, 1, 1,
                     "glTexStorage1D");
 }
 
@@ -800,7 +756,7 @@ _mesa_TexStorage2D_no_error(GLenum target, GLsizei levels,
                             GLenum internalformat, GLsizei width,
                             GLsizei height)
 {
-   texstorage_no_error(2, target, levels, internalformat, width, height, 1, NULL,
+   texstorage_no_error(2, target, levels, internalformat, width, height, 1,
                        "glTexStorage2D");
 }
 
@@ -809,7 +765,7 @@ void GLAPIENTRY
 _mesa_TexStorage2D(GLenum target, GLsizei levels, GLenum internalformat,
                    GLsizei width, GLsizei height)
 {
-   texstorage_error(2, target, levels, internalformat, width, height, 1, NULL,
+   texstorage_error(2, target, levels, internalformat, width, height, 1,
                     "glTexStorage2D");
 }
 
@@ -819,7 +775,7 @@ _mesa_TexStorage3D_no_error(GLenum target, GLsizei levels,
                             GLenum internalformat, GLsizei width,
                             GLsizei height, GLsizei depth)
 {
-   texstorage_no_error(3, target, levels, internalformat, width, height, depth, NULL,
+   texstorage_no_error(3, target, levels, internalformat, width, height, depth,
                        "glTexStorage3D");
 }
 
@@ -828,48 +784,8 @@ void GLAPIENTRY
 _mesa_TexStorage3D(GLenum target, GLsizei levels, GLenum internalformat,
                    GLsizei width, GLsizei height, GLsizei depth)
 {
-   texstorage_error(3, target, levels, internalformat, width, height, depth, NULL,
+   texstorage_error(3, target, levels, internalformat, width, height, depth,
                     "glTexStorage3D");
-}
-
-
-void GLAPIENTRY
-_mesa_TexStorageAttribs2DEXT_no_error(GLenum target, GLsizei levels,
-                                      GLenum internalformat, GLsizei width,
-                                      GLsizei height, const GLint *attribs)
-{
-   texstorage_no_error(2, target, levels, internalformat, width, height, 1, attribs,
-                       "glTexStorageAttribs2DEXT");
-}
-
-
-void GLAPIENTRY
-_mesa_TexStorageAttribs2DEXT(GLenum target, GLsizei levels, GLenum internalformat,
-                             GLsizei width, GLsizei height, const GLint *attribs)
-{
-   texstorage_error(2, target, levels, internalformat, width, height, 1, attribs,
-                    "glTexStorageAttribs2DEXT");
-}
-
-
-void GLAPIENTRY
-_mesa_TexStorageAttribs3DEXT_no_error(GLenum target, GLsizei levels,
-                                      GLenum internalformat, GLsizei width,
-                                      GLsizei height, GLsizei depth,
-                                      const GLint *attribs)
-{
-   texstorage_no_error(3, target, levels, internalformat, width, height, depth, attribs,
-                       "glTexStorageAttribs3DEXT");
-}
-
-
-void GLAPIENTRY
-_mesa_TexStorageAttribs3DEXT(GLenum target, GLsizei levels, GLenum internalformat,
-                             GLsizei width, GLsizei height, GLsizei depth,
-                             const GLint *attribs)
-{
-   texstorage_error(3, target, levels, internalformat, width, height, depth, attribs,
-                    "glTexStorageAttribs3DEXT");
 }
 
 
@@ -993,5 +909,5 @@ _mesa_texture_storage_memory(struct gl_context *ctx, GLuint dims,
    assert(memObj);
 
    texture_storage(ctx, dims, texObj, memObj, target, levels, internalformat,
-                   width, height, depth, offset, dsa, NULL, false, "");
+                   width, height, depth, offset, dsa, false, "");
 }

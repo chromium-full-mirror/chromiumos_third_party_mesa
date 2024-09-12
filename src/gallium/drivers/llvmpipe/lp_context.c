@@ -107,7 +107,10 @@ llvmpipe_destroy(struct pipe_context *pipe)
 
    llvmpipe_sampler_matrix_destroy(llvmpipe);
 
-   lp_context_destroy(&llvmpipe->context);
+#ifndef USE_GLOBAL_LLVM_CONTEXT
+   LLVMContextDispose(llvmpipe->context);
+#endif
+   llvmpipe->context = NULL;
 
    align_free(llvmpipe);
 }
@@ -253,30 +256,24 @@ llvmpipe_create_context(struct pipe_screen *screen, void *priv,
 
    llvmpipe_init_sampler_matrix(llvmpipe);
 
-#ifdef HAVE_LIBDRM
-   llvmpipe_init_fence_funcs(&llvmpipe->pipe);
-#endif
-
 #ifdef USE_GLOBAL_LLVM_CONTEXT
-   llvmpipe->context.ref = LLVMGetGlobalContext();
-   llvmpipe->context.owned = false;
-#if LLVM_VERSION_MAJOR == 15
-   if (llvmpipe->context.ref) {
-      LLVMContextSetOpaquePointers(llvmpipe->context.ref, false);
-   }
-#endif
+   llvmpipe->context = LLVMGetGlobalContext();
 #else
-   lp_context_create(&llvmpipe->context);
+   llvmpipe->context = LLVMContextCreate();
 #endif
 
-   if (!llvmpipe->context.ref)
+   if (!llvmpipe->context)
       goto fail;
+
+#if LLVM_VERSION_MAJOR == 15
+   LLVMContextSetOpaquePointers(llvmpipe->context, false);
+#endif
 
    /*
     * Create drawing context and plug our rendering stage into it.
     */
    llvmpipe->draw = draw_create_with_llvm_context(&llvmpipe->pipe,
-                                                  &llvmpipe->context);
+                                                  llvmpipe->context);
    if (!llvmpipe->draw)
       goto fail;
 

@@ -28,7 +28,6 @@
 #define H_ETNAVIV_SHADER
 
 #include "mesa/main/config.h"
-#include "etna_core_info.h"
 #include "nir.h"
 #include "pipe/p_state.h"
 #include "util/disk_cache.h"
@@ -81,7 +80,6 @@ struct etna_shader {
    uint32_t variant_count;
 
    struct nir_shader *nir;
-   const struct etna_core_info *info;
    const struct etna_specs *specs;
    struct etna_compiler *compiler;
 

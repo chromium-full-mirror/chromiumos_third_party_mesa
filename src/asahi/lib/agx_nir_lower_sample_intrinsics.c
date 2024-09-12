@@ -20,20 +20,12 @@ select_if_msaa_else_0(nir_builder *b, nir_def *x)
 }
 
 static bool
-lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+lower(nir_builder *b, nir_intrinsic_instr *intr, void *_)
 {
    b->cursor = nir_before_instr(&intr->instr);
 
    switch (intr->intrinsic) {
-   case nir_intrinsic_load_sample_pos:
-   case nir_intrinsic_load_sample_pos_or_center: {
-      /* Handle the center special case */
-      if (!b->shader->info.fs.uses_sample_shading) {
-         assert(intr->intrinsic == nir_intrinsic_load_sample_pos_or_center);
-         nir_def_replace(&intr->def, nir_imm_vec2(b, 0.5, 0.5));
-         return true;
-      }
-
+   case nir_intrinsic_load_sample_pos: {
       /* Lower sample positions to decode the packed fixed-point register:
        *
        *    uint32_t packed = load_sample_positions();
@@ -64,7 +56,8 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       }
 
       /* Collect and rewrite */
-      nir_def_replace(&intr->def, nir_vec2(b, xy[0], xy[1]));
+      nir_def_rewrite_uses(&intr->def, nir_vec2(b, xy[0], xy[1]));
+      nir_instr_remove(&intr->instr);
       return true;
    }
 
@@ -152,11 +145,8 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
    case nir_intrinsic_store_output: {
       /*
-       * In OpenGL, sample mask writes are ignored unless multisampling is used.
-       * This is not the case in Vulkan, disambiguated by the
-       * ignore_sample_mask_without_msaa flag.
-       *
-       * If it is used, the Vulkan spec says:
+       * Sample mask writes are ignored unless multisampling is used. If it is
+       * used, the Vulkan spec says:
        *
        *    If sample shading is enabled, bits written to SampleMask
        *    corresponding to samples that are not being shaded by the fragment
@@ -170,12 +160,8 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
          return false;
 
       nir_def *mask = nir_inot(b, nir_u2u16(b, intr->src[0].ssa));
-      bool *ignore_sample_mask_without_msaa = data;
 
-      if (*ignore_sample_mask_without_msaa)
-         mask = select_if_msaa_else_0(b, mask);
-
-      nir_discard_agx(b, mask);
+      nir_discard_agx(b, select_if_msaa_else_0(b, mask));
       nir_instr_remove(&intr->instr);
 
       b->shader->info.fs.uses_discard = true;
@@ -201,9 +187,8 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
  * epilogs even though there's no dependency on sample count.
  */
 bool
-agx_nir_lower_sample_intrinsics(nir_shader *shader,
-                                bool ignore_sample_mask_without_msaa)
+agx_nir_lower_sample_intrinsics(nir_shader *shader)
 {
-   return nir_shader_intrinsics_pass(shader, lower, nir_metadata_control_flow,
-                                     &ignore_sample_mask_without_msaa);
+   return nir_shader_intrinsics_pass(
+      shader, lower, nir_metadata_block_index | nir_metadata_dominance, NULL);
 }

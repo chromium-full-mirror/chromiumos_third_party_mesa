@@ -6,7 +6,5 @@ void main()
   float undefined;
 
   foo = undefined;
-
-  gl_Position = vec4(1.0);
 }
 

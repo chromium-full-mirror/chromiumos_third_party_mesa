@@ -148,17 +148,18 @@ dri_st_framebuffer_flush_swapbuffers(struct st_context *st,
 /**
  * This is called when we need to set up GL rendering to a new X window.
  */
-__DRIdrawable *
-dri_create_drawable(__DRIscreen *psp, const __DRIconfig *config,
+struct dri_drawable *
+dri_create_drawable(struct dri_screen *screen, const struct gl_config *visual,
                     bool isPixmap, void *loaderPrivate)
 {
-   struct dri_screen *screen = dri_screen(psp);
-   const struct gl_config *visual = &config->modes;
    struct dri_drawable *drawable = NULL;
 
+   if (isPixmap)
+      goto fail;		       /* not implemented */
+
    drawable = CALLOC_STRUCT(dri_drawable);
-   if (!drawable)
-      return NULL;
+   if (drawable == NULL)
+      goto fail;
 
    drawable->loaderPrivate = loaderPrivate;
    drawable->refcount = 1;
@@ -180,20 +181,10 @@ dri_create_drawable(__DRIscreen *psp, const __DRIconfig *config,
    drawable->base.ID = p_atomic_inc_return(&drifb_ID);
    drawable->base.fscreen = &screen->base;
 
-   switch (screen->type) {
-   case DRI_SCREEN_DRI3:
-   case DRI_SCREEN_KMS_SWRAST:
-      dri2_init_drawable(drawable, isPixmap, visual->alphaBits);
-      break;
-   case DRI_SCREEN_SWRAST:
-      drisw_init_drawable(drawable, isPixmap, visual->alphaBits);
-      break;
-   case DRI_SCREEN_KOPPER:
-      kopper_init_drawable(drawable, isPixmap, visual->alphaBits);
-      break;
-   }
-
-   return opaque_dri_drawable(drawable);
+   return drawable;
+fail:
+   FREE(drawable);
+   return NULL;
 }
 
 static void
@@ -261,7 +252,7 @@ dri_drawable_validate_att(struct dri_context *ctx,
 /**
  * These are used for GLX_EXT_texture_from_pixmap
  */
-void
+static void
 dri_set_tex_buffer2(__DRIcontext *pDRICtx, GLint target,
                     GLint format, __DRIdrawable *dPriv)
 {
@@ -309,10 +300,19 @@ dri_set_tex_buffer2(__DRIcontext *pDRICtx, GLint target,
    }
 }
 
+static void
+dri_set_tex_buffer(__DRIcontext *pDRICtx, GLint target,
+                   __DRIdrawable *dPriv)
+{
+   dri_set_tex_buffer2(pDRICtx, target, __DRI_TEXTURE_FORMAT_RGBA, dPriv);
+}
+
 const __DRItexBufferExtension driTexBufferExtension = {
    .base = { __DRI_TEX_BUFFER, 2 },
 
+   .setTexBuffer       = dri_set_tex_buffer,
    .setTexBuffer2      = dri_set_tex_buffer2,
+   .releaseTexBuffer   = NULL,
 };
 
 /**
@@ -587,11 +587,19 @@ dri_flush_drawable(__DRIdrawable *dPriv)
 /**
  * dri_throttle - A DRI2ThrottleExtension throttling function.
  */
-void
+static void
 dri_throttle(__DRIcontext *cPriv, __DRIdrawable *dPriv,
              enum __DRI2throttleReason reason)
 {
    dri_flush(cPriv, dPriv, 0, reason);
 }
+
+
+const __DRI2throttleExtension dri2ThrottleExtension = {
+    .base = { __DRI2_THROTTLE, 1 },
+
+    .throttle          = dri_throttle,
+};
+
 
 /* vim: set sw=3 ts=8 sts=3 expandtab: */

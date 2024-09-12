@@ -59,20 +59,6 @@ enum fd_gmem_reason {
    FD_GMEM_FB_READ = BIT(5),
 };
 
-/* Offset within GMEM of various "non-GMEM" things that GMEM is used to
- * cache.  These offsets differ for gmem vs sysmem rendering (in sysmem
- * mode, the entire GMEM can be used)
- */
-struct fd6_gmem_config {
-   /* Color/depth CCU cache: */
-   uint32_t color_ccu_offset;
-   uint32_t depth_ccu_offset;
-
-   /* Vertex attrib cache (a750+): */
-   uint32_t vpc_attr_buf_size;
-   uint32_t vpc_attr_buf_offset;
-};
-
 struct fd_screen {
    struct pipe_screen base;
 
@@ -118,7 +104,8 @@ struct fd_screen {
 
    struct fd_dev_info dev_info;
    const struct fd_dev_info *info;
-   struct fd6_gmem_config config_gmem, config_sysmem;
+   uint32_t ccu_offset_gmem;
+   uint32_t ccu_offset_bypass;
 
    /* Bitmask of gmem_reasons that do not force GMEM path over bypass
     * for current generation.
@@ -274,7 +261,7 @@ is_a5xx(struct fd_screen *screen)
 static inline bool
 is_a6xx(struct fd_screen *screen)
 {
-   return screen->gen >= 6;
+   return screen->gen == 6;
 }
 
 /* is it using the ir3 compiler (shader isa introduced with a3xx)? */

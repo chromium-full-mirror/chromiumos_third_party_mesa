@@ -115,6 +115,7 @@ Lib* Lib::GetLib(
     ADDR_HANDLE hLib)   ///< [in] handle of ADDR_HANDLE
 {
     Addr::Lib* pAddrLib = Addr::Lib::GetLib(hLib);
+
     if ((pAddrLib != NULL) &&
         (pAddrLib->GetChipFamily() <= ADDR_CHIP_FAMILY_VI))
     {
@@ -123,7 +124,7 @@ Lib* Lib::GetLib(
         hLib = NULL;
     }
 
-    return static_cast<Lib*>(pAddrLib);
+    return static_cast<Lib*>(hLib);
 }
 
 

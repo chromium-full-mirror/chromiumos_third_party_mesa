@@ -9,7 +9,7 @@
 
 #include "vk_query_pool.h"
 
-struct nvkmd_mem;
+struct nouveau_ws_bo;
 
 struct nvk_query_pool {
    struct vk_query_pool vk;
@@ -17,7 +17,8 @@ struct nvk_query_pool {
    uint32_t query_start;
    uint32_t query_stride;
 
-   struct nvkmd_mem *mem;
+   struct nouveau_ws_bo *bo;
+   void *bo_map;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(nvk_query_pool, vk.base, VkQueryPool,

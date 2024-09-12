@@ -248,7 +248,7 @@ bool
 d3d12_lower_image_casts(nir_shader *s, struct d3d12_image_format_conversion_info_arr *info)
 {
    bool progress = nir_shader_intrinsics_pass(s, lower_image_cast_instr,
-                                              nir_metadata_control_flow,
+                                              nir_metadata_block_index | nir_metadata_dominance,
                                               info);
 
    if (progress) {

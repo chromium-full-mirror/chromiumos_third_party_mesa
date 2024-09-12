@@ -50,7 +50,8 @@ st_nir_lower_position_invariant(struct nir_shader *s, bool aos,
                                                     VARYING_SLOT_POS, glsl_vec4_type()), result, 0xf);
    s->info.outputs_written |= VARYING_BIT_POS;
 
-   nir_metadata_preserve(b.impl, nir_metadata_control_flow);
+   nir_metadata_preserve(b.impl, nir_metadata_block_index |
+                                 nir_metadata_dominance);
 
    return true;
 }

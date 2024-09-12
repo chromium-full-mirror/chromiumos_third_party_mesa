@@ -208,7 +208,8 @@ nir_remove_dead_variables(nir_shader *shader, nir_variable_mode modes,
    nir_foreach_function_impl(impl, shader) {
       if (progress) {
          remove_dead_var_writes(shader);
-         nir_metadata_preserve(impl, nir_metadata_control_flow);
+         nir_metadata_preserve(impl, nir_metadata_block_index |
+                                        nir_metadata_dominance);
       } else {
          nir_metadata_preserve(impl, nir_metadata_all);
       }

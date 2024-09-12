@@ -1124,11 +1124,7 @@ _mesa_PopAttrib(void)
                      AlphaToCoverageDitherControlNV);
    }
 
-   /* Restore the previous PopAttribStateMask as well as any modified state
-    * that was not restored in the current pop.
-    */
-   ctx->PopAttribState = attr->OldPopAttribStateMask |
-                         (ctx->PopAttribState & ~attr->Mask);
+   ctx->PopAttribState = attr->OldPopAttribStateMask;
 }
 
 

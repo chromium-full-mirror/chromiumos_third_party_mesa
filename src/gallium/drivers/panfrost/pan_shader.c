@@ -85,7 +85,9 @@ lower_load_poly_line_smooth_enabled(nir_shader *nir,
             continue;
 
          b.cursor = nir_before_instr(instr);
-         nir_def_replace(&intrin->def, nir_imm_true(&b));
+         nir_def_rewrite_uses(&intrin->def, nir_imm_true(&b));
+
+         nir_instr_remove(instr);
          nir_instr_free(instr);
       }
    }

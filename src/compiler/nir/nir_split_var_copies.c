@@ -104,6 +104,7 @@ bool
 nir_split_var_copies(nir_shader *shader)
 {
    return nir_shader_intrinsics_pass(shader, split_var_copies_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        NULL);
 }

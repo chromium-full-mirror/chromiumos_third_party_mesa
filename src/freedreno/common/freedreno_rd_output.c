@@ -14,12 +14,11 @@
 #include <unistd.h>
 
 #include "c11/threads.h"
-#include "util/detect_os.h"
 #include "util/log.h"
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
 
-#if DETECT_OS_ANDROID
+#ifdef ANDROID
 static const char *fd_rd_output_base_path = "/data/local/tmp";
 #else
 static const char *fd_rd_output_base_path = "/tmp";
@@ -70,7 +69,7 @@ fd_rd_output_sanitize_name(char *name)
 }
 
 void
-fd_rd_output_init(struct fd_rd_output *output, const char* output_name)
+fd_rd_output_init(struct fd_rd_output *output, char* output_name)
 {
    const char *test_name = os_get_option("FD_RD_DUMP_TESTNAME");
    ASSERTED int name_len;
@@ -90,7 +89,7 @@ fd_rd_output_init(struct fd_rd_output *output, const char* output_name)
       output->combine = true;
 
       char file_path[PATH_MAX];
-      snprintf(file_path, sizeof(file_path), "%s/%s_combined.rd.gz",
+      snprintf(file_path, sizeof(file_path), "%s/%s_combined.rd",
                fd_rd_output_base_path, output->name);
       output->file = gzopen(file_path, "w");
    }

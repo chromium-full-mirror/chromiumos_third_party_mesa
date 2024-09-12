@@ -15,11 +15,10 @@ dirs = {
   '/classes/dma-copy/': 'classes/',
   '/classes/host/': 'classes/',
   '/classes/memory-to-memory-format/': 'classes/',
-  '/classes/inline-to-memory/': 'classes/',
   '/classes/twod/': 'classes/',
 }
 branch = 'master'
-target = os.path.abspath(os.path.dirname(__file__)) + "/nvidia/"
+target = os.path.abspath(os.path.dirname(__file__)) + "/"
 
 parser = argparse.ArgumentParser(description='Updates Nvidia header files from git.')
 parser.add_argument('git_path', type=str, help='Path to the open-gpu-doc repo')

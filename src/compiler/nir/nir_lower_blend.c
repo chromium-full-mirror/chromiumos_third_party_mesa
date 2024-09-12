@@ -645,11 +645,13 @@ nir_lower_blend(nir_shader *shader, const nir_lower_blend_options *options)
 
    struct ctx ctx = { .options = options };
    bool progress = nir_shader_intrinsics_pass(shader, consume_dual_stores,
-                                              nir_metadata_control_flow,
+                                              nir_metadata_block_index |
+                                                 nir_metadata_dominance,
                                               ctx.src1);
 
    progress |= nir_shader_intrinsics_pass(shader, nir_lower_blend_instr,
-                                          nir_metadata_control_flow,
+                                          nir_metadata_block_index |
+                                             nir_metadata_dominance,
                                           &ctx);
    return progress;
 }

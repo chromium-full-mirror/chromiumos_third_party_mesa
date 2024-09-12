@@ -1519,6 +1519,12 @@ ntt_emit_alu(struct ntt_compile *c, nir_alu_instr *instr)
       [nir_op_fsign] = { TGSI_OPCODE_SSG, TGSI_OPCODE_DSSG },
       [nir_op_isign] = { TGSI_OPCODE_ISSG, TGSI_OPCODE_I64SSG },
       [nir_op_ftrunc] = { TGSI_OPCODE_TRUNC, TGSI_OPCODE_DTRUNC },
+      [nir_op_fddx] = { TGSI_OPCODE_DDX },
+      [nir_op_fddy] = { TGSI_OPCODE_DDY },
+      [nir_op_fddx_coarse] = { TGSI_OPCODE_DDX },
+      [nir_op_fddy_coarse] = { TGSI_OPCODE_DDY },
+      [nir_op_fddx_fine] = { TGSI_OPCODE_DDX_FINE },
+      [nir_op_fddy_fine] = { TGSI_OPCODE_DDY_FINE },
       [nir_op_pack_half_2x16] = { TGSI_OPCODE_PK2H },
       [nir_op_unpack_half_2x16] = { TGSI_OPCODE_UP2H },
       [nir_op_ibitfield_extract] = { TGSI_OPCODE_IBFE },
@@ -2343,7 +2349,7 @@ ntt_emit_store_output(struct ntt_compile *c, nir_intrinsic_instr *instr)
    }
 
    uint8_t swizzle[4] = { 0, 0, 0, 0 };
-   for (int i = frac; i < 4; i++) {
+   for (int i = frac; i <= 4; i++) {
       if (out.WriteMask & (1 << i))
          swizzle[i] = i - frac;
    }
@@ -2552,11 +2558,11 @@ ntt_emit_intrinsic(struct ntt_compile *c, nir_intrinsic_instr *instr)
       ntt_DEMOTE(c);
       break;
 
-   case nir_intrinsic_terminate:
+   case nir_intrinsic_discard:
       ntt_KILL(c);
       break;
 
-   case nir_intrinsic_terminate_if: {
+   case nir_intrinsic_discard_if: {
       struct ureg_src cond = ureg_scalar(ntt_get_src(c, instr->src[0]), 0);
 
       if (c->native_integers) {
@@ -2591,21 +2597,6 @@ ntt_emit_intrinsic(struct ntt_compile *c, nir_intrinsic_instr *instr)
       return;
    case nir_intrinsic_read_invocation:
       ntt_READ_INVOC(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]), ntt_get_src(c, instr->src[1]));
-      return;
-
-   case nir_intrinsic_ddx:
-   case nir_intrinsic_ddx_coarse:
-      ntt_DDX(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
-      return;
-   case nir_intrinsic_ddx_fine:
-      ntt_DDX_FINE(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
-      return;
-   case nir_intrinsic_ddy:
-   case nir_intrinsic_ddy_coarse:
-      ntt_DDY(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
-      return;
-   case nir_intrinsic_ddy_fine:
-      ntt_DDY_FINE(c, ntt_get_dest(c, &instr->def), ntt_get_src(c, instr->src[0]));
       return;
 
    case nir_intrinsic_load_ssbo:
@@ -3556,7 +3547,8 @@ nir_to_tgsi_lower_64bit_load_const(nir_builder *b, nir_load_const_instr *instr)
       num_components == 4 ? nir_channel(b, &second->def, 1) : NULL,
    };
    nir_def *new = nir_vec(b, channels, num_components);
-   nir_def_replace(&instr->def, new);
+   nir_def_rewrite_uses(&instr->def, new);
+   nir_instr_remove(&instr->instr);
 
    return true;
 }
@@ -3581,7 +3573,8 @@ nir_to_tgsi_lower_64bit_to_vec2(nir_shader *s)
 {
    return nir_shader_instructions_pass(s,
                                        nir_to_tgsi_lower_64bit_to_vec2_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                        NULL);
 }
 
@@ -3670,7 +3663,8 @@ nir_to_tgsi_lower_tex(nir_shader *s)
 {
    return nir_shader_instructions_pass(s,
                                        nir_to_tgsi_lower_tex_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                        NULL);
 }
 
@@ -4085,7 +4079,6 @@ static const nir_shader_compiler_options nir_to_tgsi_compiler_options = {
     * workgroup id.
     */
    .lower_cs_local_index_to_id = true,
-   .has_ddx_intrinsics = true,
 };
 
 /* Returns a default compiler options for drivers with only nir-to-tgsi-based

@@ -78,7 +78,8 @@ lower_single_sampled_instr(nir_builder *b,
       return false;
    }
 
-   nir_def_replace(&intrin->def, lowered);
+   nir_def_rewrite_uses(&intrin->def, lowered);
+   nir_instr_remove(&intrin->instr);
    return true;
 }
 
@@ -115,7 +116,8 @@ nir_lower_single_sampled(nir_shader *shader)
                 SYSTEM_VALUE_BARYCENTRIC_LINEAR_CENTROID);
 
    return nir_shader_intrinsics_pass(shader, lower_single_sampled_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        NULL) ||
           progress;
 }

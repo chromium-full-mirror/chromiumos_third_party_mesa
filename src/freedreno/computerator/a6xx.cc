@@ -168,7 +168,7 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
                A6XX_SP_CS_CTRL_REG0_FULLREGFOOTPRINT(i->max_reg + 1) |
                A6XX_SP_CS_CTRL_REG0_HALFREGFOOTPRINT(i->max_half_reg + 1) |
                COND(v->mergedregs, A6XX_SP_CS_CTRL_REG0_MERGEDREGS) |
-               COND(v->early_preamble, A6XX_SP_CS_CTRL_REG0_EARLYPREAMBLE) |
+               COND(ir3_kernel->info.early_preamble, A6XX_SP_CS_CTRL_REG0_EARLYPREAMBLE) |
                A6XX_SP_CS_CTRL_REG0_BRANCHSTACK(ir3_shader_branchstack_hw(v)));
    if (CHIP == A7XX) {
       OUT_REG(ring, HLSQ_FS_CNTL_0(CHIP, .threadsize = THREAD64));
@@ -203,20 +203,16 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
       OUT_RING(ring, A6XX_HLSQ_CS_CNTL_1_LINEARLOCALIDREGID(regid(63, 0)) |
                         A6XX_HLSQ_CS_CNTL_1_THREADSIZE(thrsz));
    } else {
-      unsigned tile_height = (local_size[1] % 8 == 0)   ? 3
-                             : (local_size[1] % 4 == 0) ? 5
-                             : (local_size[1] % 2 == 0) ? 9
-                                                        : 17;
+      enum a7xx_cs_yalign yalign = (local_size[1] % 8 == 0)   ? CS_YALIGN_8
+                                   : (local_size[1] % 4 == 0) ? CS_YALIGN_4
+                                   : (local_size[1] % 2 == 0) ? CS_YALIGN_2
+                                                              : CS_YALIGN_1;
 
-      OUT_REG(ring,
-         HLSQ_CS_CNTL_1(CHIP,
-            .linearlocalidregid = regid(63, 0),
-            .threadsize = thrsz,
-            .workgrouprastorderzfirsten = true,
-            .wgtilewidth = 4,
-            .wgtileheight = tile_height,
-         )
-      );
+      OUT_REG(ring, A7XX_HLSQ_CS_CNTL_1(.linearlocalidregid = regid(63, 0),
+                                        .threadsize = thrsz,
+                                        .unk11 = true,
+                                        .unk22 = true,
+                                        .yalign = yalign, ));
    }
 
    if (CHIP == A7XX || a6xx_backend->info->a6xx.has_lpac) {
@@ -225,17 +221,9 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
                         A6XX_SP_CS_CNTL_0_WGSIZECONSTID(regid(63, 0)) |
                         A6XX_SP_CS_CNTL_0_WGOFFSETCONSTID(regid(63, 0)) |
                         A6XX_SP_CS_CNTL_0_LOCALIDREGID(local_invocation_id));
-      if (CHIP == A7XX) {
-         /* TODO allow the shader to control the tiling */
-         OUT_REG(ring,
-            SP_CS_CNTL_1(A7XX, .linearlocalidregid = regid(63, 0),
-                               .threadsize = thrsz,
-                               .workitemrastorder = WORKITEMRASTORDER_LINEAR));
-      } else {
-         OUT_REG(ring,
-            SP_CS_CNTL_1(CHIP, .linearlocalidregid = regid(63, 0),
-                               .threadsize = thrsz));
-      }
+      OUT_REG(ring,
+         SP_CS_CNTL_1(CHIP, .linearlocalidregid = regid(63, 0),
+                            .threadsize = thrsz, ));
    }
 
    OUT_PKT4(ring, REG_A6XX_SP_CS_OBJ_START, 2);

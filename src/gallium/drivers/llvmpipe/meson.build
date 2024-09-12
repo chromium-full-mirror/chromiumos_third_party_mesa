@@ -1,5 +1,22 @@
 # Copyright © 2017 Intel Corporation
-# SPDX-License-Identifier: MIT
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 files_llvmpipe = files(
   'lp_bld_alpha.c',
@@ -105,15 +122,17 @@ libllvmpipe = static_library(
   dependencies : [ dep_llvm, idep_nir_headers, idep_mesautil, dep_libdrm],
 )
 
-driver_llvmpipe = declare_dependency(
+# This overwrites the softpipe driver dependency, but itself depends on the
+# softpipe dependency.
+driver_swrast = declare_dependency(
   compile_args : '-DGALLIUM_LLVMPIPE',
   link_with : libllvmpipe,
-  dependencies : [dep_llvm, idep_mesautil],
+  dependencies : [driver_swrast, dep_llvm, idep_mesautil],
 )
 
-if with_tests
+if with_tests and with_gallium_softpipe and draw_with_llvm
   foreach t : ['lp_test_format', 'lp_test_arit', 'lp_test_blend',
-               'lp_test_conv', 'lp_test_printf', 'lp_test_lookup_multiple']
+               'lp_test_conv', 'lp_test_printf']
     test(
       t,
       executable(

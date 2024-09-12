@@ -25,7 +25,7 @@
 
 #include "util/detect_os.h"
 
-#if DETECT_OS_POSIX
+#if DETECT_OS_UNIX
 
 #include "util/os_mman.h"
 

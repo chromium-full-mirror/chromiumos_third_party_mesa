@@ -51,7 +51,9 @@ lower_load_uniform_to_scalar(nir_builder *b, nir_intrinsic_instr *intr)
       loads[i] = &chan_intr->def;
    }
 
-   nir_def_replace(&intr->def, nir_vec(b, loads, intr->num_components));
+   nir_def_rewrite_uses(&intr->def,
+                            nir_vec(b, loads, intr->num_components));
+   nir_instr_remove(&intr->instr);
 }
 
 void

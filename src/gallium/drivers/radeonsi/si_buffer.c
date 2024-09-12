@@ -103,6 +103,9 @@ void si_init_resource_fields(struct si_screen *sscreen, struct si_resource *res,
    if (sscreen->debug_flags & DBG(NO_WC))
       res->flags &= ~RADEON_FLAG_GTT_WC;
 
+   if (res->b.b.flags & SI_RESOURCE_FLAG_READ_ONLY)
+      res->flags |= RADEON_FLAG_READ_ONLY;
+
    if (res->b.b.flags & SI_RESOURCE_FLAG_32BIT)
       res->flags |= RADEON_FLAG_32BIT;
 
@@ -112,9 +115,9 @@ void si_init_resource_fields(struct si_screen *sscreen, struct si_resource *res,
    if (res->b.b.flags & PIPE_RESOURCE_FLAG_SPARSE)
       res->flags |= RADEON_FLAG_SPARSE;
 
-   /* For bypassing GL2 for performance reasons (not being slowed down by GL2, and not slowing down
-    * parallel GL2 traffic) such as asynchronous DRI prime blits, or when coherency with non-GL2
-    * clients is required, such as with GFX12. GFX8 and older don't support RADEON_FLAG_GL2_BYPASS.
+   /* For higher throughput and lower latency over PCIe assuming sequential access.
+    * Only CP DMA and optimized compute benefit from this.
+    * GFX8 and older don't support RADEON_FLAG_GL2_BYPASS.
     */
    if (sscreen->info.gfx_level >= GFX9 &&
        res->b.b.flags & SI_RESOURCE_FLAG_GL2_BYPASS)
@@ -172,15 +175,6 @@ bool si_alloc_resource(struct si_screen *sscreen, struct si_resource *res)
 
    util_range_set_empty(&res->valid_buffer_range);
    res->TC_L2_dirty = false;
-
-   if (res->b.b.target != PIPE_BUFFER && !(res->b.b.flags & SI_RESOURCE_AUX_PLANE)) {
-      /* The buffer is shared with other planes. */
-      struct si_resource *plane = (struct si_resource *)res->b.b.next;
-      for (; plane; plane = (struct si_resource *)plane->b.b.next) {
-         radeon_bo_reference(sscreen->ws, &plane->buf, res->buf);
-         plane->gpu_address = res->gpu_address;
-      }
-   }
 
    /* Print debug information. */
    if (sscreen->debug_flags & DBG(VM) && res->b.b.target == PIPE_BUFFER) {
@@ -641,7 +635,6 @@ static struct pipe_resource *si_buffer_from_user_memory(struct pipe_screen *scre
    }
 
    buf->gpu_address = ws->buffer_get_virtual_address(buf->buf);
-   buf->bo_size = templ->width0;
    return &buf->b.b;
 }
 

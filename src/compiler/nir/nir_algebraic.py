@@ -255,14 +255,9 @@ class Constant(Value):
       if isinstance(self.value, (bool)):
          return 'NIR_TRUE' if self.value else 'NIR_FALSE'
       if isinstance(self.value, int):
-         # Explicitly sign-extend negative integers to 64-bit, ensuring correct
-         # handling of -INT32_MIN which is not representable in 32-bit.
-         if self.value < 0:
-            return hex(struct.unpack('Q', struct.pack('q', self.value))[0]) + 'ull'
-         else:
-            return hex(self.value) + 'ull'
+         return hex(self.value)
       elif isinstance(self.value, float):
-         return hex(struct.unpack('Q', struct.pack('d', self.value))[0]) + 'ull'
+         return hex(struct.unpack('Q', struct.pack('d', self.value))[0])
       else:
          assert False
 

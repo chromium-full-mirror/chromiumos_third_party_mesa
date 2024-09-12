@@ -62,7 +62,7 @@ vn_buffer_get_max_buffer_size(struct vn_physical_device *physical_dev)
     */
    static const uint64_t safe_max_buffer_size = 1ULL << 30;
    return physical_dev->base.base.supported_features.maintenance4
-             ? physical_dev->base.base.properties.maxBufferSize
+             ? physical_dev->properties.vulkan_1_3.maxBufferSize
              : safe_max_buffer_size;
 }
 
@@ -451,9 +451,24 @@ vn_BindBufferMemory2(VkDevice device,
                      uint32_t bindInfoCount,
                      const VkBindBufferMemoryInfo *pBindInfos)
 {
+   STACK_ARRAY(VkBindBufferMemoryInfo, bind_infos, bindInfoCount);
+   typed_memcpy(bind_infos, pBindInfos, bindInfoCount);
+
+   for (uint32_t i = 0; i < bindInfoCount; i++) {
+      VkBindBufferMemoryInfo *info = &bind_infos[i];
+      struct vn_device_memory *mem =
+         vn_device_memory_from_handle(info->memory);
+      if (mem->base_memory) {
+         info->memory = vn_device_memory_to_handle(mem->base_memory);
+         info->memoryOffset += mem->base_offset;
+      }
+   }
+
    struct vn_device *dev = vn_device_from_handle(device);
    vn_async_vkBindBufferMemory2(dev->primary_ring, device, bindInfoCount,
-                                pBindInfos);
+                                bind_infos);
+
+   STACK_ARRAY_FINISH(bind_infos);
 
    return VK_SUCCESS;
 }

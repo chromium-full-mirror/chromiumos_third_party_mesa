@@ -94,8 +94,7 @@ PUSH_KICK(struct nouveau_pushbuf *push)
 {
    struct nouveau_pushbuf_priv *ppush = push->user_priv;
    simple_mtx_lock(&ppush->screen->fence.lock);
-   int ASSERTED ret = nouveau_pushbuf_kick(push);
-   assert(!ret);
+   nouveau_pushbuf_kick(push);
    simple_mtx_unlock(&ppush->screen->fence.lock);
 }
 

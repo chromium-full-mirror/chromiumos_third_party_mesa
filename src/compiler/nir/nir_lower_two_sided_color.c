@@ -204,6 +204,7 @@ nir_lower_two_sided_color(nir_shader *shader, bool face_sysval)
 
    return nir_shader_instructions_pass(shader,
                                        nir_lower_two_sided_color_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        &state);
 }

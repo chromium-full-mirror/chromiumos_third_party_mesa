@@ -112,7 +112,6 @@ Linux, FreeBSD, and other operating systems.
    devinfo
    codingstyle
    submittingpatches
-   rust
    releasing
    release-calendar
    dispatch

@@ -279,9 +279,10 @@ opt_access_impl(struct access_state *state,
 
    if (progress) {
       nir_metadata_preserve(impl,
-                            nir_metadata_control_flow |
-                            nir_metadata_live_defs |
-                            nir_metadata_loop_analysis);
+                            nir_metadata_block_index |
+                               nir_metadata_dominance |
+                               nir_metadata_live_defs |
+                               nir_metadata_loop_analysis);
    }
 
    return progress;
@@ -325,9 +326,10 @@ nir_opt_access(nir_shader *shader, const nir_opt_access_options *options)
       /* If we make a change to the uniforms, update all the impls. */
       if (var_progress) {
          nir_metadata_preserve(impl,
-                               nir_metadata_control_flow |
-                               nir_metadata_live_defs |
-                               nir_metadata_loop_analysis);
+                               nir_metadata_block_index |
+                                  nir_metadata_dominance |
+                                  nir_metadata_live_defs |
+                                  nir_metadata_loop_analysis);
       }
    }
 

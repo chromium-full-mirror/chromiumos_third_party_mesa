@@ -879,7 +879,7 @@ lima_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
 
    lima_util_blitter_save_states(ctx);
 
-   util_blitter_blit(ctx->blitter, &info, NULL);
+   util_blitter_blit(ctx->blitter, &info);
 }
 
 static void

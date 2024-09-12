@@ -269,7 +269,8 @@ nir_lower_amul(nir_shader *shader,
          }
       }
 
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance);
    }
 
    return state.progress;

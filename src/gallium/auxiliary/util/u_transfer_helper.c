@@ -172,7 +172,7 @@ u_transfer_helper_resource_destroy(struct pipe_screen *pscreen,
    helper->vtbl->resource_destroy(pscreen, prsc);
 }
 
-static inline bool needs_pack(unsigned usage)
+static bool needs_pack(unsigned usage)
 {
    return (usage & PIPE_MAP_READ) &&
       !(usage & (PIPE_MAP_DISCARD_WHOLE_RESOURCE | PIPE_MAP_DISCARD_RANGE));
@@ -194,7 +194,6 @@ transfer_map_msaa(struct pipe_context *pctx,
    if (!trans)
       return NULL;
    struct pipe_transfer *ptrans = &trans->base;
-   bool need_pack = needs_pack(usage);
 
    pipe_resource_reference(&ptrans->resource, prsc);
    ptrans->level = level;
@@ -208,7 +207,6 @@ transfer_map_msaa(struct pipe_context *pctx,
          .height0 = box->height,
          .depth0 = 1,
          .array_size = 1,
-         .usage = need_pack ? PIPE_USAGE_STAGING : 0,
    };
    if (util_format_is_depth_or_stencil(tmpl.format))
       tmpl.bind |= PIPE_BIND_DEPTH_STENCIL;
@@ -220,7 +218,7 @@ transfer_map_msaa(struct pipe_context *pctx,
       return NULL;
    }
 
-   if (need_pack) {
+   if (needs_pack(usage)) {
       struct pipe_blit_info blit;
       memset(&blit, 0, sizeof(blit));
 

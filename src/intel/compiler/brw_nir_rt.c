@@ -118,7 +118,9 @@ lower_rt_io_derefs(nir_shader *shader)
                   nir_build_deref_cast(&b, call_data_addr,
                                        nir_var_function_temp,
                                        deref->var->type, 0);
-               nir_def_replace(&deref->def, &cast->def);
+               nir_def_rewrite_uses(&deref->def,
+                                        &cast->def);
+               nir_instr_remove(&deref->instr);
                progress = true;
             }
          } else if (nir_deref_mode_is(deref, nir_var_ray_hit_attrib)) {
@@ -129,7 +131,9 @@ lower_rt_io_derefs(nir_shader *shader)
                   nir_build_deref_cast(&b, hit_attrib_addr,
                                        nir_var_function_temp,
                                        deref->type, 0);
-               nir_def_replace(&deref->def, &cast->def);
+               nir_def_rewrite_uses(&deref->def,
+                                        &cast->def);
+               nir_instr_remove(&deref->instr);
                progress = true;
             }
          }
@@ -145,7 +149,8 @@ lower_rt_io_derefs(nir_shader *shader)
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -516,7 +521,9 @@ brw_nir_create_raygen_trampoline(const struct brw_compiler *compiler,
          b.cursor = nir_before_instr(&intrin->instr);
          nir_def *global_arg_addr =
             load_trampoline_param(&b, rt_disp_globals_addr, 1, 64);
-         nir_def_replace(&intrin->def, global_arg_addr);
+         nir_def_rewrite_uses(&intrin->def,
+                                  global_arg_addr);
+         nir_instr_remove(instr);
       }
    }
 

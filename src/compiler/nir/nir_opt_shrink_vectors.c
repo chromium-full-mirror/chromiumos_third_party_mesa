@@ -312,7 +312,6 @@ opt_shrink_vectors_intrinsic(nir_builder *b, nir_intrinsic_instr *instr,
    case nir_intrinsic_load_uniform:
    case nir_intrinsic_load_ubo:
    case nir_intrinsic_load_input:
-   case nir_intrinsic_load_per_primitive_input:
    case nir_intrinsic_load_input_vertex:
    case nir_intrinsic_load_per_vertex_input:
    case nir_intrinsic_load_interpolated_input:
@@ -570,7 +569,8 @@ nir_opt_shrink_vectors(nir_shader *shader, bool shrink_start)
 
       if (progress) {
          nir_metadata_preserve(impl,
-                               nir_metadata_control_flow);
+                               nir_metadata_block_index |
+                                  nir_metadata_dominance);
       } else {
          nir_metadata_preserve(impl, nir_metadata_all);
       }

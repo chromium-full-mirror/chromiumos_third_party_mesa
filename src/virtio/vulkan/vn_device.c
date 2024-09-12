@@ -409,11 +409,11 @@ vn_device_update_shader_cache_id(struct vn_device *dev)
     * and not utilized by venus.
     */
 #if !DETECT_OS_ANDROID && defined(ENABLE_SHADER_CACHE)
-   const uint8_t *device_uuid =
-      dev->physical_device->base.base.properties.pipelineCacheUUID;
+   const VkPhysicalDeviceProperties *vulkan_1_0_props =
+      &dev->physical_device->properties.vulkan_1_0;
 
    char uuid[VK_UUID_SIZE * 2 + 1];
-   mesa_bytes_to_hex(uuid, device_uuid, VK_UUID_SIZE);
+   mesa_bytes_to_hex(uuid, vulkan_1_0_props->pipelineCacheUUID, VK_UUID_SIZE);
 
    struct disk_cache *cache = disk_cache_create("venus", uuid, 0);
    if (!cache)
@@ -480,9 +480,14 @@ vn_device_init(struct vn_device *dev,
       goto out_memory_report_fini;
    }
 
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++) {
+      struct vn_device_memory_pool *pool = &dev->memory_pools[i];
+      mtx_init(&pool->mutex, mtx_plain);
+   }
+
    result = vn_device_feedback_pool_init(dev);
    if (result != VK_SUCCESS)
-      goto out_queue_family_fini;
+      goto out_memory_pool_fini;
 
    result = vn_feedback_cmd_pools_init(dev);
    if (result != VK_SUCCESS)
@@ -508,7 +513,10 @@ out_feedback_cmd_pools_fini:
 out_feedback_pool_fini:
    vn_device_feedback_pool_fini(dev);
 
-out_queue_family_fini:
+out_memory_pool_fini:
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
+      vn_device_memory_pool_fini(dev, i);
+
    vn_device_queue_family_fini(dev);
 
 out_memory_report_fini:
@@ -560,8 +568,8 @@ vn_CreateDevice(VkPhysicalDevice physicalDevice,
    }
 
    if (VN_DEBUG(LOG_CTX_INFO)) {
-      vn_log(instance, "%s", physical_dev->base.base.properties.deviceName);
-      vn_log(instance, "%s", physical_dev->base.base.properties.driverInfo);
+      vn_log(instance, "%s", physical_dev->properties.vulkan_1_0.deviceName);
+      vn_log(instance, "%s", physical_dev->properties.vulkan_1_2.driverInfo);
    }
 
    vn_tls_set_async_pipeline_create();
@@ -591,6 +599,9 @@ vn_DestroyDevice(VkDevice device, const VkAllocationCallbacks *pAllocator)
    vn_feedback_cmd_pools_fini(dev);
 
    vn_device_feedback_pool_fini(dev);
+
+   for (uint32_t i = 0; i < ARRAY_SIZE(dev->memory_pools); i++)
+      vn_device_memory_pool_fini(dev, i);
 
    vn_device_queue_family_fini(dev);
 

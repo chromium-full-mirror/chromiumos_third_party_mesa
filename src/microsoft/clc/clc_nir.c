@@ -53,7 +53,8 @@ lower_load_base_global_invocation_id(nir_builder *b, nir_intrinsic_instr *intr,
 
    nir_def *offset = load_ubo(b, intr, var, offsetof(struct clc_work_properties_data,
                                                          global_offset_x));
-   nir_def_replace(&intr->def, offset);
+   nir_def_rewrite_uses(&intr->def, offset);
+   nir_instr_remove(&intr->instr);
    return true;
 }
 
@@ -65,7 +66,8 @@ lower_load_work_dim(nir_builder *b, nir_intrinsic_instr *intr,
 
    nir_def *dim = load_ubo(b, intr, var, offsetof(struct clc_work_properties_data,
                                                       work_dim));
-   nir_def_replace(&intr->def, dim);
+   nir_def_rewrite_uses(&intr->def, dim);
+   nir_instr_remove(&intr->instr);
    return true;
 }
 
@@ -78,7 +80,8 @@ lower_load_num_workgroups(nir_builder *b, nir_intrinsic_instr *intr,
    nir_def *count =
       load_ubo(b, intr, var, offsetof(struct clc_work_properties_data,
                                       group_count_total_x));
-   nir_def_replace(&intr->def, count);
+   nir_def_rewrite_uses(&intr->def, count);
+   nir_instr_remove(&intr->instr);
    return true;
 }
 
@@ -91,7 +94,8 @@ lower_load_base_workgroup_id(nir_builder *b, nir_intrinsic_instr *intr,
    nir_def *offset =
       load_ubo(b, intr, var, offsetof(struct clc_work_properties_data,
                                       group_id_offset_x));
-   nir_def_replace(&intr->def, offset);
+   nir_def_rewrite_uses(&intr->def, offset);
+   nir_instr_remove(&intr->instr);
    return true;
 }
 
@@ -173,7 +177,8 @@ lower_load_kernel_input(nir_builder *b, nir_intrinsic_instr *intr,
 
    nir_def *result =
       nir_load_deref(b, deref);
-   nir_def_replace(&intr->def, result);
+   nir_def_rewrite_uses(&intr->def, result);
+   nir_instr_remove(&intr->instr);
    return true;
 }
 
@@ -333,6 +338,7 @@ bool
 clc_nir_lower_global_pointers_to_constants(nir_shader *nir)
 {
    return nir_shader_intrinsics_pass(nir, lower_deref_base_to_constant,
-                                     nir_metadata_control_flow |
+                                     nir_metadata_block_index |
+                                     nir_metadata_dominance |
                                      nir_metadata_loop_analysis, NULL);
 }

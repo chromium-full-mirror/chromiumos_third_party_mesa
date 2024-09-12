@@ -42,7 +42,12 @@ struct vn_renderer_sync {
 
 struct vn_renderer_info {
    struct {
-      VkPhysicalDeviceDrmPropertiesEXT props;
+      bool has_primary;
+      int primary_major;
+      int primary_minor;
+      bool has_render;
+      int render_major;
+      int render_minor;
    } drm;
 
    struct {
@@ -50,7 +55,10 @@ struct vn_renderer_info {
       uint16_t device_id;
 
       bool has_bus_info;
-      VkPhysicalDevicePCIBusInfoPropertiesEXT props;
+      uint16_t domain;
+      uint8_t bus;
+      uint8_t device;
+      uint8_t function;
    } pci;
 
    bool has_dma_buf_import;

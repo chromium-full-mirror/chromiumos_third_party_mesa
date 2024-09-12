@@ -1,4 +1,5 @@
 # Copyright © 2022 Konstantin Seurer
+#
 # SPDX-License-Identifier: MIT
 
 subdir('shaders')

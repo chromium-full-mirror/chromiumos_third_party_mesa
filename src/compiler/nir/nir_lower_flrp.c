@@ -634,7 +634,8 @@ lower_flrp_impl(nir_function_impl *impl,
       }
    }
 
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
 }
 
 /**

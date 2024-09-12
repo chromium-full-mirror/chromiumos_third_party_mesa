@@ -101,10 +101,6 @@ v3d_resource_bo_alloc(struct v3d_resource *rsc)
         struct pipe_screen *pscreen = prsc->screen;
         struct v3d_bo *bo;
 
-        /* never replace a mapped bo */
-        if (rsc->bo && rsc->bo->map)
-                return false;
-
         /* Buffers may be read using ldunifa, which prefetches the next
          * 4 bytes after a read. If the buffer's size is exactly a multiple
          * of a page size and the shader reads the last 4 bytes with ldunifa
@@ -812,7 +808,7 @@ v3d_resource_create_with_modifiers(struct pipe_screen *pscreen,
         /* Scanout BOs for simulator need to be linear for interaction with
          * i965.
          */
-        if (USE_V3D_SIMULATOR &&
+        if (using_v3d_simulator &&
             tmpl->bind & (PIPE_BIND_SHARED | PIPE_BIND_SCANOUT))
                 should_tile = false;
 
@@ -1180,7 +1176,7 @@ v3d_resource_get_stencil(struct pipe_resource *prsc)
 {
         struct v3d_resource *rsc = v3d_resource(prsc);
 
-        return rsc->separate_stencil ? &rsc->separate_stencil->base : NULL;
+        return &rsc->separate_stencil->base;
 }
 
 static const struct u_transfer_vtbl transfer_vtbl = {

@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <xf86drm.h>
 #include "asahi/compiler/agx_compile.h"
 #include "asahi/genxml/agx_pack.h"
 #include "asahi/layout/layout.h"
@@ -19,7 +18,6 @@
 #include "asahi/lib/agx_uvs.h"
 #include "asahi/lib/pool.h"
 #include "asahi/lib/shaders/geometry.h"
-#include "asahi/lib/unstable_asahi_drm.h"
 #include "compiler/nir/nir_lower_blend.h"
 #include "compiler/shader_enums.h"
 #include "gallium/auxiliary/util/u_blitter.h"
@@ -30,10 +28,9 @@
 #include "util/bitset.h"
 #include "util/disk_cache.h"
 #include "util/hash_table.h"
-#include "util/rwlock.h"
 #include "util/u_range.h"
-#include "agx_bg_eot.h"
 #include "agx_helpers.h"
+#include "agx_meta.h"
 #include "agx_nir_passes.h"
 
 #ifdef __GLIBC__
@@ -168,9 +165,6 @@ struct PACKED agx_draw_uniforms {
 
    /* ~0/0 boolean whether the epilog lacks any discard instrction */
    uint16_t no_epilog_discard;
-
-   /* Provoking vertex: 0, 1, 2 */
-   uint16_t provoking_vertex;
 
    /* Mapping from varying slots written by the last vertex stage to UVS
     * indices. This mapping must be compatible with the fragment shader.
@@ -360,8 +354,6 @@ struct agx_stage {
 };
 
 union agx_batch_result {
-   struct drm_asahi_result_render render;
-   struct drm_asahi_result_compute compute;
 };
 
 /* This is a firmware limit. It should be possible to raise to 2048 in the
@@ -575,16 +567,11 @@ enum asahi_blit_clamp {
    ASAHI_BLIT_CLAMP_COUNT,
 };
 
-struct asahi_blit_key {
-   enum pipe_format src_format, dst_format;
-   bool array;
-};
-
-DERIVE_HASH_TABLE(asahi_blit_key);
-
 struct asahi_blitter {
    bool active;
-   struct hash_table *blit_cs;
+
+   /* [clamp_type][is_array] */
+   void *blit_cs[ASAHI_BLIT_CLAMP_COUNT][2];
 
    /* [filter] */
    void *sampler[2];
@@ -642,9 +629,6 @@ struct agx_context {
       uint64_t generation[AGX_MAX_BATCHES];
    } batches;
 
-   /* Queue handle */
-   uint32_t queue_id;
-
    struct agx_batch *batch;
    struct agx_bo *result_buf;
 
@@ -687,8 +671,8 @@ struct agx_context {
    struct util_debug_callback debug;
    bool is_noop;
 
+   struct agx_tess_params tess_params;
    bool in_tess;
-   bool in_generated_vdm;
 
    struct blitter_context *blitter;
    struct asahi_blitter compute_blitter;
@@ -702,7 +686,7 @@ struct agx_context {
    struct util_dynarray global_buffers;
 
    struct hash_table *generic_meta;
-   struct agx_bg_eot_cache bg_eot;
+   struct agx_meta_cache meta;
 
    bool any_faults;
 
@@ -710,9 +694,6 @@ struct agx_context {
    uint32_t dummy_syncobj;
    int in_sync_fd;
    uint32_t in_sync_obj;
-   uint64_t flush_last_seqid;
-   uint64_t flush_my_seqid;
-   uint64_t flush_other_seqid;
 
    struct agx_scratch scratch_vs;
    struct agx_scratch scratch_fs;
@@ -778,78 +759,9 @@ agx_context(struct pipe_context *pctx)
 }
 
 struct agx_linked_shader;
-
-typedef void (*meta_shader_builder_t)(struct nir_builder *b, const void *key);
-
-void agx_init_meta_shaders(struct agx_context *ctx);
-
-void agx_destroy_meta_shaders(struct agx_context *ctx);
-
-struct agx_compiled_shader *agx_build_meta_shader(struct agx_context *ctx,
-                                                  meta_shader_builder_t builder,
-                                                  void *data, size_t data_size);
-
-struct agx_grid {
-   /* Tag for the union */
-   enum agx_cdm_mode mode;
-
-   /* If mode != INDIRECT_LOCAL, the local size */
-   uint32_t local[3];
-
-   union {
-      /* If mode == DIRECT, the global size. This is *not* multiplied by the
-       * local size, differing from the API definition but matching AGX.
-       */
-      uint32_t global[3];
-
-      /* Address of the indirect buffer if mode != DIRECT */
-      uint64_t indirect;
-   };
-};
-
-static inline const struct agx_grid
-agx_grid_direct(uint32_t global_x, uint32_t global_y, uint32_t global_z,
-                uint32_t local_x, uint32_t local_y, uint32_t local_z)
-{
-   return (struct agx_grid){
-      .mode = AGX_CDM_MODE_DIRECT,
-      .global = {global_x, global_y, global_z},
-      .local = {local_x, local_y, local_z},
-   };
-}
-
-static inline const struct agx_grid
-agx_grid_indirect(uint64_t indirect, uint32_t local_x, uint32_t local_y,
-                  uint32_t local_z)
-{
-   return (struct agx_grid){
-      .mode = AGX_CDM_MODE_INDIRECT_GLOBAL,
-      .local = {local_x, local_y, local_z},
-      .indirect = indirect,
-   };
-}
-
-static inline const struct agx_grid
-agx_grid_indirect_local(uint64_t indirect)
-{
-   return (struct agx_grid){
-      .mode = AGX_CDM_MODE_INDIRECT_LOCAL,
-      .indirect = indirect,
-   };
-}
-
-void agx_launch_with_data(struct agx_batch *batch, const struct agx_grid *grid,
-                          meta_shader_builder_t builder, void *key,
-                          size_t key_size, void *data, size_t data_size);
-
-void agx_launch_internal(struct agx_batch *batch, const struct agx_grid *grid,
-                         struct agx_compiled_shader *cs,
-                         enum pipe_shader_type stage, uint32_t usc);
-
-void agx_launch(struct agx_batch *batch, const struct agx_grid *grid,
+void agx_launch(struct agx_batch *batch, const struct pipe_grid_info *info,
                 struct agx_compiled_shader *cs,
-                struct agx_linked_shader *linked, enum pipe_shader_type stage,
-                unsigned variable_shared_mem);
+                struct agx_linked_shader *linked, enum pipe_shader_type stage);
 
 void agx_init_query_functions(struct pipe_context *ctx);
 
@@ -936,16 +848,8 @@ struct agx_screen {
    struct pipe_screen pscreen;
    struct agx_device dev;
    struct disk_cache *disk_cache;
-
-   /* Shared timeline syncobj and value to serialize flushes across contexts */
-   uint32_t flush_syncobj;
-   uint64_t flush_cur_seqid;
-   uint64_t flush_wait_seqid;
-   /* Lock to protect flush_wait_seqid updates (reads are just atomic) */
-   simple_mtx_t flush_seqid_lock;
-
-   /* Lock to protect syncobj usage vs. destruction in context destroy */
-   struct u_rwlock destroy_lock;
+   /* Queue handle */
+   uint32_t queue_id;
 };
 
 static inline struct agx_screen *
@@ -1024,14 +928,14 @@ agx_resource_valid(struct agx_resource *rsrc, int level)
 static inline void *
 agx_map_texture_cpu(struct agx_resource *rsrc, unsigned level, unsigned z)
 {
-   return ((uint8_t *)rsrc->bo->map) +
+   return ((uint8_t *)rsrc->bo->ptr.cpu) +
           ail_get_layer_level_B(&rsrc->layout, z, level);
 }
 
 static inline uint64_t
 agx_map_texture_gpu(struct agx_resource *rsrc, unsigned z)
 {
-   return rsrc->bo->va->addr +
+   return rsrc->bo->ptr.gpu +
           (uint64_t)ail_get_layer_offset_B(&rsrc->layout, z);
 }
 
@@ -1125,12 +1029,9 @@ agx_batch_add_bo(struct agx_batch *batch, struct agx_bo *bo)
 #define AGX_BATCH_FOREACH_BO_HANDLE(batch, handle)                             \
    BITSET_FOREACH_SET(handle, (batch)->bo_list.set, batch->bo_list.bit_count)
 
-struct drm_asahi_cmd_compute;
-struct drm_asahi_cmd_render;
-
 void agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
-                      struct drm_asahi_cmd_compute *compute,
-                      struct drm_asahi_cmd_render *render);
+                      uint32_t barriers, enum drm_asahi_cmd_type cmd_type,
+                      void *cmdbuf);
 
 void agx_flush_batch(struct agx_context *ctx, struct agx_batch *batch);
 void agx_flush_batch_for_reason(struct agx_context *ctx,
@@ -1207,13 +1108,8 @@ struct agx_encoder agx_encoder_allocate(struct agx_batch *batch,
 
 void agx_batch_init_state(struct agx_batch *batch);
 
-struct asahi_bg_eot {
-   uint64_t usc;
-   struct agx_counts_packed counts;
-};
-
-struct asahi_bg_eot agx_build_bg_eot(struct agx_batch *batch, bool store,
-                                     bool partial_render);
+uint64_t agx_build_meta(struct agx_batch *batch, bool store,
+                        bool partial_render);
 
 /* Query management */
 uint16_t agx_get_oq_index(struct agx_batch *batch, struct agx_query *query);
@@ -1235,6 +1131,12 @@ agx_render_condition_check(struct agx_context *ctx)
       return agx_render_condition_check_inner(ctx);
 }
 
+/* Texel buffers lowered to (at most) 1024x16384 2D textures */
+#define AGX_TEXTURE_BUFFER_WIDTH      1024
+#define AGX_TEXTURE_BUFFER_MAX_HEIGHT 16384
+#define AGX_TEXTURE_BUFFER_MAX_SIZE                                            \
+   (AGX_TEXTURE_BUFFER_WIDTH * AGX_TEXTURE_BUFFER_MAX_HEIGHT)
+
 static inline uint32_t
 agx_texture_buffer_size_el(enum pipe_format format, uint32_t size)
 {
@@ -1242,3 +1144,13 @@ agx_texture_buffer_size_el(enum pipe_format format, uint32_t size)
 
    return MIN2(AGX_TEXTURE_BUFFER_MAX_SIZE, size / blocksize);
 }
+
+typedef void (*meta_shader_builder_t)(struct nir_builder *b, const void *key);
+
+void agx_init_meta_shaders(struct agx_context *ctx);
+
+void agx_destroy_meta_shaders(struct agx_context *ctx);
+
+struct agx_compiled_shader *agx_build_meta_shader(struct agx_context *ctx,
+                                                  meta_shader_builder_t builder,
+                                                  void *data, size_t data_size);

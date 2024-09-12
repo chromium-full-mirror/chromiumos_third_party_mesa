@@ -247,6 +247,8 @@ struct dd_function_table {
    void (*ShaderCacheSerializeDriverBlob)(struct gl_context *ctx,
                                           struct gl_program *prog);
    /*@}*/
+
+   GLboolean (*ValidateEGLImage)(struct gl_context *ctx, GLeglImageOES image_handle);
 };
 
 #endif /* DD_INCLUDED */

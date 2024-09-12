@@ -260,8 +260,7 @@ extern "C" {
 #define CREATE_DUAL_EVENT_CALLBACK(event_name, stage)                                             \
 void si_ds_begin_##event_name(struct si_ds_device *device, uint64_t ts_ns, uint16_t tp_idx,       \
                               const void *flush_data,                                             \
-                              const struct trace_si_begin_##event_name *payload,                  \
-                              const void *indirect_data)                                          \
+                              const struct trace_si_begin_##event_name *payload)                  \
 {                                                                                                 \
    const struct si_ds_flush_data *flush = (const struct si_ds_flush_data *) flush_data;           \
    begin_event(flush->queue, ts_ns, stage);                                                       \
@@ -269,8 +268,7 @@ void si_ds_begin_##event_name(struct si_ds_device *device, uint64_t ts_ns, uint1
                                                                                                   \
 void si_ds_end_##event_name(struct si_ds_device *device, uint64_t ts_ns, uint16_t tp_idx,         \
                             const void *flush_data,                                               \
-                            const struct trace_si_end_##event_name *payload,                      \
-                            const void *indirect_data)                                            \
+                            const struct trace_si_end_##event_name *payload)                      \
 {                                                                                                 \
    const struct si_ds_flush_data *flush =  (const struct si_ds_flush_data *) flush_data;          \
    end_event(flush->queue, ts_ns, stage, flush->submission_id, NULL, payload,                     \

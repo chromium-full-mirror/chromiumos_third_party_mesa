@@ -3,12 +3,10 @@ use mesa_rust_gen::*;
 use std::{mem, ptr};
 
 #[derive(PartialEq, Eq, Hash)]
-#[repr(transparent)]
 pub struct PipeResource {
     pipe: *mut pipe_resource,
+    pub is_user: bool,
 }
-
-const PIPE_RESOURCE_FLAG_RUSTICL_IS_USER: u32 = PIPE_RESOURCE_FLAG_FRONTEND_PRIV;
 
 // SAFETY: pipe_resource is considered a thread safe type
 unsafe impl Send for PipeResource {}
@@ -70,13 +68,10 @@ impl PipeResource {
             return None;
         }
 
-        if is_user {
-            unsafe {
-                res.as_mut().unwrap().flags |= PIPE_RESOURCE_FLAG_RUSTICL_IS_USER;
-            }
-        }
-
-        Some(Self { pipe: res })
+        Some(Self {
+            pipe: res,
+            is_user: is_user,
+        })
     }
 
     pub(super) fn pipe(&self) -> *mut pipe_resource {
@@ -112,11 +107,7 @@ impl PipeResource {
     }
 
     pub fn is_staging(&self) -> bool {
-        self.as_ref().usage() == pipe_resource_usage::PIPE_USAGE_STAGING
-    }
-
-    pub fn is_user(&self) -> bool {
-        self.as_ref().flags & PIPE_RESOURCE_FLAG_RUSTICL_IS_USER != 0
+        self.as_ref().usage() & pipe_resource_usage::PIPE_USAGE_STAGING.0 != 0
     }
 
     pub fn pipe_image_view(

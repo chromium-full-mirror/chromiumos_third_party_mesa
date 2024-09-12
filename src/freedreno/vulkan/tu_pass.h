@@ -48,8 +48,6 @@ struct tu_subpass
    uint32_t resolve_count;
    bool resolve_depth_stencil;
 
-   bool legacy_dithering_enabled;
-
    bool feedback_loop_color;
    bool feedback_loop_ds;
 

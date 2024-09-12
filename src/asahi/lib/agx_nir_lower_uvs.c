@@ -80,23 +80,13 @@ lower(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       assert(ctx->viewport == NULL && "only written once");
       ctx->viewport = value;
       ctx->after_layer_viewport = nir_after_instr(index->parent_instr);
-   } else if (sem.location == VARYING_SLOT_CLIP_DIST0 ||
-              sem.location == VARYING_SLOT_CLIP_DIST1) {
-
+   } else if (sem.location == VARYING_SLOT_CLIP_DIST0) {
       unsigned clip_base = ctx->layout->group_offs[UVS_CLIP_DIST];
-      unsigned c = 4 * (sem.location - VARYING_SLOT_CLIP_DIST0) + component;
+      nir_def *index = nir_iadd_imm(b, nir_imul_imm(b, nir_u2u16(b, offset), 4),
+                                    clip_base + component);
 
-      if (c < b->shader->info.clip_distance_array_size) {
-         nir_def *index = nir_iadd_imm(
-            b, nir_imul_imm(b, nir_u2u16(b, offset), 4), clip_base + c);
-
-         nir_store_uvs_agx(b, value, index);
-      }
+      nir_store_uvs_agx(b, value, index);
    }
-
-   /* Combined clip/cull used */
-   assert(sem.location != VARYING_SLOT_CULL_DIST0);
-   assert(sem.location != VARYING_SLOT_CULL_DIST1);
 
    return true;
 }
@@ -148,7 +138,7 @@ agx_nir_lower_uvs(nir_shader *s, struct agx_unlinked_uvs_layout *layout)
 
    /* Determine the unlinked UVS layout */
    NIR_PASS(progress, s, nir_shader_intrinsics_pass, gather_components,
-            nir_metadata_control_flow, layout);
+            nir_metadata_block_index | nir_metadata_dominance, layout);
 
    unsigned sizes[UVS_NUM_GROUP] = {
       [UVS_POSITION] = 4,
@@ -179,7 +169,7 @@ agx_nir_lower_uvs(nir_shader *s, struct agx_unlinked_uvs_layout *layout)
    /* Now lower in terms of the unlinked layout */
    struct ctx ctx = {.layout = layout};
    NIR_PASS(progress, s, nir_shader_intrinsics_pass, lower,
-            nir_metadata_control_flow, &ctx);
+            nir_metadata_block_index | nir_metadata_dominance, &ctx);
 
    if (ctx.layer || ctx.viewport) {
       write_layer_viewport_sysval(&ctx);

@@ -31,7 +31,6 @@
 #include "util/u_blitter.h"
 #include "util/format/u_format.h"
 #include "util/format_srgb.h"
-#include "util/helpers.h"
 #include "util/u_framebuffer.h"
 #include "util/u_inlines.h"
 #include "util/u_rect.h"
@@ -53,6 +52,8 @@ clear_in_rp(struct pipe_context *pctx,
 {
    struct zink_context *ctx = zink_context(pctx);
    struct pipe_framebuffer_state *fb = &ctx->fb_state;
+
+   zink_flush_dgc_if_enabled(ctx);
 
    VkClearAttachment attachments[1 + PIPE_MAX_COLOR_BUFS];
    int num_attachments = 0;
@@ -616,6 +617,7 @@ zink_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
                          bool render_condition_enabled)
 {
    struct zink_context *ctx = zink_context(pctx);
+   zink_flush_dgc_if_enabled(ctx);
    bool render_condition_active = ctx->render_condition_active;
    if (!render_condition_enabled && render_condition_active) {
       zink_stop_conditional_render(ctx);
@@ -643,6 +645,7 @@ zink_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
    struct zink_context *ctx = zink_context(pctx);
    /* check for stencil fallback */
    bool blitting = ctx->blitting;
+   zink_flush_dgc_if_enabled(ctx);
    bool render_condition_active = ctx->render_condition_active;
    if (!render_condition_enabled && render_condition_active) {
       zink_stop_conditional_render(ctx);

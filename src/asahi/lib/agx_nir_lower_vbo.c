@@ -11,11 +11,6 @@
 #include "util/u_math.h"
 #include "shader_enums.h"
 
-struct ctx {
-   struct agx_attribute *attribs;
-   struct agx_robustness rs;
-};
-
 static bool
 is_rgb10_a2(const struct util_format_description *desc)
 {
@@ -114,8 +109,7 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (intr->intrinsic != nir_intrinsic_load_input)
       return false;
 
-   struct ctx *ctx = data;
-   struct agx_attribute *attribs = ctx->attribs;
+   struct agx_attribute *attribs = data;
    b->cursor = nir_instr_remove(&intr->instr);
 
    nir_src *offset_src = nir_get_io_offset_src(intr);
@@ -196,17 +190,13 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
     * before the load. That is faster than the 4 cmpsel required after the load,
     * and it avoids waiting on the load which should help prolog performance.
     *
-    * TODO: Optimize.
+    * TODO: Plumb through soft fault information to skip this.
     *
+    * TODO: Add a knob for robustBufferAccess2 semantics.
     */
-   nir_def *oob = nir_ult(b, bounds, el);
-
-   /* TODO: We clamp to handle null descriptors. This should be optimized
-    * further. However, with the fix up after the load for D3D robustness, we
-    * don't need this clamp if we can ignore the fault.
-    */
-   if (!(ctx->rs.level >= AGX_ROBUSTNESS_D3D && ctx->rs.soft_fault)) {
-      el = nir_bcsel(b, oob, nir_imm_int(b, 0), el);
+   bool robust = true;
+   if (robust) {
+      el = nir_umin(b, el, bounds);
    }
 
    nir_def *base = nir_load_vbo_base_agx(b, buf_handle);
@@ -237,12 +227,6 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
    nir_def *memory = nir_load_constant_agx(
       b, interchange_comps, interchange_register_size, base, stride_offset_el,
       .format = interchange_format, .base = shift);
-
-   /* TODO: Optimize per above */
-   if (ctx->rs.level >= AGX_ROBUSTNESS_D3D) {
-      nir_def *zero = nir_imm_zero(b, memory->num_components, memory->bit_size);
-      memory = nir_bcsel(b, oob, zero, memory);
-   }
 
    unsigned dest_size = intr->def.bit_size;
 
@@ -306,12 +290,9 @@ pass(struct nir_builder *b, nir_intrinsic_instr *intr, void *data)
 }
 
 bool
-agx_nir_lower_vbo(nir_shader *shader, struct agx_attribute *attribs,
-                  struct agx_robustness robustness)
+agx_nir_lower_vbo(nir_shader *shader, struct agx_attribute *attribs)
 {
    assert(shader->info.stage == MESA_SHADER_VERTEX);
-
-   struct ctx ctx = {.attribs = attribs, .rs = robustness};
-   return nir_shader_intrinsics_pass(shader, pass, nir_metadata_control_flow,
-                                     &ctx);
+   return nir_shader_intrinsics_pass(
+      shader, pass, nir_metadata_block_index | nir_metadata_dominance, attribs);
 }

@@ -275,7 +275,6 @@ get_program_state(struct fd_context *ctx, const struct pipe_draw_info *info)
    return fd6_ctx->prog;
 }
 
-template <chip CHIP>
 static void
 flush_streamout(struct fd_context *ctx, struct fd6_emit *emit)
    assert_dt
@@ -287,8 +286,8 @@ flush_streamout(struct fd_context *ctx, struct fd6_emit *emit)
 
    for (unsigned i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
       if (emit->streamout_mask & (1 << i)) {
-         enum fd_gpu_event evt = (enum fd_gpu_event)(FD_FLUSH_SO_0 + i);
-         fd6_event_write<CHIP>(ctx, ring, evt);
+         enum vgt_event_type evt = (enum vgt_event_type)(FLUSH_SO_0 + i);
+         fd6_event_write(ctx->batch, ring, evt, false);
       }
    }
 }
@@ -464,7 +463,7 @@ draw_vbos(struct fd_context *ctx, const struct pipe_draw_info *info,
       ctx->batch->barrier |= FD6_WAIT_FOR_ME;
 
    if (ctx->batch->barrier)
-      fd6_barrier_flush<CHIP>(ctx->batch);
+      fd6_barrier_flush(ctx->batch);
 
    /* for debug after a lock up, write a unique counter value
     * to scratch7 for each draw, to make it easier to match up
@@ -508,7 +507,7 @@ draw_vbos(struct fd_context *ctx, const struct pipe_draw_info *info,
          uint32_t last_index_start = ctx->last.index_start;
 
          for (unsigned i = 1; i < num_draws; i++) {
-            flush_streamout<CHIP>(ctx, &emit);
+            flush_streamout(ctx, &emit);
 
             fd6_vsc_update_sizes(ctx->batch, info, &draws[i]);
 
@@ -537,7 +536,7 @@ draw_vbos(struct fd_context *ctx, const struct pipe_draw_info *info,
 
    emit_marker6(ring, 7);
 
-   flush_streamout<CHIP>(ctx, &emit);
+   flush_streamout(ctx, &emit);
 
    fd_context_all_clean(ctx);
 }
@@ -688,4 +687,7 @@ fd6_draw_init(struct pipe_context *pctx)
    ctx->update_draw = fd6_update_draw<CHIP>;
    fd6_update_draw<CHIP>(ctx);
 }
-FD_GENX(fd6_draw_init);
+
+/* Teach the compiler about needed variants: */
+template void fd6_draw_init<A6XX>(struct pipe_context *pctx);
+template void fd6_draw_init<A7XX>(struct pipe_context *pctx);

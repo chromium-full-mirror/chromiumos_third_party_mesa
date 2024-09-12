@@ -103,6 +103,7 @@ nir_lower_alpha_test(nir_shader *shader, enum compare_func func,
    };
 
    return nir_shader_intrinsics_pass(shader, lower,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index |
+                                        nir_metadata_dominance,
                                      &state);
 }

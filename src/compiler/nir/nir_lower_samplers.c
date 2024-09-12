@@ -145,6 +145,7 @@ bool
 nir_lower_samplers(nir_shader *shader)
 {
    return nir_shader_instructions_pass(shader, lower_sampler,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        NULL);
 }

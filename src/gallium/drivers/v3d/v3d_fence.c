@@ -56,8 +56,7 @@ v3d_fence_reference(struct pipe_screen *pscreen,
         struct v3d_fence *f = (struct v3d_fence *)pf;
         struct v3d_fence *old = *p;
 
-        if (pipe_reference(old ? &old->reference : NULL,
-                           f ? &f->reference : NULL)) {
+        if (pipe_reference(&(*p)->reference, &f->reference)) {
                 close(old->fd);
                 free(old);
         }

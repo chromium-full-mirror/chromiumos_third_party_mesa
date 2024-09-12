@@ -19,7 +19,7 @@ use std::mem::MaybeUninit;
 use std::ptr;
 use std::slice;
 
-#[cl_info_entrypoint(clGetContextInfo)]
+#[cl_info_entrypoint(cl_get_context_info)]
 impl CLInfo<cl_context_info> for cl_context {
     fn query(&self, q: cl_context_info, _: &[u8]) -> CLResult<Vec<MaybeUninit<u8>>> {
         let ctx = Context::ref_from_raw(*self)?;
@@ -64,7 +64,7 @@ impl CLInfo<cl_gl_context_info> for GLCtxManager {
     }
 }
 
-#[cl_entrypoint(clGetGLContextInfoKHR)]
+#[cl_entrypoint]
 pub fn get_gl_context_info_khr(
     properties: *const cl_context_properties,
     param_name: cl_gl_context_info,
@@ -109,7 +109,7 @@ pub fn get_gl_context_info_khr(
         )
 }
 
-#[cl_entrypoint(clCreateContext)]
+#[cl_entrypoint]
 fn create_context(
     properties: *const cl_context_properties,
     num_devices: cl_uint,
@@ -196,7 +196,7 @@ fn create_context(
     Ok(Context::new(devs, props, gl_ctx_manager).into_cl())
 }
 
-#[cl_entrypoint(clCreateContextFromType)]
+#[cl_entrypoint]
 fn create_context_from_type(
     properties: *const cl_context_properties,
     device_type: cl_device_type,
@@ -227,17 +227,17 @@ fn create_context_from_type(
     )
 }
 
-#[cl_entrypoint(clRetainContext)]
+#[cl_entrypoint]
 fn retain_context(context: cl_context) -> CLResult<()> {
     Context::retain(context)
 }
 
-#[cl_entrypoint(clReleaseContext)]
+#[cl_entrypoint]
 fn release_context(context: cl_context) -> CLResult<()> {
     Context::release(context)
 }
 
-#[cl_entrypoint(clSetContextDestructorCallback)]
+#[cl_entrypoint]
 fn set_context_destructor_callback(
     context: cl_context,
     pfn_notify: ::std::option::Option<FuncDeleteContextCB>,

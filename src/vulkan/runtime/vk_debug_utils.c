@@ -302,12 +302,10 @@ vk_common_SetDebugUtilsObjectNameEXT(
       vk_free(alloc, object->object_name);
       object->object_name = NULL;
    }
-   if (pNameInfo->pObjectName != NULL) {
-      object->object_name = vk_strdup(alloc, pNameInfo->pObjectName,
-                                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-      if (!object->object_name)
-         return VK_ERROR_OUT_OF_HOST_MEMORY;
-   }
+   object->object_name = vk_strdup(alloc, pNameInfo->pObjectName,
+                                   VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   if (!object->object_name)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
 
    return VK_SUCCESS;
 }

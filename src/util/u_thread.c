@@ -51,7 +51,7 @@ util_get_current_cpu(void)
 int u_thread_create(thrd_t *thrd, int (*routine)(void *), void *param)
 {
    int ret = thrd_error;
-#if defined(HAVE_PTHREAD) && !DETECT_OS_FUCHIA
+#ifdef HAVE_PTHREAD
    sigset_t saved_set, new_set;
 
    sigfillset(&new_set);
@@ -75,7 +75,7 @@ int u_thread_create(thrd_t *thrd, int (*routine)(void *), void *param)
 void u_thread_setname( const char *name )
 {
 #if defined(HAVE_PTHREAD)
-#if DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || defined(__GLIBC__) || DETECT_OS_MANAGARM || DETECT_OS_FUCHSIA
+#if DETECT_OS_LINUX || DETECT_OS_CYGWIN || DETECT_OS_SOLARIS || defined(__GLIBC__) || DETECT_OS_MANAGARM
    int ret = pthread_setname_np(pthread_self(), name);
    if (ret == ERANGE) {
       char buf[16];

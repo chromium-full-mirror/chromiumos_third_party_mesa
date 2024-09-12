@@ -346,7 +346,8 @@ static bool
 nak_nir_lower_subgroup_id(nir_shader *nir)
 {
    return nir_shader_intrinsics_pass(nir, nak_nir_lower_subgroup_id_intrin,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index |
+                                     nir_metadata_dominance,
                                      NULL);
 }
 
@@ -598,7 +599,11 @@ nak_nir_lower_system_value_intrin(nir_builder *b, nir_intrinsic_instr *intrin,
 
          nir_store_var(b, clock, nir_vec2(b, clock_lo, clock_hi), 0x3);
 
-         nir_break_if(b, nir_ieq(b, clock_hi, nir_channel(b, last_clock, 1)));
+         nir_push_if(b, nir_ieq(b, clock_hi, nir_channel(b, last_clock, 1)));
+         {
+            nir_jump(b, nir_jump_break);
+         }
+         nir_pop_if(b, NULL);
       }
       nir_pop_loop(b, NULL);
 
@@ -717,7 +722,8 @@ nak_nir_lower_fs_outputs(nir_shader *nir)
       return false;
 
    bool progress = nir_shader_intrinsics_pass(nir, lower_fs_output_intrin,
-                                              nir_metadata_control_flow,
+                                              nir_metadata_block_index |
+                                              nir_metadata_dominance,
                                               NULL);
 
    if (progress) {
@@ -779,7 +785,8 @@ nak_nir_remove_barriers(nir_shader *nir)
    nir->info.uses_control_barrier = false;
 
    return nir_shader_intrinsics_pass(nir, nak_nir_remove_barrier_intrin,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index |
+                                     nir_metadata_dominance,
                                      NULL);
 }
 
@@ -796,8 +803,7 @@ nak_mem_vectorize_cb(unsigned align_mul, unsigned align_offset,
    assert(util_is_power_of_two_nonzero(align_mul));
 
    unsigned max_bytes = 128u / 8u;
-   if (low->intrinsic == nir_intrinsic_ldc_nv ||
-       low->intrinsic == nir_intrinsic_ldcx_nv)
+   if (low->intrinsic == nir_intrinsic_load_ubo)
       max_bytes = 64u / 8u;
 
    align_mul = MIN2(align_mul, max_bytes);
@@ -824,12 +830,10 @@ nak_mem_access_size_align(nir_intrinsic_op intrin,
 
    unsigned chunk_bytes = MIN3(bytes_pow2, align, 16);
    assert(util_is_power_of_two_nonzero(chunk_bytes));
-   if (intrin == nir_intrinsic_ldc_nv ||
-       intrin == nir_intrinsic_ldcx_nv)
+   if (intrin == nir_intrinsic_load_ubo)
       chunk_bytes = MIN2(chunk_bytes, 8);
 
-   if ((intrin == nir_intrinsic_ldc_nv ||
-        intrin == nir_intrinsic_ldcx_nv) && align < 4) {
+   if (intrin == nir_intrinsic_load_ubo && align < 4) {
       /* CBufs require 4B alignment unless we're doing a ldc.u8 or ldc.i8.
        * In particular, this applies to ldc.u16 which means we either have to
        * fall back to two ldc.u8 or use ldc.u32 and shift stuff around to get
@@ -1007,19 +1011,7 @@ nak_postprocess_nir(nir_shader *nir,
       }
    } while (progress);
 
-   if (nak->sm < 70)
-      OPT(nir, nak_nir_split_64bit_conversions);
-
-   nir_convert_to_lcssa(nir, true, true);
    nir_divergence_analysis(nir);
-
-   if (nak->sm >= 75) {
-      if (OPT(nir, nak_nir_lower_non_uniform_ldcx)) {
-         OPT(nir, nir_copy_prop);
-         OPT(nir, nir_opt_dce);
-         nir_divergence_analysis(nir);
-      }
-   }
 
    OPT(nir, nak_nir_remove_barriers);
 

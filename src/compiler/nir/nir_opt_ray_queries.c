@@ -131,7 +131,8 @@ nir_opt_ray_queries(nir_shader *shader)
    bool progress =
       nir_shader_instructions_pass(shader,
                                    nir_replace_unread_queries_instr,
-                                   nir_metadata_control_flow,
+                                   nir_metadata_block_index |
+                                      nir_metadata_dominance,
                                    read_queries);
 
    /* Update the number of queries if some have been removed. */

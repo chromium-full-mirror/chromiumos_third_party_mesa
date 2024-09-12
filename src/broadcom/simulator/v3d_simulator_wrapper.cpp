@@ -27,7 +27,7 @@
  * v3d_simulator.c code to use.
  */
 
-#if USE_V3D_SIMULATOR
+#ifdef USE_V3D_SIMULATOR
 
 #include "v3d_simulator_wrapper.h"
 #include "v3d_hw_auto.h"
@@ -42,10 +42,7 @@ struct v3d_hw *v3d_hw_auto_new(void *in_params)
 uint64_t v3d_hw_get_mem(const struct v3d_hw *hw, uint64_t *size)
 {
         uint64_t addr;
-        bool ret;
-        ret = hw->get_mem(&addr, size);
-        assert(ret);
-        (void)ret;
+        assert(hw->get_mem(&addr, size));
         return addr;
 }
 

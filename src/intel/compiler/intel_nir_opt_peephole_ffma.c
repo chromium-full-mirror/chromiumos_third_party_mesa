@@ -247,6 +247,7 @@ bool
 intel_nir_opt_peephole_ffma(nir_shader *shader)
 {
    return nir_shader_instructions_pass(shader, intel_nir_opt_peephole_ffma_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                        NULL);
 }

@@ -92,7 +92,7 @@ remove_unused_by_block(struct ir3_block *block)
                if (*srcp == instr)
                   *srcp = NULL;
 
-         ir3_instr_remove(instr);
+         list_delinit(&instr->node);
          progress = true;
       }
    }

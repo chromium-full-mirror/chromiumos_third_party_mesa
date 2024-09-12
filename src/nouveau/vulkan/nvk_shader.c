@@ -66,7 +66,7 @@ nvk_nak_stages(const struct nv_device_info *info)
 
    const char *env_str = getenv("NVK_USE_NAK");
    if (env_str == NULL)
-      return info->cls_eng3d >= MAXWELL_A ? all : 0;
+      return info->cls_eng3d >= VOLTA_A ? all : 0;
    else
       return parse_debug_string(env_str, flags);
 }
@@ -81,7 +81,6 @@ uint64_t
 nvk_physical_device_compiler_flags(const struct nvk_physical_device *pdev)
 {
    bool no_cbufs = pdev->debug_flags & NVK_DEBUG_NO_CBUF;
-   bool use_edb_buffer_views = nvk_use_edb_buffer_views(pdev);
    uint64_t prog_debug = nvk_cg_get_prog_debug();
    uint64_t prog_optimize = nvk_cg_get_prog_optimize();
    uint64_t nak_stages = nvk_nak_stages(&pdev->info);
@@ -95,7 +94,6 @@ nvk_physical_device_compiler_flags(const struct nvk_physical_device *pdev)
    return prog_debug
       | (prog_optimize << 8)
       | ((uint64_t)no_cbufs << 12)
-      | ((uint64_t)use_edb_buffer_views << 13)
       | (nak_stages << 16)
       | (nak_flags << 48);
 }
@@ -114,48 +112,6 @@ nvk_get_nir_options(struct vk_physical_device *vk_pdev,
       return nvk_cg_nir_options(pdev, stage);
 }
 
-nir_address_format
-nvk_ubo_addr_format(const struct nvk_physical_device *pdev,
-                    const struct vk_pipeline_robustness_state *rs)
-{
-   if (nvk_use_bindless_cbuf(&pdev->info)) {
-      return nir_address_format_vec2_index_32bit_offset;
-   } else if (rs->null_uniform_buffer_descriptor) {
-      /* We need bounds checking for null descriptors */
-      return nir_address_format_64bit_bounded_global;
-   } else {
-      switch (rs->uniform_buffers) {
-      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT:
-         return nir_address_format_64bit_global_32bit_offset;
-      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT:
-      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT:
-         return nir_address_format_64bit_bounded_global;
-      default:
-         unreachable("Invalid robust buffer access behavior");
-      }
-   }
-}
-
-nir_address_format
-nvk_ssbo_addr_format(const struct nvk_physical_device *pdev,
-                    const struct vk_pipeline_robustness_state *rs)
-{
-   if (rs->null_storage_buffer_descriptor) {
-      /* We need bounds checking for null descriptors */
-      return nir_address_format_64bit_bounded_global;
-   } else {
-      switch (rs->storage_buffers) {
-      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_DISABLED_EXT:
-         return nir_address_format_64bit_global_32bit_offset;
-      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_EXT:
-      case VK_PIPELINE_ROBUSTNESS_BUFFER_BEHAVIOR_ROBUST_BUFFER_ACCESS_2_EXT:
-         return nir_address_format_64bit_bounded_global;
-      default:
-         unreachable("Invalid robust buffer access behavior");
-      }
-   }
-}
-
 static struct spirv_to_nir_options
 nvk_get_spirv_options(struct vk_physical_device *vk_pdev,
                       UNUSED gl_shader_stage stage,
@@ -165,9 +121,9 @@ nvk_get_spirv_options(struct vk_physical_device *vk_pdev,
       container_of(vk_pdev, struct nvk_physical_device, vk);
 
    return (struct spirv_to_nir_options) {
-      .ssbo_addr_format = nvk_ssbo_addr_format(pdev, rs),
+      .ssbo_addr_format = nvk_buffer_addr_format(rs->storage_buffers),
       .phys_ssbo_addr_format = nir_address_format_64bit_global,
-      .ubo_addr_format = nvk_ubo_addr_format(pdev, rs),
+      .ubo_addr_format = nvk_buffer_addr_format(rs->uniform_buffers),
       .shared_addr_format = nir_address_format_32bit_offset,
       .min_ssbo_alignment = NVK_MIN_SSBO_ALIGNMENT,
       .min_ubo_alignment = nvk_min_cbuf_alignment(&pdev->info),
@@ -195,9 +151,8 @@ nvk_populate_fs_key(struct nak_fs_key *key,
 {
    memset(key, 0, sizeof(*key));
 
-   key->sample_info_cb = 0;
+   key->sample_locations_cb = 0;
    key->sample_locations_offset = nvk_root_descriptor_offset(draw.sample_locations);
-   key->sample_masks_offset = nvk_root_descriptor_offset(draw.sample_masks);
 
    /* Turn underestimate on when no state is availaible or if explicitly set */
    if (state == NULL || state->rs == NULL ||
@@ -260,84 +215,54 @@ nvk_hash_graphics_state(struct vk_physical_device *device,
 }
 
 static bool
-lower_load_intrinsic(nir_builder *b, nir_intrinsic_instr *load,
-                     UNUSED void *_data)
+lower_load_global_constant_offset_instr(nir_builder *b,
+                                        nir_intrinsic_instr *intrin,
+                                        UNUSED void *_data)
 {
-   switch (load->intrinsic) {
-   case nir_intrinsic_load_ubo: {
-      b->cursor = nir_before_instr(&load->instr);
-
-      nir_def *index = load->src[0].ssa;
-      nir_def *offset = load->src[1].ssa;
-      const enum gl_access_qualifier access = nir_intrinsic_access(load);
-      const uint32_t align_mul = nir_intrinsic_align_mul(load);
-      const uint32_t align_offset = nir_intrinsic_align_offset(load);
-
-      nir_def *val;
-      if (load->src[0].ssa->num_components == 1) {
-         val = nir_ldc_nv(b, load->num_components, load->def.bit_size,
-                           index, offset, .access = access,
-                           .align_mul = align_mul,
-                           .align_offset = align_offset);
-      } else if (load->src[0].ssa->num_components == 2) {
-         nir_def *handle = nir_pack_64_2x32(b, load->src[0].ssa);
-         val = nir_ldcx_nv(b, load->num_components, load->def.bit_size,
-                           handle, offset, .access = access,
-                           .align_mul = align_mul,
-                           .align_offset = align_offset);
-      } else {
-         unreachable("Invalid UBO index");
-      }
-      nir_def_rewrite_uses(&load->def, val);
-      return true;
-   }
-
-   case nir_intrinsic_load_global_constant_offset:
-   case nir_intrinsic_load_global_constant_bounded: {
-      b->cursor = nir_before_instr(&load->instr);
-
-      nir_def *base_addr = load->src[0].ssa;
-      nir_def *offset = load->src[1].ssa;
-
-      nir_def *zero = NULL;
-      if (load->intrinsic == nir_intrinsic_load_global_constant_bounded) {
-         nir_def *bound = load->src[2].ssa;
-
-         unsigned bit_size = load->def.bit_size;
-         assert(bit_size >= 8 && bit_size % 8 == 0);
-         unsigned byte_size = bit_size / 8;
-
-         zero = nir_imm_zero(b, load->num_components, bit_size);
-
-         unsigned load_size = byte_size * load->num_components;
-
-         nir_def *sat_offset =
-            nir_umin(b, offset, nir_imm_int(b, UINT32_MAX - (load_size - 1)));
-         nir_def *in_bounds =
-            nir_ilt(b, nir_iadd_imm(b, sat_offset, load_size - 1), bound);
-
-         nir_push_if(b, in_bounds);
-      }
-
-      nir_def *val =
-         nir_build_load_global_constant(b, load->def.num_components,
-                                        load->def.bit_size,
-                                        nir_iadd(b, base_addr, nir_u2u64(b, offset)),
-                                        .align_mul = nir_intrinsic_align_mul(load),
-                                        .align_offset = nir_intrinsic_align_offset(load));
-
-      if (load->intrinsic == nir_intrinsic_load_global_constant_bounded) {
-         nir_pop_if(b, NULL);
-         val = nir_if_phi(b, val, zero);
-      }
-
-      nir_def_rewrite_uses(&load->def, val);
-      return true;
-   }
-
-   default:
+   if (intrin->intrinsic != nir_intrinsic_load_global_constant_offset &&
+       intrin->intrinsic != nir_intrinsic_load_global_constant_bounded)
       return false;
+
+   b->cursor = nir_before_instr(&intrin->instr);
+
+   nir_def *base_addr = intrin->src[0].ssa;
+   nir_def *offset = intrin->src[1].ssa;
+
+   nir_def *zero = NULL;
+   if (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded) {
+      nir_def *bound = intrin->src[2].ssa;
+
+      unsigned bit_size = intrin->def.bit_size;
+      assert(bit_size >= 8 && bit_size % 8 == 0);
+      unsigned byte_size = bit_size / 8;
+
+      zero = nir_imm_zero(b, intrin->num_components, bit_size);
+
+      unsigned load_size = byte_size * intrin->num_components;
+
+      nir_def *sat_offset =
+         nir_umin(b, offset, nir_imm_int(b, UINT32_MAX - (load_size - 1)));
+      nir_def *in_bounds =
+         nir_ilt(b, nir_iadd_imm(b, sat_offset, load_size - 1), bound);
+
+      nir_push_if(b, in_bounds);
    }
+
+   nir_def *val =
+      nir_build_load_global_constant(b, intrin->def.num_components,
+                                     intrin->def.bit_size,
+                                     nir_iadd(b, base_addr, nir_u2u64(b, offset)),
+                                     .align_mul = nir_intrinsic_align_mul(intrin),
+                                     .align_offset = nir_intrinsic_align_offset(intrin));
+
+   if (intrin->intrinsic == nir_intrinsic_load_global_constant_bounded) {
+      nir_pop_if(b, NULL);
+      val = nir_if_phi(b, val, zero);
+   }
+
+   nir_def_rewrite_uses(&intrin->def, val);
+
+   return true;
 }
 
 struct lower_ycbcr_state {
@@ -468,16 +393,16 @@ nvk_lower_nir(struct nvk_device *dev, nir_shader *nir,
       };
    }
 
-   NIR_PASS(_, nir, nvk_nir_lower_descriptors, pdev, rs,
+   NIR_PASS(_, nir, nvk_nir_lower_descriptors, rs,
             set_layout_count, set_layouts, cbuf_map);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_global,
             nir_address_format_64bit_global);
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ssbo,
-            nvk_ssbo_addr_format(pdev, rs));
+            nvk_buffer_addr_format(rs->storage_buffers));
    NIR_PASS(_, nir, nir_lower_explicit_io, nir_var_mem_ubo,
-            nvk_ubo_addr_format(pdev, rs));
+            nvk_buffer_addr_format(rs->uniform_buffers));
    NIR_PASS(_, nir, nir_shader_intrinsics_pass,
-            lower_load_intrinsic, nir_metadata_none, NULL);
+            lower_load_global_constant_offset_instr, nir_metadata_none, NULL);
 
    if (!nir->info.shared_memory_explicit_layout) {
       NIR_PASS(_, nir, nir_lower_vars_to_explicit_types,
@@ -627,9 +552,7 @@ nvk_shader_upload(struct nvk_device *dev, struct nvk_shader *shader)
 
    uint32_t data_offset = 0;
    if (shader->data_size > 0) {
-      uint32_t cbuf_alignment = nvk_min_cbuf_alignment(&pdev->info);
-      alignment = MAX2(alignment, cbuf_alignment);
-      total_size = align(total_size, cbuf_alignment);
+      total_size = align(total_size, nvk_min_cbuf_alignment(&pdev->info));
       data_offset = total_size;
       total_size += shader->data_size;
    }
@@ -745,7 +668,8 @@ nvk_compile_shader(struct nvk_device *dev,
    }
 
    if (info->stage == MESA_SHADER_FRAGMENT) {
-      if (shader->info.fs.uses_sample_shading) {
+      if (shader->info.fs.reads_sample_mask ||
+          shader->info.fs.uses_sample_shading) {
          shader->min_sample_shading = 1;
       } else if (state != NULL && state->ms != NULL &&
                  state->ms->sample_shading_enable) {
@@ -925,13 +849,6 @@ nvk_shader_get_executable_statistics(
                           statistics, statistic_count);
 
    assert(executable_index == 0);
-
-   vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
-      WRITE_STR(stat->name, "Instruction count");
-      WRITE_STR(stat->description, "Number of instructions used by this shader");
-      stat->format = VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR;
-      stat->value.u64 = shader->info.num_instrs;
-   }
 
    vk_outarray_append_typed(VkPipelineExecutableStatisticKHR, &out, stat) {
       WRITE_STR(stat->name, "Code Size");

@@ -410,7 +410,8 @@ v3d_nir_lower_logic_ops(nir_shader *s, struct v3d_compile *c)
 
                 if (progress) {
                         nir_metadata_preserve(impl,
-                                              nir_metadata_control_flow);
+                                              nir_metadata_block_index |
+                                              nir_metadata_dominance);
                 } else {
                         nir_metadata_preserve(impl,
                                               nir_metadata_all);

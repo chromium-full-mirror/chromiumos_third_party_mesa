@@ -574,7 +574,8 @@ vn_query_feedback_cmd_record_internal(VkCommandBuffer cmd_handle,
                                       bool copy)
 {
    struct vn_query_pool *pool = vn_query_pool_from_handle(pool_handle);
-   assert(pool->fb_buf);
+   if (!pool->fb_buf)
+      return;
 
    /* Results are always 64 bit and include availability bit (also 64 bit) */
    const VkDeviceSize slot_size = (pool->result_array_size * 8) + 8;

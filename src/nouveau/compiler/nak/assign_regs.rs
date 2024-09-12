@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 use crate::api::{GetDebugFlags, DEBUG};
+use crate::bitset::BitSet;
 use crate::ir::*;
 use crate::liveness::{BlockLiveness, Liveness, SimpleLiveness};
 
-use compiler::bitset::BitSet;
 use std::cmp::{max, Ordering};
 use std::collections::{HashMap, HashSet};
 
@@ -20,10 +20,6 @@ impl KillSet {
             set: HashSet::new(),
             vec: Vec::new(),
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.vec.len()
     }
 
     pub fn clear(&mut self) {
@@ -43,36 +39,6 @@ impl KillSet {
 
     pub fn is_empty(&self) -> bool {
         self.vec.is_empty()
-    }
-}
-
-// These two helpers are carefully paired for the purposes of RA.
-// src_ssa_ref() returns whatever SSARef is present in the source, if any.
-// src_set_reg() overwrites that SSARef with a RegRef.
-#[inline]
-fn src_ssa_ref(src: &Src) -> Option<&SSARef> {
-    match &src.src_ref {
-        SrcRef::SSA(ssa) => Some(ssa),
-        SrcRef::CBuf(CBufRef {
-            buf: CBuf::BindlessSSA(ssa),
-            ..
-        }) => Some(ssa),
-        _ => None,
-    }
-}
-
-#[inline]
-fn src_set_reg(src: &mut Src, reg: RegRef) {
-    match &mut src.src_ref {
-        SrcRef::SSA(_) => {
-            src.src_ref = reg.into();
-        }
-        SrcRef::CBuf(cb) => {
-            debug_assert!(matches!(&cb.buf, CBuf::BindlessSSA(_)));
-            debug_assert!(reg.file() == RegFile::UGPR && reg.comps() == 2);
-            cb.buf = CBuf::BindlessUGPR(reg);
-        }
-        _ => (),
     }
 }
 
@@ -119,10 +85,10 @@ impl SSAUseMap {
     pub fn add_block(&mut self, b: &BasicBlock) {
         for (ip, instr) in b.instrs.iter().enumerate() {
             match &instr.op {
-                Op::RegOut(op) => {
+                Op::FSOut(op) => {
                     for (i, src) in op.srcs.iter().enumerate() {
                         let out_reg = u32::try_from(i).unwrap();
-                        if let Some(ssa) = src_ssa_ref(src) {
+                        if let SrcRef::SSA(ssa) = src.src_ref {
                             assert!(ssa.comps() == 1);
                             self.add_fixed_reg_use(ip, ssa[0], out_reg);
                         }
@@ -131,8 +97,8 @@ impl SSAUseMap {
                 _ => {
                     // We don't care about predicates because they're scalar
                     for src in instr.srcs() {
-                        if let Some(ssa) = src_ssa_ref(src) {
-                            self.add_vec_use(ip, *ssa);
+                        if let SrcRef::SSA(ssa) = src.src_ref {
+                            self.add_vec_use(ip, ssa);
                         }
                     }
                 }
@@ -188,7 +154,6 @@ struct RegAllocator {
     file: RegFile,
     num_regs: u32,
     used: BitSet,
-    pinned: BitSet,
     reg_ssa: Vec<SSAValue>,
     ssa_reg: HashMap<SSAValue, u32>,
 }
@@ -199,7 +164,6 @@ impl RegAllocator {
             file: file,
             num_regs: num_regs,
             used: BitSet::new(),
-            pinned: BitSet::new(),
             reg_ssa: Vec::new(),
             ssa_reg: HashMap::new(),
         }
@@ -217,8 +181,13 @@ impl RegAllocator {
         self.used.get(reg.try_into().unwrap())
     }
 
-    pub fn reg_is_pinned(&self, reg: u32) -> bool {
-        self.pinned.get(reg.try_into().unwrap())
+    fn reg_range_is_unused(&self, reg: u32, comps: u8) -> bool {
+        for c in 0..u32::from(comps) {
+            if self.reg_is_used(reg + c) {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn try_get_reg(&self, ssa: SSAValue) -> Option<u32> {
@@ -259,7 +228,6 @@ impl RegAllocator {
         let reg_usize = usize::try_from(reg).unwrap();
         assert!(self.reg_ssa[reg_usize] == ssa);
         self.used.remove(reg_usize);
-        self.pinned.remove(reg_usize);
         reg
     }
 
@@ -278,23 +246,8 @@ impl RegAllocator {
         self.used.insert(reg_usize);
     }
 
-    pub fn pin_reg(&mut self, reg: u32) {
-        assert!(self.reg_is_used(reg));
-        self.pinned.insert(reg.try_into().unwrap());
-    }
-
-    fn reg_range_is_unset(set: &BitSet, reg: u32, comps: u8) -> bool {
-        for c in 0..u32::from(comps) {
-            if set.get((reg + c).try_into().unwrap()) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn try_find_unset_reg_range(
+    pub fn try_find_unused_reg_range(
         &self,
-        set: &BitSet,
         start_reg: u32,
         align: u32,
         comps: u8,
@@ -303,7 +256,8 @@ impl RegAllocator {
 
         let mut next_reg = start_reg;
         loop {
-            let reg: u32 = set
+            let reg: u32 = self
+                .used
                 .next_unset(usize::try_from(next_reg).unwrap())
                 .try_into()
                 .unwrap();
@@ -317,21 +271,12 @@ impl RegAllocator {
                 return None;
             }
 
-            if Self::reg_range_is_unset(set, reg, comps) {
+            if self.reg_range_is_unused(reg, comps) {
                 return Some(reg);
             }
 
             next_reg = reg + align;
         }
-    }
-
-    pub fn try_find_unused_reg_range(
-        &self,
-        start_reg: u32,
-        align: u32,
-        comps: u8,
-    ) -> Option<u32> {
-        self.try_find_unset_reg_range(&self.used, start_reg, align, comps)
     }
 
     pub fn alloc_scalar(
@@ -401,20 +346,19 @@ impl RegAllocator {
     }
 }
 
-struct VecRegAllocator<'a> {
+struct PinnedRegAllocator<'a> {
     ra: &'a mut RegAllocator,
     pcopy: OpParCopy,
     pinned: BitSet,
     evicted: HashMap<SSAValue, u32>,
 }
 
-impl<'a> VecRegAllocator<'a> {
+impl<'a> PinnedRegAllocator<'a> {
     fn new(ra: &'a mut RegAllocator) -> Self {
-        let pinned = ra.pinned.clone();
-        VecRegAllocator {
-            ra,
+        PinnedRegAllocator {
+            ra: ra,
             pcopy: OpParCopy::new(),
-            pinned,
+            pinned: Default::default(),
             evicted: HashMap::new(),
         }
     }
@@ -438,7 +382,12 @@ impl<'a> VecRegAllocator<'a> {
     }
 
     fn reg_range_is_unpinned(&self, reg: u32, comps: u8) -> bool {
-        RegAllocator::reg_range_is_unset(&self.pinned, reg, comps)
+        for c in 0..u32::from(comps) {
+            if self.reg_is_pinned(reg + c) {
+                return false;
+            }
+        }
+        true
     }
 
     fn assign_pin_reg(&mut self, ssa: SSAValue, reg: u32) -> RegRef {
@@ -461,8 +410,29 @@ impl<'a> VecRegAllocator<'a> {
         align: u32,
         comps: u8,
     ) -> Option<u32> {
-        self.ra
-            .try_find_unset_reg_range(&self.pinned, start_reg, align, comps)
+        let mut next_reg = start_reg;
+        loop {
+            let reg: u32 = self
+                .pinned
+                .next_unset(usize::try_from(next_reg).unwrap())
+                .try_into()
+                .unwrap();
+
+            // Ensure we're properly aligned
+            let reg = reg.next_multiple_of(align);
+
+            // Ensure we're in-bounds. This also serves as a check to ensure
+            // that u8::try_from(reg + i) will succeed.
+            if reg > self.ra.num_regs - u32::from(comps) {
+                return None;
+            }
+
+            if self.reg_range_is_unpinned(reg, comps) {
+                return Some(reg);
+            }
+
+            next_reg = reg + align;
+        }
     }
 
     pub fn evict_ssa(&mut self, ssa: SSAValue, old_reg: u32) {
@@ -619,20 +589,19 @@ impl<'a> VecRegAllocator<'a> {
     }
 }
 
-impl Drop for VecRegAllocator<'_> {
+impl Drop for PinnedRegAllocator<'_> {
     fn drop(&mut self) {
         assert!(self.evicted.is_empty());
     }
 }
 
-fn instr_remap_srcs_file(instr: &mut Instr, ra: &mut VecRegAllocator) {
+fn instr_remap_srcs_file(instr: &mut Instr, ra: &mut PinnedRegAllocator) {
     // Collect vector sources first since those may silently pin some of our
     // scalar sources.
     for src in instr.srcs_mut() {
-        if let Some(ssa) = src_ssa_ref(src) {
-            if ssa.file().unwrap() == ra.file() && ssa.comps() > 1 {
-                let reg = ra.collect_vector(ssa);
-                src_set_reg(src, reg);
+        if let SrcRef::SSA(ssa) = &src.src_ref {
+            if ssa.file() == ra.file() && ssa.comps() > 1 {
+                src.src_ref = ra.collect_vector(ssa).into();
             }
         }
     }
@@ -644,10 +613,9 @@ fn instr_remap_srcs_file(instr: &mut Instr, ra: &mut VecRegAllocator) {
     }
 
     for src in instr.srcs_mut() {
-        if let Some(ssa) = src_ssa_ref(src) {
-            if ssa.file().unwrap() == ra.file() && ssa.comps() == 1 {
-                let reg = ra.collect_vector(ssa);
-                src_set_reg(src, reg);
+        if let SrcRef::SSA(ssa) = &src.src_ref {
+            if ssa.file() == ra.file() && ssa.comps() == 1 {
+                src.src_ref = ra.collect_vector(ssa).into();
             }
         }
     }
@@ -661,8 +629,8 @@ fn instr_alloc_scalar_dsts_file(
 ) {
     for dst in instr.dsts_mut() {
         if let Dst::SSA(ssa) = dst {
-            if ssa.file().unwrap() == ra.file() {
-                assert!(ssa.comps() == 1);
+            assert!(ssa.comps() == 1);
+            if ssa.file() == ra.file() {
                 let reg = ra.alloc_scalar(ip, sum, ssa[0]);
                 *dst = RegRef::new(ra.file(), reg, 1).into();
             }
@@ -689,7 +657,7 @@ fn instr_assign_regs_file(
     let mut vec_dst_comps = 0;
     for (i, dst) in instr.dsts().iter().enumerate() {
         if let Dst::SSA(ssa) = dst {
-            if ssa.file().unwrap() == ra.file() && ssa.comps() > 1 {
+            if ssa.file() == ra.file() && ssa.comps() > 1 {
                 vec_dsts.push(VecDst {
                     dst_idx: i,
                     comps: ssa.comps(),
@@ -703,10 +671,10 @@ fn instr_assign_regs_file(
 
     // No vector destinations is the easy case
     if vec_dst_comps == 0 {
-        let mut vra = VecRegAllocator::new(ra);
-        instr_remap_srcs_file(instr, &mut vra);
-        vra.free_killed(killed);
-        vra.finish(pcopy);
+        let mut pra = PinnedRegAllocator::new(ra);
+        instr_remap_srcs_file(instr, &mut pra);
+        pra.free_killed(killed);
+        pra.finish(pcopy);
         instr_alloc_scalar_dsts_file(instr, ip, sum, ra);
         return;
     }
@@ -719,7 +687,7 @@ fn instr_assign_regs_file(
     let mut avail = killed.set.clone();
     let mut killed_vecs = Vec::new();
     for src in instr.srcs() {
-        if let Some(vec) = src_ssa_ref(src) {
+        if let SrcRef::SSA(vec) = src.src_ref {
             if vec.comps() > 1 {
                 let mut vec_killed = true;
                 for ssa in vec.iter() {
@@ -732,7 +700,7 @@ fn instr_assign_regs_file(
                     for ssa in vec.iter() {
                         avail.remove(ssa);
                     }
-                    killed_vecs.push(*vec);
+                    killed_vecs.push(vec);
                 }
             }
         }
@@ -767,55 +735,55 @@ fn instr_assign_regs_file(
     }
 
     if vec_dsts_map_to_killed_srcs {
-        let mut vra = VecRegAllocator::new(ra);
-        instr_remap_srcs_file(instr, &mut vra);
+        let mut pra = PinnedRegAllocator::new(ra);
+        instr_remap_srcs_file(instr, &mut pra);
 
         for vec_dst in &mut vec_dsts {
             let src_vec = vec_dst.killed.as_ref().unwrap();
-            vec_dst.reg = vra.try_get_vec_reg(src_vec).unwrap();
+            vec_dst.reg = pra.try_get_vec_reg(src_vec).unwrap();
         }
 
-        vra.free_killed(killed);
+        pra.free_killed(killed);
 
         for vec_dst in vec_dsts {
             let dst = &mut instr.dsts_mut()[vec_dst.dst_idx];
-            *dst = vra
+            *dst = pra
                 .assign_pin_vec_reg(*dst.as_ssa().unwrap(), vec_dst.reg)
                 .into();
         }
 
-        vra.finish(pcopy);
+        pra.finish(pcopy);
 
         instr_alloc_scalar_dsts_file(instr, ip, sum, ra);
     } else if could_trivially_allocate {
-        let mut vra = VecRegAllocator::new(ra);
+        let mut pra = PinnedRegAllocator::new(ra);
         for vec_dst in vec_dsts {
             let dst = &mut instr.dsts_mut()[vec_dst.dst_idx];
-            *dst = vra
+            *dst = pra
                 .assign_pin_vec_reg(*dst.as_ssa().unwrap(), vec_dst.reg)
                 .into();
         }
 
-        instr_remap_srcs_file(instr, &mut vra);
-        vra.free_killed(killed);
-        vra.finish(pcopy);
+        instr_remap_srcs_file(instr, &mut pra);
+        pra.free_killed(killed);
+        pra.finish(pcopy);
         instr_alloc_scalar_dsts_file(instr, ip, sum, ra);
     } else {
-        let mut vra = VecRegAllocator::new(ra);
-        instr_remap_srcs_file(instr, &mut vra);
+        let mut pra = PinnedRegAllocator::new(ra);
+        instr_remap_srcs_file(instr, &mut pra);
 
         // Allocate vector destinations first so we have the most freedom.
         // Scalar destinations can fill in holes.
         for dst in instr.dsts_mut() {
             if let Dst::SSA(ssa) = dst {
-                if ssa.file().unwrap() == vra.file() && ssa.comps() > 1 {
-                    *dst = vra.alloc_vector(*ssa).into();
+                if ssa.file() == pra.file() && ssa.comps() > 1 {
+                    *dst = pra.alloc_vector(*ssa).into();
                 }
             }
         }
 
-        vra.free_killed(killed);
-        vra.finish(pcopy);
+        pra.free_killed(killed);
+        pra.finish(pcopy);
 
         instr_alloc_scalar_dsts_file(instr, ip, sum, ra);
     }
@@ -869,13 +837,6 @@ impl AssignRegsBlock {
         let ra = &mut self.ra[ssa.file()];
         let reg = ra.alloc_scalar(ip, sum, ssa);
         RegRef::new(ssa.file(), reg, 1)
-    }
-
-    fn pin_vector(&mut self, reg: RegRef) {
-        let ra = &mut self.ra[reg.file()];
-        for c in 0..reg.comps() {
-            ra.pin_reg(reg.comp(c).base_idx());
-        }
     }
 
     fn try_coalesce(&mut self, ssa: SSAValue, src: &Src) -> bool {
@@ -932,7 +893,7 @@ impl AssignRegsBlock {
             Op::PhiSrcs(phi) => {
                 for (id, src) in phi.srcs.iter() {
                     assert!(src.src_mod.is_none());
-                    if let Some(ssa) = src_ssa_ref(src) {
+                    if let SrcRef::SSA(ssa) = src.src_ref {
                         assert!(ssa.comps() == 1);
                         let reg = self.get_scalar(ssa[0]);
                         self.phi_out.insert(*id, reg.into());
@@ -963,10 +924,10 @@ impl AssignRegsBlock {
             }
             Op::Break(op) => {
                 for src in op.srcs_as_mut_slice() {
-                    if let Some(ssa) = src_ssa_ref(src) {
+                    if let SrcRef::SSA(ssa) = src.src_ref {
                         assert!(ssa.comps() == 1);
                         let reg = self.get_scalar(ssa[0]);
-                        src_set_reg(src, reg);
+                        src.src_ref = reg.into();
                     }
                 }
 
@@ -984,10 +945,10 @@ impl AssignRegsBlock {
             }
             Op::BSSy(op) => {
                 for src in op.srcs_as_mut_slice() {
-                    if let Some(ssa) = src_ssa_ref(src) {
+                    if let SrcRef::SSA(ssa) = src.src_ref {
                         assert!(ssa.comps() == 1);
                         let reg = self.get_scalar(ssa[0]);
-                        src_set_reg(src, reg);
+                        src.src_ref = reg.into();
                     }
                 }
 
@@ -1004,18 +965,13 @@ impl AssignRegsBlock {
                 Some(instr)
             }
             Op::Copy(copy) => {
-                if let Some(ssa) = src_ssa_ref(&copy.src) {
-                    // This may be a Cbuf::BindlessSSA source so we need to
-                    // support vectors because cbuf handles are vec2s. However,
-                    // since we only have a single scalar destination, we can
-                    // just allocate and free killed up-front.
-                    let ra = &mut self.ra[ssa.file().unwrap()];
-                    let mut vra = VecRegAllocator::new(ra);
-                    let reg = vra.collect_vector(ssa);
-                    vra.free_killed(srcs_killed);
-                    vra.finish(pcopy);
-                    src_set_reg(&mut copy.src, reg);
+                if let SrcRef::SSA(src_vec) = &copy.src.src_ref {
+                    debug_assert!(src_vec.comps() == 1);
+                    let src_ssa = &src_vec[0];
+                    copy.src.src_ref = self.get_scalar(*src_ssa).into();
                 }
+
+                self.ra.free_killed(srcs_killed);
 
                 let mut del_copy = false;
                 if let Dst::SSA(dst_vec) = &mut copy.dst {
@@ -1037,68 +993,12 @@ impl AssignRegsBlock {
                     Some(instr)
                 }
             }
-            Op::Pin(OpPin { src, dst }) | Op::Unpin(OpUnpin { src, dst }) => {
-                assert!(instr.pred.is_true());
-
-                // These basically act as a vector version of OpCopy except that
-                // they only work on SSA values and we pin the destination if
-                // it's OpPin.
-                let src_vec = src.as_ssa().unwrap();
-                let dst_vec = dst.as_ssa().unwrap();
-                assert!(src_vec.comps() == dst_vec.comps());
-
-                if srcs_killed.len() == src_vec.comps().into()
-                    && src_vec.file() == dst_vec.file()
-                {
-                    let ra = &mut self.ra[src_vec.file().unwrap()];
-                    let mut vra = VecRegAllocator::new(ra);
-                    let reg = vra.collect_vector(src_vec);
-                    vra.finish(pcopy);
-                    for c in 0..src_vec.comps() {
-                        let c_reg = ra.free_ssa(src_vec[usize::from(c)]);
-                        debug_assert!(c_reg == reg.comp(c).base_idx());
-                        ra.assign_reg(dst_vec[usize::from(c)], c_reg);
-                    }
-
-                    if matches!(&instr.op, Op::Pin(_)) {
-                        self.pin_vector(reg);
-                    }
-                    self.ra.free_killed(dsts_killed);
-
-                    None
-                } else {
-                    // Otherwise, turn into a parallel copy
-                    //
-                    // We can always allocate the destination first in this
-                    // case.
-                    assert!(dst_vec.comps() > 1 || srcs_killed.is_empty());
-
-                    let dst_ra = &mut self.ra[dst_vec.file().unwrap()];
-                    let mut vra = VecRegAllocator::new(dst_ra);
-                    let dst_reg = vra.alloc_vector(*dst_vec);
-                    vra.finish(pcopy);
-
-                    let mut pin_copy = OpParCopy::new();
-                    for c in 0..dst_reg.comps() {
-                        let src_reg = self.get_scalar(src_vec[usize::from(c)]);
-                        pin_copy.push(dst_reg.comp(c).into(), src_reg.into());
-                    }
-
-                    if matches!(&instr.op, Op::Pin(_)) {
-                        self.pin_vector(dst_reg);
-                    }
-                    self.ra.free_killed(srcs_killed);
-                    self.ra.free_killed(dsts_killed);
-
-                    Some(Instr::new_boxed(pin_copy))
-                }
-            }
             Op::ParCopy(pcopy) => {
                 for (_, src) in pcopy.dsts_srcs.iter_mut() {
-                    if let Some(src_vec) = src_ssa_ref(src) {
+                    if let SrcRef::SSA(src_vec) = src.src_ref {
                         debug_assert!(src_vec.comps() == 1);
-                        let reg = self.get_scalar(src_vec[0]).into();
-                        src_set_reg(src, reg);
+                        let src_ssa = &src_vec[0];
+                        src.src_ref = self.get_scalar(*src_ssa).into();
                     }
                 }
 
@@ -1130,12 +1030,12 @@ impl AssignRegsBlock {
                     Some(instr)
                 }
             }
-            Op::RegOut(out) => {
+            Op::FSOut(out) => {
                 for src in out.srcs.iter_mut() {
-                    if let Some(src_vec) = src_ssa_ref(src) {
+                    if let SrcRef::SSA(src_vec) = src.src_ref {
                         debug_assert!(src_vec.comps() == 1);
-                        let reg = self.get_scalar(src_vec[0]).into();
-                        src_set_reg(src, reg);
+                        let src_ssa = &src_vec[0];
+                        src.src_ref = self.get_scalar(*src_ssa).into();
                     }
                 }
 
@@ -1184,9 +1084,6 @@ impl AssignRegsBlock {
                 for (ssa, reg) in &pred_raf.ssa_reg {
                     if bl.is_live_in(ssa) {
                         raf.assign_reg(*ssa, *reg);
-                        if pred_raf.reg_is_pinned(*reg) {
-                            raf.pin_reg(*reg);
-                        }
                         self.live_in.push(LiveValue {
                             live_ref: LiveRef::SSA(*ssa),
                             reg_ref: RegRef::new(raf.file(), *reg, 1),
@@ -1247,13 +1144,6 @@ impl AssignRegsBlock {
                         annotation: "generated by assign_regs".into(),
                     }));
                 }
-                if !b.uniform {
-                    for dst in pcopy.dsts_as_slice() {
-                        if let Dst::Reg(reg) = dst {
-                            assert!(!reg.is_uniform());
-                        }
-                    }
-                }
                 instrs.push(Instr::new_boxed(pcopy));
             }
 
@@ -1299,7 +1189,7 @@ impl AssignRegsBlock {
     }
 }
 
-impl Shader<'_> {
+impl Shader {
     pub fn assign_regs(&mut self) {
         assert!(self.functions.len() == 1);
         let f = &mut self.functions[0];
@@ -1313,10 +1203,9 @@ impl Shader<'_> {
         // We want at least one temporary GPR reserved for parallel copies.
         let mut tmp_gprs = 1_u8;
 
-        let spill_files =
-            [RegFile::UPred, RegFile::Pred, RegFile::UGPR, RegFile::Bar];
+        let spill_files = [RegFile::Pred, RegFile::Bar];
         for file in spill_files {
-            let num_regs = self.sm.num_regs(file);
+            let num_regs = file.num_regs(self.info.sm);
             if max_live[file] > num_regs {
                 f.spill_values(file, num_regs);
 
@@ -1336,13 +1225,7 @@ impl Shader<'_> {
         let mut gpr_limit = max(max_live[RegFile::GPR], 16);
         let mut total_gprs = gpr_limit + u32::from(tmp_gprs);
 
-        let max_gprs = if DEBUG.spill() {
-            // We need at least 16 registers to satisfy RA constraints for
-            // texture ops and another 2 for parallel copy lowering
-            18
-        } else {
-            self.sm.num_regs(RegFile::GPR)
-        };
+        let max_gprs = RegFile::GPR.num_regs(self.info.sm);
         if total_gprs > max_gprs {
             // If we're spilling GPRs, we need to reserve 2 GPRs for OpParCopy
             // lowering because it needs to be able lower Mem copies which
@@ -1359,11 +1242,18 @@ impl Shader<'_> {
 
         self.info.num_gprs = total_gprs.try_into().unwrap();
 
+        // We do a maximum here because nak_from_nir may set num_barriers to 1
+        // in the case where there is an OpBar.
+        self.info.num_barriers = max(
+            self.info.num_barriers,
+            max_live[RegFile::Bar].try_into().unwrap(),
+        );
+
         let limit = PerRegFile::new_with(|file| {
             if file == RegFile::GPR {
                 gpr_limit
             } else {
-                self.sm.num_regs(file)
+                file.num_regs(self.info.sm)
             }
         });
 

@@ -141,8 +141,7 @@ st_make_bitmap_texture(struct gl_context *ctx, GLsizei width, GLsizei height,
     */
    pt = st_texture_create(st, st->internal_target, st->bitmap.tex_format,
                           0, width, height, 1, 1, 0,
-                          PIPE_BIND_SAMPLER_VIEW, false,
-                          PIPE_COMPRESSION_FIXED_RATE_NONE);
+                          PIPE_BIND_SAMPLER_VIEW, false);
    if (!pt) {
       _mesa_unmap_pbo_source(ctx, unpack);
       return NULL;
@@ -370,8 +369,7 @@ reset_cache(struct st_context *st)
                                       BITMAP_CACHE_WIDTH, BITMAP_CACHE_HEIGHT,
                                       1, 1, 0,
                                       PIPE_BIND_SAMPLER_VIEW,
-                                      false,
-                                      PIPE_COMPRESSION_FIXED_RATE_NONE);
+                                      false);
 }
 
 

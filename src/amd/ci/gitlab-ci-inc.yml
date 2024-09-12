@@ -14,9 +14,7 @@
         - src/amd/ci/$GPU_VERSION-flakes.txt
         - src/amd/ci/$GPU_VERSION-skips.txt
         - src/amd/ci/$PIGLIT_TRACES_FILE
-        - src/amd/ci/$GPU_VERSION-vkd3d-fails.txt
-        - src/amd/ci/$GPU_VERSION-vkd3d-flakes.txt
-        - src/amd/ci/$GPU_VERSION-vkd3d-skips.txt
+        - src/amd/ci/$VKD3D_PROTON_RESULTS-vkd3d.txt
         - src/amd/common/**/*
         - src/amd/llvm/**/*
         - src/amd/registers/**/*
@@ -42,18 +40,6 @@
         - src/vulkan/**/*
       when: on_success
 
-.radv-manual-rules:
-  stage: amd-postmerge
-  rules:
-    - !reference [.test, rules]
-    - !reference [.vulkan-manual-rules, rules]
-    - changes:
-        *amd_common_file_list
-      when: manual
-    - changes:
-        *radv_file_list
-      when: manual
-
 .radv-collabora-rules:
   stage: amd
   rules:
@@ -76,12 +62,18 @@
     - !reference [.radv-rules, rules]
 
 .radv-valve-manual-rules:
-  stage: amd-postmerge
-  extends: .no-auto-retry
+  stage: amd
+  retry: !reference [.scheduled_pipeline-rules, retry]
   rules:
     - !reference [.test, rules]
     - !reference [.valve-farm-manual-rules, rules]
-    - !reference [.radv-manual-rules, rules]
+    - !reference [.vulkan-manual-rules, rules]
+    - changes:
+        *amd_common_file_list
+      when: on_success
+    - changes:
+        *radv_file_list
+      when: manual
 
 .radeonsi+radv-rules:
   stage: amd
@@ -101,7 +93,7 @@
       when: on_success
 
 .radeonsi-vaapi-manual-rules:
-  stage: amd-postmerge
+  stage: amd
   rules:
     - !reference [.test, rules]
     - !reference [.collabora-farm-manual-rules, rules]
@@ -118,7 +110,7 @@
     - !reference [.radeonsi-rules, rules]
 
 .radeonsi-valve-manual-rules:
-  stage: amd-postmerge
+  stage: amd
   rules:
     - !reference [.test, rules]
     - !reference [.valve-farm-manual-rules, rules]
@@ -137,7 +129,6 @@
     BOOT_METHOD: depthcharge
     DEVICE_TYPE: acer-R721T-grunt
     DTB: ""
-    FARM: collabora
     FDO_CI_CONCURRENT: 3
     HWCI_FREQ_MAX: "true"
     HWCI_KERNEL_MODULES: amdgpu
@@ -151,7 +142,6 @@
     BOOT_METHOD: depthcharge
     DEVICE_TYPE: hp-14-db0003na-grunt
     DTB: ""
-    FARM: collabora
     FDO_CI_CONCURRENT: 3
     HWCI_FREQ_MAX: "true"
     HWCI_KERNEL_MODULES: amdgpu
@@ -165,7 +155,6 @@
     BOOT_METHOD: depthcharge
     DEVICE_TYPE: asus-CM1400CXA-dalboz
     DTB: ""
-    FARM: collabora
 #   FDO_CI_CONCURRENT: ?
     HWCI_FREQ_MAX: "true"
     HWCI_KERNEL_MODULES: amdgpu
@@ -178,7 +167,6 @@
     BOOT_METHOD: depthcharge
     DEVICE_TYPE: lenovo-TPad-C13-Yoga-zork
     DTB: ""
-    FARM: collabora
 #   FDO_CI_CONCURRENT: ?
     HWCI_FREQ_MAX: "true"
     HWCI_KERNEL_MODULES: amdgpu
@@ -250,7 +238,6 @@
     MESA_VK_IGNORE_CONFORMANCE_WARNING: 1
     # Enable ETC2 emulation on non-native platforms (RENOIR,RDNA+, GFX6-8 dGPUs)
     radv_require_etc2: 'true'
-    B2C_JOB_WARN_REGEX: '\*ERROR\* ring .* timeout'
 
 .b2c-test-radv-vk:
   extends:
@@ -262,6 +249,7 @@
 
 .b2c-deqp-test:
   variables:
+    B2C_JOB_SUCCESS_REGEX: '^\+ DEQP_EXITCODE=0\r$'
     HWCI_TEST_SCRIPT: ./install/deqp-runner.sh
 
 .tahiti-test-valve:
@@ -398,4 +386,4 @@
     - .kabini-test-valve
     - .radv-valve-manual-rules
   variables:
-    GPU_VERSION: radv-kabini
+    VKD3D_PROTON_RESULTS: radv-kabini

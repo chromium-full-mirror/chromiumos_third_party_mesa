@@ -172,7 +172,8 @@ lower_readonly_image_instr_intrinsic(nir_builder *b, nir_intrinsic_instr *intrin
    nir_def *res = nir_trim_vector(b, &tex->def,
                                   intrin->def.num_components);
 
-   nir_def_replace(&intrin->def, res);
+   nir_def_rewrite_uses(&intrin->def, res);
+   nir_instr_remove(&intrin->instr);
 
    return true;
 }
@@ -224,6 +225,7 @@ nir_lower_readonly_images_to_tex(nir_shader *shader, bool per_variable)
 {
    struct readonly_image_lower_options options = { per_variable };
    return nir_shader_instructions_pass(shader, lower_readonly_image_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        &options);
 }

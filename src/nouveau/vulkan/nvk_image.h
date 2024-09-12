@@ -37,9 +37,6 @@
 
 struct nvk_device_memory;
 struct nvk_physical_device;
-struct nvk_queue;
-struct nvkmd_mem;
-struct nvkmd_va;
 
 VkFormatFeatureFlags2
 nvk_get_image_format_features(struct nvk_physical_device *pdevice,
@@ -59,8 +56,8 @@ struct nvk_image_plane {
    struct nil_image nil;
    uint64_t addr;
 
-   /** Reserved VA for sparse images, NULL otherwise. */
-   struct nvkmd_va *va;
+   /** Size of the reserved VMA range for sparse images, zero otherwise. */
+   uint64_t vma_size_B;
 };
 
 struct nvk_image {
@@ -89,7 +86,7 @@ struct nvk_image {
     * be used to fake support if the conditions aren't satisfied.
     */
    struct nvk_image_plane linear_tiled_shadow;
-   struct nvkmd_mem *linear_tiled_shadow_mem;
+   struct nouveau_ws_bo *linear_tiled_shadow_bo;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(nvk_image, vk.base, VkImage, VK_OBJECT_TYPE_IMAGE)
@@ -148,11 +145,5 @@ nvk_image_memory_aspects_to_plane(ASSERTED const struct nvk_image *image,
       return nvk_image_aspects_to_plane(image, aspectMask);
    }
 }
-
-VkResult nvk_queue_image_bind(struct nvk_queue *queue,
-                              const VkSparseImageMemoryBindInfo *bind_info);
-
-VkResult nvk_queue_image_opaque_bind(struct nvk_queue *queue,
-                                     const VkSparseImageOpaqueMemoryBindInfo *bind_info);
 
 #endif

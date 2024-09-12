@@ -272,16 +272,6 @@ get_io_offset(nir_builder *b, nir_deref_instr *deref,
    return offset;
 }
 
-static bool
-is_medium_precision(const nir_shader *shader, const nir_variable *var)
-{
-   if (shader->options->io_options & nir_io_mediump_is_32bit)
-      return false;
-
-   return var->data.precision == GLSL_PRECISION_MEDIUM ||
-          var->data.precision == GLSL_PRECISION_LOW;
-}
-
 static nir_def *
 emit_load(struct lower_io_state *state,
           nir_def *array_index, nir_variable *var, nir_def *offset,
@@ -320,12 +310,7 @@ emit_load(struct lower_io_state *state,
             op = nir_intrinsic_load_interpolated_input;
          }
       } else {
-         if (var->data.per_primitive)
-            op = nir_intrinsic_load_per_primitive_input;
-         else if (array_index)
-            op = nir_intrinsic_load_per_vertex_input;
-         else
-            op = nir_intrinsic_load_input;
+         op = array_index ? nir_intrinsic_load_per_vertex_input : nir_intrinsic_load_input;
       }
       break;
    case nir_var_shader_out:
@@ -366,8 +351,11 @@ emit_load(struct lower_io_state *state,
       semantics.location = var->data.location;
       semantics.num_slots = get_number_of_slots(state, var);
       semantics.fb_fetch_output = var->data.fb_fetch_output;
-      semantics.medium_precision = is_medium_precision(b->shader, var);
+      semantics.medium_precision =
+         var->data.precision == GLSL_PRECISION_MEDIUM ||
+         var->data.precision == GLSL_PRECISION_LOW;
       semantics.high_dvec2 = high_dvec2;
+      semantics.per_primitive = var->data.per_primitive;
       /* "per_vertex" is misnamed. It means "explicit interpolation with
        * the original vertex order", which is a stricter version of
        * INTERP_MODE_EXPLICIT.
@@ -515,7 +503,9 @@ emit_store(struct lower_io_state *state, nir_def *data,
    semantics.num_slots = get_number_of_slots(state, var);
    semantics.dual_source_blend_index = var->data.index;
    semantics.gs_streams = gs_streams;
-   semantics.medium_precision = is_medium_precision(b->shader, var);
+   semantics.medium_precision =
+      var->data.precision == GLSL_PRECISION_MEDIUM ||
+      var->data.precision == GLSL_PRECISION_LOW;
    semantics.per_view = var->data.per_view;
    semantics.invariant = var->data.invariant;
 
@@ -641,7 +631,9 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
    nir_io_semantics semantics = { 0 };
    semantics.location = var->data.location;
    semantics.num_slots = get_number_of_slots(state, var);
-   semantics.medium_precision = is_medium_precision(b->shader, var);
+   semantics.medium_precision =
+      var->data.precision == GLSL_PRECISION_MEDIUM ||
+      var->data.precision == GLSL_PRECISION_LOW;
 
    nir_def *load =
       nir_load_interpolated_input(&state->builder,
@@ -2280,7 +2272,8 @@ lower_explicit_io_array_length(nir_builder *b, nir_intrinsic_instr *intrin,
    nir_def *remaining = nir_usub_sat(b, size, offset);
    nir_def *arr_size = nir_udiv_imm(b, remaining, stride);
 
-   nir_def_replace(&intrin->def, arr_size);
+   nir_def_rewrite_uses(&intrin->def, arr_size);
+   nir_instr_remove(&intrin->instr);
 }
 
 static void
@@ -2490,7 +2483,8 @@ nir_lower_vars_to_explicit_types_impl(nir_function_impl *impl,
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow |
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance |
                                      nir_metadata_live_defs |
                                      nir_metadata_loop_analysis);
    } else {
@@ -2745,7 +2739,6 @@ nir_get_io_offset_src_number(const nir_intrinsic_instr *instr)
 {
    switch (instr->intrinsic) {
    case nir_intrinsic_load_input:
-   case nir_intrinsic_load_per_primitive_input:
    case nir_intrinsic_load_output:
    case nir_intrinsic_load_shared:
    case nir_intrinsic_load_task_payload:
@@ -2755,7 +2748,6 @@ nir_get_io_offset_src_number(const nir_intrinsic_instr *instr)
    case nir_intrinsic_load_global:
    case nir_intrinsic_load_global_2x32:
    case nir_intrinsic_load_global_constant:
-   case nir_intrinsic_load_global_etna:
    case nir_intrinsic_load_scratch:
    case nir_intrinsic_load_fs_input_interp_deltas:
    case nir_intrinsic_shared_atomic:
@@ -2763,9 +2755,7 @@ nir_get_io_offset_src_number(const nir_intrinsic_instr *instr)
    case nir_intrinsic_task_payload_atomic:
    case nir_intrinsic_task_payload_atomic_swap:
    case nir_intrinsic_global_atomic:
-   case nir_intrinsic_global_atomic_2x32:
    case nir_intrinsic_global_atomic_swap:
-   case nir_intrinsic_global_atomic_swap_2x32:
    case nir_intrinsic_load_coefficients_agx:
       return 0;
    case nir_intrinsic_load_ubo:
@@ -2780,12 +2770,9 @@ nir_get_io_offset_src_number(const nir_intrinsic_instr *instr)
    case nir_intrinsic_store_task_payload:
    case nir_intrinsic_store_global:
    case nir_intrinsic_store_global_2x32:
-   case nir_intrinsic_store_global_etna:
    case nir_intrinsic_store_scratch:
    case nir_intrinsic_ssbo_atomic:
    case nir_intrinsic_ssbo_atomic_swap:
-   case nir_intrinsic_ldc_nv:
-   case nir_intrinsic_ldcx_nv:
       return 1;
    case nir_intrinsic_store_ssbo:
    case nir_intrinsic_store_per_vertex_output:
@@ -2946,7 +2933,6 @@ static bool
 is_input(nir_intrinsic_instr *intrin)
 {
    return intrin->intrinsic == nir_intrinsic_load_input ||
-          intrin->intrinsic == nir_intrinsic_load_per_primitive_input ||
           intrin->intrinsic == nir_intrinsic_load_input_vertex ||
           intrin->intrinsic == nir_intrinsic_load_per_vertex_input ||
           intrin->intrinsic == nir_intrinsic_load_interpolated_input ||
@@ -3046,7 +3032,7 @@ nir_io_add_const_offset_to_base(nir_shader *nir, nir_variable_mode modes)
       }
       progress |= impl_progress;
       if (impl_progress)
-         nir_metadata_preserve(impl, nir_metadata_control_flow);
+         nir_metadata_preserve(impl, nir_metadata_block_index | nir_metadata_dominance);
       else
          nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -3120,13 +3106,15 @@ nir_lower_color_inputs(nir_shader *nir)
             load = nir_channels(&b, load, BITFIELD_RANGE(start, count));
          }
 
-         nir_def_replace(&intrin->def, load);
+         nir_def_rewrite_uses(&intrin->def, load);
+         nir_instr_remove(instr);
          progress = true;
       }
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_dominance |
+                                     nir_metadata_block_index);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }

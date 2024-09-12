@@ -79,7 +79,6 @@ static const struct etna_op_info etna_ops[] = {
    OPCT(f2u8,  F2I, TRUE, U8),
    UOP(b2f32, AND), /* AND with fui(1.0f) */
    UOP(b2i32, AND), /* AND with 1 */
-   UOP(b2i8, AND),  /* AND with 1 */
 
    /* arithmetic */
    IOP(iadd, ADD),
@@ -233,7 +232,7 @@ etna_emit_jump(struct etna_compile *c, unsigned block, struct etna_inst_src cond
    }
 
    struct etna_inst inst = {
-      .opcode = ISA_OPC_BRANCH_UNARY,
+      .opcode = ISA_OPC_BRANCH,
       .cond = ISA_COND_NOT,
       .type = ISA_TYPE_U32,
       .src[0] = condition,
@@ -254,7 +253,7 @@ etna_emit_discard(struct etna_compile *c, struct etna_inst_src condition)
    struct etna_inst inst = {
       .opcode = ISA_OPC_TEXKILL,
       .cond = ISA_COND_NZ,
-      .type = (c->info->halti < 2) ? ISA_TYPE_F32 : ISA_TYPE_U32,
+      .type = (c->specs->halti < 2) ? ISA_TYPE_F32 : ISA_TYPE_U32,
       .src[0] = condition,
    };
    inst.src[0].swiz = INST_SWIZ_BROADCAST(inst.src[0].swiz & 3);

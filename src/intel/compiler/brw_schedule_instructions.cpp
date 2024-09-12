@@ -33,7 +33,7 @@
 
 using namespace brw;
 
-/** @file
+/** @file brw_fs_schedule_instructions.cpp
  *
  * List scheduling of FS instructions.
  *
@@ -589,7 +589,6 @@ public:
 
    void calculate_deps();
    bool is_compressed(const fs_inst *inst);
-   bool register_needs_barrier(const brw_reg &reg);
    schedule_node *choose_instruction_to_schedule();
    int calculate_issue_time(const fs_inst *inst);
 
@@ -602,7 +601,7 @@ public:
    void schedule_instructions();
    void run(instruction_scheduler_mode mode);
 
-   int grf_index(const brw_reg &reg);
+   int grf_index(const fs_reg &reg);
 
    void *mem_ctx;
    linear_ctx *lin_ctx;
@@ -848,7 +847,7 @@ instruction_scheduler::setup_liveness(cfg_t *cfg)
    }
 
    int payload_last_use_ip[hw_reg_count];
-   s->calculate_payload_ranges(true, hw_reg_count, payload_last_use_ip);
+   s->calculate_payload_ranges(hw_reg_count, payload_last_use_ip);
 
    for (unsigned i = 0; i < hw_reg_count; i++) {
       if (payload_last_use_ip[i] == -1)
@@ -1049,6 +1048,7 @@ has_cross_lane_access(const fs_inst *inst)
     * accesses.
     */
    if (inst->opcode == SHADER_OPCODE_BROADCAST ||
+       inst->opcode == SHADER_OPCODE_READ_SR_REG ||
        inst->opcode == SHADER_OPCODE_CLUSTER_BROADCAST ||
        inst->opcode == SHADER_OPCODE_SHUFFLE ||
        inst->opcode == FS_OPCODE_LOAD_LIVE_CHANNELS ||
@@ -1065,39 +1065,6 @@ has_cross_lane_access(const fs_inst *inst)
    }
 
    return false;
-}
-
-/**
- * Some register access need dependencies on other instructions.
- */
-bool
-instruction_scheduler::register_needs_barrier(const brw_reg &reg)
-{
-   if (reg.file != ARF || reg.is_null())
-      return false;
-
-   /* If you look at SR register layout, there is nothing in there that
-    * depends on other instructions. This is just fixed dispatch information.
-    *
-    * ATSM PRMs, Volume 9: Render Engine, State Register Fields :
-    *    sr0.0:
-    *      - 0:2   TID
-    *      - 4:13  Slice, DSS, Subslice, EU IDs
-    *      - 20:22 Priority
-    *      - 23:23 Priority class
-    *      - 24:27 FFID
-    *    sr0.1:
-    *      - 0:5   IEEE Exception
-    *      - 21:31 FFTID
-    *    sr0.2:
-    *      - 0:31  Dispatch Mask
-    *    sr0.3:
-    *      - 0:31  Vector Mask
-    */
-   if (reg.nr == BRW_ARF_STATE)
-      return false;
-
-   return true;
 }
 
 /**
@@ -1175,7 +1142,7 @@ instruction_scheduler::clear_last_grf_write()
 }
 
 int
-instruction_scheduler::grf_index(const brw_reg &reg)
+instruction_scheduler::grf_index(const fs_reg &reg)
 {
    if (post_reg_alloc)
       return reg.nr;
@@ -1223,7 +1190,7 @@ instruction_scheduler::calculate_deps()
             }
          } else if (inst->src[i].is_accumulator()) {
             add_dep(last_accumulator_write, n);
-         } else if (register_needs_barrier(inst->src[i])) {
+         } else if (inst->src[i].file == ARF && !inst->src[i].is_null()) {
             add_barrier_deps(n);
          }
       }
@@ -1262,7 +1229,7 @@ instruction_scheduler::calculate_deps()
       } else if (inst->dst.is_accumulator()) {
          add_dep(last_accumulator_write, n);
          last_accumulator_write = n;
-      } else if (register_needs_barrier(inst->dst)) {
+      } else if (inst->dst.file == ARF && !inst->dst.is_null()) {
          add_barrier_deps(n);
       }
 
@@ -1308,7 +1275,7 @@ instruction_scheduler::calculate_deps()
             }
          } else if (inst->src[i].is_accumulator()) {
             add_dep(n, last_accumulator_write, 0);
-         } else if (register_needs_barrier(inst->src[i])) {
+         } else if (inst->src[i].file == ARF && !inst->src[i].is_null()) {
             add_barrier_deps(n);
          }
       }
@@ -1341,7 +1308,7 @@ instruction_scheduler::calculate_deps()
          }
       } else if (inst->dst.is_accumulator()) {
          last_accumulator_write = n;
-      } else if (register_needs_barrier(inst->dst)) {
+      } else if (inst->dst.file == ARF && !inst->dst.is_null()) {
          add_barrier_deps(n);
       }
 
@@ -1503,7 +1470,7 @@ instruction_scheduler::schedule(schedule_node *chosen)
 
    if (debug) {
       fprintf(stderr, "clock %4d, scheduled: ", current.time);
-      brw_print_instruction(*s, chosen->inst);
+      s->dump_instruction(chosen->inst);
    }
 }
 
@@ -1523,7 +1490,7 @@ instruction_scheduler::update_children(schedule_node *chosen)
 
       if (debug) {
          fprintf(stderr, "\tchild %d, %d parents: ", i, child->n->tmp.parent_count);
-         brw_print_instruction(*s, child->n->inst);
+         s->dump_instruction(child->n->inst);
       }
 
       child->n->tmp.cand_generation = current.cand_generation;
@@ -1578,7 +1545,7 @@ instruction_scheduler::run(instruction_scheduler_mode mode)
    if (debug && !post_reg_alloc) {
       fprintf(stderr, "\nInstructions before scheduling (reg_alloc %d)\n",
               post_reg_alloc);
-         brw_print_instructions(*s);
+         s->dump_instructions();
    }
 
    if (!post_reg_alloc) {
@@ -1601,45 +1568,45 @@ instruction_scheduler::run(instruction_scheduler_mode mode)
    if (debug && !post_reg_alloc) {
       fprintf(stderr, "\nInstructions after scheduling (reg_alloc %d)\n",
               post_reg_alloc);
-      brw_print_instructions(*s);
+      s->dump_instructions();
    }
 }
 
 instruction_scheduler *
-brw_prepare_scheduler(fs_visitor &s, void *mem_ctx)
+fs_visitor::prepare_scheduler(void *mem_ctx)
 {
-   const int grf_count = s.alloc.count;
+   const int grf_count = alloc.count;
 
    instruction_scheduler *empty = rzalloc(mem_ctx, instruction_scheduler);
-   return new (empty) instruction_scheduler(mem_ctx, &s, grf_count, s.first_non_payload_grf,
-                                            s.cfg->num_blocks, /* post_reg_alloc */ false);
+   return new (empty) instruction_scheduler(mem_ctx, this, grf_count, first_non_payload_grf,
+                                            cfg->num_blocks, /* post_reg_alloc */ false);
 }
 
 void
-brw_schedule_instructions_pre_ra(fs_visitor &s, instruction_scheduler *sched,
-                                 instruction_scheduler_mode mode)
+fs_visitor::schedule_instructions_pre_ra(instruction_scheduler *sched,
+                                         instruction_scheduler_mode mode)
 {
    if (mode == SCHEDULE_NONE)
       return;
 
    sched->run(mode);
 
-   s.invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
+   invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 }
 
 void
-brw_schedule_instructions_post_ra(fs_visitor &s)
+fs_visitor::schedule_instructions_post_ra()
 {
    const bool post_reg_alloc = true;
-   const int grf_count = reg_unit(s.devinfo) * s.grf_used;
+   const int grf_count = reg_unit(devinfo) * grf_used;
 
    void *mem_ctx = ralloc_context(NULL);
 
-   instruction_scheduler sched(mem_ctx, &s, grf_count, s.first_non_payload_grf,
-                               s.cfg->num_blocks, post_reg_alloc);
+   instruction_scheduler sched(mem_ctx, this, grf_count, first_non_payload_grf,
+                               cfg->num_blocks, post_reg_alloc);
    sched.run(SCHEDULE_POST);
 
    ralloc_free(mem_ctx);
 
-   s.invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
+   invalidate_analysis(DEPENDENCY_INSTRUCTIONS);
 }

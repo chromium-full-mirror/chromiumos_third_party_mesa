@@ -39,6 +39,45 @@
 #include "util/log.h"
 #include "api_exec_decl.h"
 
+static void
+output_if_debug(enum mesa_log_level level, const char *outputString)
+{
+   static int debug = -1;
+
+   /* Init the local 'debug' var once.
+    * Note: the _mesa_init_debug() function should have been called
+    * by now so MESA_DEBUG_FLAGS will be initialized.
+    */
+   if (debug == -1) {
+#ifndef NDEBUG
+      /* in debug builds, print messages unless MESA_DEBUG="silent" */
+      if (MESA_DEBUG_FLAGS & DEBUG_SILENT)
+         debug = 0;
+      else
+         debug = 1;
+#else
+      const char *env = getenv("MESA_DEBUG");
+      debug = env && strstr(env, "silent") == NULL;
+#endif
+   }
+
+   /* Now only print the string if we're required to do so. */
+   if (debug)
+      mesa_log(level, "Mesa", "%s", outputString);
+}
+
+
+/**
+ * Return the file handle to use for debug/logging.  Defaults to stderr
+ * unless MESA_LOG_FILE is defined.
+ */
+FILE *
+_mesa_get_log_file(void)
+{
+   return mesa_log_get_file();
+}
+
+
 /**
  * When a new type of error is recorded, print a message describing
  * previous errors which were accumulated.
@@ -53,7 +92,7 @@ flush_delayed_errors( struct gl_context *ctx )
                      ctx->ErrorDebugCount,
                      _mesa_enum_to_string(ctx->ErrorValue));
 
-      mesa_log_if_debug(MESA_LOG_ERROR, s);
+      output_if_debug(MESA_LOG_ERROR, s);
 
       ctx->ErrorDebugCount = 0;
    }
@@ -79,7 +118,7 @@ _mesa_warning( struct gl_context *ctx, const char *fmtString, ... )
    if (ctx)
       flush_delayed_errors( ctx );
 
-   mesa_log_if_debug(MESA_LOG_WARN, str);
+   output_if_debug(MESA_LOG_WARN, str);
 }
 
 
@@ -279,7 +318,7 @@ _mesa_error( struct gl_context *ctx, GLenum error, const char *fmtString, ... )
 
       /* Print the error to stderr if needed. */
       if (do_output) {
-         mesa_log_if_debug(MESA_LOG_ERROR, s2);
+         output_if_debug(MESA_LOG_ERROR, s2);
       }
 
       /* Log the error via ARB_debug_output if needed.*/
@@ -317,10 +356,28 @@ _mesa_debug( const struct gl_context *ctx, const char *fmtString, ... )
    va_start(args, fmtString);
    vsnprintf(s, MAX_DEBUG_MESSAGE_LENGTH, fmtString, args);
    va_end(args);
-   mesa_log_if_debug(MESA_LOG_DEBUG, s);
+   output_if_debug(MESA_LOG_DEBUG, s);
 #endif /* !NDEBUG */
    (void) ctx;
    (void) fmtString;
+}
+
+
+void
+_mesa_log(const char *fmtString, ...)
+{
+   char s[MAX_DEBUG_MESSAGE_LENGTH];
+   va_list args;
+   va_start(args, fmtString);
+   vsnprintf(s, MAX_DEBUG_MESSAGE_LENGTH, fmtString, args);
+   va_end(args);
+   output_if_debug(MESA_LOG_INFO, s);
+}
+
+void
+_mesa_log_direct(const char *string)
+{
+   output_if_debug(MESA_LOG_INFO, string);
 }
 
 /**

@@ -19,7 +19,5 @@ void main()
    for (i = 0; i < defined; i++) {
       fooFloat = 10.0;
    }
-
-   gl_Position = vec4(1.0);
 }
 

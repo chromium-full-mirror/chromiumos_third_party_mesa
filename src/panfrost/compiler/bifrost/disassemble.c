@@ -32,11 +32,9 @@
 
 #include "util/compiler.h"
 #include "util/macros.h"
-#include "bi_disasm.h"
 #include "bi_print_common.h"
 #include "bifrost.h"
 #include "disassemble.h"
-#include "../bifrost.h"
 
 // return bits (high, lo]
 static uint64_t
@@ -450,7 +448,7 @@ decode_M(enum bi_constmod *mod, unsigned M1, unsigned M2, bool single)
 }
 
 static void
-dump_clause(FILE *fp, const uint32_t *words, unsigned *size, unsigned offset,
+dump_clause(FILE *fp, uint32_t *words, unsigned *size, unsigned offset,
             bool verbose)
 {
    // State for a decoded clause
@@ -701,10 +699,10 @@ dump_clause(FILE *fp, const uint32_t *words, unsigned *size, unsigned offset,
 }
 
 void
-disassemble_bifrost(FILE *fp, const void *code, size_t size, bool verbose)
+disassemble_bifrost(FILE *fp, uint8_t *code, size_t size, bool verbose)
 {
-   const uint32_t *words = (const uint32_t *)code;
-   const uint32_t *words_end = words + (size / 4);
+   uint32_t *words = (uint32_t *)code;
+   uint32_t *words_end = words + (size / 4);
    // used for displaying branch targets
    unsigned offset = 0;
    while (words != words_end) {

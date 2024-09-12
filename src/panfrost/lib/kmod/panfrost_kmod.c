@@ -17,7 +17,8 @@
 
 #include "pan_kmod_backend.h"
 
-#include "pan_props.h"
+/* Only needed for pan_arch(), don't add per-arch stuff here. */
+#include "genxml/gen_macros.h"
 
 const struct pan_kmod_ops panfrost_kmod_ops;
 

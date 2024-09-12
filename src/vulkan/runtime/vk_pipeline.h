@@ -54,9 +54,6 @@ typedef struct VkPipelineShaderStageNirCreateInfoMESA {
 bool
 vk_pipeline_shader_stage_is_null(const VkPipelineShaderStageCreateInfo *info);
 
-bool
-vk_pipeline_shader_stage_has_identifier(const VkPipelineShaderStageCreateInfo *info);
-
 VkResult
 vk_pipeline_shader_stage_to_nir(struct vk_device *device,
                                 const VkPipelineShaderStageCreateInfo *info,
@@ -76,8 +73,6 @@ struct vk_pipeline_robustness_state {
    VkPipelineRobustnessBufferBehaviorEXT uniform_buffers;
    VkPipelineRobustnessBufferBehaviorEXT vertex_inputs;
    VkPipelineRobustnessImageBehaviorEXT images;
-   bool null_uniform_buffer_descriptor;
-   bool null_storage_buffer_descriptor;
 };
 
 /** Hash VkPipelineShaderStageCreateInfo info

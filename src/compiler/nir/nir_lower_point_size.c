@@ -37,26 +37,18 @@ lower_point_size_intrin(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
    float *minmax = (float *)data;
 
-   gl_varying_slot location = VARYING_SLOT_MAX;
-   nir_src *psiz_src;
+   if (intr->intrinsic != nir_intrinsic_store_deref)
+      return false;
 
-   if (intr->intrinsic == nir_intrinsic_store_deref) {
-      nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
-      nir_variable *var = nir_deref_instr_get_variable(deref);
-      location = var->data.location;
-      psiz_src = &intr->src[1];
-   } else if (intr->intrinsic == nir_intrinsic_store_output) {
-      location = nir_intrinsic_io_semantics(intr).location;
-      psiz_src = &intr->src[0];
-   }
-
-   if (location != VARYING_SLOT_PSIZ)
+   nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+   nir_variable *var = nir_deref_instr_get_variable(deref);
+   if (var->data.location != VARYING_SLOT_PSIZ)
       return false;
 
    b->cursor = nir_before_instr(&intr->instr);
 
-   nir_def *psiz = psiz_src->ssa;
-   assert(psiz->num_components == 1);
+   assert(intr->src[1].ssa->num_components == 1);
+   nir_def *psiz = intr->src[1].ssa;
 
    if (minmax[0] > 0.0f)
       psiz = nir_fmax(b, psiz, nir_imm_float(b, minmax[0]));
@@ -64,7 +56,7 @@ lower_point_size_intrin(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    if (minmax[1] > 0.0f)
       psiz = nir_fmin(b, psiz, nir_imm_float(b, minmax[1]));
 
-   nir_src_rewrite(psiz_src, psiz);
+   nir_src_rewrite(&intr->src[1], psiz);
 
    return true;
 }
@@ -84,6 +76,7 @@ nir_lower_point_size(nir_shader *s, float min, float max)
 
    float minmax[] = { min, max };
    return nir_shader_intrinsics_pass(s, lower_point_size_intrin,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index |
+                                        nir_metadata_dominance,
                                      minmax);
 }

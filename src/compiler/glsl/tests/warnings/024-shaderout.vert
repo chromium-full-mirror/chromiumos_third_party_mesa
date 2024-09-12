@@ -15,7 +15,5 @@ void main()
    * case. "Real undefined" is beyond the scope of what mesa is/should
    * detect*/
   defined = fooOut;
-
-  gl_Position = vec4(1.0);
 }
 

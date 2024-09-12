@@ -266,7 +266,7 @@ impl LopPass {
     }
 }
 
-impl Shader<'_> {
+impl Shader {
     pub fn opt_lop(&mut self) {
         for f in &mut self.functions {
             let mut pass = LopPass::new(f);

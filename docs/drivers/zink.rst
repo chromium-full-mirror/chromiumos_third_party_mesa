@@ -300,9 +300,9 @@ variable:
   ``gpl``
     Force using Graphics Pipeline Library for all shaders
   ``rp``
-    Enable render pass optimizations (for tiling GPUs)
+    Enable renderpass optimizations (for tiling GPUs)
   ``norp``
-    Disable render pass optimizations (for tiling GPUs)
+    Disable renderpass optimizations (for tiling GPUs)
   ``map``
     Print info about mapped VRAM
   ``flushsync``

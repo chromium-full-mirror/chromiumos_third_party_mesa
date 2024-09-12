@@ -280,10 +280,9 @@ panfrost_set_shader_images(struct pipe_context *pctx,
 
       struct panfrost_resource *rsrc = pan_resource(image->resource);
 
-      /* Images don't work with AFBC/AFRC, since they require pixel-level
-       * granularity */
-      if (drm_is_afbc(rsrc->image.layout.modifier) ||
-          drm_is_afrc(rsrc->image.layout.modifier)) {
+      /* Images don't work with AFBC, since they require pixel-level granularity
+       */
+      if (drm_is_afbc(rsrc->image.layout.modifier)) {
          pan_resource_modifier_convert(
             ctx, rsrc, DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED, true,
             "Shader image");
@@ -551,31 +550,21 @@ panfrost_destroy(struct pipe_context *pipe)
 
    pan_screen(pipe->screen)->vtbl.context_cleanup(panfrost);
 
-   if (panfrost->writers)
-      _mesa_hash_table_destroy(panfrost->writers, NULL);
+   _mesa_hash_table_destroy(panfrost->writers, NULL);
 
    if (panfrost->blitter)
       util_blitter_destroy(panfrost->blitter);
 
    util_unreference_framebuffer_state(&panfrost->pipe_framebuffer);
-   if (pipe->stream_uploader)
-      u_upload_destroy(pipe->stream_uploader);
+   u_upload_destroy(pipe->stream_uploader);
 
    panfrost_pool_cleanup(&panfrost->descs);
    panfrost_pool_cleanup(&panfrost->shaders);
    panfrost_afbc_context_destroy(panfrost);
 
-   util_dynarray_foreach(&panfrost->global_buffers, struct pipe_resource *, res) {
-      pipe_resource_reference(res, NULL);
-   }
-
-   util_dynarray_fini(&panfrost->global_buffers);
-
    drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->in_sync_obj);
-   if (panfrost->in_sync_fd != -1) {
+   if (panfrost->in_sync_fd != -1)
       close(panfrost->in_sync_fd);
-      panfrost->in_sync_fd = -1;
-   }
 
    drmSyncobjDestroy(panfrost_device_fd(dev), panfrost->syncobj);
    ralloc_free(pipe);
@@ -820,41 +809,30 @@ panfrost_set_global_binding(struct pipe_context *pctx, unsigned first,
                             unsigned count, struct pipe_resource **resources,
                             uint32_t **handles)
 {
+   if (!resources)
+      return;
+
    struct panfrost_context *ctx = pan_context(pctx);
+   struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
 
-   unsigned old_size =
-      util_dynarray_num_elements(&ctx->global_buffers, *resources);
+   for (unsigned i = first; i < first + count; ++i) {
+      struct panfrost_resource *rsrc = pan_resource(resources[i]);
+      panfrost_batch_write_rsrc(batch, rsrc, PIPE_SHADER_COMPUTE);
 
-   if (old_size < first + count) {
-      /* we are screwed no matter what */
-      if (!util_dynarray_grow(&ctx->global_buffers, *resources,
-                              (first + count) - old_size))
-         unreachable("out of memory");
+      util_range_add(&rsrc->base, &rsrc->valid_buffer_range, 0,
+                     rsrc->base.width0);
 
-      for (unsigned i = old_size; i < first + count; i++)
-         *util_dynarray_element(&ctx->global_buffers, struct pipe_resource *,
-                                i) = NULL;
-   }
+      /* The handle points to uint32_t, but space is allocated for 64
+       * bits. We need to respect the offset passed in. This interface
+       * is so bad.
+       */
+      mali_ptr addr = 0;
+      static_assert(sizeof(addr) == 8, "size out of sync");
 
-   for (unsigned i = 0; i < count; ++i) {
-      struct pipe_resource **res = util_dynarray_element(
-         &ctx->global_buffers, struct pipe_resource *, first + i);
-      if (resources && resources[i]) {
-         pipe_resource_reference(res, resources[i]);
+      memcpy(&addr, handles[i], sizeof(addr));
+      addr += rsrc->image.data.base;
 
-         /* The handle points to uint32_t, but space is allocated for 64
-          * bits. We need to respect the offset passed in. This interface
-          * is so bad.
-          */
-         uint64_t addr = 0;
-         struct panfrost_resource *rsrc = pan_resource(resources[i]);
-
-         memcpy(&addr, handles[i], sizeof(addr));
-         addr += rsrc->bo->ptr.gpu;
-         memcpy(handles[i], &addr, sizeof(addr));
-      } else {
-         pipe_resource_reference(res, NULL);
-      }
+      memcpy(handles[i], &addr, sizeof(addr));
    }
 }
 
@@ -893,24 +871,8 @@ struct pipe_context *
 panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 {
    struct panfrost_context *ctx = rzalloc(NULL, struct panfrost_context);
-
-   if (!ctx)
-      return NULL;
-
    struct pipe_context *gallium = (struct pipe_context *)ctx;
    struct panfrost_device *dev = pan_device(screen);
-
-   int ret;
-
-   /* Create a syncobj in a signaled state. Will be updated to point to the
-    * last queued job out_sync every time we submit a new job.
-    */
-   ret = drmSyncobjCreate(panfrost_device_fd(dev), DRM_SYNCOBJ_CREATE_SIGNALED,
-                          &ctx->syncobj);
-   if (ret) {
-      ralloc_free(ctx);
-      return NULL;
-   }
 
    gallium->screen = screen;
 
@@ -1006,19 +968,21 @@ panfrost_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    ctx->sample_mask = ~0;
    ctx->active_queries = true;
 
-   util_dynarray_init(&ctx->global_buffers, ctx);
+   int ASSERTED ret;
+
+   /* Create a syncobj in a signaled state. Will be updated to point to the
+    * last queued job out_sync every time we submit a new job.
+    */
+   ret = drmSyncobjCreate(panfrost_device_fd(dev), DRM_SYNCOBJ_CREATE_SIGNALED,
+                          &ctx->syncobj);
+   assert(!ret && ctx->syncobj);
 
    /* Sync object/FD used for NATIVE_FENCE_FD. */
    ctx->in_sync_fd = -1;
    ret = drmSyncobjCreate(panfrost_device_fd(dev), 0, &ctx->in_sync_obj);
    assert(!ret);
 
-   ret = pan_screen(screen)->vtbl.context_init(ctx);
-
-   if (ret) {
-      gallium->destroy(gallium);
-      return NULL;
-   }
+   pan_screen(screen)->vtbl.context_init(ctx);
 
    return gallium;
 }
@@ -1027,6 +991,5 @@ void
 panfrost_context_reinit(struct panfrost_context *ctx)
 {
    pan_screen(ctx->base.screen)->vtbl.context_cleanup(ctx);
-   ASSERTED int ret = pan_screen(ctx->base.screen)->vtbl.context_init(ctx);
-   assert(!ret);
+   pan_screen(ctx->base.screen)->vtbl.context_init(ctx);
 }

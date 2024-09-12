@@ -246,8 +246,5 @@ EGL_FUNCTIONS = (
     _eglFunc("eglGLInteropQueryDeviceInfoMESA",      "display"),
     _eglFunc("eglGLInteropExportObjectMESA",         "display"),
     _eglFunc("eglGLInteropFlushObjectsMESA",         "display"),
-
-    # EGL_EXT_surface_compression
-    _eglFunc("eglQuerySupportedCompressionRatesEXT", "display"),
 )
 

@@ -258,6 +258,7 @@ nir_lower_vec_to_regs(nir_shader *shader, nir_instr_writemask_filter_cb cb,
    };
 
    return nir_shader_instructions_pass(shader, lower,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        &data);
 }

@@ -77,12 +77,12 @@ TEST_F(FSCombineConstantsTest, Simple)
 {
    fs_builder bld = make_builder(shader);
 
-   brw_reg r = brw_vec8_grf(1, 0);
-   brw_reg imm_a = brw_imm_ud(1);
-   brw_reg imm_b = brw_imm_ud(2);
+   fs_reg r = brw_vec8_grf(1, 0);
+   fs_reg imm_a = brw_imm_ud(1);
+   fs_reg imm_b = brw_imm_ud(2);
 
    bld.SEL(r, imm_a, imm_b);
-   brw_calculate_cfg(*shader);
+   shader->calculate_cfg();
 
    bool progress = opt_combine_constants(shader);
    ASSERT_TRUE(progress);
@@ -102,10 +102,10 @@ TEST_F(FSCombineConstantsTest, DoContainingDo)
 {
    fs_builder bld = make_builder(shader);
 
-   brw_reg r1 = brw_vec8_grf(1, 0);
-   brw_reg r2 = brw_vec8_grf(2, 0);
-   brw_reg imm_a = brw_imm_ud(1);
-   brw_reg imm_b = brw_imm_ud(2);
+   fs_reg r1 = brw_vec8_grf(1, 0);
+   fs_reg r2 = brw_vec8_grf(2, 0);
+   fs_reg imm_a = brw_imm_ud(1);
+   fs_reg imm_b = brw_imm_ud(2);
 
    bld.DO();
    bld.DO();
@@ -113,7 +113,7 @@ TEST_F(FSCombineConstantsTest, DoContainingDo)
    bld.WHILE();
    bld.WHILE();
    bld.SEL(r2, imm_a, imm_b);
-   brw_calculate_cfg(*shader);
+   shader->calculate_cfg();
 
    unsigned original_num_blocks = shader->cfg->num_blocks;
 

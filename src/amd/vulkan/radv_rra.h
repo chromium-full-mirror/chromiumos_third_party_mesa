@@ -25,15 +25,10 @@ struct radv_rra_accel_struct_data {
    VkEvent build_event;
    uint64_t va;
    uint64_t size;
-   struct radv_rra_accel_struct_buffer *buffer;
-   VkAccelerationStructureTypeKHR type;
-   bool is_dead;
-};
-
-struct radv_rra_accel_struct_buffer {
    VkBuffer buffer;
    VkDeviceMemory memory;
-   uint32_t ref_cnt;
+   VkAccelerationStructureTypeKHR type;
+   bool is_dead;
 };
 
 enum radv_rra_ray_history_metadata_type {
@@ -169,13 +164,6 @@ static_assert(sizeof(struct radv_packed_end_trace_token) == 76, "Unexpected radv
 VkResult radv_rra_trace_init(struct radv_device *device);
 
 void radv_rra_trace_clear_ray_history(VkDevice _device, struct radv_rra_trace_data *data);
-
-void radv_radv_rra_accel_struct_buffer_ref(struct radv_rra_accel_struct_buffer *buffer);
-
-void radv_rra_accel_struct_buffer_unref(struct radv_device *device, struct radv_rra_accel_struct_buffer *buffer);
-
-struct set;
-void radv_rra_accel_struct_buffers_unref(struct radv_device *device, struct set *buffers);
 
 void radv_rra_trace_finish(VkDevice vk_device, struct radv_rra_trace_data *data);
 

@@ -32,24 +32,20 @@
 
 static ir_function_signature *
 find_matching_signature(const char *name, const exec_list *actual_parameters,
-                        glsl_symbol_table *symbols,
-                        bool has_implicit_conversions,
-                        bool has_implicit_int_to_uint_conversion);
+                        glsl_symbol_table *symbols);
 
 namespace {
 
 class call_link_visitor : public ir_hierarchical_visitor {
 public:
    call_link_visitor(gl_shader_program *prog, gl_linked_shader *linked,
-                     gl_shader *main, gl_shader **shader_list,
-                     unsigned num_shaders)
+		     gl_shader **shader_list, unsigned num_shaders)
    {
       this->prog = prog;
       this->shader_list = shader_list;
       this->num_shaders = num_shaders;
       this->success = true;
       this->linked = linked;
-      this->main = main;
 
       this->locals = _mesa_pointer_set_create(NULL);
    }
@@ -85,9 +81,7 @@ public:
        * final linked shader.  If it does, use it as the target of the call.
        */
       ir_function_signature *sig =
-         find_matching_signature(name, &callee->parameters, linked->symbols,
-                                 main->has_implicit_conversions,
-                                 main->has_implicit_int_to_uint_conversion);
+         find_matching_signature(name, &callee->parameters, linked->symbols);
       if (sig != NULL) {
 	 ir->callee = sig;
 	 return visit_continue;
@@ -98,9 +92,7 @@ public:
        */
       for (unsigned i = 0; i < num_shaders; i++) {
          sig = find_matching_signature(name, &ir->actual_parameters,
-                                       shader_list[i]->symbols,
-                                       shader_list[i]->has_implicit_conversions,
-                                       shader_list[i]->has_implicit_int_to_uint_conversion);
+                                       shader_list[i]->symbols);
          if (sig)
             break;
       }
@@ -307,8 +299,6 @@ private:
     */
    gl_linked_shader *linked;
 
-   gl_shader *main;
-
    /**
     * Table of variables local to the function.
     */
@@ -322,17 +312,13 @@ private:
  */
 ir_function_signature *
 find_matching_signature(const char *name, const exec_list *actual_parameters,
-                        glsl_symbol_table *symbols,
-                        bool has_implicit_conversions,
-                        bool has_implicit_int_to_uint_conversion)
+                        glsl_symbol_table *symbols)
 {
    ir_function *const f = symbols->get_function(name);
 
    if (f) {
       ir_function_signature *sig =
-         f->matching_signature(NULL, actual_parameters,
-                               has_implicit_conversions,
-                               has_implicit_int_to_uint_conversion, false);
+         f->matching_signature(NULL, actual_parameters, false);
 
       if (sig && (sig->is_defined || sig->is_intrinsic()))
          return sig;
@@ -343,12 +329,11 @@ find_matching_signature(const char *name, const exec_list *actual_parameters,
 
 
 bool
-link_function_calls(gl_shader_program *prog, gl_linked_shader *main_linked,
-                    gl_shader *main, gl_shader **shader_list,
-                    unsigned num_shaders)
+link_function_calls(gl_shader_program *prog, gl_linked_shader *main,
+		    gl_shader **shader_list, unsigned num_shaders)
 {
-   call_link_visitor v(prog, main_linked, main, shader_list, num_shaders);
+   call_link_visitor v(prog, main, shader_list, num_shaders);
 
-   v.run(main_linked->ir);
+   v.run(main->ir);
    return v.success;
 }

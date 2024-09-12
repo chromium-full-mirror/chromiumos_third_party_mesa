@@ -223,6 +223,8 @@ enum opcode {
    BRW_OPCODE_CBIT,
    BRW_OPCODE_ADDC,
    BRW_OPCODE_SUBB,
+   BRW_OPCODE_SAD2,
+   BRW_OPCODE_SADA2,
    BRW_OPCODE_ADD3, /* Gen12+ only */
    BRW_OPCODE_DP4,
    BRW_OPCODE_DPH,
@@ -534,9 +536,7 @@ enum opcode {
    SHADER_OPCODE_BTD_SPAWN_LOGICAL,
    SHADER_OPCODE_BTD_RETIRE_LOGICAL,
 
-   SHADER_OPCODE_READ_ARCH_REG,
-
-   SHADER_OPCODE_LOAD_SUBGROUP_INVOCATION,
+   SHADER_OPCODE_READ_SR_REG,
 
    RT_OPCODE_TRACE_RAY_LOGICAL,
 };
@@ -954,8 +954,7 @@ tgl_swsb_src_dep(struct tgl_swsb swsb)
  * SWSB annotation.
  */
 static inline uint32_t
-tgl_swsb_encode(const struct intel_device_info *devinfo,
-                struct tgl_swsb swsb, enum opcode opcode)
+tgl_swsb_encode(const struct intel_device_info *devinfo, struct tgl_swsb swsb)
 {
    if (!swsb.mode) {
       const unsigned pipe = devinfo->verx10 < 125 ? 0 :
@@ -968,27 +967,18 @@ tgl_swsb_encode(const struct intel_device_info *devinfo,
 
    } else if (swsb.regdist) {
       if (devinfo->ver >= 20) {
-         unsigned mode = 0;
-         if (opcode == BRW_OPCODE_DPAS) {
-            mode = (swsb.mode & TGL_SBID_SET) ? 0b01 :
-                   (swsb.mode & TGL_SBID_SRC) ? 0b10 :
-                 /* swsb.mode & TGL_SBID_DST */ 0b11;
-         } else if (swsb.mode & TGL_SBID_SET) {
-            assert(opcode == BRW_OPCODE_SEND || opcode == BRW_OPCODE_SENDC);
+         if ((swsb.mode & TGL_SBID_SET)) {
             assert(swsb.pipe == TGL_PIPE_ALL ||
-                   swsb.pipe == TGL_PIPE_INT ||
-                   swsb.pipe == TGL_PIPE_FLOAT);
-
-            mode = swsb.pipe == TGL_PIPE_INT   ? 0b11 :
-                   swsb.pipe == TGL_PIPE_FLOAT ? 0b10 :
-                /* swsb.pipe == TGL_PIPE_ALL  */ 0b01;
+                   swsb.pipe == TGL_PIPE_INT || swsb.pipe == TGL_PIPE_FLOAT);
+            return (swsb.pipe == TGL_PIPE_INT ? 0x300 :
+                    swsb.pipe == TGL_PIPE_FLOAT ? 0x200 : 0x100) |
+                   swsb.regdist << 5 | swsb.sbid;
          } else {
             assert(!(swsb.mode & ~(TGL_SBID_DST | TGL_SBID_SRC)));
-            mode = swsb.pipe == TGL_PIPE_ALL  ? 0b11 :
-                   swsb.mode == TGL_SBID_SRC  ? 0b10 :
-                /* swsb.mode == TGL_SBID_DST */ 0b01;
+            return (swsb.pipe == TGL_PIPE_ALL ? 0x300 :
+                    swsb.mode == TGL_SBID_SRC ? 0x200 : 0x100) |
+                   swsb.regdist << 5 | swsb.sbid;
          }
-         return mode << 8 | swsb.regdist << 5 | swsb.sbid;
       } else {
          assert(!(swsb.sbid & ~0xfu));
          return 0x80 | swsb.regdist << 4 | swsb.sbid;
@@ -1012,12 +1002,11 @@ tgl_swsb_encode(const struct intel_device_info *devinfo,
  */
 static inline struct tgl_swsb
 tgl_swsb_decode(const struct intel_device_info *devinfo,
-                const bool is_unordered, const uint32_t x, enum opcode opcode)
+                const bool is_unordered, const uint32_t x)
 {
    if (devinfo->ver >= 20) {
       if (x & 0x300) {
-         /* Mode isn't SingleInfo, there's a tuple */
-         if (opcode == BRW_OPCODE_SEND || opcode == BRW_OPCODE_SENDC) {
+         if (is_unordered) {
             const struct tgl_swsb swsb = {
                (x & 0xe0u) >> 5,
                ((x & 0x300) == 0x300 ? TGL_PIPE_INT :
@@ -1025,16 +1014,6 @@ tgl_swsb_decode(const struct intel_device_info *devinfo,
                 TGL_PIPE_ALL),
                x & 0x1fu,
                TGL_SBID_SET
-            };
-            return swsb;
-         } else if (opcode == BRW_OPCODE_DPAS) {
-            const struct tgl_swsb swsb = {
-               .regdist = (x & 0xe0u) >> 5,
-               .pipe = TGL_PIPE_NONE,
-               .sbid = x & 0x1fu,
-               .mode = (x & 0x300) == 0x300 ? TGL_SBID_DST :
-                       (x & 0x300) == 0x200 ? TGL_SBID_SRC :
-                                              TGL_SBID_SET,
             };
             return swsb;
          } else {

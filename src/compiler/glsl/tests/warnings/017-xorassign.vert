@@ -8,7 +8,5 @@ void main()
 
   fooInt ^= undefined;
   fooInt ^= defined;
-
-  gl_Position = vec4(1.0);
 }
 

@@ -20,13 +20,17 @@ panvk_AllocateMemory(VkDevice _device,
                      VkDeviceMemory *pMem)
 {
    VK_FROM_HANDLE(panvk_device, device, _device);
-   struct panvk_instance *instance =
-      to_panvk_instance(device->vk.physical->instance);
    struct panvk_device_memory *mem;
    bool can_be_exported = false;
    VkResult result;
 
    assert(pAllocateInfo->sType == VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+
+   if (pAllocateInfo->allocationSize == 0) {
+      /* Apparently, this is allowed */
+      *pMem = VK_NULL_HANDLE;
+      return VK_SUCCESS;
+   }
 
    const VkExportMemoryAllocateInfo *export_info =
       vk_find_struct_const(pAllocateInfo->pNext, EXPORT_MEMORY_ALLOCATE_INFO);
@@ -112,15 +116,8 @@ panvk_AllocateMemory(VkDevice _device,
    }
 
    if (device->debug.decode_ctx) {
-      if (instance->debug_flags & PANVK_DEBUG_DUMP) {
-         mem->debug.host_mapping =
-            pan_kmod_bo_mmap(mem->bo, 0, pan_kmod_bo_size(mem->bo),
-                             PROT_READ | PROT_WRITE, MAP_SHARED, NULL);
-      }
-
-      pandecode_inject_mmap(device->debug.decode_ctx, mem->addr.dev,
-                            mem->debug.host_mapping, pan_kmod_bo_size(mem->bo),
-                            NULL);
+      pandecode_inject_mmap(device->debug.decode_ctx, mem->addr.dev, NULL,
+                            pan_kmod_bo_size(mem->bo), NULL);
    }
 
    *pMem = panvk_device_memory_to_handle(mem);
@@ -148,9 +145,6 @@ panvk_FreeMemory(VkDevice _device, VkDeviceMemory _mem,
    if (device->debug.decode_ctx) {
       pandecode_inject_free(device->debug.decode_ctx, mem->addr.dev,
                             pan_kmod_bo_size(mem->bo));
-
-      if (mem->debug.host_mapping)
-         os_munmap(mem->debug.host_mapping, pan_kmod_bo_size(mem->bo));
    }
 
    struct pan_kmod_vm_op op = {
@@ -289,13 +283,4 @@ panvk_GetDeviceMemoryCommitment(VkDevice device, VkDeviceMemory memory,
                                 VkDeviceSize *pCommittedMemoryInBytes)
 {
    *pCommittedMemoryInBytes = 0;
-}
-
-VKAPI_ATTR uint64_t VKAPI_CALL
-panvk_GetDeviceMemoryOpaqueCaptureAddress(
-   VkDevice _device, const VkDeviceMemoryOpaqueCaptureAddressInfo *pInfo)
-{
-   VK_FROM_HANDLE(panvk_device_memory, memory, pInfo->memory);
-
-   return memory->addr.dev;
 }

@@ -6,3 +6,4 @@ dEQP-VK.transform_feedback.primitives_generated_query.get.queue_reset.*
 
 # uprev Piglit in Mesa
 dEQP-VK.transform_feedback.primitives_generated_query.get.*reset.*
+
