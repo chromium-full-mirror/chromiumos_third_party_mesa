@@ -23,7 +23,7 @@ struct PerfRecord {
    /// Timestamp in the GPU clock domain
    uint64_t timestamp;
 
-   /// intel_perf_record_header + report data
+   /// drm_i915_perf_record_header + report data
    std::vector<uint8_t> data;
 };
 

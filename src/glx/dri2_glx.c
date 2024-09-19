@@ -1001,7 +1001,7 @@ static const struct glx_screen_vtable dri2_screen_vtable = {
 };
 
 static struct glx_screen *
-dri2CreateScreen(int screen, struct glx_display * priv, bool driver_name_is_inferred)
+dri2CreateScreen(int screen, struct glx_display * priv, bool implicit)
 {
    const __DRIconfig **driver_configs;
    const __DRIextension **extensions;
@@ -1058,7 +1058,7 @@ dri2CreateScreen(int screen, struct glx_display * priv, bool driver_name_is_infe
    }
    psc->driverName = driverName;
 
-   extensions = driOpenDriver(driverName, driver_name_is_inferred);
+   extensions = driOpenDriver(driverName, &psc->driver);
    if (extensions == NULL)
       goto handle_error;
 
@@ -1074,7 +1074,7 @@ dri2CreateScreen(int screen, struct glx_display * priv, bool driver_name_is_infe
        psc->dri2->createNewScreen3(screen, psc->fd,
                                    (const __DRIextension **)&pdp->loader_extensions[0],
                                    extensions,
-                                   &driver_configs, driver_name_is_inferred, psc);
+                                   &driver_configs, implicit, psc);
 
    if (psc->driScreen == NULL) {
       ErrorMessageF("glx: failed to create dri2 screen\n");
@@ -1178,6 +1178,8 @@ handle_error:
    psc->driScreen = NULL;
    if (psc->fd >= 0)
       close(psc->fd);
+   if (psc->driver)
+      dlclose(psc->driver);
 
    free(deviceName);
    glx_screen_cleanup(&psc->base);

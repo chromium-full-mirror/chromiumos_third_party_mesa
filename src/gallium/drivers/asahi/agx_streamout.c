@@ -133,6 +133,8 @@ agx_draw_vbo_from_xfb(struct pipe_context *pctx,
 
    unsigned count = offset_B / so->stride;
 
+   /* XXX: Probably need to divide here */
+
    struct pipe_draw_start_count_bias draw = {
       .start = 0,
       .count = count,

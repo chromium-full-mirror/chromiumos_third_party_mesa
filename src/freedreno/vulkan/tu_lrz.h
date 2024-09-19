@@ -42,7 +42,6 @@ struct tu_lrz_state
    enum tu_lrz_direction prev_direction;
 };
 
-template <chip CHIP>
 void
 tu6_emit_lrz(struct tu_cmd_buffer *cmd, struct tu_cs *cs);
 
@@ -63,7 +62,6 @@ template <chip CHIP>
 void
 tu_lrz_begin_renderpass(struct tu_cmd_buffer *cmd);
 
-template <chip CHIP>
 void
 tu_lrz_begin_resumed_renderpass(struct tu_cmd_buffer *cmd);
 
@@ -82,11 +80,9 @@ template <chip CHIP>
 void
 tu_lrz_sysmem_begin(struct tu_cmd_buffer *cmd, struct tu_cs *cs);
 
-template <chip CHIP>
 void
 tu_lrz_sysmem_end(struct tu_cmd_buffer *cmd, struct tu_cs *cs);
 
-template <chip CHIP>
 void
 tu_lrz_disable_during_renderpass(struct tu_cmd_buffer *cmd);
 

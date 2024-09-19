@@ -254,6 +254,7 @@ nir_lower_drawpixels(nir_shader *shader,
    assert(shader->info.stage == MESA_SHADER_FRAGMENT);
 
    return nir_shader_instructions_pass(shader, lower_drawpixels_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        &state);
 }

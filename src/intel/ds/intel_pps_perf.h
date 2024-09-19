@@ -33,6 +33,9 @@ class IntelPerf
 
    int drm_fd = -1;
 
+   void *ralloc_ctx = nullptr;
+   void *ralloc_cfg = nullptr;
+
    struct intel_perf_context *ctx = nullptr;
    struct intel_perf_config *cfg = nullptr;
 

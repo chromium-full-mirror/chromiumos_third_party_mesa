@@ -108,7 +108,9 @@ nir_lower_uniforms_to_ubo_instr(nir_builder *b, nir_instr *instr, void *data)
          nir_intrinsic_set_range_base(load, nir_intrinsic_base(intr) * multiplier);
          nir_intrinsic_set_range(load, nir_intrinsic_range(intr) * multiplier);
       }
-      nir_def_replace(&intr->def, load_result);
+      nir_def_rewrite_uses(&intr->def, load_result);
+
+      nir_instr_remove(&intr->instr);
       return true;
    }
 
@@ -127,7 +129,8 @@ nir_lower_uniforms_to_ubo(nir_shader *shader, bool dword_packed, bool load_vec4)
 
    progress = nir_shader_instructions_pass(shader,
                                            nir_lower_uniforms_to_ubo_instr,
-                                           nir_metadata_control_flow,
+                                           nir_metadata_block_index |
+                                              nir_metadata_dominance,
                                            &state);
 
    if (progress) {

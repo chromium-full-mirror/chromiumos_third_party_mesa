@@ -579,7 +579,6 @@ tc_batch_flush(struct threaded_context *tc, bool full_copy)
    tc_batch_check(next);
    tc_debug_check(tc);
    tc->bytes_mapped_estimate = 0;
-   tc->bytes_replaced_estimate = 0;
    p_atomic_add(&tc->num_offloaded_slots, next->num_total_slots);
 
    if (next->token) {
@@ -756,7 +755,6 @@ _tc_sync(struct threaded_context *tc, UNUSED const char *info, UNUSED const char
    if (next->num_total_slots) {
       p_atomic_add(&tc->num_direct_slots, next->num_total_slots);
       tc->bytes_mapped_estimate = 0;
-      tc->bytes_replaced_estimate = 0;
       tc_add_call_end(next);
       tc_batch_execute(next, NULL, 0);
       tc_begin_next_buffer_list(tc);
@@ -2443,10 +2441,6 @@ tc_make_image_handle_resident(struct pipe_context *_pipe, uint64_t handle,
  * transfer
  */
 
-static void
-tc_flush(struct pipe_context *_pipe, struct pipe_fence_handle **fence,
-         unsigned flags);
-
 struct tc_replace_buffer_storage {
    struct tc_call_base base;
    uint16_t num_rebinds;
@@ -2494,13 +2488,6 @@ tc_invalidate_buffer(struct threaded_context *tc,
        tbuf->is_user_ptr ||
        tbuf->b.flags & (PIPE_RESOURCE_FLAG_SPARSE | PIPE_RESOURCE_FLAG_UNMAPPABLE))
       return false;
-
-   assert(tbuf->b.target == PIPE_BUFFER);
-   tc->bytes_replaced_estimate += tbuf->b.width0;
-
-   if (tc->bytes_replaced_limit && (tc->bytes_replaced_estimate > tc->bytes_replaced_limit)) {
-      tc_flush(&tc->base, NULL, PIPE_FLUSH_ASYNC);
-   }
 
    /* Allocate a new one. */
    new_buf = screen->resource_create(screen, &tbuf->b);
@@ -2606,9 +2593,9 @@ tc_improve_map_buffer_flags(struct threaded_context *tc,
       usage |= PIPE_MAP_UNSYNCHRONIZED;
 
    if (!(usage & PIPE_MAP_UNSYNCHRONIZED)) {
-      /* If discarding the entire valid range, discard the whole resource instead. */
+      /* If discarding the entire range, discard the whole resource instead. */
       if (usage & PIPE_MAP_DISCARD_RANGE &&
-          util_ranges_covered(&tres->valid_buffer_range, offset, offset + size))
+          offset == 0 && size == tres->b.width0)
          usage |= PIPE_MAP_DISCARD_WHOLE_RESOURCE;
 
       /* Discard the whole resource if needed. */
@@ -2890,6 +2877,10 @@ tc_transfer_flush_region(struct pipe_context *_pipe,
    p->transfer = transfer;
    p->box = *rel_box;
 }
+
+static void
+tc_flush(struct pipe_context *_pipe, struct pipe_fence_handle **fence,
+         unsigned flags);
 
 struct tc_buffer_unmap {
    struct tc_call_base base;

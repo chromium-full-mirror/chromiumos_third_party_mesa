@@ -437,7 +437,7 @@ test_one(unsigned verbose,
          const struct pipe_blend_state *blend,
          struct lp_type type)
 {
-   lp_context_ref context;
+   LLVMContextRef context;
    struct gallivm_state *gallivm;
    LLVMValueRef func = NULL;
    blend_test_ptr_t blend_test_ptr;
@@ -451,14 +451,17 @@ test_one(unsigned verbose,
    if (verbose >= 1)
       dump_blend_type(stdout, blend, type);
 
-   lp_context_create(&context);
-   gallivm = gallivm_create("test_module", &context, NULL);
+   context = LLVMContextCreate();
+#if LLVM_VERSION_MAJOR == 15
+   LLVMContextSetOpaquePointers(context, false);
+#endif
+   gallivm = gallivm_create("test_module", context, NULL);
 
    func = add_blend_test(gallivm, blend, type);
 
    gallivm_compile_module(gallivm);
 
-   blend_test_ptr = (blend_test_ptr_t)gallivm_jit_function(gallivm, func, "test");
+   blend_test_ptr = (blend_test_ptr_t)gallivm_jit_function(gallivm, func);
 
    gallivm_free_ir(gallivm);
 
@@ -581,7 +584,7 @@ test_one(unsigned verbose,
       write_tsv_row(fp, blend, type, cycles_avg, success);
 
    gallivm_destroy(gallivm);
-   lp_context_destroy(&context);
+   LLVMContextDispose(context);
 
    return success;
 }

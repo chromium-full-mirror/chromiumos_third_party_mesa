@@ -61,7 +61,8 @@ lower_multiview_mask(nir_shader *nir, uint32_t *mask)
          nir_def *src = nir_bcsel(&b, cmp, orig_src, nir_imm_float(&b, 0.));
          nir_src_rewrite(&intrin->src[1], src);
 
-         nir_metadata_preserve(impl, nir_metadata_control_flow);
+         nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance);
          return true;
       }
    }

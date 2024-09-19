@@ -40,6 +40,13 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
+struct i915_tracked_hw_state {
+   const char *name;
+   void (*validate)(struct i915_context *, unsigned *batch_space);
+   void (*emit)(struct i915_context *);
+   unsigned dirty, batch_space;
+};
+
 static void
 validate_flush(struct i915_context *i915, unsigned *batch_space)
 {
@@ -214,7 +221,7 @@ emit_static(struct i915_context *i915)
    if (i915->current.cbuf_bo && (i915->static_dirty & I915_DST_BUF_COLOR)) {
       OUT_BATCH(_3DSTATE_BUF_INFO_CMD);
       OUT_BATCH(i915->current.cbuf_flags);
-      OUT_RELOC(i915->current.cbuf_bo, I915_USAGE_RENDER, i915->current.cbuf_offset);
+      OUT_RELOC(i915->current.cbuf_bo, I915_USAGE_RENDER, 0);
    }
 
    /* What happens if no zbuf??

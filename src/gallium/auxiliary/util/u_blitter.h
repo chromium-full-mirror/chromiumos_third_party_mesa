@@ -272,12 +272,10 @@ void util_blitter_blit_generic(struct blitter_context *blitter,
                                unsigned mask, unsigned filter,
                                const struct pipe_scissor_state *scissor,
                                bool alpha_blend, bool sample0_only,
-                               unsigned dst_sample,
-                               void *fs_override);
+                               unsigned dst_sample);
 
 void util_blitter_blit(struct blitter_context *blitter,
-		       const struct pipe_blit_info *info,
-                       void *fs_override);
+		       const struct pipe_blit_info *info);
 
 void util_blitter_generate_mipmap(struct blitter_context *blitter,
                                   struct pipe_resource *tex,

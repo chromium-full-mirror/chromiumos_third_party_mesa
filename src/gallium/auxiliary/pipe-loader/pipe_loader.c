@@ -159,22 +159,22 @@ pipe_loader_get_driinfo_xml(const char *driver_name)
    unsigned merged_count;
    const driOptionDescription *merged_driconf =
       merge_driconf(driver_driconf, driver_count, &merged_count);
+   free((void *)driver_driconf);
 
    char *xml = driGetOptionsXml(merged_driconf, merged_count);
 
-   free((void *)driver_driconf);
    free((void *)merged_driconf);
 
    return xml;
 }
 
 struct pipe_screen *
-pipe_loader_create_screen_vk(struct pipe_loader_device *dev, bool sw_vk, bool driver_name_is_inferred)
+pipe_loader_create_screen_vk(struct pipe_loader_device *dev, bool sw_vk, bool implicit)
 {
    struct pipe_screen_config config;
 
    pipe_loader_load_options(dev);
-   config.driver_name_is_inferred = driver_name_is_inferred;
+   config.implicit_driver_load = implicit;
    config.options_info = &dev->option_info;
    config.options = &dev->option_cache;
 
@@ -182,9 +182,9 @@ pipe_loader_create_screen_vk(struct pipe_loader_device *dev, bool sw_vk, bool dr
 }
 
 struct pipe_screen *
-pipe_loader_create_screen(struct pipe_loader_device *dev, bool driver_name_is_inferred)
+pipe_loader_create_screen(struct pipe_loader_device *dev, bool implicit)
 {
-   return pipe_loader_create_screen_vk(dev, false, driver_name_is_inferred);
+   return pipe_loader_create_screen_vk(dev, false, implicit);
 }
 
 struct util_dl_library *

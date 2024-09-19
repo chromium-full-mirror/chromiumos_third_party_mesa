@@ -32,11 +32,8 @@ impl NirInstrPrinter {
         unsafe {
             let stream = self.stream.as_mut().get_unchecked_mut();
             nak_nir_asprint_instr(stream, instr);
-            let bytes = std::slice::from_raw_parts(
-                stream.buffer as *const u8,
-                stream.written,
-            );
-            let string = String::from_utf8_lossy(bytes).into_owned();
+            let c_str = std::ffi::CStr::from_ptr(stream.buffer);
+            let string = c_str.to_string_lossy().into_owned();
             nak_clear_memstream(stream);
             string
         }

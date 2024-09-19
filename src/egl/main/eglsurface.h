@@ -135,11 +135,6 @@ struct _egl_surface {
    EGLenum VGColorspace;
    EGLenum GLColorspace;
 
-   /* EGL_EXT_surface_compression
-    * Value of EGL_SURFACE_COMPRESSION_EXT attribute selected at creation.
-    */
-   EGLint CompressionRate;
-
    /* attributes set by eglSurfaceAttrib */
    EGLint MipmapLevel;
    EGLenum MultisampleResolve;

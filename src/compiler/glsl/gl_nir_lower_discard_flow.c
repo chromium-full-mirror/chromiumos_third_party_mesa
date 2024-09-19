@@ -55,8 +55,7 @@ set_discard_global(nir_builder *b, nir_variable *discarded,
 {
    nir_deref_instr *lhs = nir_build_deref_var(b, discarded);
    nir_def *rhs;
-   if (intrin->intrinsic == nir_intrinsic_terminate_if ||
-       intrin->intrinsic == nir_intrinsic_demote_if) {
+   if (intrin->intrinsic == nir_intrinsic_discard_if) {
       /* discarded <- condition, use  discarded as the condition */
       rhs = intrin->src[0].ssa;
       nir_src_rewrite(&intrin->src[0], &lhs->def);
@@ -92,10 +91,8 @@ lower_discard_flow(nir_builder *b, nir_cf_node *cf_node,
             }
          } else if (instr->type == nir_instr_type_intrinsic) {
             nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
-            if (intrin->intrinsic == nir_intrinsic_terminate_if ||
-                intrin->intrinsic == nir_intrinsic_terminate ||
-                intrin->intrinsic == nir_intrinsic_demote_if ||
-                intrin->intrinsic == nir_intrinsic_demote) {
+            if (intrin->intrinsic == nir_intrinsic_discard_if ||
+                intrin->intrinsic == nir_intrinsic_discard) {
                b->cursor = nir_before_instr(instr);
                set_discard_global(b, discarded, intrin);
             }

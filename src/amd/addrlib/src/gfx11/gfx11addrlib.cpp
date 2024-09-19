@@ -739,8 +739,11 @@ ChipFamily Gfx11Lib::HwlConvertChipFamily(
             {
             }
             break;
-
         case FAMILY_GFX1150:
+            if  (false
+                 || ASICREV_IS_GFX1150(chipRevision)
+                 || ASICREV_IS_GFX1151(chipRevision)
+                )
             {
                 m_settings.isGfx1150 = 1;
             }
@@ -1003,9 +1006,7 @@ UINT_32 Gfx11Lib::GetMetaBlkSize(
                 if ((pipeRotateLog2 > 0)  &&
                     (elemLog2 == 4)       &&
                     (numSamplesLog2 == 3) &&
-                    (IsZOrderSwizzle(swizzleMode) ||
-                     IsRtOptSwizzle(swizzleMode)  ||
-                     (GetEffectiveNumPipes() > 3)))
+                    (IsZOrderSwizzle(swizzleMode) || (GetEffectiveNumPipes() > 3)))
                 {
                     overlapLog2++;
                 }
@@ -3467,7 +3468,7 @@ ADDR_E_RETURNCODE Gfx11Lib::ComputeSurfaceInfoMacroTiled(
                 if (IsZOrderSwizzle(pIn->swizzleMode) && (index <= 1))
                 {
                     fixedTailMaxDim.w /= Block256_2d[index].w / Block256_2d[2].w;
-                    fixedTailMaxDim.h /= Block256_2d[index].h / Block256_2d[2].h;
+                    fixedTailMaxDim.h /= Block256_2d[index].w / Block256_2d[2].w;
                 }
 
                 for (UINT_32 i = 0; i < pIn->numMipLevels; i++)

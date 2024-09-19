@@ -106,8 +106,8 @@ lower_scoreboard(fs_visitor *v)
 }
 
 fs_inst *
-emit_SEND(const fs_builder &bld, const brw_reg &dst,
-          const brw_reg &desc, const brw_reg &payload)
+emit_SEND(const fs_builder &bld, const fs_reg &dst,
+          const fs_reg &desc, const fs_reg &payload)
 {
    fs_inst *inst = bld.emit(SHADER_OPCODE_SEND, dst, desc, desc, payload);
    inst->mlen = 1;
@@ -130,32 +130,30 @@ bool operator ==(const tgl_swsb &a, const tgl_swsb &b)
 }
 
 std::ostream &operator<<(std::ostream &os, const tgl_swsb &swsb) {
-   char *buf;
-   size_t len;
-   FILE *f = open_memstream(&buf, &len);
+   if (swsb.regdist)
+      os << "@" << swsb.regdist;
 
-   /* Because we don't have a devinfo to pass here, for TGL we'll see
-    * F@1 annotations instead of @1 since the float pipe is the only one
-    * used there.
-    */
-   brw_print_swsb(f, NULL, swsb);
-   fflush(f);
-   fclose(f);
-
-   os << buf;
-   free(buf);
+   if (swsb.mode) {
+      if (swsb.regdist)
+         os << " ";
+      os << "$" << swsb.sbid;
+      if (swsb.mode & TGL_SBID_DST)
+         os << ".dst";
+      if (swsb.mode & TGL_SBID_SRC)
+         os << ".src";
+   }
 
    return os;
 }
 
 TEST_F(scoreboard_test, RAW_inorder_inorder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
-   brw_reg y = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
+   fs_reg y = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.ADD(   x, g[1], g[2]);
    bld.MUL(   y, g[3], g[4]);
    bld.AND(g[5],    x,    y);
@@ -176,11 +174,11 @@ TEST_F(scoreboard_test, RAW_inorder_inorder)
 
 TEST_F(scoreboard_test, RAW_inorder_outoforder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.ADD(          x, g[1], g[2]);
    bld.MUL(       g[3], g[4], g[5]);
    emit_SEND(bld, g[6], g[7],    x);
@@ -201,12 +199,12 @@ TEST_F(scoreboard_test, RAW_inorder_outoforder)
 
 TEST_F(scoreboard_test, RAW_outoforder_inorder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
-   brw_reg y = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
+   fs_reg y = bld.vgrf(BRW_REGISTER_TYPE_D);
    emit_SEND(bld,    x, g[1], g[2]);
    bld.MUL(          y, g[3], g[4]);
    bld.AND(       g[5],    x,    y);
@@ -227,15 +225,15 @@ TEST_F(scoreboard_test, RAW_outoforder_inorder)
 
 TEST_F(scoreboard_test, RAW_outoforder_outoforder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
    /* The second SEND depends on the first, and would need to refer to two
     * SBIDs.  Since it is not possible we expect a SYNC instruction to be
     * added.
     */
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    emit_SEND(bld,    x, g[1], g[2]);
    emit_SEND(bld, g[3],    x, g[4])->sfid++;
 
@@ -259,11 +257,11 @@ TEST_F(scoreboard_test, RAW_outoforder_outoforder)
 
 TEST_F(scoreboard_test, WAR_inorder_inorder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.ADD(g[1],    x, g[2]);
    bld.MUL(g[3], g[4], g[5]);
    bld.AND(   x, g[6], g[7]);
@@ -284,11 +282,11 @@ TEST_F(scoreboard_test, WAR_inorder_inorder)
 
 TEST_F(scoreboard_test, WAR_inorder_outoforder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.ADD(       g[1],    x, g[2]);
    bld.MUL(       g[3], g[4], g[5]);
    emit_SEND(bld,    x, g[6], g[7]);
@@ -309,11 +307,11 @@ TEST_F(scoreboard_test, WAR_inorder_outoforder)
 
 TEST_F(scoreboard_test, WAR_outoforder_inorder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    emit_SEND(bld, g[1], g[2],    x);
    bld.MUL(       g[4], g[5], g[6]);
    bld.AND(          x, g[7], g[8]);
@@ -334,11 +332,11 @@ TEST_F(scoreboard_test, WAR_outoforder_inorder)
 
 TEST_F(scoreboard_test, WAR_outoforder_outoforder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    emit_SEND(bld, g[1], g[2],    x);
    emit_SEND(bld,    x, g[3], g[4])->sfid++;
 
@@ -362,11 +360,11 @@ TEST_F(scoreboard_test, WAR_outoforder_outoforder)
 
 TEST_F(scoreboard_test, WAW_inorder_inorder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.ADD(   x, g[1], g[2]);
    bld.MUL(g[3], g[4], g[5]);
    bld.AND(   x, g[6], g[7]);
@@ -392,11 +390,11 @@ TEST_F(scoreboard_test, WAW_inorder_inorder)
 
 TEST_F(scoreboard_test, WAW_inorder_outoforder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.ADD(          x, g[1], g[2]);
    bld.MUL(       g[3], g[4], g[5]);
    emit_SEND(bld,    x, g[6], g[7]);
@@ -417,11 +415,11 @@ TEST_F(scoreboard_test, WAW_inorder_outoforder)
 
 TEST_F(scoreboard_test, WAW_outoforder_inorder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    emit_SEND(bld,    x, g[1], g[2]);
    bld.MUL(       g[3], g[4], g[5]);
    bld.AND(          x, g[6], g[7]);
@@ -442,11 +440,11 @@ TEST_F(scoreboard_test, WAW_outoforder_inorder)
 
 TEST_F(scoreboard_test, WAW_outoforder_outoforder)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    emit_SEND(bld, x, g[1], g[2]);
    emit_SEND(bld, x, g[3], g[4])->sfid++;
 
@@ -471,11 +469,11 @@ TEST_F(scoreboard_test, WAW_outoforder_outoforder)
 
 TEST_F(scoreboard_test, loop1)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
 
    bld.emit(BRW_OPCODE_DO);
@@ -501,11 +499,11 @@ TEST_F(scoreboard_test, loop1)
 
 TEST_F(scoreboard_test, loop2)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.XOR(g[3], g[1], g[2]);
    bld.XOR(g[4], g[1], g[2]);
@@ -536,11 +534,11 @@ TEST_F(scoreboard_test, loop2)
 
 TEST_F(scoreboard_test, loop3)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
 
    bld.emit(BRW_OPCODE_DO);
@@ -573,11 +571,11 @@ TEST_F(scoreboard_test, loop3)
 
 TEST_F(scoreboard_test, conditional1)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.emit(BRW_OPCODE_IF);
 
@@ -602,11 +600,11 @@ TEST_F(scoreboard_test, conditional1)
 
 TEST_F(scoreboard_test, conditional2)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.XOR(g[3], g[1], g[2]);
    bld.XOR(g[4], g[1], g[2]);
@@ -634,11 +632,11 @@ TEST_F(scoreboard_test, conditional2)
 
 TEST_F(scoreboard_test, conditional3)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.emit(BRW_OPCODE_IF);
 
@@ -666,11 +664,11 @@ TEST_F(scoreboard_test, conditional3)
 
 TEST_F(scoreboard_test, conditional4)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.emit(BRW_OPCODE_IF);
 
@@ -698,11 +696,11 @@ TEST_F(scoreboard_test, conditional4)
 
 TEST_F(scoreboard_test, conditional5)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.emit(BRW_OPCODE_IF);
 
@@ -735,11 +733,11 @@ TEST_F(scoreboard_test, conditional5)
 
 TEST_F(scoreboard_test, conditional6)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.emit(BRW_OPCODE_IF);
 
@@ -779,11 +777,11 @@ TEST_F(scoreboard_test, conditional6)
 
 TEST_F(scoreboard_test, conditional7)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.emit(BRW_OPCODE_IF);
 
@@ -823,11 +821,11 @@ TEST_F(scoreboard_test, conditional7)
 
 TEST_F(scoreboard_test, conditional8)
 {
-   brw_reg g[16];
+   fs_reg g[16];
    for (unsigned i = 0; i < ARRAY_SIZE(g); i++)
-      g[i] = bld.vgrf(BRW_TYPE_D);
+      g[i] = bld.vgrf(BRW_REGISTER_TYPE_D);
 
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
    bld.XOR(   x, g[1], g[2]);
    bld.XOR(g[3], g[1], g[2]);
    bld.XOR(g[4], g[1], g[2]);
@@ -871,10 +869,10 @@ TEST_F(scoreboard_test, gfx125_RaR_over_different_pipes)
    devinfo->verx10 = 125;
    brw_init_isa_info(&compiler->isa, devinfo);
 
-   brw_reg a = bld.vgrf(BRW_TYPE_D);
-   brw_reg b = bld.vgrf(BRW_TYPE_D);
-   brw_reg f = bld.vgrf(BRW_TYPE_F);
-   brw_reg x = bld.vgrf(BRW_TYPE_D);
+   fs_reg a = bld.vgrf(BRW_REGISTER_TYPE_D);
+   fs_reg b = bld.vgrf(BRW_REGISTER_TYPE_D);
+   fs_reg f = bld.vgrf(BRW_REGISTER_TYPE_F);
+   fs_reg x = bld.vgrf(BRW_REGISTER_TYPE_D);
 
    bld.ADD(f, x, x);
    bld.ADD(a, x, x);
@@ -892,52 +890,4 @@ TEST_F(scoreboard_test, gfx125_RaR_over_different_pipes)
    EXPECT_EQ(instruction(block0, 0)->sched, tgl_swsb_null());
    EXPECT_EQ(instruction(block0, 1)->sched, tgl_swsb_null());
    EXPECT_EQ(instruction(block0, 2)->sched, tgl_swsb_regdist(1));
-}
-
-TEST_F(scoreboard_test, gitlab_issue_from_mr_29723)
-{
-   brw_init_isa_info(&compiler->isa, devinfo);
-
-   struct brw_reg a = brw_ud8_grf(29, 0);
-   struct brw_reg b = brw_ud8_grf(2, 0);
-
-   auto bld1 = bld.exec_all().group(1, 0);
-   bld1.ADD(             a, stride(b, 0, 1, 0),    brw_imm_ud(256));
-   bld1.CMP(brw_null_reg(), stride(a, 2, 1, 2), stride(b, 0, 1, 0), BRW_CONDITIONAL_L);
-
-   v->calculate_cfg();
-   bblock_t *block0 = v->cfg->blocks[0];
-   ASSERT_EQ(0, block0->start_ip);
-   ASSERT_EQ(1, block0->end_ip);
-
-   lower_scoreboard(v);
-   ASSERT_EQ(0, block0->start_ip);
-   ASSERT_EQ(1, block0->end_ip);
-
-   EXPECT_EQ(instruction(block0, 0)->sched, tgl_swsb_null());
-   EXPECT_EQ(instruction(block0, 1)->sched, tgl_swsb_regdist(1));
-}
-
-TEST_F(scoreboard_test, gitlab_issue_11069)
-{
-   brw_init_isa_info(&compiler->isa, devinfo);
-
-   struct brw_reg a = brw_ud8_grf(76, 0);
-   struct brw_reg b = brw_ud8_grf(2, 0);
-
-   auto bld1 = bld.exec_all().group(1, 0);
-   bld1.ADD(stride(a, 2, 1, 2), stride(b, 0, 1, 0),   brw_imm_ud(0x80));
-   bld1.CMP(    brw_null_reg(), stride(a, 0, 1, 0), stride(b, 0, 1, 0), BRW_CONDITIONAL_L);
-
-   v->calculate_cfg();
-   bblock_t *block0 = v->cfg->blocks[0];
-   ASSERT_EQ(0, block0->start_ip);
-   ASSERT_EQ(1, block0->end_ip);
-
-   lower_scoreboard(v);
-   ASSERT_EQ(0, block0->start_ip);
-   ASSERT_EQ(1, block0->end_ip);
-
-   EXPECT_EQ(instruction(block0, 0)->sched, tgl_swsb_null());
-   EXPECT_EQ(instruction(block0, 1)->sched, tgl_swsb_regdist(1));
 }

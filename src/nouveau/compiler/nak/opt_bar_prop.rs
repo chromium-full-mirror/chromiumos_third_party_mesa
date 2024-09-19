@@ -269,7 +269,7 @@ impl BarPropPass {
     }
 }
 
-impl Shader<'_> {
+impl Shader {
     pub fn opt_bar_prop(&mut self) {
         for f in &mut self.functions {
             BarPropPass::new().run(f);

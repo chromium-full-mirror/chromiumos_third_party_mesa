@@ -23,14 +23,9 @@
  */
 
 #include <stdio.h>
-#include <string.h>
 #include <getopt.h>
-
-#include "util/ralloc.h"
-#include "compiler/brw_inst.h"
-#include "dev/intel_device_info.h"
-
 #include "brw_asm.h"
+#include "intel/compiler/brw_disasm_info.h"
 
 enum opt_output_type {
    OPT_OUTPUT_HEX,
@@ -38,7 +33,14 @@ enum opt_output_type {
    OPT_OUTPUT_BIN,
 };
 
+extern FILE *yyin;
+struct brw_codegen *p;
 static enum opt_output_type output_type = OPT_OUTPUT_BIN;
+char *input_filename = NULL;
+int errors;
+
+struct list_head instr_labels;
+struct list_head target_labels;
 
 static void
 print_help(const char *progname, FILE *file)
@@ -125,20 +127,91 @@ i965_asm_init(uint16_t pci_id)
    return devinfo;
 }
 
+static bool
+i965_postprocess_labels()
+{
+   void *store = p->store;
 
+   struct target_label *tlabel;
+   struct instr_label *ilabel, *s;
+
+   const unsigned to_bytes_scale = brw_jump_scale(p->devinfo);
+
+   LIST_FOR_EACH_ENTRY(tlabel, &target_labels, link) {
+      LIST_FOR_EACH_ENTRY_SAFE(ilabel, s, &instr_labels, link) {
+         if (!strcmp(tlabel->name, ilabel->name)) {
+            brw_inst *inst = store + ilabel->offset;
+
+            int relative_offset = (tlabel->offset - ilabel->offset) / sizeof(brw_inst);
+            relative_offset *= to_bytes_scale;
+
+            unsigned opcode = brw_inst_opcode(p->isa, inst);
+
+            if (ilabel->type == INSTR_LABEL_JIP) {
+               switch (opcode) {
+               case BRW_OPCODE_IF:
+               case BRW_OPCODE_ELSE:
+               case BRW_OPCODE_ENDIF:
+               case BRW_OPCODE_WHILE:
+                  brw_inst_set_jip(p->devinfo, inst, relative_offset);
+                  break;
+               case BRW_OPCODE_BREAK:
+               case BRW_OPCODE_HALT:
+               case BRW_OPCODE_CONTINUE:
+                  brw_inst_set_jip(p->devinfo, inst, relative_offset);
+                  break;
+               default:
+                  fprintf(stderr, "Unknown opcode %d with JIP label\n", opcode);
+                  return false;
+               }
+            } else {
+               switch (opcode) {
+               case BRW_OPCODE_IF:
+               case BRW_OPCODE_ELSE:
+                  brw_inst_set_uip(p->devinfo, inst, relative_offset);
+                  break;
+               case BRW_OPCODE_WHILE:
+               case BRW_OPCODE_ENDIF:
+                  fprintf(stderr, "WHILE/ENDIF cannot have UIP offset\n");
+                  return false;
+               case BRW_OPCODE_BREAK:
+               case BRW_OPCODE_CONTINUE:
+               case BRW_OPCODE_HALT:
+                  brw_inst_set_uip(p->devinfo, inst, relative_offset);
+                  break;
+               default:
+                  fprintf(stderr, "Unknown opcode %d with UIP label\n", opcode);
+                  return false;
+               }
+            }
+
+            list_del(&ilabel->link);
+         }
+      }
+   }
+
+   LIST_FOR_EACH_ENTRY(ilabel, &instr_labels, link) {
+      fprintf(stderr, "Unknown label '%s'\n", ilabel->name);
+   }
+
+   return list_is_empty(&instr_labels);
+}
 
 int main(int argc, char **argv)
 {
-   void *mem_ctx = ralloc_context(NULL);
-   FILE *input_file = NULL;
    char *output_file = NULL;
    char c;
    FILE *output = stdout;
    bool help = false, compact = false;
+   void *store;
    uint64_t pci_id = 0;
-   int offset = 0;
+   int offset = 0, err;
+   int start_offset = 0;
+   struct disasm_info *disasm_info;
    struct intel_device_info *devinfo = NULL;
    int result = EXIT_FAILURE;
+   list_inithead(&instr_labels);
+   list_inithead(&target_labels);
 
    const struct option i965_asm_opts[] = {
       { "help",          no_argument,       (int *) &help,      true },
@@ -206,11 +279,11 @@ int main(int argc, char **argv)
       goto end;
    }
 
-   const char *filename = argv[optind];
-   input_file = fopen(filename, "r");
-   if (!input_file) {
+   input_filename = strdup(argv[optind]);
+   yyin = fopen(input_filename, "r");
+   if (!yyin) {
       fprintf(stderr, "Unable to read input file : %s\n",
-              filename);
+              input_filename);
       goto end;
    }
 
@@ -229,19 +302,43 @@ int main(int argc, char **argv)
       goto end;
    }
 
-   brw_assemble_result r = brw_assemble(mem_ctx, devinfo, input_file, filename,
-                                        compact ? BRW_ASSEMBLE_COMPACT : 0);
-   if (!r.bin)
+   struct brw_isa_info isa;
+   brw_init_isa_info(&isa, devinfo);
+
+   p = rzalloc(NULL, struct brw_codegen);
+   brw_init_codegen(&isa, p, p);
+
+   err = yyparse();
+   if (err || errors)
       goto end;
+
+   if (!i965_postprocess_labels())
+      goto end;
+
+   store = p->store;
+
+   disasm_info = disasm_initialize(p->isa, NULL);
+   if (!disasm_info) {
+      fprintf(stderr, "Unable to initialize disasm_info struct instance\n");
+      goto end;
+   }
 
    if (output_type == OPT_OUTPUT_C_LITERAL)
       fprintf(output, "{\n");
 
-   for (int i = 0; i < r.inst_count; i++) {
-      const brw_inst *insn = r.bin + offset;
+   brw_validate_instructions(p->isa, p->store, 0,
+                             p->next_insn_offset, disasm_info);
+
+   const int nr_insn = (p->next_insn_offset - start_offset) / 16;
+
+   if (compact)
+      brw_compact_instructions(p, start_offset, disasm_info);
+
+   for (int i = 0; i < nr_insn; i++) {
+      const brw_inst *insn = store + offset;
       bool compacted = false;
 
-      if (compact && brw_inst_cmpt_control(devinfo, insn)) {
+      if (compact && brw_inst_cmpt_control(p->devinfo, insn)) {
             offset += 8;
             compacted = true;
       } else {
@@ -251,6 +348,8 @@ int main(int argc, char **argv)
       print_instruction(output, compacted, insn);
    }
 
+   ralloc_free(disasm_info);
+
    if (output_type == OPT_OUTPUT_C_LITERAL)
       fprintf(output, "}");
 
@@ -258,15 +357,17 @@ int main(int argc, char **argv)
    goto end;
 
 end:
+   free(input_filename);
    free(output_file);
 
-   if (input_file)
-      fclose(input_file);
+   if (yyin)
+      fclose(yyin);
 
    if (output)
       fclose(output);
 
-   ralloc_free(mem_ctx);
+   if (p)
+      ralloc_free(p);
 
    if (devinfo)
       free(devinfo);

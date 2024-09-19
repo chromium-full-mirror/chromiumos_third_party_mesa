@@ -38,6 +38,11 @@
 
 #include "drm-uapi/drm_fourcc.h"
 
+struct wsi_headless_format {
+   VkFormat        format;
+   struct u_vector modifiers;
+};
+
 struct wsi_headless {
    struct wsi_interface base;
 

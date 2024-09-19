@@ -17,6 +17,18 @@ struct RegTracker<T> {
     carry: [T; 1],
 }
 
+impl<T: Copy> RegTracker<T> {
+    pub fn new(v: T) -> Self {
+        Self {
+            reg: [v; 255],
+            ureg: [v; 63],
+            pred: [v; 7],
+            upred: [v; 7],
+            carry: [v; 1],
+        }
+    }
+}
+
 fn new_array_with<T, const N: usize>(f: &impl Fn() -> T) -> [T; N] {
     let mut v = Vec::new();
     for _ in 0..N {
@@ -52,24 +64,13 @@ impl<T> RegTracker<T> {
     pub fn for_each_instr_src_mut(
         &mut self,
         instr: &Instr,
-        mut f: impl FnMut(usize, &mut T),
+        mut f: impl FnMut(&mut T),
     ) {
-        for (i, src) in instr.srcs().iter().enumerate() {
-            match &src.src_ref {
-                SrcRef::Reg(reg) => {
-                    for t in &mut self[*reg] {
-                        f(i, t);
-                    }
+        for src in instr.srcs() {
+            if let SrcRef::Reg(reg) = &src.src_ref {
+                for i in &mut self[*reg] {
+                    f(i);
                 }
-                SrcRef::CBuf(CBufRef {
-                    buf: CBuf::BindlessUGPR(reg),
-                    ..
-                }) => {
-                    for t in &mut self[*reg] {
-                        f(i, t);
-                    }
-                }
-                _ => (),
             }
         }
     }
@@ -77,12 +78,12 @@ impl<T> RegTracker<T> {
     pub fn for_each_instr_dst_mut(
         &mut self,
         instr: &Instr,
-        mut f: impl FnMut(usize, &mut T),
+        mut f: impl FnMut(&mut T),
     ) {
-        for (i, dst) in instr.dsts().iter().enumerate() {
+        for dst in instr.dsts() {
             if let Dst::Reg(reg) = dst {
-                for t in &mut self[*reg] {
-                    f(i, t);
+                for i in &mut self[*reg] {
+                    f(i);
                 }
             }
         }
@@ -132,14 +133,14 @@ impl<T> IndexMut<RegRef> for RegTracker<T> {
 }
 
 #[derive(Clone)]
-enum RegUse<T: Clone> {
+enum RegUse {
     None,
-    Write(T),
-    Reads(Vec<T>),
+    Write(usize),
+    Reads(Vec<usize>),
 }
 
-impl<T: Clone> RegUse<T> {
-    pub fn deps(&self) -> &[T] {
+impl RegUse {
+    pub fn deps(&self) -> &[usize] {
         match self {
             RegUse::None => &[],
             RegUse::Write(dep) => slice::from_ref(dep),
@@ -147,11 +148,11 @@ impl<T: Clone> RegUse<T> {
         }
     }
 
-    pub fn clear(&mut self) -> Self {
+    pub fn clear(&mut self) -> RegUse {
         std::mem::replace(self, RegUse::None)
     }
 
-    pub fn clear_write(&mut self) -> Self {
+    pub fn clear_write(&mut self) -> RegUse {
         if matches!(self, RegUse::Write(_)) {
             std::mem::replace(self, RegUse::None)
         } else {
@@ -159,7 +160,7 @@ impl<T: Clone> RegUse<T> {
         }
     }
 
-    pub fn add_read(&mut self, dep: T) -> Self {
+    pub fn add_read(&mut self, dep: usize) -> RegUse {
         match self {
             RegUse::None => {
                 *self = RegUse::Reads(vec![dep]);
@@ -175,7 +176,7 @@ impl<T: Clone> RegUse<T> {
         }
     }
 
-    pub fn set_write(&mut self, dep: T) -> Self {
+    pub fn set_write(&mut self, dep: usize) -> RegUse {
         std::mem::replace(self, RegUse::Write(dep))
     }
 }
@@ -361,7 +362,7 @@ impl BarAlloc {
     }
 }
 
-fn assign_barriers(f: &mut Function, sm: &dyn ShaderModel) {
+fn assign_barriers(f: &mut Function, sm: u8) {
     let mut uses = RegTracker::new_with(&|| RegUse::None);
     let mut deps = DepGraph::new();
 
@@ -379,20 +380,20 @@ fn assign_barriers(f: &mut Function, sm: &dyn ShaderModel) {
                     waits.extend_from_slice(u.deps());
                 });
 
-                if instr.has_fixed_latency(sm.sm()) {
+                if instr.has_fixed_latency(sm) {
                     // Delays will cover us here.  We just need to make sure
                     // that we wait on any uses that we consume.
-                    uses.for_each_instr_src_mut(instr, |_, u| {
+                    uses.for_each_instr_src_mut(instr, |u| {
                         let u = u.clear_write();
                         waits.extend_from_slice(u.deps());
                     });
-                    uses.for_each_instr_dst_mut(instr, |_, u| {
+                    uses.for_each_instr_dst_mut(instr, |u| {
                         let u = u.clear();
                         waits.extend_from_slice(u.deps());
                     });
                 } else {
                     let (rd, wr) = deps.add_instr(bi, ip);
-                    uses.for_each_instr_src_mut(instr, |_, u| {
+                    uses.for_each_instr_src_mut(instr, |u| {
                         // Only mark a dep as signaled if we actually have
                         // something that shows up in the register file as
                         // needing scoreboarding
@@ -400,7 +401,7 @@ fn assign_barriers(f: &mut Function, sm: &dyn ShaderModel) {
                         let u = u.add_read(rd);
                         waits.extend_from_slice(u.deps());
                     });
-                    uses.for_each_instr_dst_mut(instr, |_, u| {
+                    uses.for_each_instr_dst_mut(instr, |u| {
                         // Only mark a dep as signaled if we actually have
                         // something that shows up in the register file as
                         // needing scoreboarding
@@ -436,7 +437,7 @@ fn assign_barriers(f: &mut Function, sm: &dyn ShaderModel) {
                 instr.deps.set_yield(true);
             }
 
-            if instr.has_fixed_latency(sm.sm()) {
+            if instr.has_fixed_latency(sm) {
                 continue;
             }
 
@@ -463,164 +464,30 @@ fn assign_barriers(f: &mut Function, sm: &dyn ShaderModel) {
     }
 }
 
-fn exec_latency(sm: u8, op: &Op) -> u32 {
-    match op {
-        Op::Bar(_) | Op::MemBar(_) => {
-            if sm >= 80 {
-                6
-            } else {
-                5
-            }
-        }
-        Op::CCtl(_op) => {
-            // CCTL.C needs 8, CCTL.I needs 11
-            11
-        }
-        // Op::DepBar(_) => 4,
-        _ => 1, // TODO: co-issue
-    }
-}
-
-fn instr_latency(op: &Op, dst_idx: usize) -> u32 {
-    let file = match op.dsts_as_slice()[dst_idx] {
-        Dst::None => return 0,
-        Dst::SSA(vec) => vec.file().unwrap(),
-        Dst::Reg(reg) => reg.file(),
-    };
-
-    // This is BS and we know it
-    match file {
-        RegFile::GPR => 6,
-        RegFile::UGPR => 12,
-        RegFile::Pred => 13,
-        RegFile::UPred => 11,
-        RegFile::Bar => 0, // Barriers have a HW scoreboard
-        RegFile::Carry => 6,
-        RegFile::Mem => panic!("Not a register"),
-    }
-}
-
-/// Read-after-write latency
-fn raw_latency(
-    _sm: u8,
-    write: &Op,
-    dst_idx: usize,
-    _read: &Op,
-    _src_idx: usize,
-) -> u32 {
-    instr_latency(write, dst_idx)
-}
-
-/// Write-after-read latency
-fn war_latency(
-    _sm: u8,
-    _read: &Op,
-    _src_idx: usize,
-    _write: &Op,
-    _dst_idx: usize,
-) -> u32 {
-    // We assume the source gets read in the first 4 cycles.  We don't know how
-    // quickly the write will happen.  This is all a guess.
-    4
-}
-
-/// Write-after-write latency
-fn waw_latency(
-    _sm: u8,
-    a: &Op,
-    a_dst_idx: usize,
-    _b: &Op,
-    _b_dst_idx: usize,
-) -> u32 {
-    // We know our latencies are wrong so assume the wrote could happen anywhere
-    // between 0 and instr_latency(a) cycles
-    instr_latency(a, a_dst_idx)
-}
-
-/// Predicate read-after-write latency
-fn paw_latency(_sm: u8, _write: &Op, _dst_idx: usize) -> u32 {
-    13
-}
-
-fn calc_delays(f: &mut Function, sm: &dyn ShaderModel) {
+fn calc_delays(f: &mut Function, sm: u8) {
     for b in f.blocks.iter_mut().rev() {
         let mut cycle = 0_u32;
-
-        // Vector mapping IP to start cycle
-        let mut instr_cycle = Vec::new();
-        instr_cycle.resize(b.instrs.len(), 0_u32);
-
-        // Maps registers to RegUse<ip, src_dst_idx>.  Predicates are
-        // represented by  src_idx = usize::MAX.
-        let mut uses: RegTracker<RegUse<(usize, usize)>> =
-            RegTracker::new_with(&|| RegUse::None);
-
-        // Map from barrier to last waited cycle
-        let mut bars = [0_u32; 6];
-
-        for ip in (0..b.instrs.len()).rev() {
-            let instr = &b.instrs[ip];
-            let mut min_start = cycle + exec_latency(sm.sm(), &instr.op);
+        let mut ready = RegTracker::new(0_u32);
+        let mut bars_ready = [0_u32; 6];
+        for instr in b.instrs.iter_mut().rev() {
+            // TODO: co-issue
+            let mut min_start = cycle + instr.get_exec_latency(sm);
             if let Some(bar) = instr.deps.rd_bar() {
-                min_start = max(min_start, bars[usize::from(bar)] + 2);
+                min_start = max(min_start, bars_ready[usize::from(bar)] + 2);
             }
             if let Some(bar) = instr.deps.wr_bar() {
-                min_start = max(min_start, bars[usize::from(bar)] + 2);
+                min_start = max(min_start, bars_ready[usize::from(bar)] + 2);
             }
-            uses.for_each_instr_dst_mut(instr, |i, u| match u {
-                RegUse::None => {
-                    // We don't know how it will be used but it may be used in
-                    // the next block so we need at least assume the maximum
-                    // destination latency from the end of the block.
-                    let s = instr_latency(&instr.op, i);
-                    min_start = max(min_start, s);
-                }
-                RegUse::Write((w_ip, w_dst_idx)) => {
-                    let s = instr_cycle[*w_ip]
-                        + waw_latency(
-                            sm.sm(),
-                            &instr.op,
-                            i,
-                            &b.instrs[*w_ip].op,
-                            *w_dst_idx,
-                        );
-                    min_start = max(min_start, s);
-                }
-                RegUse::Reads(reads) => {
-                    for (r_ip, r_src_idx) in reads {
-                        let c = instr_cycle[*r_ip];
-                        let s = if *r_src_idx == usize::MAX {
-                            c + paw_latency(sm.sm(), &instr.op, i)
-                        } else {
-                            c + raw_latency(
-                                sm.sm(),
-                                &instr.op,
-                                i,
-                                &b.instrs[*r_ip].op,
-                                *r_src_idx,
-                            )
-                        };
-                        min_start = max(min_start, s);
+            if instr.has_fixed_latency(sm) {
+                for (idx, dst) in instr.dsts().iter().enumerate() {
+                    if let Dst::Reg(reg) = dst {
+                        let latency = instr.get_dst_latency(sm, idx);
+                        for c in &ready[*reg] {
+                            min_start = max(min_start, *c + latency);
+                        }
                     }
                 }
-            });
-            uses.for_each_instr_src_mut(instr, |i, u| match u {
-                RegUse::None => (),
-                RegUse::Write((w_ip, w_dst_idx)) => {
-                    let s = instr_cycle[*w_ip]
-                        + war_latency(
-                            sm.sm(),
-                            &instr.op,
-                            i,
-                            &b.instrs[*w_ip].op,
-                            *w_dst_idx,
-                        );
-                    min_start = max(min_start, s);
-                }
-                RegUse::Reads(_) => (),
-            });
-
-            let instr = &mut b.instrs[ip];
+            }
 
             let delay = min_start - cycle;
             let delay = delay
@@ -629,17 +496,9 @@ fn calc_delays(f: &mut Function, sm: &dyn ShaderModel) {
                 .unwrap();
             instr.deps.set_delay(delay);
 
-            instr_cycle[ip] = min_start;
-            uses.for_each_instr_pred_mut(instr, |c| {
-                c.add_read((ip, usize::MAX));
-            });
-            uses.for_each_instr_src_mut(instr, |i, c| {
-                c.add_read((ip, i));
-            });
-            uses.for_each_instr_dst_mut(instr, |i, c| {
-                c.set_write((ip, i));
-            });
-            for (bar, c) in bars.iter_mut().enumerate() {
+            ready.for_each_instr_pred_mut(instr, |c| *c = min_start);
+            ready.for_each_instr_src_mut(instr, |c| *c = min_start);
+            for (bar, c) in bars_ready.iter_mut().enumerate() {
                 if instr.deps.wt_bar_mask & (1 << bar) != 0 {
                     *c = min_start;
                 }
@@ -657,7 +516,7 @@ fn calc_delays(f: &mut Function, sm: &dyn ShaderModel) {
         if matches!(instr.op, Op::SrcBar(_)) {
             instr.op = Op::Nop(OpNop { label: None });
             MappedInstrs::One(instr)
-        } else if exec_latency(sm.sm(), &instr.op) > 1 {
+        } else if instr.get_exec_latency(sm) > 1 {
             let mut nop = Instr::new_boxed(OpNop { label: None });
             nop.deps.set_delay(2);
             MappedInstrs::Many(vec![instr, nop])
@@ -667,17 +526,13 @@ fn calc_delays(f: &mut Function, sm: &dyn ShaderModel) {
     });
 }
 
-impl Shader<'_> {
+impl Shader {
     pub fn assign_deps_serial(&mut self) {
         for f in &mut self.functions {
             for b in &mut f.blocks.iter_mut().rev() {
                 let mut wt = 0_u8;
                 for instr in &mut b.instrs {
-                    if matches!(&instr.op, Op::Bar(_))
-                        || matches!(&instr.op, Op::BClear(_))
-                        || matches!(&instr.op, Op::BSSy(_))
-                        || matches!(&instr.op, Op::BSync(_))
-                    {
+                    if instr.is_barrier() {
                         instr.deps.set_yield(true);
                     } else if instr.is_branch() {
                         instr.deps.add_wt_bar_mask(0x3f);
@@ -704,8 +559,8 @@ impl Shader<'_> {
             self.assign_deps_serial();
         } else {
             for f in &mut self.functions {
-                assign_barriers(f, self.sm);
-                calc_delays(f, self.sm);
+                assign_barriers(f, self.info.sm);
+                calc_delays(f, self.info.sm);
             }
         }
     }

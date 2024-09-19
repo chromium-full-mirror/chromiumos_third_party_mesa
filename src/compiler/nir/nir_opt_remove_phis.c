@@ -124,7 +124,8 @@ remove_phis_block(nir_block *block, nir_builder *b)
          def = nir_mov_alu(b, mov->src[0], def->num_components);
       }
 
-      nir_def_replace(&phi->def, def);
+      nir_def_rewrite_uses(&phi->def, def);
+      nir_instr_remove(&phi->instr);
 
       progress = true;
    }
@@ -152,7 +153,8 @@ nir_opt_remove_phis_impl(nir_function_impl *impl)
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }

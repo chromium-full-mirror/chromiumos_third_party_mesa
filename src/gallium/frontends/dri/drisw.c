@@ -26,7 +26,7 @@
  *
  **************************************************************************/
 
-#include "mesa_interface.h"
+#include "GL/internal/mesa_interface.h"
 #include "git_sha1.h"
 #include "util/format/u_format.h"
 #include "util/u_memory.h"
@@ -575,7 +575,7 @@ drisw_create_drawable(struct dri_screen *screen, const struct gl_config * visual
 }
 
 static const __DRIconfig **
-drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
+drisw_init_screen(struct dri_screen *screen, bool implicit)
 {
    const __DRIswrastLoaderExtension *loader = screen->swrast_loader;
    const __DRIconfig **configs;
@@ -600,7 +600,7 @@ drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
       success = pipe_loader_sw_probe_dri(&screen->dev, lf);
 
    if (success)
-      pscreen = pipe_loader_create_screen(screen->dev, driver_name_is_inferred);
+      pscreen = pipe_loader_create_screen(screen->dev, implicit);
 
    if (!pscreen)
       return NULL;
@@ -620,6 +620,16 @@ drisw_init_screen(struct dri_screen *screen, bool driver_name_is_inferred)
    if (pscreen->resource_create_with_modifiers && (pscreen->get_param(pscreen, PIPE_CAP_DMABUF) & DRM_PRIME_CAP_EXPORT))
       screen->extensions[0] = &driVkImageExtension.base;
 #endif
+   screen->lookup_egl_image = dri2_lookup_egl_image;
+
+   const __DRIimageLookupExtension *image = screen->dri2.image;
+   if (image &&
+       image->base.version >= 2 &&
+       image->validateEGLImage &&
+       image->lookupEGLImageValidated) {
+      screen->validate_egl_image = dri2_validate_egl_image;
+      screen->lookup_egl_image_validated = dri2_lookup_egl_image_validated;
+   }
 
    screen->create_drawable = drisw_create_drawable;
 

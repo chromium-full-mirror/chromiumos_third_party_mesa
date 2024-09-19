@@ -92,7 +92,7 @@ iris_utrace_delete_ts_buffer(struct u_trace_context *utctx, void *timestamps)
 static void
 iris_utrace_record_ts(struct u_trace *trace, void *cs,
                       void *timestamps, unsigned idx,
-                      uint32_t flags)
+                      bool end_of_pipe)
 {
    struct iris_batch *batch = container_of(trace, struct iris_batch, trace);
    struct iris_context *ice = batch->ice;
@@ -102,14 +102,12 @@ iris_utrace_record_ts(struct u_trace *trace, void *cs,
    iris_use_pinned_bo(batch, bo, true, IRIS_DOMAIN_NONE);
 
    const bool is_end_compute =
-      cs == NULL &&
-      (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE_CS);
+      (cs == NULL && ice->utrace.last_compute_walker != NULL && end_of_pipe);
    if (is_end_compute) {
-      assert(ice->utrace.last_compute_walker != NULL);
       batch->screen->vtbl.rewrite_compute_walker_pc(
          batch, ice->utrace.last_compute_walker, bo, ts_offset);
       ice->utrace.last_compute_walker = NULL;
-   } else if (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE) {
+   } else if (end_of_pipe) {
       iris_emit_pipe_control_write(batch, "query: pipelined snapshot write",
                                    PIPE_CONTROL_WRITE_TIMESTAMP,
                                    bo, ts_offset, 0ull);
@@ -170,8 +168,7 @@ void iris_utrace_flush(struct iris_batch *batch, uint64_t submission_id)
 {
    struct intel_ds_flush_data *flush_data = malloc(sizeof(*flush_data));
    intel_ds_flush_data_init(flush_data, &batch->ds, submission_id);
-   intel_ds_queue_flush_data(&batch->ds, &batch->trace, flush_data,
-                             U_TRACE_FRAME_UNKNOWN, false);
+   intel_ds_queue_flush_data(&batch->ds, &batch->trace, flush_data, false);
 }
 
 void iris_utrace_init(struct iris_context *ice)

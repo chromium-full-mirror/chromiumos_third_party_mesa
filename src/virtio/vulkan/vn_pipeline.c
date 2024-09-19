@@ -496,7 +496,8 @@ vn_GetPipelineCacheData(VkDevice device,
       return VK_INCOMPLETE;
    }
 
-   const struct vk_properties *props = &physical_dev->base.base.properties;
+   const VkPhysicalDeviceProperties *props =
+      &physical_dev->properties.vulkan_1_0;
    header->header_size = sizeof(*header);
    header->header_version = VK_PIPELINE_CACHE_HEADER_VERSION_ONE;
    header->vendor_id = props->vendorID;
@@ -1541,10 +1542,6 @@ vn_CreateGraphicsPipelines(VkDevice device,
       pAllocator ? pAllocator : &dev->base.base.alloc;
    bool want_sync = false;
    VkResult result;
-
-   /* silence -Wmaybe-uninitialized false alarm on release build with gcc */
-   if (!createInfoCount)
-      return VK_SUCCESS;
 
    memset(pPipelines, 0, sizeof(*pPipelines) * createInfoCount);
 

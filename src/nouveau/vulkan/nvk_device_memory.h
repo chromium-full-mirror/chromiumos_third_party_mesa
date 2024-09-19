@@ -11,16 +11,18 @@
 
 #include "util/list.h"
 
-struct nvkmd_mem;
+struct nvk_device;
+struct nvk_image_plane;
 
 struct nvk_device_memory {
    struct vk_device_memory vk;
 
-   struct nvkmd_mem *mem;
+   struct nouveau_ws_bo *bo;
+
+   void *map;
 };
 
-VK_DEFINE_NONDISP_HANDLE_CASTS(nvk_device_memory, vk.base, VkDeviceMemory,
-                               VK_OBJECT_TYPE_DEVICE_MEMORY)
+VK_DEFINE_NONDISP_HANDLE_CASTS(nvk_device_memory, vk.base, VkDeviceMemory, VK_OBJECT_TYPE_DEVICE_MEMORY)
 
 extern const VkExternalMemoryProperties nvk_opaque_fd_mem_props;
 extern const VkExternalMemoryProperties nvk_dma_buf_mem_props;

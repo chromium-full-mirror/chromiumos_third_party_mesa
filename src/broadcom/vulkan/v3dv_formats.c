@@ -407,7 +407,7 @@ v3dv_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
          break;
       }
       default:
-         vk_debug_ignored_stype(ext->sType);
+         v3dv_debug_ignored_stype(ext->sType);
          break;
       }
    }
@@ -692,7 +692,7 @@ v3dv_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice,
          }
          break;
       default:
-         vk_debug_ignored_stype(s->sType);
+         v3dv_debug_ignored_stype(s->sType);
          break;
       }
    }
@@ -713,7 +713,7 @@ v3dv_GetPhysicalDeviceImageFormatProperties2(VkPhysicalDevice physicalDevice,
          ycbcr_props = (void *) s;
          break;
       default:
-         vk_debug_ignored_stype(s->sType);
+         v3dv_debug_ignored_stype(s->sType);
          break;
       }
    }

@@ -35,9 +35,6 @@ init_shaders(struct vl_compositor *c)
 {
    assert(c);
 
-   if (c->shaders_initialized)
-      return true;
-
    if (c->pipe_cs_composit_supported) {
       if (!vl_compositor_cs_init_shaders(c))
          return false;
@@ -99,17 +96,12 @@ init_shaders(struct vl_compositor *c)
       }
    }
 
-   c->shaders_initialized = true;
-
    return true;
 }
 
 static void cleanup_shaders(struct vl_compositor *c)
 {
    assert(c);
-
-   if (!c->shaders_initialized)
-      return;
 
    if (c->pipe_cs_composit_supported) {
       vl_compositor_cs_cleanup_shaders(c);
@@ -340,9 +332,6 @@ set_yuv_layer(struct vl_compositor_state *s, struct vl_compositor *c,
 
    assert(layer < VL_COMPOSITOR_MAX_LAYERS);
 
-   if (!init_shaders(c))
-      return;
-
    s->used_layers |= 1 << layer;
    sampler_views = buffer->get_sampler_view_components(buffer);
    for (i = 0; i < 3; ++i) {
@@ -401,9 +390,6 @@ set_rgb_to_yuv_layer(struct vl_compositor_state *s, struct vl_compositor *c,
    assert(s && c && v);
 
    assert(layer < VL_COMPOSITOR_MAX_LAYERS);
-
-   if (!init_shaders(c))
-      return;
 
    s->used_layers |= 1 << layer;
 
@@ -564,9 +550,6 @@ vl_compositor_set_buffer_layer(struct vl_compositor_state *s,
 
    assert(layer < VL_COMPOSITOR_MAX_LAYERS);
 
-   if (!init_shaders(c))
-      return;
-
    s->used_layers |= 1 << layer;
    sampler_views = buffer->get_sampler_view_components(buffer);
    for (i = 0; i < 3; ++i) {
@@ -633,9 +616,6 @@ vl_compositor_set_palette_layer(struct vl_compositor_state *s,
 
    assert(layer < VL_COMPOSITOR_MAX_LAYERS);
 
-   if (!init_shaders(c))
-      return;
-
    s->used_layers |= 1 << layer;
 
    s->layers[layer].fs = include_color_conversion ?
@@ -666,9 +646,6 @@ vl_compositor_set_rgba_layer(struct vl_compositor_state *s,
    assert(s && c && rgba);
 
    assert(layer < VL_COMPOSITOR_MAX_LAYERS);
-
-   if (!init_shaders(c))
-      return;
 
    s->used_layers |= 1 << layer;
    s->layers[layer].fs = c->fs_rgba;
@@ -802,6 +779,11 @@ vl_compositor_init(struct vl_compositor *c, struct pipe_context *pipe)
    c->deinterlace = VL_COMPOSITOR_NONE;
 
    if (!init_pipe_state(c)) {
+      return false;
+   }
+
+   if (!init_shaders(c)) {
+      cleanup_pipe_state(c);
       return false;
    }
 

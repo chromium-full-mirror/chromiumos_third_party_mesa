@@ -29,6 +29,7 @@ uint64_t nak_debug_flags(const struct nak_compiler *nak);
 const struct nir_shader_compiler_options *
 nak_nir_options(const struct nak_compiler *nak);
 
+void nak_optimize_nir(nir_shader *nir, const struct nak_compiler *nak);
 void nak_preprocess_nir(nir_shader *nir, const struct nak_compiler *nak);
 
 PRAGMA_DIAGNOSTIC_PUSH
@@ -40,7 +41,8 @@ struct nak_fs_key {
     * VkPipelineMultisampleStateCreateInfo::minSampleShading
     */
    bool force_sample_shading;
-   bool uses_underestimate;
+
+   uint8_t _pad;
 
    /**
     * The constant buffer index and offset at which the sample locations table lives.
@@ -85,7 +87,15 @@ struct nak_xfb_info {
 };
 
 /* This struct MUST have explicit padding fields to ensure that all padding is
- * zeroed and the zeros get properly copied, even across API boundaries.
+ * zeroed and the zeros get properly copied, even across API boundaries.  This
+ * is ensured in two ways:
+ *
+ *  - Bindgen is invoked with --explicit-padding and if a __bindgen_paddingN
+ *    member ever crops up, that tells us we need to add an explicit member
+ *    here.
+ *
+ *  - There is a set of const asserts in nak/api.rs which ensure that all of
+ *    the union fields are equal to NAK_SHADER_INFO_STAGE_UNION_SIZE.
  */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic error "-Wpadded"
@@ -102,9 +112,6 @@ struct nak_shader_info {
    uint8_t num_barriers;
 
    uint8_t _pad0;
-
-   /** Number of instructions used */
-   uint32_t num_instrs;
 
    /** Size of shader local (scratch) memory */
    uint32_t slm_size;

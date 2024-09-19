@@ -9,8 +9,6 @@ Debugging
 For a list of environment variables to debug RADV, please see
 :ref:`radv env-vars` for a list.
 
-Instructions for debugging GPU hangs can be found :ref:`here <radv-debug-hang>`.
-
 Hardware Documentation
 ----------------------
 

@@ -7,7 +7,7 @@
 #ifndef RADV_DESCRIPTOR_SET_H
 #define RADV_DESCRIPTOR_SET_H
 
-#include "util/mesa-blake3.h"
+#include "util/mesa-sha1.h"
 
 #include "radv_constants.h"
 
@@ -40,7 +40,7 @@ struct radv_descriptor_set_layout {
    struct vk_descriptor_set_layout vk;
 
    /* Hash of all fields below */
-   blake3_hash hash;
+   uint8_t hash[SHA1_DIGEST_LENGTH];
 
    /* Everything below is hashed and shouldn't contain any pointers. Be careful when modifying this
     * structure.
@@ -56,6 +56,7 @@ struct radv_descriptor_set_layout {
    uint32_t size;
 
    /* Shader stages affected by this descriptor set */
+   uint16_t shader_stages;
    uint16_t dynamic_shader_stages;
 
    /* Number of buffers in this descriptor set */
@@ -185,7 +186,7 @@ struct radv_pipeline_layout {
 
    bool independent_sets;
 
-   blake3_hash hash;
+   unsigned char sha1[20];
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(radv_pipeline_layout, base, VkPipelineLayout, VK_OBJECT_TYPE_PIPELINE_LAYOUT)

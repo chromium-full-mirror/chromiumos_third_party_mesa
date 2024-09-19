@@ -2600,7 +2600,6 @@ load_nir_from_disk_cache(struct disk_cache *cache,
     * However we do still check if the first element is indeed the size,
     * as we cannot fully trust disk_cache_get (EGL_ANDROID_blob_cache) */
    if (buffer[0] != size) {
-      free(buffer);
       return NULL;
    }
 

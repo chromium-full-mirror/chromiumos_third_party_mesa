@@ -180,9 +180,7 @@ iris_xe_wait_exec_queue_idle(struct iris_batch *batch)
     */
    ret = intel_ioctl(iris_bufmgr_get_fd(bufmgr), DRM_IOCTL_XE_EXEC, &exec);
    if (ret == 0) {
-      ASSERTED bool success;
-      success = iris_wait_syncobj(bufmgr, syncobj, INT64_MAX);
-      assert(success);
+      assert(iris_wait_syncobj(bufmgr, syncobj, INT64_MAX));
    } else {
       assert(iris_batch_is_banned(bufmgr, -errno) == true);
    }

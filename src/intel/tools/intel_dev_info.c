@@ -254,11 +254,10 @@ main(int argc, char *argv[])
             continue;
 
          bool success = intel_get_device_info_from_fd(fd, &devinfo, -1, -1);
+         close(fd);
 
-         if (!success) {
-            close(fd);
+         if (!success)
             continue;
-         }
 
          if (print_json) {
             JSON_Value *json = intel_device_info_dump_json(&devinfo);
@@ -277,7 +276,6 @@ main(int argc, char *argv[])
             printf("%s", pretty_string);
             json_free_serialized_string(pretty_string);
             json_value_free(json);
-            close(fd);
             continue;
          }
 
@@ -289,8 +287,6 @@ main(int argc, char *argv[])
             intel_get_and_print_hwconfig_table(fd, &devinfo);
          if (print_workarounds)
             print_wa_info(&devinfo);
-
-         close(fd);
       }
    }
 

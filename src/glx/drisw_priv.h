@@ -28,6 +28,7 @@
 
 #include <X11/extensions/XShm.h>
 #include "kopper_interface.h"
+#include "GL/internal/mesa_interface.h"
 
 struct drisw_display
 {
@@ -53,6 +54,7 @@ struct drisw_screen
 
    const __DRIconfig **driver_configs;
 
+   void *driver;
    const char *name;
 
    bool has_multibuffer;

@@ -110,9 +110,6 @@ struct fd_batch {
 
    struct fd_context *ctx;
 
-   /* update seqno of most recent draw/etc to the batch. */
-   uint32_t update_seqno;
-
    /* do we need to mem2gmem before rendering.  We don't, if for example,
     * there was a glClear() that invalidated the entire previous buffer
     * contents.  Keep track of which buffer(s) are cleared, or needs
@@ -401,7 +398,6 @@ static inline void
 fd_batch_needs_flush(struct fd_batch *batch)
 {
    batch->needs_flush = true;
-   batch->update_seqno = ++batch->ctx->update_count;
    fd_pipe_fence_ref(&batch->ctx->last_fence, NULL);
 }
 
@@ -437,9 +433,7 @@ fd_reset_wfi(struct fd_batch *batch)
 void fd_wfi(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt;
 
 /* emit a CP_EVENT_WRITE:
- * (a6xx+ cannot use this, use fd6_event_write<chip>.)
  */
-#ifndef __cplusplus
 static inline void
 fd_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
                enum vgt_event_type evt)
@@ -448,7 +442,6 @@ fd_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
    OUT_RING(ring, evt);
    fd_reset_wfi(batch);
 }
-#endif
 
 /* Get per-tile epilogue */
 static inline struct fd_ringbuffer *

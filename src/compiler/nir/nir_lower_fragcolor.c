@@ -97,6 +97,7 @@ nir_lower_fragcolor(nir_shader *shader, unsigned max_draw_buffers)
       return false;
 
    return nir_shader_intrinsics_pass(shader, lower_fragcolor_intrin,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                      &max_draw_buffers);
 }

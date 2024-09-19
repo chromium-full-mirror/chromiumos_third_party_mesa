@@ -138,6 +138,7 @@ nir_lower_var_copies(nir_shader *shader)
    shader->info.var_copies_lowered = true;
 
    return nir_shader_intrinsics_pass(shader, lower_var_copies_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        NULL);
 }

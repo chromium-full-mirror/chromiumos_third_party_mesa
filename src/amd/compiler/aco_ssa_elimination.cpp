@@ -398,8 +398,7 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
     */
    const bool can_reassign =
       vopc || (exec_copy->opcode == aco_opcode::p_parallelcopy &&
-               (exec_val->isSALU() || exec_val->opcode == aco_opcode::p_parallelcopy ||
-                exec_val->opcode == aco_opcode::p_create_vector));
+               (exec_val->isSALU() || exec_val->opcode == aco_opcode::p_parallelcopy));
 
    /* The reassignment is not worth it when both the original exec needs to be copied
     * and the new exec copy can't be removed. In this case we'd end up with more instructions.
@@ -508,10 +507,8 @@ try_optimize_branching_sequence(ssa_elimination_ctx& ctx, Block& block, const in
       exec_copy->operands[0] = Operand(exec, ctx.program->lane_mask);
    }
 
-   bool has_nonzero_op =
-      std::any_of(exec_val->operands.begin(), exec_val->operands.end(),
-                  [](const Operand& op) -> bool { return op.isConstant() && op.constantValue(); });
-   if (exec_val->isPseudo() && has_nonzero_op) {
+   if (exec_val->opcode == aco_opcode::p_parallelcopy && exec_val->operands[0].isConstant() &&
+       exec_val->operands[0].constantValue()) {
       /* Remove the branch instruction when exec is constant non-zero. */
       aco_ptr<Instruction>& branch = block.instructions.back();
       if (branch->opcode == aco_opcode::p_cbranch_z && branch->operands[0].physReg() == exec)

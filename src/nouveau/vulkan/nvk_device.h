@@ -16,26 +16,24 @@
 #include "vk_queue.h"
 
 struct nvk_physical_device;
-struct nvkmd_dev;
-struct nvkmd_mem;
 struct vk_pipeline_cache;
 
 struct nvk_slm_area {
    simple_mtx_t mutex;
-   struct nvkmd_mem *mem;
+   struct nouveau_ws_bo *bo;
    uint32_t bytes_per_warp;
    uint32_t bytes_per_tpc;
 };
 
-struct nvkmd_mem *
-nvk_slm_area_get_mem_ref(struct nvk_slm_area *area,
-                         uint32_t *bytes_per_warp_out,
-                         uint32_t *bytes_per_mp_out);
+struct nouveau_ws_bo *
+nvk_slm_area_get_bo_ref(struct nvk_slm_area *area,
+                        uint32_t *bytes_per_warp_out,
+                        uint32_t *bytes_per_mp_out);
 
 struct nvk_device {
    struct vk_device vk;
 
-   struct nvkmd_dev *nvkmd;
+   struct nouveau_ws_device *ws_dev;
 
    struct nvk_upload_queue upload;
 
@@ -44,8 +42,8 @@ struct nvk_device {
    struct nvk_heap shader_heap;
    struct nvk_heap event_heap;
    struct nvk_slm_area slm;
-   struct nvkmd_mem *zero_page;
-   struct nvkmd_mem *vab_memory;
+   struct nouveau_ws_bo *zero_page;
+   struct nouveau_ws_bo *vab_memory;
 
    struct nvk_queue queue;
 

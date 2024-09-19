@@ -407,7 +407,6 @@ Lib* CiHwlInit   (const Client* pClient);
 Lib* Gfx9HwlInit (const Client* pClient);
 Lib* Gfx10HwlInit(const Client* pClient);
 Lib* Gfx11HwlInit(const Client* pClient);
-Lib* Gfx12HwlInit(const Client* pClient);
 } // Addr
 
 #endif

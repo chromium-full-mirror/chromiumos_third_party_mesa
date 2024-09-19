@@ -48,7 +48,6 @@ struct panfrost_csf_batch {
 };
 
 struct panfrost_csf_context {
-   bool is_init;
    uint32_t group_handle;
 
    struct {
@@ -71,7 +70,7 @@ struct pipe_draw_info;
 struct pipe_grid_info;
 struct pipe_draw_start_count_bias;
 
-int GENX(csf_init_context)(struct panfrost_context *ctx);
+void GENX(csf_init_context)(struct panfrost_context *ctx);
 void GENX(csf_cleanup_context)(struct panfrost_context *ctx);
 
 void GENX(csf_init_batch)(struct panfrost_batch *batch);

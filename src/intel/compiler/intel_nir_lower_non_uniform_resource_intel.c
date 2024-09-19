@@ -225,7 +225,8 @@ intel_nir_lower_non_uniform_resource_intel(nir_shader *shader)
 
    bool ret = nir_shader_instructions_pass(shader,
                                            intel_nir_lower_non_uniform_instr,
-                                           nir_metadata_control_flow,
+                                           nir_metadata_block_index |
+                                           nir_metadata_dominance,
                                            &inst_array);
 
    ralloc_free(mem_ctx);
@@ -308,7 +309,8 @@ intel_nir_cleanup_resource_intel(nir_shader *shader)
 
    bool ret = nir_shader_intrinsics_pass(shader,
                                          intel_nir_cleanup_resource_intel_instr,
-                                         nir_metadata_control_flow,
+                                         nir_metadata_block_index |
+                                         nir_metadata_dominance,
                                          NULL);
 
    ralloc_free(mem_ctx);

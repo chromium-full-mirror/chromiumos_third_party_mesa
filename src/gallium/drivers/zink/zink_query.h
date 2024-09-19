@@ -33,10 +33,10 @@ extern "C" {
 #endif
 
 void
-zink_suspend_queries(struct zink_context *ctx);
+zink_suspend_queries(struct zink_context *ctx, struct zink_batch *batch);
 
 void
-zink_resume_queries(struct zink_context *ctx);
+zink_resume_queries(struct zink_context *ctx, struct zink_batch *batch);
 
 void
 zink_query_renderpass_suspend(struct zink_context *ctx);

@@ -66,7 +66,6 @@ struct lp_setup_variant {
     * assembly.
     */
    LLVMValueRef function;
-   char *function_name;
 
    /* The actual generated setup function:
     */

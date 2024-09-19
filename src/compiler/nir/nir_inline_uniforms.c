@@ -414,7 +414,8 @@ nir_inline_uniforms(nir_shader *shader, unsigned num_uniforms,
                      if (offset == uniform_dw_offsets[i]) {
                         b.cursor = nir_before_instr(&intr->instr);
                         nir_def *def = nir_imm_int(&b, uniform_values[i]);
-                        nir_def_replace(&intr->def, def);
+                        nir_def_rewrite_uses(&intr->def, def);
+                        nir_instr_remove(&intr->instr);
                         break;
                      }
                   }
@@ -457,13 +458,15 @@ nir_inline_uniforms(nir_shader *shader, unsigned num_uniforms,
                   }
 
                   /* Replace the original uniform load. */
-                  nir_def_replace(&intr->def,
-                                  nir_vec(&b, components, num_components));
+                  nir_def_rewrite_uses(&intr->def,
+                                       nir_vec(&b, components, num_components));
+                  nir_instr_remove(&intr->instr);
                }
             }
          }
 
-         nir_metadata_preserve(impl, nir_metadata_control_flow);
+         nir_metadata_preserve(impl, nir_metadata_block_index |
+                                        nir_metadata_dominance);
       }
    }
 }

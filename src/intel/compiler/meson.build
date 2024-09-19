@@ -1,5 +1,22 @@
 # Copyright © 2017 Intel Corporation
-# SPDX-License-Identifier: MIT
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
 
 intel_nir_files = files(
   'intel_nir.h',
@@ -11,7 +28,6 @@ intel_nir_files = files(
   'intel_nir_lower_conversions.c',
   'intel_nir_lower_non_uniform_barycentric_at_sample.c',
   'intel_nir_lower_non_uniform_resource_intel.c',
-  'intel_nir_lower_printf.c',
   'intel_nir_lower_shading_rate_output.c',
   'intel_nir_lower_sparse.c',
   'intel_nir_lower_texture.c',
@@ -30,7 +46,6 @@ libintel_compiler_brw_files = files(
   'brw_compiler.h',
   'brw_dead_control_flow.cpp',
   'brw_debug_recompile.c',
-  'brw_def_analysis.cpp',
   'brw_disasm.c',
   'brw_disasm_info.cpp',
   'brw_disasm_info.h',
@@ -115,17 +130,6 @@ brw_device_sha1_gen_src = custom_target('brw_device_sha1_gen.c',
                                         command : [prog_python, '@INPUT0@', '--outdir', meson.current_build_dir()])
 
 
-brw_nir_lower_fsign = custom_target(
-  'brw_nir_lower_fsign.c',
-  input : 'brw_nir_lower_fsign.py',
-  output : 'brw_nir_lower_fsign.c',
-  command : [
-    prog_python, '@INPUT@', '-p', dir_compiler_nir,
-  ],
-  depend_files : nir_algebraic_depends,
-  capture : true,
-)
-
 brw_nir_trig = custom_target(
   'brw_nir_trig_workarounds.c',
   input : 'brw_nir_trig_workarounds.py',
@@ -139,7 +143,7 @@ brw_nir_trig = custom_target(
 
 libintel_compiler_brw = static_library(
   'intel_compiler',
-  [libintel_compiler_brw_files, intel_nir_files, brw_nir_lower_fsign, brw_nir_trig, ir_expression_operation_h, [brw_device_sha1_gen_src]],
+  [libintel_compiler_brw_files, intel_nir_files, brw_nir_trig, ir_expression_operation_h, [brw_device_sha1_gen_src]],
   include_directories : [inc_include, inc_src, inc_intel],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
@@ -151,7 +155,6 @@ idep_intel_compiler_brw = declare_dependency(
   link_with : [libintel_compiler_brw],
   dependencies : [
     idep_nir,
-    idep_mesautil,
   ],
 )
 
@@ -170,7 +173,9 @@ elif with_intel_clc
       'elk/elk_nir_options.h',
       'elk/elk_nir_options.c',
     ],
-    link_with : [libisl],
+    link_with : [
+      libintel_common,libisl,
+    ],
     include_directories : [inc_include, inc_src, inc_intel],
     c_args : [pre_args, no_override_init_args],
     link_args : [ld_args_build_id],
@@ -197,7 +202,6 @@ if with_tests
         'test_fs_cmod_propagation.cpp',
         'test_fs_combine_constants.cpp',
         'test_fs_copy_propagation.cpp',
-        'test_fs_cse.cpp',
         'test_fs_saturate_propagation.cpp',
         'test_fs_scoreboard.cpp',
         'test_simd_selection.cpp',
@@ -205,7 +209,9 @@ if with_tests
       ),
       ir_expression_operation_h,
       include_directories : [inc_include, inc_src, inc_intel],
-      link_with : libisl,
+      link_with : [
+        libintel_common, libisl
+      ],
       dependencies : [idep_gtest, idep_nir, idep_mesautil, idep_intel_dev,
                       idep_intel_compiler_brw],
     ),
@@ -243,33 +249,13 @@ brw_lex_yy_c = custom_target(
   command : [prog_flex, '-o', '@OUTPUT@', '@INPUT@']
 )
 
-brw_asm_deps = [
-  dep_thread,
-  idep_intel_compiler_brw,
-  idep_intel_dev,
-  idep_mesautil,
-]
-
-brw_asm = static_library(
-  'brw_asm',
-  ['brw_asm.c', brw_gram_tab[0], brw_gram_tab[1], brw_lex_yy_c],
-  dependencies : brw_asm_deps,
-  include_directories : [inc_include, inc_src, inc_intel],
-  c_args : [no_override_init_args],
-  gnu_symbol_visibility : 'hidden',
-  build_by_default : false,
-)
-
-idep_brw_asm = declare_dependency(
-  link_with : brw_asm,
-  dependencies : brw_asm_deps,
-)
-
 brw_asm_tool = executable(
   'brw_asm',
-  ['brw_asm_tool.c'],
-  dependencies : idep_brw_asm,
+  ['brw_asm_tool.c', brw_gram_tab[0], brw_gram_tab[1], brw_lex_yy_c],
+  dependencies : [idep_mesautil, dep_thread, idep_intel_dev,
+                  idep_intel_compiler_brw],
   include_directories : [inc_include, inc_src, inc_intel],
+  link_with : [libintel_common],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
   install : true
@@ -305,6 +291,7 @@ brw_disasm_tool = executable(
   dependencies : [idep_mesautil, dep_thread, idep_intel_dev,
                   idep_intel_compiler_brw],
   include_directories : [inc_include, inc_src, inc_intel],
+  link_with : [libintel_common],
   c_args : [no_override_init_args],
   gnu_symbol_visibility : 'hidden',
   install : true

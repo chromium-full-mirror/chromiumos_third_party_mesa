@@ -50,7 +50,7 @@ device_alloc_image(struct dri2_egl_display *dri2_dpy,
 {
    return dri2_dpy->image->createImage(
       dri2_dpy->dri_screen_render_gpu, dri2_surf->base.Width,
-      dri2_surf->base.Height, dri2_surf->visual, NULL, 0, 0, NULL);
+      dri2_surf->base.Height, dri2_surf->visual, 0, NULL);
 }
 
 static void
@@ -340,20 +340,22 @@ device_probe_device_sw(_EGLDisplay *disp)
 EGLBoolean
 dri2_initialize_device(_EGLDisplay *disp)
 {
+   _EGLDevice *dev;
    const char *err;
    struct dri2_egl_display *dri2_dpy = dri2_display_create();
    if (!dri2_dpy)
       return EGL_FALSE;
 
    /* Extension requires a PlatformDisplay - the EGLDevice. */
-   disp->Device = disp->PlatformDisplay;
+   dev = disp->PlatformDisplay;
 
+   disp->Device = dev;
    disp->DriverData = (void *)dri2_dpy;
    err = "DRI2: failed to load driver";
-   if (_eglDeviceSupports(disp->Device, _EGL_DEVICE_DRM)) {
+   if (_eglDeviceSupports(dev, _EGL_DEVICE_DRM)) {
       if (!device_probe_device(disp))
          goto cleanup;
-   } else if (_eglDeviceSupports(disp->Device, _EGL_DEVICE_SOFTWARE)) {
+   } else if (_eglDeviceSupports(dev, _EGL_DEVICE_SOFTWARE)) {
       if (!device_probe_device_sw(disp))
          goto cleanup;
    } else {

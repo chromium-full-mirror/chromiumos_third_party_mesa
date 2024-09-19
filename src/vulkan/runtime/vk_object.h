@@ -161,10 +161,9 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
    static inline __VkType                                                  \
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
-      if (_obj != NULL) {                                                  \
-         vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);            \
+      vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
+      if (_obj != NULL)                                                    \
          _obj->__base.client_visible = true;                               \
-      }                                                                    \
       return (__VkType) _obj;                                              \
    }
 
@@ -202,10 +201,9 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
    UNUSED static inline __VkType                                           \
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
-      if (_obj != NULL) {                                                  \
-         vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);            \
+      vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
+      if (_obj != NULL)                                                    \
          _obj->__base.client_visible = true;                               \
-      }                                                                    \
       return (__VkType)(uintptr_t) _obj;                                   \
    }
 

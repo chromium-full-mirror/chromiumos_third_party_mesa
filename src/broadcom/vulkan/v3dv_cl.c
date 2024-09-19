@@ -31,6 +31,16 @@
 #include "broadcom/common/v3d_macros.h"
 #include "broadcom/cle/v3dx_pack.h"
 
+/* The Control List Executor (CLE) pre-fetches V3D_CLE_READAHEAD bytes from
+ * the Control List buffer. The usage of these last bytes should be avoided or
+ * the CLE would pre-fetch the data after the end of the CL buffer, reporting
+ * the kernel "MMU error from client CLE".
+ */
+#define V3D42_CLE_READAHEAD 256u
+#define V3D42_CLE_BUFFER_MIN_SIZE 4096u
+#define V3D71_CLE_READAHEAD 1024u
+#define V3D71_CLE_BUFFER_MIN_SIZE 16384u
+
 void
 v3dv_cl_init(struct v3dv_job *job, struct v3dv_cl *cl)
 {
@@ -73,9 +83,8 @@ cl_alloc_bo(struct v3dv_cl *cl, uint32_t space, enum
     * calling cl_submit to use this reserved space.
     */
    uint32_t unusable_space = 0;
-   struct v3d_device_info *devinfo = &cl->job->device->devinfo;
-   uint32_t cle_readahead = devinfo->cle_readahead;
-   uint32_t cle_buffer_min_size = devinfo->cle_buffer_min_size;
+   uint32_t cle_readahead = V3DV_X(cl->job->device, CLE_READAHEAD);
+   uint32_t cle_buffer_min_size = V3DV_X(cl->job->device, CLE_BUFFER_MIN_SIZE);
    switch (chain_type) {
    case V3D_CL_BO_CHAIN_WITH_BRANCH:
       unusable_space = cle_readahead + cl_packet_length(BRANCH);

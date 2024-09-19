@@ -823,7 +823,7 @@ void pvr_GetPhysicalDeviceFormatProperties2(
          break;
       }
       default:
-         vk_debug_ignored_stype(ext->sType);
+         pvr_debug_ignored_stype(ext->sType);
          break;
       }
    }
@@ -1031,10 +1031,8 @@ VkResult pvr_GetPhysicalDeviceImageFormatProperties2(
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO:
          external_info = (const void *)ext;
          break;
-      case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO:
-         break;
       default:
-         vk_debug_ignored_stype(ext->sType);
+         pvr_debug_ignored_stype(ext->sType);
          break;
       }
    }
@@ -1046,7 +1044,7 @@ VkResult pvr_GetPhysicalDeviceImageFormatProperties2(
          external_props = (void *)ext;
          break;
       default:
-         vk_debug_ignored_stype(ext->sType);
+         pvr_debug_ignored_stype(ext->sType);
          break;
       }
    }

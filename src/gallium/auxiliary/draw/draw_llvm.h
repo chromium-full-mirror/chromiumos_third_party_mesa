@@ -398,7 +398,6 @@ struct draw_llvm_variant
    LLVMTypeRef vertex_header_ptr_type;
 
    LLVMValueRef function;
-   char *function_name;
    draw_jit_vert_func jit_func;
 
    struct llvm_vertex_shader *shader;
@@ -432,7 +431,6 @@ struct draw_gs_llvm_variant
    LLVMValueRef io_ptr;
    LLVMValueRef num_prims;
    LLVMValueRef function;
-   char *function_name;
    draw_gs_jit_func jit_func;
 
    struct llvm_geometry_shader *shader;
@@ -459,7 +457,6 @@ struct draw_tcs_llvm_variant
    /* LLVMValueRef io_ptr; */
    LLVMValueRef num_prims;
    LLVMValueRef function;
-   char *function_name;
    draw_tcs_jit_func jit_func;
 
    struct llvm_tess_ctrl_shader *shader;
@@ -490,7 +487,6 @@ struct draw_tes_llvm_variant
    LLVMValueRef io_ptr;
    LLVMValueRef num_prims;
    LLVMValueRef function;
-   char *function_name;
    draw_tes_jit_func jit_func;
 
    struct llvm_tess_eval_shader *shader;
@@ -542,7 +538,8 @@ struct llvm_tess_eval_shader {
 struct draw_llvm {
    struct draw_context *draw;
 
-   lp_context_ref context;
+   LLVMContextRef context;
+   bool context_owned;
 
    struct draw_vs_jit_context vs_jit_context;
    struct draw_gs_jit_context gs_jit_context;
@@ -588,7 +585,7 @@ llvm_tess_eval_shader(struct draw_tess_eval_shader *tes)
 }
 
 struct draw_llvm *
-draw_llvm_create(struct draw_context *draw, lp_context_ref *llvm_context);
+draw_llvm_create(struct draw_context *draw, LLVMContextRef llvm_context);
 
 void
 draw_llvm_destroy(struct draw_llvm *llvm);

@@ -328,7 +328,8 @@ nir_legacy_trivialize(nir_shader *s, bool fuse_fabs)
     * chase registers recursively, allowing registers to be trivialized easier.
     */
    if (nir_shader_instructions_pass(s, fuse_mods_with_registers,
-                                    nir_metadata_control_flow,
+                                    nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                     &fuse_fabs)) {
       /* If we made progress, we likely left dead loads. Clean them up. */
       NIR_PASS_V(s, nir_opt_dce);

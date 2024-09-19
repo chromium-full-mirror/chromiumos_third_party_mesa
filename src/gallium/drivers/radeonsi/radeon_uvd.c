@@ -535,9 +535,6 @@ static struct ruvd_h264 get_h264_msg(struct ruvd_decoder *dec, struct pipe_h264_
    case PIPE_VIDEO_CHROMA_FORMAT_444:
       result.chroma_format = 3;
       break;
-   case PIPE_VIDEO_CHROMA_FORMAT_440:
-      result.chroma_format = 4;
-      break;
    }
 
    result.pps_info_flags = 0;
@@ -1197,7 +1194,7 @@ static void ruvd_end_frame(struct pipe_video_codec *decoder, struct pipe_video_b
                FB_BUFFER_OFFSET + dec->fb_size, RADEON_USAGE_READ, RADEON_DOMAIN_GTT);
    set_reg(dec, dec->reg.cntl, 1);
 
-   flush(dec, picture->flush_flags, picture->fence);
+   flush(dec, PIPE_FLUSH_ASYNC, picture->fence);
    next_buffer(dec);
 }
 

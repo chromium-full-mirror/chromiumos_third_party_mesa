@@ -6,7 +6,6 @@
 #include <perfetto.h>
 
 #include "tu_perfetto.h"
-#include "tu_buffer.h"
 #include "tu_device.h"
 #include "tu_image.h"
 

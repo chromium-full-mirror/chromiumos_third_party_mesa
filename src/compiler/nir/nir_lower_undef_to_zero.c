@@ -58,6 +58,7 @@ bool
 nir_lower_undef_to_zero(nir_shader *shader)
 {
    return nir_shader_instructions_pass(shader, lower_undef_instr_to_zero,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        NULL);
 }

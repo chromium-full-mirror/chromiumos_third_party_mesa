@@ -35,7 +35,7 @@
 #include "loader.h"
 #include "glxextensions.h"
 
-#if USE_LIBGLVND
+#if defined(USE_LIBGLVND)
 #define _GLX_PUBLIC _X_HIDDEN
 #else
 #define _GLX_PUBLIC _X_EXPORT
@@ -87,7 +87,7 @@ struct __GLXDRIdisplayRec
      */
    void (*destroyDisplay) (__GLXDRIdisplay * display);
 
-   struct glx_screen *(*createScreen)(int screen, struct glx_display * priv, bool driver_name_is_inferred);
+   struct glx_screen *(*createScreen)(int screen, struct glx_display * priv, bool implicit);
 };
 
 struct __GLXDRIscreenRec {

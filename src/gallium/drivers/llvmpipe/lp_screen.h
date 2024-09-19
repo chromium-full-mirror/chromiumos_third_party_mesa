@@ -38,7 +38,6 @@
 #include "pipe/p_defines.h"
 #include "util/u_thread.h"
 #include "util/list.h"
-#include "util/vma.h"
 #include "gallivm/lp_bld.h"
 #include "gallivm/lp_bld_misc.h"
 
@@ -77,13 +76,6 @@ struct llvmpipe_screen
 
 #ifdef HAVE_LIBDRM
    int udmabuf_fd;
-#endif
-
-#if DETECT_OS_LINUX
-   int fd_mem_alloc;
-   mtx_t mem_mutex;
-   uint64_t mem_file_size;
-   struct util_vma_heap mem_heap;
 #endif
 };
 

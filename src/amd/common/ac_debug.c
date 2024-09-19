@@ -19,10 +19,6 @@ const struct si_reg *ac_find_register(enum amd_gfx_level gfx_level, enum radeon_
    unsigned table_size;
 
    switch (gfx_level) {
-   case GFX12:
-      table = gfx12_reg_table;
-      table_size = ARRAY_SIZE(gfx12_reg_table);
-      break;
    case GFX11_5:
       table = gfx115_reg_table;
       table_size = ARRAY_SIZE(gfx115_reg_table);
@@ -203,41 +199,6 @@ bool ac_vm_fault_occurred(enum amd_gfx_level gfx_level, uint64_t *old_dmesg_time
 #endif
 }
 
-char *
-ac_get_umr_waves(const struct radeon_info *info, enum amd_ip_type ring)
-{
-   /* TODO: Dump compute ring. */
-   if (ring != AMD_IP_GFX)
-      return NULL;
-
-#ifndef _WIN32
-   char *data;
-   size_t size;
-   FILE *f = open_memstream(&data, &size);
-   if (!f)
-      return NULL;
-
-   char cmd[256];
-   sprintf(cmd, "umr --by-pci %04x:%02x:%02x.%01x -O bits,halt_waves -go 0 -wa %s -go 1 2>&1", info->pci.domain,
-           info->pci.bus, info->pci.dev, info->pci.func, info->gfx_level >= GFX10 ? "gfx_0.0.0" : "gfx");
-
-   char line[2048];
-   FILE *p = popen(cmd, "r");
-   if (p) {
-      while (fgets(line, sizeof(line), p))
-         fputs(line, f);
-      fprintf(f, "\n");
-      pclose(p);
-   }
-
-   fclose(f);
-
-   return data;
-#else
-   return NULL;
-#endif
-}
-
 static int compare_wave(const void *p1, const void *p2)
 {
    struct ac_wave_info *w1 = (struct ac_wave_info *)p1;
@@ -275,9 +236,9 @@ static int compare_wave(const void *p1, const void *p2)
 #define AC_UMR_REGISTERS_LINE "Main Registers"
 
 static bool
-ac_read_umr_register(const char **_scan, const char *name, uint32_t *value)
+ac_read_umr_register(char **_scan, const char *name, uint32_t *value)
 {
-   const char *scan = *_scan;
+   char *scan = *_scan;
    if (strncmp(scan, name, MIN2(strlen(scan), strlen(name))))
       return false;
 
@@ -291,44 +252,37 @@ ac_read_umr_register(const char **_scan, const char *name, uint32_t *value)
 
 /* Return wave information. "waves" should be a large enough array. */
 unsigned ac_get_wave_info(enum amd_gfx_level gfx_level, const struct radeon_info *info,
-                          const char *wave_dump,
                           struct ac_wave_info waves[AC_MAX_WAVES_PER_CHIP])
 {
 #ifdef _WIN32
    return 0;
 #else
-   char *dump = NULL;
-   if (!wave_dump) {
-      dump = ac_get_umr_waves(info, AMD_IP_GFX);
-      wave_dump = dump;
-   }
-
+   char line[2000], cmd[256];
    unsigned num_waves = 0;
 
-   while (true) {
-      const char *end = strchr(wave_dump, '\n');
-      if (!end)
-         break;
+   sprintf(cmd, "umr --by-pci %04x:%02x:%02x.%01x -O halt_waves -wa %s",
+           info->pci.domain, info->pci.bus, info->pci.dev, info->pci.func,
+           gfx_level >= GFX10 ? "gfx_0.0.0" : "gfx");
 
-      if (strncmp(wave_dump, AC_UMR_REGISTERS_LINE, strlen(AC_UMR_REGISTERS_LINE))) {
-         wave_dump = end + 1;
+   FILE *p = popen(cmd, "r");
+   if (!p)
+      return 0;
+
+   while (fgets(line, sizeof(line), p)) {
+      if (strncmp(line, AC_UMR_REGISTERS_LINE, strlen(AC_UMR_REGISTERS_LINE)))
          continue;
-      }
 
       assert(num_waves < AC_MAX_WAVES_PER_CHIP);
       struct ac_wave_info *w = &waves[num_waves];
       memset(w, 0, sizeof(struct ac_wave_info));
       num_waves++;
 
-      while (true) {
-         const char *end2 = strchr(wave_dump, '\n');
-         if (!end2)
-            break;
-         if (end2 - wave_dump < 2)
+      while (fgets(line, sizeof(line), p)) {
+         if (strlen(line) < 2)
             break;
 
-         const char *scan = wave_dump;
-         while (scan < end2) {
+         char *scan = line;
+         while (scan < line + strlen(line)) {
             if (strncmp(scan, "ix", MIN2(strlen(scan), strlen("ix")))) {
                scan++;
                continue;
@@ -369,7 +323,7 @@ unsigned ac_get_wave_info(enum amd_gfx_level gfx_level, const struct radeon_info
 
             /* Skip registers we do not handle. */
             if (!progress) {
-               while (scan < end2) {
+               while (scan < line + strlen(line)) {
                   if (*scan == '|') {
                      progress = true;
                      break;
@@ -381,15 +335,12 @@ unsigned ac_get_wave_info(enum amd_gfx_level gfx_level, const struct radeon_info
             if (!progress)
                break;
          }
-
-         wave_dump = end2 + 1;
       }
    }
 
    qsort(waves, num_waves, sizeof(struct ac_wave_info), compare_wave);
 
-   free(dump);
-
+   pclose(p);
    return num_waves;
 #endif
 }

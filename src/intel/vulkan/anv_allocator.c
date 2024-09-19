@@ -1297,13 +1297,9 @@ anv_bo_pool_free(struct anv_bo_pool *pool, struct anv_bo *bo)
 // Scratch pool
 
 void
-anv_scratch_pool_init(struct anv_device *device, struct anv_scratch_pool *pool,
-                      bool protected)
+anv_scratch_pool_init(struct anv_device *device, struct anv_scratch_pool *pool)
 {
    memset(pool, 0, sizeof(*pool));
-   pool->alloc_flags = ANV_BO_ALLOC_INTERNAL |
-      (protected ? ANV_BO_ALLOC_PROTECTED : 0) |
-      (device->info->verx10 < 125 ? ANV_BO_ALLOC_32BIT_ADDRESS : 0);
 }
 
 void
@@ -1371,8 +1367,11 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
     *
     * so nothing will ever touch the top page.
     */
+   const enum anv_bo_alloc_flags alloc_flags =
+      ANV_BO_ALLOC_INTERNAL |
+      (devinfo->verx10 < 125 ? ANV_BO_ALLOC_32BIT_ADDRESS : 0);
    VkResult result = anv_device_alloc_bo(device, "scratch", size,
-                                         pool->alloc_flags,
+                                         alloc_flags,
                                          0 /* explicit_address */,
                                          &bo);
    if (result != VK_SUCCESS)
@@ -1414,14 +1413,10 @@ anv_scratch_pool_get_surf(struct anv_device *device,
       anv_state_pool_alloc(&device->scratch_surface_state_pool,
                            device->isl_dev.ss.size, 64);
 
-   isl_surf_usage_flags_t usage =
-      (pool->alloc_flags & ANV_BO_ALLOC_PROTECTED) ?
-      ISL_SURF_USAGE_PROTECTED_BIT : 0;
-
    isl_buffer_fill_state(&device->isl_dev, state.map,
                          .address = anv_address_physical(addr),
                          .size_B = bo->size,
-                         .mocs = anv_mocs(device, bo, usage),
+                         .mocs = anv_mocs(device, bo, 0),
                          .format = ISL_FORMAT_RAW,
                          .swizzle = ISL_SWIZZLE_IDENTITY,
                          .stride_B = per_thread_scratch,
@@ -1596,7 +1591,7 @@ anv_device_alloc_bo(struct anv_device *device,
    const uint64_t ccs_offset = size;
    if (alloc_flags & ANV_BO_ALLOC_AUX_CCS) {
       assert(device->info->has_aux_map);
-      size += size / INTEL_AUX_MAP_MAIN_SIZE_SCALEDOWN;
+      size += DIV_ROUND_UP(size, intel_aux_get_main_to_aux_ratio(device->aux_map_ctx));
       size = align64(size, 4096);
    }
 

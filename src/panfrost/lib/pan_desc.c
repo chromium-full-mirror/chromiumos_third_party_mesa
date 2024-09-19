@@ -50,10 +50,6 @@ mod_to_block_fmt(uint64_t mod)
       if (drm_is_afbc(mod) && (mod & AFBC_FORMAT_MOD_TILED))
          return MALI_BLOCK_FORMAT_AFBC_TILED;
 #endif
-#if PAN_ARCH >= 10
-      if (drm_is_afrc(mod))
-         return 0; /* Reserved field for AFRC state */
-#endif
 
       unreachable("Unsupported modifer");
    }
@@ -170,7 +166,6 @@ translate_s_format(enum pipe_format in)
    case PIPE_FORMAT_S8X24_UINT:
       return MALI_S_FORMAT_S8X24;
    case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
-   case PIPE_FORMAT_X32_S8X24_UINT:
       return MALI_S_FORMAT_X32_S8X24;
 #endif
 
@@ -180,8 +175,7 @@ translate_s_format(enum pipe_format in)
 }
 
 static void
-pan_prepare_s(const struct pan_fb_info *fb, unsigned layer_idx,
-              struct MALI_ZS_CRC_EXTENSION *ext)
+pan_prepare_s(const struct pan_fb_info *fb, struct MALI_ZS_CRC_EXTENSION *ext)
 {
    const struct pan_image_view *s = fb->zs.view.s;
 
@@ -194,7 +188,7 @@ pan_prepare_s(const struct pan_fb_info *fb, unsigned layer_idx,
    ext->s_msaa = mali_sampling_mode(s);
 
    struct pan_surface surf;
-   pan_iview_get_surface(s, 0, layer_idx, 0, &surf);
+   pan_iview_get_surface(s, 0, 0, 0, &surf);
 
    assert(image->layout.modifier ==
              DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED ||
@@ -210,8 +204,7 @@ pan_prepare_s(const struct pan_fb_info *fb, unsigned layer_idx,
 }
 
 static void
-pan_prepare_zs(const struct pan_fb_info *fb, unsigned layer_idx,
-               struct MALI_ZS_CRC_EXTENSION *ext)
+pan_prepare_zs(const struct pan_fb_info *fb, struct MALI_ZS_CRC_EXTENSION *ext)
 {
    const struct pan_image_view *zs = fb->zs.view.zs;
 
@@ -224,7 +217,7 @@ pan_prepare_zs(const struct pan_fb_info *fb, unsigned layer_idx,
    ext->zs_msaa = mali_sampling_mode(zs);
 
    struct pan_surface surf;
-   pan_iview_get_surface(zs, 0, layer_idx, 0, &surf);
+   pan_iview_get_surface(zs, 0, 0, 0, &surf);
    UNUSED const struct pan_image_slice_layout *slice =
       &image->layout.slices[level];
 
@@ -301,14 +294,13 @@ pan_prepare_crc(const struct pan_fb_info *fb, int rt_crc,
 }
 
 static void
-pan_emit_zs_crc_ext(const struct pan_fb_info *fb, unsigned layer_idx,
-                    int rt_crc, void *zs_crc_ext)
+pan_emit_zs_crc_ext(const struct pan_fb_info *fb, int rt_crc, void *zs_crc_ext)
 {
    pan_pack(zs_crc_ext, ZS_CRC_EXTENSION, cfg) {
       pan_prepare_crc(fb, rt_crc, &cfg);
       cfg.zs_clean_pixel_write_enable = fb->zs.clear.z || fb->zs.clear.s;
-      pan_prepare_zs(fb, layer_idx, &cfg);
-      pan_prepare_s(fb, layer_idx, &cfg);
+      pan_prepare_zs(fb, &cfg);
+      pan_prepare_s(fb, &cfg);
    }
 }
 
@@ -417,11 +409,10 @@ pan_rt_init_format(const struct pan_image_view *rt,
 
    struct pan_blendable_format fmt =
       *GENX(panfrost_blendable_format_from_pipe_format)(rt->format);
-   enum mali_color_format writeback_format;
 
    if (fmt.internal) {
       cfg->internal_format = fmt.internal;
-      writeback_format = fmt.writeback;
+      cfg->writeback_format = fmt.writeback;
       panfrost_invert_swizzle(desc->swizzle, swizzle);
    } else {
       /* Construct RAW internal/writeback, where internal is
@@ -433,39 +424,29 @@ pan_rt_init_format(const struct pan_image_view *rt,
       assert(offset <= 4);
 
       cfg->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW8 + offset;
-      writeback_format = pan_mfbd_raw_format(bits);
+
+      cfg->writeback_format = pan_mfbd_raw_format(bits);
    }
-
-#if PAN_ARCH >= 10
-   const struct pan_image *image = pan_image_view_get_rt_image(rt);
-
-   if (drm_is_afrc(image->layout.modifier))
-      cfg->afrc.writeback_format = writeback_format;
-   else
-      cfg->writeback_format = writeback_format;
-#else
-   cfg->writeback_format = writeback_format;
-#endif
 
    cfg->swizzle = panfrost_translate_swizzle_4(swizzle);
 }
 
 static void
-pan_prepare_rt(const struct pan_fb_info *fb, unsigned layer_idx,
-               unsigned rt_idx, unsigned cbuf_offset,
+pan_prepare_rt(const struct pan_fb_info *fb,
+               unsigned idx, unsigned cbuf_offset,
                struct MALI_RENDER_TARGET *cfg)
 {
-   cfg->clean_pixel_write_enable = fb->rts[rt_idx].clear;
+   cfg->clean_pixel_write_enable = fb->rts[idx].clear;
    cfg->internal_buffer_offset = cbuf_offset;
-   if (fb->rts[rt_idx].clear) {
-      cfg->clear.color_0 = fb->rts[rt_idx].clear_value[0];
-      cfg->clear.color_1 = fb->rts[rt_idx].clear_value[1];
-      cfg->clear.color_2 = fb->rts[rt_idx].clear_value[2];
-      cfg->clear.color_3 = fb->rts[rt_idx].clear_value[3];
+   if (fb->rts[idx].clear) {
+      cfg->clear.color_0 = fb->rts[idx].clear_value[0];
+      cfg->clear.color_1 = fb->rts[idx].clear_value[1];
+      cfg->clear.color_2 = fb->rts[idx].clear_value[2];
+      cfg->clear.color_3 = fb->rts[idx].clear_value[3];
    }
 
-   const struct pan_image_view *rt = fb->rts[rt_idx].view;
-   if (!rt || fb->rts[rt_idx].discard) {
+   const struct pan_image_view *rt = fb->rts[idx].view;
+   if (!rt || fb->rts[idx].discard) {
       cfg->internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_R8G8B8A8;
       cfg->internal_buffer_offset = cbuf_offset;
 #if PAN_ARCH >= 7
@@ -477,18 +458,12 @@ pan_prepare_rt(const struct pan_fb_info *fb, unsigned layer_idx,
 
    const struct pan_image *image = pan_image_view_get_rt_image(rt);
 
-   if (!drm_is_afrc(image->layout.modifier))
-      cfg->write_enable = true;
-
+   cfg->write_enable = true;
    cfg->dithering_enable = true;
 
    unsigned level = rt->first_level;
-   ASSERTED unsigned layer_count = rt->dim == MALI_TEXTURE_DIMENSION_3D
-                                      ? rt->planes[0]->layout.depth
-                                      : rt->last_layer - rt->first_layer + 1;
-
    assert(rt->last_level == rt->first_level);
-   assert(layer_idx < layer_count);
+   assert(rt->last_layer == rt->first_layer);
 
    int row_stride = image->layout.slices[level].row_stride;
 
@@ -505,7 +480,7 @@ pan_prepare_rt(const struct pan_fb_info *fb, unsigned layer_idx,
    cfg->writeback_block_format = mod_to_block_fmt(image->layout.modifier);
 
    struct pan_surface surf;
-   pan_iview_get_surface(rt, 0, layer_idx, 0, &surf);
+   pan_iview_get_surface(rt, 0, 0, 0, &surf);
 
    if (drm_is_afbc(image->layout.modifier)) {
 #if PAN_ARCH >= 9
@@ -538,21 +513,6 @@ pan_prepare_rt(const struct pan_fb_info *fb, unsigned layer_idx,
 
       if (image->layout.modifier & AFBC_FORMAT_MOD_YTR)
          cfg->afbc.yuv_transform_enable = true;
-#endif
-#if PAN_ARCH >= 10
-   } else if (drm_is_afrc(image->layout.modifier)) {
-      struct pan_afrc_format_info finfo =
-         panfrost_afrc_get_format_info(image->layout.format);
-
-      cfg->writeback_mode = MALI_WRITEBACK_MODE_AFRC_RGB;
-      cfg->afrc.block_size =
-         GENX(pan_afrc_block_size)(image->layout.modifier, 0);
-      cfg->afrc.format =
-         GENX(pan_afrc_format)(finfo, image->layout.modifier, 0);
-
-      cfg->rgb.base = surf.data;
-      cfg->rgb.row_stride = row_stride;
-      cfg->rgb.surface_stride = layer_stride;
 #endif
    } else {
       assert(image->layout.modifier == DRM_FORMAT_MOD_LINEAR ||
@@ -640,11 +600,11 @@ pan_emit_midgard_tiler(const struct pan_fb_info *fb,
 
 #if PAN_ARCH >= 5
 static void
-pan_emit_rt(const struct pan_fb_info *fb, unsigned layer_idx,
+pan_emit_rt(const struct pan_fb_info *fb,
             unsigned idx, unsigned cbuf_offset, void *out)
 {
    pan_pack(out, RENDER_TARGET, cfg) {
-      pan_prepare_rt(fb, layer_idx, idx, cbuf_offset, &cfg);
+      pan_prepare_rt(fb, idx, cbuf_offset, &cfg);
    }
 }
 
@@ -713,8 +673,7 @@ pan_force_clean_write(const struct pan_fb_info *fb, unsigned tile_size)
 #endif
 
 unsigned
-GENX(pan_emit_fbd)(const struct pan_fb_info *fb, unsigned layer_idx,
-                   const struct pan_tls_info *tls,
+GENX(pan_emit_fbd)(const struct pan_fb_info *fb, const struct pan_tls_info *tls,
                    const struct pan_tiler_context *tiler_ctx, void *out)
 {
    void *fbd = out;
@@ -831,14 +790,14 @@ GENX(pan_emit_fbd)(const struct pan_fb_info *fb, unsigned layer_idx,
 #endif
 
    if (has_zs_crc_ext) {
-      pan_emit_zs_crc_ext(fb, layer_idx, crc_rt, out + pan_size(FRAMEBUFFER));
+      pan_emit_zs_crc_ext(fb, crc_rt, out + pan_size(FRAMEBUFFER));
       rtd += pan_size(ZS_CRC_EXTENSION);
    }
 
    unsigned rt_count = MAX2(fb->rt_count, 1);
    unsigned cbuf_offset = 0;
    for (unsigned i = 0; i < rt_count; i++) {
-      pan_emit_rt(fb, layer_idx, i, cbuf_offset, rtd);
+      pan_emit_rt(fb, i, cbuf_offset, rtd);
       rtd += pan_size(RENDER_TARGET);
       if (!fb->rts[i].view)
          continue;
@@ -858,24 +817,8 @@ GENX(pan_emit_fbd)(const struct pan_fb_info *fb, unsigned layer_idx,
    return tag.opaque[0];
 }
 #else /* PAN_ARCH == 4 */
-static enum mali_color_format
-pan_sfbd_raw_format(unsigned bits)
-{
-   /* clang-format off */
-   switch (bits) {
-   case   16: return MALI_COLOR_FORMAT_1_16B_CHANNEL;
-   case   32: return MALI_COLOR_FORMAT_1_32B_CHANNEL;
-   case   48: return MALI_COLOR_FORMAT_3_16B_CHANNELS;
-   case   64: return MALI_COLOR_FORMAT_2_32B_CHANNELS;
-   case   96: return MALI_COLOR_FORMAT_3_32B_CHANNELS;
-   case  128: return MALI_COLOR_FORMAT_4_32B_CHANNELS;
-   default: unreachable("invalid raw bpp");
-   }
-   /* clang-format on */
-}
 unsigned
-GENX(pan_emit_fbd)(const struct pan_fb_info *fb, unsigned layer_idx,
-                   const struct pan_tls_info *tls,
+GENX(pan_emit_fbd)(const struct pan_fb_info *fb, const struct pan_tls_info *tls,
                    const struct pan_tiler_context *tiler_ctx, void *fbd)
 {
    assert(fb->rt_count <= 1);
@@ -919,11 +862,7 @@ GENX(pan_emit_fbd)(const struct pan_fb_info *fb, unsigned layer_idx,
             cfg.internal_format = fmt.internal;
             cfg.color_writeback_format = fmt.writeback;
          } else {
-            /* Construct RAW internal/writeback */
-            unsigned bits = desc->block.bits;
-
-            cfg.internal_format = MALI_COLOR_BUFFER_INTERNAL_FORMAT_RAW_VALUE;
-            cfg.color_writeback_format = pan_sfbd_raw_format(bits);
+            unreachable("raw formats not finished for SFBD");
          }
 
          unsigned level = rt->first_level;
@@ -992,9 +931,14 @@ GENX(pan_emit_fbd)(const struct pan_fb_info *fb, unsigned layer_idx,
 
 #if PAN_ARCH <= 9
 void
-GENX(pan_emit_fragment_job_payload)(const struct pan_fb_info *fb, mali_ptr fbd,
-                                    void *out)
+GENX(pan_emit_fragment_job)(const struct pan_fb_info *fb, mali_ptr fbd,
+                            void *out)
 {
+   pan_section_pack(out, FRAGMENT_JOB, HEADER, header) {
+      header.type = MALI_JOB_TYPE_FRAGMENT;
+      header.index = 1;
+   }
+
    pan_section_pack(out, FRAGMENT_JOB, PAYLOAD, payload) {
       payload.bound_min_x = fb->extent.minx >> MALI_TILE_SHIFT;
       payload.bound_min_y = fb->extent.miny >> MALI_TILE_SHIFT;

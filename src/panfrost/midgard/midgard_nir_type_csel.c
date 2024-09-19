@@ -38,7 +38,7 @@ midgard_nir_type_csel(nir_shader *shader)
    nir_gather_types(impl, float_types, NULL);
 
    nir_shader_instructions_pass(
-      shader, pass, nir_metadata_control_flow,
+      shader, pass, nir_metadata_block_index | nir_metadata_dominance,
       float_types);
 
    free(float_types);

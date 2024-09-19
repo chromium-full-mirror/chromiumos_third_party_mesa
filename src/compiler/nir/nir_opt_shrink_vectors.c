@@ -569,7 +569,8 @@ nir_opt_shrink_vectors(nir_shader *shader, bool shrink_start)
 
       if (progress) {
          nir_metadata_preserve(impl,
-                               nir_metadata_control_flow);
+                               nir_metadata_block_index |
+                                  nir_metadata_dominance);
       } else {
          nir_metadata_preserve(impl, nir_metadata_all);
       }

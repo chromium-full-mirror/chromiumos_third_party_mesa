@@ -179,6 +179,7 @@ gl_nir_lower_atomics(nir_shader *shader,
    };
 
    return nir_shader_instructions_pass(shader, gl_nir_lower_atomics_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                        &data);
 }

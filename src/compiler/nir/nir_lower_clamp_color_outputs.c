@@ -93,6 +93,7 @@ bool
 nir_lower_clamp_color_outputs(nir_shader *shader)
 {
    return nir_shader_instructions_pass(shader, lower_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        shader);
 }

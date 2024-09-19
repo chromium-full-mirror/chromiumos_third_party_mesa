@@ -29,6 +29,13 @@ agx_bucket(struct agx_device *dev, unsigned size)
    return &dev->bo_cache.buckets[agx_bucket_index(size)];
 }
 
+static bool
+agx_bo_wait(struct agx_bo *bo, int64_t timeout_ns)
+{
+   /* TODO: When we allow parallelism we'll need to implement this for real */
+   return true;
+}
+
 static void
 agx_bo_cache_remove_locked(struct agx_device *dev, struct agx_bo *bo)
 {
@@ -62,6 +69,11 @@ agx_bo_cache_fetch(struct agx_device *dev, size_t size, size_t align,
 
       if (align > entry->align)
          continue;
+
+      /* If the oldest BO in the cache is busy, likely so is
+       * everything newer, so bail. */
+      if (!agx_bo_wait(entry, dontwait ? 0 : INT64_MAX))
+         break;
 
       /* This one works, use it */
       agx_bo_cache_remove_locked(dev, entry);
@@ -189,10 +201,10 @@ agx_bo_unreference(struct agx_bo *bo)
     * lock, let's make sure it's still not referenced before freeing it.
     */
    if (p_atomic_read(&bo->refcnt) == 0) {
-      assert(!p_atomic_read_relaxed(&bo->writer));
+      assert(!p_atomic_read_relaxed(&bo->writer_syncobj));
 
       if (dev->debug & AGX_DBG_TRACE)
-         agxdecode_track_free(dev->agxdecode, bo);
+         agxdecode_track_free(bo);
 
       if (!agx_bo_cache_put(bo))
          agx_bo_free(dev, bo);
@@ -225,12 +237,12 @@ agx_bo_create_aligned(struct agx_device *dev, unsigned size, unsigned align,
     * flush the cache to make space for the new allocation.
     */
    if (!bo)
-      bo = dev->ops.bo_alloc(dev, size, align, flags);
+      bo = agx_bo_alloc(dev, size, align, flags);
    if (!bo)
       bo = agx_bo_cache_fetch(dev, size, align, flags, false);
    if (!bo) {
       agx_bo_cache_evict_all(dev);
-      bo = dev->ops.bo_alloc(dev, size, align, flags);
+      bo = agx_bo_alloc(dev, size, align, flags);
    }
 
    if (!bo) {
@@ -242,7 +254,7 @@ agx_bo_create_aligned(struct agx_device *dev, unsigned size, unsigned align,
    p_atomic_set(&bo->refcnt, 1);
 
    if (dev->debug & AGX_DBG_TRACE)
-      agxdecode_track_alloc(dev->agxdecode, bo);
+      agxdecode_track_alloc(bo);
 
    return bo;
 }

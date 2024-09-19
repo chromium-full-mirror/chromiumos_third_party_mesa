@@ -82,28 +82,38 @@ fn get_ssa_or_phi(
 }
 
 fn get_or_insert_phi_dsts(bb: &mut BasicBlock) -> &mut OpPhiDsts {
-    let ip = if let Some(ip) = bb.phi_dsts_ip() {
-        ip
-    } else {
+    let has_phi = matches!(&bb.instrs[0].op, Op::PhiDsts(_));
+    if !has_phi {
         bb.instrs.insert(0, Instr::new_boxed(OpPhiDsts::new()));
-        0
-    };
-    match &mut bb.instrs[ip].op {
+    }
+    match &mut bb.instrs[0].op {
         Op::PhiDsts(phi) => phi,
         _ => panic!("Expected to find the phi we just inserted"),
     }
 }
 
 fn get_or_insert_phi_srcs(bb: &mut BasicBlock) -> &mut OpPhiSrcs {
-    let ip = if let Some(ip) = bb.phi_srcs_ip() {
-        ip
-    } else if let Some(ip) = bb.branch_ip() {
+    let mut has_phi = false;
+    let mut ip = bb.instrs.len();
+    for (i, instr) in bb.instrs.iter_mut().enumerate().rev() {
+        match &mut instr.op {
+            Op::PhiSrcs(_) => {
+                ip = i;
+                has_phi = true;
+                break;
+            }
+            _ => {
+                if instr.is_branch() {
+                    ip = i;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    if !has_phi {
         bb.instrs.insert(ip, Instr::new_boxed(OpPhiSrcs::new()));
-        ip
-    } else {
-        bb.instrs.push(Instr::new_boxed(OpPhiSrcs::new()));
-        bb.instrs.len() - 1
-    };
+    }
     match &mut bb.instrs[ip].op {
         Op::PhiSrcs(phi) => phi,
         _ => panic!("Expected to find the phi we just inserted"),
@@ -192,7 +202,7 @@ impl Function {
 
         // Populate phi sources for any back-edges
         loop {
-            let Some(b_idx) = needs_src.iter().next() else {
+            let Some(b_idx) = needs_src.next_set(0) else {
                 break;
             };
             needs_src.remove(b_idx);

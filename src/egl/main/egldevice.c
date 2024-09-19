@@ -351,7 +351,7 @@ _eglQueryDevicesEXT(EGLint max_devices, _EGLDevice **devices,
    num_devs = _eglDeviceRefreshList();
    devs = _eglGlobal.DeviceList;
 
-#ifdef HAVE_SWRAST
+#ifdef GALLIUM_SOFTPIPE
    swrast = devs;
 #else
    swrast = NULL;

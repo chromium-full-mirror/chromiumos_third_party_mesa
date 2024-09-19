@@ -31,7 +31,6 @@
 #include "util/os_file.h"
 
 #include "drm/freedreno_ringbuffer_sp.h"
-#include "freedreno_rd_output.h"
 #include "msm_priv.h"
 
 static int
@@ -147,7 +146,7 @@ flush_submit_list(struct list_head *submit_list)
 
    DEBUG_MSG("nr_cmds=%u, nr_bos=%u", req.nr_cmds, req.nr_bos);
 
-   ret = drmCommandWriteRead(pipe->dev->fd, DRM_MSM_GEM_SUBMIT, &req,
+   ret = drmCommandWriteRead(msm_pipe->base.dev->fd, DRM_MSM_GEM_SUBMIT, &req,
                              sizeof(req));
    if (ret) {
       ERROR_MSG("submit failed: %d (%s)", ret, strerror(errno));
@@ -156,8 +155,6 @@ flush_submit_list(struct list_head *submit_list)
       fd_submit->out_fence->kfence = req.fence;
       fd_submit->out_fence->fence_fd = req.fence_fd;
    }
-
-   msm_dump_rd(pipe, &req);
 
    if (!bos_on_stack)
       free(submit_bos);

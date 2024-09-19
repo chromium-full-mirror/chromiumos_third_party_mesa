@@ -58,7 +58,8 @@ move_system_values_to_top(nir_shader *shader)
    }
 
    if (progress) {
-      nir_metadata_preserve(impl, nir_metadata_control_flow);
+      nir_metadata_preserve(impl, nir_metadata_block_index |
+                                     nir_metadata_dominance);
    } else {
       nir_metadata_preserve(impl, nir_metadata_all);
    }
@@ -805,7 +806,8 @@ spill_ssa_defs_and_lower_shader_calls(nir_shader *shader, uint32_t num_calls,
 
    ralloc_free(mem_ctx);
 
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
 }
 
 static nir_instr *
@@ -1413,7 +1415,8 @@ nir_lower_stack_to_scratch(nir_shader *shader,
 
    return nir_shader_instructions_pass(shader,
                                        lower_stack_instr_to_scratch,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        &state);
 }
 
@@ -1447,7 +1450,8 @@ static bool
 nir_opt_remove_respills(nir_shader *shader)
 {
    return nir_shader_intrinsics_pass(shader, opt_remove_respills_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        NULL);
 }
 
@@ -1590,7 +1594,8 @@ nir_opt_trim_stack_values(nir_shader *shader)
    }
 
    nir_metadata_preserve(impl,
-                         progress ? (nir_metadata_control_flow |
+                         progress ? (nir_metadata_dominance |
+                                     nir_metadata_block_index |
                                      nir_metadata_loop_analysis)
                                   : nir_metadata_all);
 
@@ -1809,7 +1814,8 @@ nir_opt_stack_loads(nir_shader *shader)
    bool progress = false;
 
    nir_foreach_function_impl(impl, shader) {
-      nir_metadata_require(impl, nir_metadata_control_flow);
+      nir_metadata_require(impl, nir_metadata_dominance |
+                                    nir_metadata_block_index);
 
       bool func_progress = false;
       nir_foreach_block_safe(block, impl) {
@@ -1835,7 +1841,8 @@ nir_opt_stack_loads(nir_shader *shader)
       }
 
       nir_metadata_preserve(impl,
-                            func_progress ? (nir_metadata_control_flow |
+                            func_progress ? (nir_metadata_block_index |
+                                             nir_metadata_dominance |
                                              nir_metadata_loop_analysis)
                                           : nir_metadata_all);
 
@@ -1908,7 +1915,8 @@ static bool
 nir_split_stack_components(nir_shader *shader)
 {
    return nir_shader_intrinsics_pass(shader, split_stack_components_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        NULL);
 }
 

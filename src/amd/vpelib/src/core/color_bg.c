@@ -446,7 +446,8 @@ static void vpe_bg_degam(
         compute_degam(output_tf->tf, (double)bg_color->rgba.g, &degam_g, true);
         compute_degam(output_tf->tf, (double)bg_color->rgba.b, &degam_b, true);
         break;
-    case TRANSFER_FUNC_LINEAR:
+    case TRANSFER_FUNC_LINEAR_0_125:
+    case TRANSFER_FUNC_LINEAR_0_1:
         break;
     default:
         VPE_ASSERT(0);
@@ -470,7 +471,8 @@ static void vpe_bg_inverse_gamut_remap(enum color_space output_cs,
         bg_rgb[2] = (double)bg_color->rgba.b;
 
         switch (output_tf->tf) {
-        case TRANSFER_FUNC_LINEAR:
+        case TRANSFER_FUNC_LINEAR_0_1:
+        case TRANSFER_FUNC_LINEAR_0_125:
             /* Since linear output uses Bt709, and this conversion is only needed
              * when the tone mapping is enabled on (Bt2020) input, it is needed to
              * apply the reverse of Bt2020 -> Bt709 on the background color to

@@ -55,11 +55,12 @@
 #define GL_LIB_NAME "libGL.so.1"
 #endif
 
-const __DRIextension **
-dri_loader_get_extensions(const char *driver_name);
-
 /**
  * Try to \c dlopen the named driver.
+ *
+ * This function adds the "_dri.so" suffix to the driver name and searches the
+ * directories specified by the \c LIBGL_DRIVERS_PATH environment variable in
+ * order to find the driver.
  *
  * \param driverName - a name like "i965", "radeon", "nouveau", etc.
  * \param out_driver_handle - Address to return the resulting dlopen() handle.
@@ -69,19 +70,21 @@ dri_loader_get_extensions(const char *driver_name);
  * file not found.
  */
 _X_HIDDEN const __DRIextension **
-driOpenDriver(const char *driverName, bool driver_name_is_inferred)
+driOpenDriver(const char *driverName, void **out_driver_handle)
 {
    void *glhandle;
 
    /* Attempt to make sure libGL symbols will be visible to the driver */
    glhandle = dlopen(GL_LIB_NAME, RTLD_NOW | RTLD_GLOBAL);
 
-   const __DRIextension **extensions = dri_loader_get_extensions(driverName);
+   static const char *search_path_vars[] = {
+      "LIBGL_DRIVERS_PATH",
+      "LIBGL_DRIVERS_DIR", /* deprecated */
+      NULL
+   };
 
-   if (!extensions && driver_name_is_inferred) {
-      glx_message(_LOADER_WARNING,
-           "MESA-LOADER: glx: failed to open %s: driver not built!\n", driverName);
-   }
+   const __DRIextension **extensions =
+      loader_open_driver(driverName, out_driver_handle, search_path_vars);
 
    if (glhandle)
       dlclose(glhandle);
@@ -739,8 +742,9 @@ clear_driver_config_cache()
 static char *
 get_driver_config(const char *driverName)
 {
+   void *handle;
    char *config = NULL;
-   const __DRIextension **extensions = driOpenDriver(driverName, false);
+   const __DRIextension **extensions = driOpenDriver(driverName, &handle);
    if (extensions) {
       for (int i = 0; extensions[i]; i++) {
          if (strcmp(extensions[i]->name, __DRI_CONFIG_OPTIONS) != 0)
@@ -755,6 +759,8 @@ get_driver_config(const char *driverName)
          break;
       }
    }
+
+   dlclose(handle);
 
    return config;
 }

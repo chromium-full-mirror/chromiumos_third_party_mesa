@@ -157,7 +157,7 @@ test_one(unsigned verbose,
          struct lp_type src_type,
          struct lp_type dst_type)
 {
-   lp_context_ref context;
+   LLVMContextRef context;
    struct gallivm_state *gallivm;
    LLVMValueRef func = NULL;
    conv_test_ptr_t conv_test_ptr;
@@ -222,14 +222,17 @@ test_one(unsigned verbose,
       eps *= 2;
    }
 
-   lp_context_create(&context);
-   gallivm = gallivm_create("test_module", &context, NULL);
+   context = LLVMContextCreate();
+#if LLVM_VERSION_MAJOR == 15
+   LLVMContextSetOpaquePointers(context, false);
+#endif
+   gallivm = gallivm_create("test_module", context, NULL);
 
    func = add_conv_test(gallivm, src_type, num_srcs, dst_type, num_dsts);
 
    gallivm_compile_module(gallivm);
 
-   conv_test_ptr = (conv_test_ptr_t)gallivm_jit_function(gallivm, func, "test");
+   conv_test_ptr = (conv_test_ptr_t)gallivm_jit_function(gallivm, func);
 
    gallivm_free_ir(gallivm);
 
@@ -334,7 +337,7 @@ test_one(unsigned verbose,
       write_tsv_row(fp, src_type, dst_type, cycles_avg, success);
 
    gallivm_destroy(gallivm);
-   lp_context_destroy(&context);
+   LLVMContextDispose(context);
 
    return success;
 }

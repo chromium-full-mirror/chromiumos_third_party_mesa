@@ -188,7 +188,7 @@ nvk_GetPhysicalDeviceFormatProperties2(VkPhysicalDevice physicalDevice,
          break;
 
       default:
-         vk_debug_ignored_stype(ext->sType);
+         nvk_debug_ignored_stype(ext->sType);
          break;
       }
    }

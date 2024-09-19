@@ -32,8 +32,6 @@
 extern "C" {
 #endif
 
-struct spirv_capabilities;
-
 struct nir_spirv_specialization {
    uint32_t id;
    nir_const_value value;
@@ -81,16 +79,7 @@ struct spirv_to_nir_options {
     */
    bool mediump_16bit_derivatives;
 
-   /* These really early AMD extensions don't have capabilities */
-   bool amd_gcn_shader;
-   bool amd_shader_ballot;
-   bool amd_trinary_minmax;
-   bool amd_shader_explicit_vertex_parameter;
-
-   /* Whether or not printf is supported */
-   bool printf;
-
-   const struct spirv_capabilities *capabilities;
+   struct spirv_supported_capabilities caps;
 
    /* Address format for various kinds of pointers. */
    nir_address_format ubo_addr_format;

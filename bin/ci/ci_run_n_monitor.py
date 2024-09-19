@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from itertools import chain
 from subprocess import check_output, CalledProcessError
-from typing import Dict, TYPE_CHECKING, Iterable, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Iterable, Literal, Optional
 
 import gitlab
 import gitlab.v4.objects
@@ -53,119 +53,90 @@ STATUS_COLORS = {
     "success": Fore.GREEN,
     "failed": Fore.RED,
     "canceled": Fore.MAGENTA,
-    "canceling": Fore.MAGENTA,
     "manual": "",
     "pending": "",
     "skipped": "",
 }
 
-COMPLETED_STATUSES = {"success", "failed"}
-RUNNING_STATUSES = {"created", "pending", "running"}
+COMPLETED_STATUSES = ["success", "failed"]
 
 
-def print_job_status(
-    job: gitlab.v4.objects.ProjectPipelineJob,
-    new_status: bool = False,
-    job_name_field_pad: int = 0,
-) -> None:
+def print_job_status(job, new_status=False) -> None:
     """It prints a nice, colored job status with a link to the job."""
-    if job.status in {"canceled", "canceling"}:
+    if job.status == "canceled":
         return
 
     if new_status and job.status == "created":
         return
 
-    job_name_field_pad = len(job.name) if job_name_field_pad < 1 else job_name_field_pad
-
-    duration = job_duration(job)
+    if job.duration:
+        duration = job.duration
+    elif job.started_at:
+        duration = time.perf_counter() - time.mktime(job.started_at.timetuple())
 
     print(
         STATUS_COLORS[job.status]
-        + "🞋 target job "  # U+1F78B Round target
-        + link2print(job.web_url, job.name, job_name_field_pad)
-        + (f"has new status: {job.status}" if new_status else f"{job.status}")
+        + "🞋 job "
+        + URL_START
+        + f"{job.web_url}\a{job.name}"
+        + URL_END
+        + (f" has new status: {job.status}" if new_status else f" :: {job.status}")
         + (f" ({pretty_duration(duration)})" if job.started_at else "")
         + Style.RESET_ALL
     )
 
 
-def job_duration(job: gitlab.v4.objects.ProjectPipelineJob) -> float:
-    """
-    Given a job, report the time lapsed in execution.
-    :param job: Pipeline job
-    :return: Current time in execution
-    """
-    if job.duration:
-        return job.duration
-    elif job.started_at:
-        return time.perf_counter() - time.mktime(job.started_at.timetuple())
-    return 0.0
-
-
 def pretty_wait(sec: int) -> None:
     """shows progressbar in dots"""
     for val in range(sec, 0, -1):
-        print(f"⏲  {val} seconds", end="\r")  # U+23F2 Timer clock
+        print(f"⏲  {val} seconds", end="\r")
         time.sleep(1)
 
 
 def monitor_pipeline(
-    project: gitlab.v4.objects.Project,
-    pipeline: gitlab.v4.objects.ProjectPipeline,
+    project,
+    pipeline,
     target_jobs_regex: re.Pattern,
-    dependencies: set[str],
+    dependencies,
     force_manual: bool,
     stress: int,
-) -> tuple[Optional[int], Optional[int], Dict[str, Dict[int, Tuple[float, str, str]]]]:
+) -> tuple[Optional[int], Optional[int]]:
     """Monitors pipeline and delegate canceling jobs"""
     statuses: dict[str, str] = defaultdict(str)
     target_statuses: dict[str, str] = defaultdict(str)
-    stress_status_counter: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    execution_times = defaultdict(lambda: defaultdict(tuple))
-    target_id: int = -1
-    name_field_pad: int = len(max(dependencies, key=len))+2
-
-    # Pre-populate the stress status counter for already completed target jobs.
-    if stress:
-        # When stress test, it is necessary to collect this information before start.
-        for job in pipeline.jobs.list(all=True, include_retried=True):
-            if target_jobs_regex.fullmatch(job.name) and job.status in COMPLETED_STATUSES:
-                stress_status_counter[job.name][job.status] += 1
-                execution_times[job.name][job.id] = (job_duration(job), job.status, job.web_url)
+    stress_status_counter = defaultdict(lambda: defaultdict(int))
+    target_id = None
 
     while True:
         deps_failed = []
         to_cancel = []
-        for job in sorted(pipeline.jobs.list(all=True), key=lambda j: j.name):
+        for job in pipeline.jobs.list(all=True, sort="desc"):
             # target jobs
             if target_jobs_regex.fullmatch(job.name):
                 target_id = job.id
-                target_status = job.status
 
-                if stress and target_status in COMPLETED_STATUSES:
+                if stress and job.status in ["success", "failed"]:
                     if (
                         stress < 0
                         or sum(stress_status_counter[job.name].values()) < stress
                     ):
-                        stress_status_counter[job.name][target_status] += 1
-                        execution_times[job.name][job.id] = (job_duration(job), target_status, job.web_url)
-                        job = enable_job(project, pipeline, job, "retry", force_manual, name_field_pad)
+                        job = enable_job(project, pipeline, job, "retry", force_manual)
+                        stress_status_counter[job.name][job.status] += 1
                 else:
-                    execution_times[job.name][job.id] = (job_duration(job), target_status, job.web_url)
-                    job = enable_job(project, pipeline, job, "target", force_manual, name_field_pad)
+                    job = enable_job(project, pipeline, job, "target", force_manual)
 
-                print_job_status(job, target_status not in target_statuses[job.name], name_field_pad)
-                target_statuses[job.name] = target_status
+                print_job_status(job, job.status not in target_statuses[job.name])
+                target_statuses[job.name] = job.status
                 continue
 
-            # all other non-target jobs
+            # all jobs
             if job.status != statuses[job.name]:
-                print_job_status(job, True, name_field_pad)
+                print_job_status(job, True)
                 statuses[job.name] = job.status
 
             # run dependencies and cancel the rest
             if job.name in dependencies:
-                job = enable_job(project, pipeline, job, "dep", True, name_field_pad)
+                job = enable_job(project, pipeline, job, "dep", True)
                 if job.status == "failed":
                     deps_failed.append(job.name)
             else:
@@ -175,9 +146,9 @@ def monitor_pipeline(
 
         if stress:
             enough = True
-            for job_name, status in sorted(stress_status_counter.items()):
+            for job_name, status in stress_status_counter.items():
                 print(
-                    f"* {job_name:{name_field_pad}}succ: {status['success']}; "
+                    f"{job_name}\tsucc: {status['success']}; "
                     f"fail: {status['failed']}; "
                     f"total: {sum(status.values())} of {stress}",
                     flush=False,
@@ -191,20 +162,20 @@ def monitor_pipeline(
 
         print("---------------------------------", flush=False)
 
-        if len(target_statuses) == 1 and RUNNING_STATUSES.intersection(
+        if len(target_statuses) == 1 and {"running"}.intersection(
             target_statuses.values()
         ):
-            return target_id, None, execution_times
+            return target_id, None
 
         if (
             {"failed"}.intersection(target_statuses.values())
-            and not RUNNING_STATUSES.intersection(target_statuses.values())
+            and not set(["running", "pending"]).intersection(target_statuses.values())
         ):
-            return None, 1, execution_times
+            return None, 1
 
         if (
             {"skipped"}.intersection(target_statuses.values())
-            and not RUNNING_STATUSES.intersection(target_statuses.values())
+            and not {"running", "pending"}.intersection(target_statuses.values())
         ):
             print(
                 Fore.RED,
@@ -212,20 +183,20 @@ def monitor_pipeline(
                 deps_failed,
                 Fore.RESET,
             )
-            return None, 1, execution_times
+            return None, 1
 
         if {"success", "manual"}.issuperset(target_statuses.values()):
-            return None, 0, execution_times
+            return None, 0
 
         pretty_wait(REFRESH_WAIT_JOBS)
 
 
 def get_pipeline_job(
     pipeline: gitlab.v4.objects.ProjectPipeline,
-    job_id: int,
+    id: int,
 ) -> gitlab.v4.objects.ProjectPipelineJob:
     pipeline_jobs = pipeline.jobs.list(all=True)
-    return [j for j in pipeline_jobs if j.id == job_id][0]
+    return [j for j in pipeline_jobs if j.id == id][0]
 
 
 def enable_job(
@@ -234,19 +205,18 @@ def enable_job(
     job: gitlab.v4.objects.ProjectPipelineJob,
     action_type: Literal["target", "dep", "retry"],
     force_manual: bool,
-    job_name_field_pad: int = 0,
 ) -> gitlab.v4.objects.ProjectPipelineJob:
     """enable job"""
     if (
-        (job.status in COMPLETED_STATUSES and action_type != "retry")
+        (job.status in ["success", "failed"] and action_type != "retry")
         or (job.status == "manual" and not force_manual)
-        or job.status in {"skipped"} | RUNNING_STATUSES
+        or job.status in ["skipped", "running", "created", "pending"]
     ):
         return job
 
     pjob = project.jobs.get(job.id, lazy=True)
 
-    if job.status in {"success", "failed", "canceled", "canceling"}:
+    if job.status in ["success", "failed", "canceled"]:
         new_job = pjob.retry()
         job = get_pipeline_job(pipeline, new_job["id"])
     else:
@@ -254,34 +224,32 @@ def enable_job(
         job = get_pipeline_job(pipeline, pjob.id)
 
     if action_type == "target":
-        jtype = "🞋 target"  # U+1F78B Round target
+        jtype = "🞋 "
     elif action_type == "retry":
-        jtype = "↻ retrying"  # U+21BB Clockwise open circle arrow
+        jtype = "↻"
     else:
-        jtype = "↪ dependency"  # U+21AA Left Arrow Curving Right
+        jtype = "(dependency)"
 
-    job_name_field_pad = len(job.name) if job_name_field_pad < 1 else job_name_field_pad
-    print(Fore.MAGENTA + f"{jtype} job {job.name:{job_name_field_pad}}manually enabled" + Style.RESET_ALL)
+    print(Fore.MAGENTA + f"{jtype} job {job.name} manually enabled" + Style.RESET_ALL)
 
     return job
 
 
-def cancel_job(
-    project: gitlab.v4.objects.Project,
-    job: gitlab.v4.objects.ProjectPipelineJob
-) -> None:
+def cancel_job(project, job) -> None:
     """Cancel GitLab job"""
-    if job.status not in RUNNING_STATUSES:
+    if job.status in [
+        "canceled",
+        "success",
+        "failed",
+        "skipped",
+    ]:
         return
     pjob = project.jobs.get(job.id, lazy=True)
     pjob.cancel()
-    print(f"🗙 {job.name}", end=" ")  # U+1F5D9 Cancellation X
+    print(f"♲ {job.name}", end=" ")
 
 
-def cancel_jobs(
-    project: gitlab.v4.objects.Project,
-    to_cancel: list
-) -> None:
+def cancel_jobs(project, to_cancel) -> None:
     """Cancel unwanted GitLab jobs"""
     if not to_cancel:
         return
@@ -292,10 +260,7 @@ def cancel_jobs(
     print()
 
 
-def print_log(
-    project: gitlab.v4.objects.Project,
-    job_id: int
-) -> None:
+def print_log(project, job_id) -> None:
     """Print job log into output"""
     printed_lines = 0
     while True:
@@ -313,7 +278,7 @@ def print_log(
         pretty_wait(REFRESH_WAIT_LOG)
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args() -> None:
     """Parse args"""
     parser = argparse.ArgumentParser(
         description="Tool to trigger a subset of container jobs "
@@ -344,9 +309,7 @@ def parse_args() -> argparse.Namespace:
         "--stress",
         default=0,
         type=int,
-        help="Stresstest job(s). Specify the number of times to rerun the selected jobs, "
-             "or use -1 for indefinite. Defaults to 0. If jobs have already been executed, "
-             "this will ensure the total run count respects the specified number.",
+        help="Stresstest job(s). Number or repetitions or -1 for infinite.",
     )
     parser.add_argument(
         "--project",
@@ -381,14 +344,12 @@ def parse_args() -> argparse.Namespace:
 
 
 def print_detected_jobs(
-    target_dep_dag: "Dag",
-    dependency_jobs: Iterable[str],
-    target_jobs: Iterable[str],
+    target_dep_dag: "Dag", dependency_jobs: Iterable[str], target_jobs: Iterable[str]
 ) -> None:
     def print_job_set(color: str, kind: str, job_set: Iterable[str]):
         print(
             color + f"Running {len(job_set)} {kind} jobs: ",
-            "\n\t",
+            "\n",
             ", ".join(sorted(job_set)),
             Fore.RESET,
             "\n",
@@ -400,12 +361,10 @@ def print_detected_jobs(
     print_job_set(Fore.BLUE, "target", target_jobs)
 
 
-def find_dependencies(
-    token: str | None,
-    target_jobs_regex: re.Pattern,
-    project_path: str,
-    iid: int
-) -> set[str]:
+def find_dependencies(token: str | None,
+                      target_jobs_regex: re.Pattern,
+                      project_path: str,
+                      iid: int) -> set[str]:
     """
     Find the dependencies of the target jobs in a GitLab pipeline.
 
@@ -442,45 +401,7 @@ def find_dependencies(
     return target_jobs.union(dependency_jobs)
 
 
-def print_monitor_summary(
-    execution_collection: Dict[str, Dict[int, Tuple[float, str, str]]],
-    t_start: float,
-) -> None:
-    """Summary of the test execution"""
-    t_end = time.perf_counter()
-    spend_minutes = (t_end - t_start) / 60
-    print(f"⏲ Duration of script execution: {spend_minutes:0.1f} minutes")  # U+23F2 Timer clock
-    if len(execution_collection) == 0:
-        return
-    print(f"⏲ Jobs execution times:")  # U+23F2 Timer clock
-    job_names = list(execution_collection.keys())
-    job_names.sort()
-    name_field_pad = len(max(job_names, key=len)) + 2
-    for name in job_names:
-        job_executions = execution_collection[name]
-        job_times = ', '.join([__job_duration_record(job_execution)
-                               for job_execution in sorted(job_executions.items())])
-        print(f"* {name:{name_field_pad}}: ({len(job_executions)}) {job_times}")
-
-
-def __job_duration_record(dict_item: tuple) -> str:
-    """
-    Format each pair of job and its duration.
-    :param job_execution: item of execution_collection[name][idn]: Dict[int, Tuple[float, str, str]]
-    """
-    job_id = f"{dict_item[0]}"  # dictionary key
-    job_duration, job_status, job_url = dict_item[1]  # dictionary value, the tuple
-    return (f"{STATUS_COLORS[job_status]}"
-            f"{link2print(job_url, job_id)}: {pretty_duration(job_duration):>8}"
-            f"{Style.RESET_ALL}")
-
-
-def link2print(url: str, text: str, text_pad: int = 0) -> str:
-    text_pad = len(text) if text_pad < 1 else text_pad
-    return f"{URL_START}{url}\a{text:{text_pad}}{URL_END}"
-
-
-def main() -> None:
+if __name__ == "__main__":
     try:
         t_start = time.perf_counter()
 
@@ -542,7 +463,8 @@ def main() -> None:
         target = '|'.join(args.target)
         target = target.strip()
 
-        print("🞋 target job: " + Fore.BLUE + target + Style.RESET_ALL)  # U+1F78B Round target
+        deps = set()
+        print("🞋 job: " + Fore.BLUE + target + Style.RESET_ALL)
 
         # Implicitly include `parallel:` jobs
         target = f'({target})' + r'( \d+/\d+)?'
@@ -555,19 +477,17 @@ def main() -> None:
             iid=pipe.iid,
             project_path=cur_project
         )
-        target_job_id, ret, exec_t = monitor_pipeline(
+        target_job_id, ret = monitor_pipeline(
             cur_project, pipe, target_jobs_regex, deps, args.force_manual, args.stress
         )
 
         if target_job_id:
             print_log(cur_project, target_job_id)
 
-        print_monitor_summary(exec_t, t_start)
+        t_end = time.perf_counter()
+        spend_minutes = (t_end - t_start) / 60
+        print(f"⏲ Duration of script execution: {spend_minutes:0.1f} minutes")
 
         sys.exit(ret)
     except KeyboardInterrupt:
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

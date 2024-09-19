@@ -433,7 +433,9 @@ brw_nir_lower_vs_inputs(nir_shader *nir)
                nir_def_init(&load->instr, &load->def, 1, 32);
                nir_builder_instr_insert(&b, &load->instr);
 
-               nir_def_replace(&intrin->def, &load->def);
+               nir_def_rewrite_uses(&intrin->def,
+                                        &load->def);
+               nir_instr_remove(&intrin->instr);
                break;
             }
 
@@ -544,7 +546,8 @@ lower_barycentric_per_sample(nir_builder *b,
    nir_def *centroid =
       nir_load_barycentric(b, nir_intrinsic_load_barycentric_sample,
                            nir_intrinsic_interp_mode(intrin));
-   nir_def_replace(&intrin->def, centroid);
+   nir_def_rewrite_uses(&intrin->def, centroid);
+   nir_instr_remove(&intrin->instr);
    return true;
 }
 
@@ -614,14 +617,15 @@ brw_nir_lower_fs_inputs(nir_shader *nir,
       nir_lower_single_sampled(nir);
    } else if (key->persample_interp == BRW_ALWAYS) {
       nir_shader_intrinsics_pass(nir, lower_barycentric_per_sample,
-                                   nir_metadata_control_flow,
+                                   nir_metadata_block_index |
+                                   nir_metadata_dominance,
                                    NULL);
    }
 
-   if (devinfo->ver < 20)
-      nir_shader_intrinsics_pass(nir, lower_barycentric_at_offset,
-                                 nir_metadata_control_flow,
-                                 NULL);
+   nir_shader_intrinsics_pass(nir, lower_barycentric_at_offset,
+                                nir_metadata_block_index |
+                                nir_metadata_dominance,
+                                NULL);
 
    /* This pass needs actual constants */
    nir_opt_constant_folding(nir);
@@ -1119,7 +1123,7 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir,
     * messages.
     */
    OPT(nir_lower_array_deref_of_vec,
-       nir_var_mem_ubo | nir_var_mem_ssbo, NULL,
+       nir_var_mem_ubo | nir_var_mem_ssbo,
        nir_lower_direct_array_deref_of_vec_load);
 
    /* Clamp load_per_vertex_input of the TCS stage so that we do not generate
@@ -1158,7 +1162,9 @@ brw_nir_zero_inputs_instr(struct nir_builder *b, nir_intrinsic_instr *intrin,
 
    nir_def *zero = nir_imm_zero(b, 1, 32);
 
-   nir_def_replace(&intrin->def, zero);
+   nir_def_rewrite_uses(&intrin->def, zero);
+
+   nir_instr_remove(&intrin->instr);
 
    return true;
 }
@@ -1167,7 +1173,7 @@ static bool
 brw_nir_zero_inputs(nir_shader *shader, uint64_t *zero_inputs)
 {
    return nir_shader_intrinsics_pass(shader, brw_nir_zero_inputs_instr,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index | nir_metadata_dominance,
                                      zero_inputs);
 }
 
@@ -1641,8 +1647,6 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    OPT(nir_opt_combine_barriers, combine_all_memory_barriers, NULL);
 
-   OPT(intel_nir_lower_printf);
-
    do {
       progress = false;
       OPT(nir_opt_algebraic_before_ffma);
@@ -1671,12 +1675,6 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
    }
 
    brw_vectorize_lower_mem_access(nir, compiler, robust_flags);
-
-   /* Potentially perform this optimization pass twice because it can create
-    * additional opportunities for itself.
-    */
-   if (OPT(nir_opt_algebraic_before_lower_int64))
-      OPT(nir_opt_algebraic_before_lower_int64);
 
    if (OPT(nir_lower_int64))
       brw_nir_optimize(nir, devinfo);
@@ -1713,11 +1711,7 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    do {
       progress = false;
-
-      OPT(nir_opt_algebraic_late);
-      OPT(brw_nir_lower_fsign);
-
-      if (progress) {
+      if (OPT(nir_opt_algebraic_late)) {
          OPT(nir_opt_constant_folding);
          OPT(nir_copy_prop);
          OPT(nir_opt_dce);
@@ -1761,8 +1755,6 @@ brw_postprocess_nir(nir_shader *nir, const struct brw_compiler *compiler,
 
    if (OPT(nir_opt_uniform_atomics)) {
       OPT(nir_lower_subgroups, &subgroups_options);
-
-      OPT(nir_opt_algebraic_before_lower_int64);
 
       if (OPT(nir_lower_int64))
          brw_nir_optimize(nir, devinfo);
@@ -2051,36 +2043,36 @@ brw_type_for_nir_type(const struct intel_device_info *devinfo,
    switch (type) {
    case nir_type_uint:
    case nir_type_uint32:
-      return BRW_TYPE_UD;
+      return BRW_REGISTER_TYPE_UD;
    case nir_type_bool:
    case nir_type_int:
    case nir_type_bool32:
    case nir_type_int32:
-      return BRW_TYPE_D;
+      return BRW_REGISTER_TYPE_D;
    case nir_type_float:
    case nir_type_float32:
-      return BRW_TYPE_F;
+      return BRW_REGISTER_TYPE_F;
    case nir_type_float16:
-      return BRW_TYPE_HF;
+      return BRW_REGISTER_TYPE_HF;
    case nir_type_float64:
-      return BRW_TYPE_DF;
+      return BRW_REGISTER_TYPE_DF;
    case nir_type_int64:
-      return BRW_TYPE_Q;
+      return BRW_REGISTER_TYPE_Q;
    case nir_type_uint64:
-      return BRW_TYPE_UQ;
+      return BRW_REGISTER_TYPE_UQ;
    case nir_type_int16:
-      return BRW_TYPE_W;
+      return BRW_REGISTER_TYPE_W;
    case nir_type_uint16:
-      return BRW_TYPE_UW;
+      return BRW_REGISTER_TYPE_UW;
    case nir_type_int8:
-      return BRW_TYPE_B;
+      return BRW_REGISTER_TYPE_B;
    case nir_type_uint8:
-      return BRW_TYPE_UB;
+      return BRW_REGISTER_TYPE_UB;
    default:
       unreachable("unknown type");
    }
 
-   return BRW_TYPE_F;
+   return BRW_REGISTER_TYPE_F;
 }
 
 nir_shader *
@@ -2175,3 +2167,4 @@ brw_nir_get_var_type(const struct nir_shader *nir, nir_variable *var)
 
    return type;
 }
+

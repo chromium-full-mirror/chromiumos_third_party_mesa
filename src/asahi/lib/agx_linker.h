@@ -21,11 +21,6 @@ struct agx_linked_shader {
     */
    bool uses_base_param;
 
-   /* Set if the linked shader uses txf. The epilog may even if the main shader
-    * does not, in the case of spilled render targets.
-    */
-   bool uses_txf;
-
    /* Coefficient register bindings */
    struct agx_varyings_fs cf;
 
@@ -37,33 +32,30 @@ struct agx_linked_shader {
    struct agx_fragment_control_packed fragment_control;
 };
 
-void agx_fast_link(struct agx_linked_shader *linked, struct agx_device *dev,
-                   bool fragment, struct agx_shader_part *main,
-                   struct agx_shader_part *prolog,
-                   struct agx_shader_part *epilog, unsigned nr_samples_shaded);
+struct agx_linked_shader *
+agx_fast_link(void *memctx, struct agx_device *dev, bool fragment,
+              struct agx_shader_part *main, struct agx_shader_part *prolog,
+              struct agx_shader_part *epilog, unsigned nr_samples_shaded);
 
 /* These parts of the vertex element affect the generated code */
 struct agx_velem_key {
    uint32_t divisor;
    uint16_t stride;
    uint8_t format;
-   bool instanced;
+   uint8_t pad;
 };
 
 struct agx_vs_prolog_key {
    struct agx_velem_key attribs[AGX_MAX_VBUFS];
 
    /* Bit mask of attribute components to load */
-   BITSET_DECLARE(component_mask, AGX_MAX_ATTRIBS * 4);
+   BITSET_DECLARE(component_mask, VERT_ATTRIB_MAX * 4);
 
    /* Whether running as a hardware vertex shader (versus compute) */
    bool hw;
 
    /* If !hw and the draw call is indexed, the index size */
    uint8_t sw_index_size_B;
-
-   /* Robustness settings for the vertex fetch */
-   struct agx_robustness robustness;
 };
 
 struct agx_fs_prolog_key {
@@ -88,25 +80,13 @@ struct agx_fs_prolog_key {
    unsigned cf_base;
 };
 
-struct agx_blend_rt_key {
-   enum pipe_blend_func rgb_func          : 3;
-   enum pipe_blendfactor rgb_src_factor   : 5;
-   enum pipe_blendfactor rgb_dst_factor   : 5;
-   enum pipe_blend_func alpha_func        : 3;
-   enum pipe_blendfactor alpha_src_factor : 5;
-   enum pipe_blendfactor alpha_dst_factor : 5;
-   unsigned colormask                     : 4;
-   unsigned pad                           : 2;
-};
-static_assert(sizeof(struct agx_blend_rt_key) == 4, "packed");
-
 struct agx_blend_key {
-   struct agx_blend_rt_key rt[8];
-   uint8_t logicop_func;
+   nir_lower_blend_rt rt[8];
+   unsigned logicop_func;
    bool alpha_to_coverage, alpha_to_one;
-   bool padding;
+   bool padding[2];
 };
-static_assert(sizeof(struct agx_blend_key) == 36, "packed");
+static_assert(sizeof(struct agx_blend_key) == 232, "packed");
 
 struct agx_fs_epilog_link_info {
    /* Base index of spilled render targets in the binding table */
@@ -117,46 +97,31 @@ struct agx_fs_epilog_link_info {
     */
    uint8_t size_32;
 
-   /* Mask of render targets written by the main shader */
-   uint8_t rt_written;
-
    /* If set, the API fragment shader uses sample shading. This means the epilog
     * will be invoked per-sample as well.
     */
-   unsigned sample_shading : 1;
+   bool sample_shading;
 
    /* If set, broadcast the render target #0 value to all render targets. This
     * implements gl_FragColor semantics.
     */
-   unsigned broadcast_rt0 : 1;
+   bool broadcast_rt0;
 
    /* If set, force render target 0's W channel to 1.0. This optimizes blending
     * calculations in some applications.
     */
-   unsigned rt0_w_1 : 1;
+   bool rt0_w_1;
 
    /* If set, the API fragment shader wants to write depth/stencil respectively.
     * This happens in the epilog for correctness when the epilog discards.
     */
-   unsigned write_z : 1;
-   unsigned write_s : 1;
-
-   /* Whether the fragment prolog or main fragment shader already ran tests due
-    * to early_fragment_tests. In this case, the epilog must not run tests.
-    */
-   unsigned already_ran_zs : 1;
-
-   /* Whether the main fragment shader ran tests before discards due to
-    * early_fragment_tests. In this case, the epilog must mask the stores in
-    * software instead.
-    */
-   bool sample_mask_after_force_early : 1;
-
-   unsigned padding : 1;
+   bool write_z, write_s;
 };
-static_assert(sizeof(struct agx_fs_epilog_link_info) == 4, "packed");
 
 struct agx_fs_epilog_key {
+   /* Mask of render targets written by the main shader */
+   uint8_t rt_written;
+
    struct agx_fs_epilog_link_info link;
 
    /* Blend state. Blending happens in the epilog. */

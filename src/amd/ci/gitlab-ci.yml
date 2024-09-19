@@ -316,74 +316,66 @@ radv-fossils:
 
 vkd3d-tahiti-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .tahiti-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-tahiti
+    VKD3D_PROTON_RESULTS: radv-tahiti-vkd3d
     # These vkd3d-proton tests are skipped because they trigger GPU hangs.
     VKD3D_TEST_EXCLUDE: test_execute_indirect_state,test_execute_indirect_state_predication,test_undefined_descriptor_heap_mismatch_types
 
 vkd3d-polaris10-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .polaris10-test-valve-kws
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-polaris10
+    VKD3D_PROTON_RESULTS: radv-polaris10-vkd3d
 
 vkd3d-vega10-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .vega10-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-vega10
+    VKD3D_PROTON_RESULTS: radv-vega10-vkd3d
 
 vkd3d-renoir-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .renoir-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-renoir
+    VKD3D_PROTON_RESULTS: radv-renoir-vkd3d
 
 vkd3d-navi10-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .navi10-test-valve-mupuf
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-navi10
+    VKD3D_PROTON_RESULTS: radv-navi10-vkd3d
 
 vkd3d-navi21-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .navi21-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-navi21
+    VKD3D_PROTON_RESULTS: radv-navi21-vkd3d
 
 vkd3d-vangogh-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .vangogh-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-vangogh
+    VKD3D_PROTON_RESULTS: radv-vangogh-vkd3d
 
 vkd3d-navi31-valve:
   extends:
-    - .b2c-test-radv-vk
-    - .b2c-vkd3d-proton-test
+    - .vkd3d-test-valve
     - .navi31-test-valve
     - .radv-valve-manual-rules
   variables:
-    VKD3D_PROTON_RESULTS: radv-navi31
+    VKD3D_PROTON_RESULTS: radv-navi31-vkd3d

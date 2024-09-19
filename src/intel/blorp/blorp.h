@@ -148,22 +148,14 @@ void blorp_batch_init(struct blorp_context *blorp, struct blorp_batch *batch,
 void blorp_batch_finish(struct blorp_batch *batch);
 
 static inline isl_surf_usage_flags_t
-blorp_batch_isl_copy_usage(const struct blorp_batch *batch, bool is_dest,
-                           bool _protected)
+blorp_batch_isl_copy_usage(const struct blorp_batch *batch, bool is_dest)
 {
-   isl_surf_usage_flags_t usage;
-
    if (batch->flags & BLORP_BATCH_USE_COMPUTE)
-      usage = is_dest ? ISL_SURF_USAGE_STORAGE_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
+      return is_dest ? ISL_SURF_USAGE_STORAGE_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
    else if (batch->flags & BLORP_BATCH_USE_BLITTER)
-      usage = is_dest ? ISL_SURF_USAGE_BLITTER_DST_BIT : ISL_SURF_USAGE_BLITTER_SRC_BIT;
+      return is_dest ? ISL_SURF_USAGE_BLITTER_DST_BIT : ISL_SURF_USAGE_BLITTER_SRC_BIT;
    else
-      usage = is_dest ? ISL_SURF_USAGE_RENDER_TARGET_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
-
-   if (_protected)
-      usage |= ISL_SURF_USAGE_PROTECTED_BIT;
-
-   return usage;
+      return is_dest ? ISL_SURF_USAGE_RENDER_TARGET_BIT : ISL_SURF_USAGE_TEXTURE_BIT;
 }
 
 struct blorp_address {

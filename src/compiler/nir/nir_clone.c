@@ -216,7 +216,6 @@ clone_alu(clone_state *state, const nir_alu_instr *alu)
 {
    nir_alu_instr *nalu = nir_alu_instr_create(state->ns, alu->op);
    nalu->exact = alu->exact;
-   nalu->fp_fast_math = alu->fp_fast_math;
    nalu->no_signed_wrap = alu->no_signed_wrap;
    nalu->no_unsigned_wrap = alu->no_unsigned_wrap;
 

@@ -217,7 +217,8 @@ lower_mem_load(nir_builder *b, nir_intrinsic_instr *intrin,
 
    nir_def *result = nir_extract_bits(b, chunks, num_chunks, 0,
                                       num_components, bit_size);
-   nir_def_replace(&intrin->def, result);
+   nir_def_rewrite_uses(&intrin->def, result);
+   nir_instr_remove(&intrin->instr);
 
    return true;
 }
@@ -294,8 +295,7 @@ lower_mem_store(nir_builder *b, nir_intrinsic_instr *intrin,
           chunk_bytes > max_chunk_bytes) {
          /* Otherwise the caller made a mistake with their return values. */
          assert(chunk_bytes <= 4);
-         assert(allow_unaligned_stores_as_atomics ||
-                intrin->intrinsic == nir_intrinsic_store_scratch);
+         assert(allow_unaligned_stores_as_atomics);
 
          /* We'll turn this into a pair of 32-bit atomics to modify only the right
           * bits of memory.
@@ -360,13 +360,6 @@ lower_mem_store(nir_builder *b, nir_intrinsic_instr *intrin,
                               .atomic_op = nir_atomic_op_ior,
                               .base = nir_intrinsic_base(intrin));
             break;
-         case nir_intrinsic_store_scratch: {
-            nir_def *value = nir_load_scratch(b, 1, 32, chunk_offset);
-            value = nir_iand(b, value, iand_mask);
-            value = nir_ior(b, value, data);
-            nir_store_scratch(b, value, chunk_offset);
-            break;
-         }
          default:
             unreachable("Unsupported unaligned store");
          }
@@ -393,8 +386,6 @@ intrin_to_variable_mode(nir_intrinsic_op intrin)
 {
    switch (intrin) {
    case nir_intrinsic_load_ubo:
-   case nir_intrinsic_ldc_nv:
-   case nir_intrinsic_ldcx_nv:
       return nir_var_mem_ubo;
 
    case nir_intrinsic_load_push_constant:
@@ -451,8 +442,6 @@ lower_mem_access_instr(nir_builder *b, nir_instr *instr, void *_data)
    case nir_intrinsic_load_shared:
    case nir_intrinsic_load_scratch:
    case nir_intrinsic_load_task_payload:
-   case nir_intrinsic_ldc_nv:
-   case nir_intrinsic_ldcx_nv:
       return lower_mem_load(b, intrin, state->callback, state->cb_data);
 
    case nir_intrinsic_store_global:
@@ -473,6 +462,7 @@ nir_lower_mem_access_bit_sizes(nir_shader *shader,
                                const nir_lower_mem_access_bit_sizes_options *options)
 {
    return nir_shader_instructions_pass(shader, lower_mem_access_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                          nir_metadata_dominance,
                                        (void *)options);
 }

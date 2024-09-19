@@ -34,7 +34,8 @@ The components involved in this include:
 
 All of these components reside in the guest Linux virtual machine. On
 the host, all you're doing is running VMware
-`Fusion or Workstation <https://www.vmware.com/products/desktop-hypervisor.html>`__.
+`Workstation Pro <https://www.vmware.com/products/workstation-pro.html>`__ or
+`Fusion <https://www.vmware.com/products/fusion.html>`__.
 
 Prerequisites
 -------------

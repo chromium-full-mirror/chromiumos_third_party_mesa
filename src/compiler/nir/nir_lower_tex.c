@@ -353,7 +353,8 @@ lower_zero_lod(nir_builder *b, nir_tex_instr *tex)
    b->cursor = nir_before_instr(&tex->instr);
 
    if (tex->op == nir_texop_lod) {
-      nir_def_replace(&tex->def, nir_imm_int(b, 0));
+      nir_def_rewrite_uses(&tex->def, nir_imm_int(b, 0));
+      nir_instr_remove(&tex->instr);
       return;
    }
 
@@ -958,7 +959,8 @@ lower_tex_to_txd(nir_builder *b, nir_tex_instr *tex)
                 tex->def.num_components,
                 tex->def.bit_size);
    nir_builder_instr_insert(b, &txd->instr);
-   nir_def_replace(&tex->def, &txd->def);
+   nir_def_rewrite_uses(&tex->def, &txd->def);
+   nir_instr_remove(&tex->instr);
    return txd;
 }
 
@@ -997,7 +999,8 @@ lower_txb_to_txl(nir_builder *b, nir_tex_instr *tex)
                 tex->def.num_components,
                 tex->def.bit_size);
    nir_builder_instr_insert(b, &txl->instr);
-   nir_def_replace(&tex->def, &txl->def);
+   nir_def_rewrite_uses(&tex->def, &txl->def);
+   nir_instr_remove(&tex->instr);
    return txl;
 }
 
@@ -1300,7 +1303,8 @@ lower_tg4_offsets(nir_builder *b, nir_tex_instr *tex)
    dest[4] = nir_get_scalar(residency, 0);
 
    nir_def *res = nir_vec_scalars(b, dest, tex->def.num_components);
-   nir_def_replace(&tex->def, res);
+   nir_def_rewrite_uses(&tex->def, res);
+   nir_instr_remove(&tex->instr);
 
    return true;
 }
@@ -1419,15 +1423,13 @@ nir_lower_ms_txf_to_fragment_fetch(nir_builder *b, nir_tex_instr *tex)
    /* Obtain new sample index. */
    int ms_index = nir_tex_instr_src_index(tex, nir_tex_src_ms_index);
    assert(ms_index >= 0);
-   nir_def *sample = tex->src[ms_index].src.ssa;
+   nir_src sample = tex->src[ms_index].src;
    nir_def *new_sample = nir_ubfe(b, &fmask_fetch->def,
-                                  nir_u2u32(b, nir_ishl_imm(b, sample, 2)),
-                                  nir_imm_int(b, 3));
+                                  nir_ishl_imm(b, sample.ssa, 2), nir_imm_int(b, 3));
 
    /* Update instruction. */
    tex->op = nir_texop_fragment_fetch_amd;
-   nir_src_rewrite(&tex->src[ms_index].src,
-                   nir_u2uN(b, new_sample, sample->bit_size));
+   nir_src_rewrite(&tex->src[ms_index].src, new_sample);
 }
 
 static void
@@ -1791,7 +1793,8 @@ nir_lower_tex_impl(nir_function_impl *impl,
       progress |= nir_lower_tex_block(block, &builder, options, compiler_options);
    }
 
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl, nir_metadata_block_index |
+                                  nir_metadata_dominance);
    return progress;
 }
 

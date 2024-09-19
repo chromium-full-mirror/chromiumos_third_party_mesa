@@ -211,10 +211,9 @@ v3d_nir_get_tlb_color(nir_builder *b, struct v3d_compile *c, int rt, int sample)
         for (int i = 0; i < 4; i++) {
                 if (i < num_components) {
                         color[i] =
-                                nir_load_tlb_color_brcm(b, 1, 32,
-                                                        nir_imm_int(b, rt),
-                                                        .base = sample,
-                                                        .component = i);
+                                nir_load_tlb_color_v3d(b, 1, 32, nir_imm_int(b, rt),
+                                                       .base = sample,
+                                                       .component = i);
                 } else {
                         /* These will be DCEd */
                         color[i] = nir_imm_int(b, 0);
@@ -410,7 +409,8 @@ v3d_nir_lower_logic_ops(nir_shader *s, struct v3d_compile *c)
 
                 if (progress) {
                         nir_metadata_preserve(impl,
-                                              nir_metadata_control_flow);
+                                              nir_metadata_block_index |
+                                              nir_metadata_dominance);
                 } else {
                         nir_metadata_preserve(impl,
                                               nir_metadata_all);

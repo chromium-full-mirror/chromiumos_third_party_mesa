@@ -109,10 +109,7 @@ TAG(etc1_parse_block)(struct TAG(etc1_block) *block, const UINT8_TYPE *src)
    block->flipped = (src[3] & 0x1);
 
    block->pixel_indices =
-      ((uint32_t) src[4] << 24) |
-      ((uint32_t) src[5] << 16) |
-      ((uint32_t) src[6] << 8) |
-      (uint32_t) src[7];
+      (src[4] << 24) | (src[5] << 16) | (src[6] << 8) | src[7];
 }
 
 static void

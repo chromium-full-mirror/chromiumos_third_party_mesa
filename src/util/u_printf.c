@@ -99,42 +99,6 @@ size_t u_printf_length(const char *fmt, va_list untouched_args)
    return size;
 }
 
-/**
- * Used to print plain format strings without arguments as some post-processing
- * will be required:
- *  - %% needs to be printed as %
- */
-static void
-u_printf_plain_sized(FILE *out, const char* format, size_t len)
-{
-   bool found = false;
-   size_t last = 0;
-
-   for (size_t i = 0; i < len; i++) {
-      if (!found && format[i] == '%') {
-         found = true;
-      } else if (found && format[i] == '%') {
-         /* print one character less so we only print a single % */
-         fwrite(format + last, i - last - 1, 1, out);
-
-         last = i;
-         found = false;
-      } else {
-         /* We should never end up here with an actual format token */
-         assert(!found);
-         found = false;
-      }
-   }
-
-   fwrite(format + last, len - last, 1, out);
-}
-
-static void
-u_printf_plain(FILE *out, const char* format)
-{
-   u_printf_plain_sized(out, format, strlen(format));
-}
-
 static void
 u_printf_impl(FILE *out, const char *buffer, size_t buffer_size,
               const u_printf_info *info,
@@ -158,7 +122,7 @@ u_printf_impl(FILE *out, const char *buffer, size_t buffer_size,
       buf_pos += sizeof(fmt_idx);
 
       if (!fmt->num_args) {
-         u_printf_plain(out, format);
+         fprintf(out, "%s", format);
          continue;
       }
 
@@ -166,22 +130,23 @@ u_printf_impl(FILE *out, const char *buffer, size_t buffer_size,
          int arg_size = fmt->arg_sizes[i];
          size_t spec_pos = util_printf_next_spec_pos(format, 0);
 
-         /* If we hit an unused argument we skip all remaining ones */
-         if (spec_pos == -1)
-            break;
+         if (spec_pos == -1) {
+            fprintf(out, "%s", format);
+            continue;
+         }
 
          const char *token = util_printf_prev_tok(&format[spec_pos]);
          const char *next_format = &format[spec_pos + 1];
 
          /* print the part before the format token */
          if (token != format)
-            u_printf_plain_sized(out, format, token - format);
+            fwrite(format, token - format, 1, out);
 
          char *print_str = strndup(token, next_format - token);
          /* rebase spec_pos so we can use it with print_str */
          spec_pos += format - token;
 
-         /* print the formatted part */
+         /* print the formated part */
          if (print_str[spec_pos] == 's') {
             uint64_t idx;
             memcpy(&idx, &buffer[buf_pos], 8);
@@ -268,7 +233,7 @@ u_printf_impl(FILE *out, const char *buffer, size_t buffer_size,
       }
 
       /* print remaining */
-      u_printf_plain(out, format);
+      fprintf(out, "%s", format);
    }
 }
 

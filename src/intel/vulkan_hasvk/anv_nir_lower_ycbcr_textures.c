@@ -327,7 +327,8 @@ anv_nir_lower_ycbcr_textures_instr(nir_builder *builder,
                                         swizzled_bpcs);
    }
 
-   nir_def_replace(&tex->def, result);
+   nir_def_rewrite_uses(&tex->def, result);
+   nir_instr_remove(&tex->instr);
 
    return true;
 }
@@ -338,6 +339,7 @@ anv_nir_lower_ycbcr_textures(nir_shader *shader,
 {
    return nir_shader_instructions_pass(shader,
                                        anv_nir_lower_ycbcr_textures_instr,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                        (void *)layout);
 }

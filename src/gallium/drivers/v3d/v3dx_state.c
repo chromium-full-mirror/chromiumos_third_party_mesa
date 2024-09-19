@@ -297,11 +297,9 @@ v3d_set_vertex_buffers(struct pipe_context *pctx,
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_vertexbuf_stateobj *so = &v3d->vertexbuf;
 
-        assert(BITSET_SIZE(so->enabled_mask) <= 32);
-        util_set_vertex_buffers_mask(so->vb, &so->enabled_mask[0], vb,
+        util_set_vertex_buffers_mask(so->vb, &so->enabled_mask, vb,
                                      count, true);
-
-        so->count = BITSET_LAST_BIT(so->enabled_mask);
+        so->count = util_last_bit(so->enabled_mask);
 
         v3d->dirty |= V3D_DIRTY_VTXBUF;
 }
@@ -376,7 +374,7 @@ v3d_vertex_state_create(struct pipe_context *pctx, unsigned num_elements,
                         attr.normalized_int_type = desc->channel[0].normalized;
                         attr.read_as_int_uint = desc->channel[0].pure_integer;
                         attr.instance_divisor = MIN2(elem->instance_divisor,
-                                                     V3D_MAX_VERTEX_ATTRIB_DIVISOR);
+                                                     0xffff);
 
                         switch (desc->channel[0].type) {
                         case UTIL_FORMAT_TYPE_FLOAT:
@@ -481,13 +479,13 @@ v3d_set_constant_buffer(struct pipe_context *pctx, enum pipe_shader_type shader,
          * passing NULL here.
          */
         if (unlikely(!cb)) {
-                BITSET_CLEAR(so->enabled_mask, index);
-                BITSET_CLEAR(so->dirty_mask, index);
+                so->enabled_mask &= ~(1 << index);
+                so->dirty_mask &= ~(1 << index);
                 return;
         }
 
-        BITSET_SET(so->enabled_mask, index);
-        BITSET_SET(so->dirty_mask, index);
+        so->enabled_mask |= 1 << index;
+        so->dirty_mask |= 1 << index;
         v3d->dirty |= V3D_DIRTY_CONSTBUF;
 }
 
@@ -1291,6 +1289,7 @@ v3d_set_shader_buffers(struct pipe_context *pctx,
 {
         struct v3d_context *v3d = v3d_context(pctx);
         struct v3d_ssbo_stateobj *so = &v3d->ssbo[shader];
+        unsigned mask = 0;
 
         if (buffers) {
                 for (unsigned i = 0; i < count; i++) {
@@ -1302,16 +1301,20 @@ v3d_set_shader_buffers(struct pipe_context *pctx,
                             (buf->buffer_size == buffers[i].buffer_size))
                                 continue;
 
+                        mask |= 1 << n;
+
                         buf->buffer_offset = buffers[i].buffer_offset;
                         buf->buffer_size = buffers[i].buffer_size;
                         pipe_resource_reference(&buf->buffer, buffers[i].buffer);
 
                         if (buf->buffer)
-                                BITSET_SET(so->enabled_mask, n);
+                                so->enabled_mask |= 1 << n;
                         else
-                                BITSET_CLEAR(so->enabled_mask, n);
+                                so->enabled_mask &= ~(1 << n);
                 }
         } else {
+                mask = ((1 << count) - 1) << start;
+
                 for (unsigned i = 0; i < count; i++) {
                         unsigned n = i + start;
                         struct pipe_shader_buffer *buf = &so->sb[n];
@@ -1319,7 +1322,7 @@ v3d_set_shader_buffers(struct pipe_context *pctx,
                         pipe_resource_reference(&buf->buffer, NULL);
                 }
 
-                BITSET_CLEAR_RANGE(so->enabled_mask, start, start + count);
+                so->enabled_mask &= ~mask;
         }
 
         v3d->dirty |= V3D_DIRTY_SSBO;
@@ -1392,12 +1395,12 @@ v3d_set_shader_images(struct pipe_context *pctx,
                         util_copy_image_view(&iview->base, &images[i]);
 
                         if (iview->base.resource) {
-                                BITSET_SET(so->enabled_mask, n);
+                                so->enabled_mask |= 1 << n;
                                 v3d_create_image_view_texture_shader_state(v3d,
                                                                            so,
                                                                            n);
                         } else {
-                                BITSET_CLEAR(so->enabled_mask, n);
+                                so->enabled_mask &= ~(1 << n);
                                 pipe_resource_reference(&iview->tex_state, NULL);
                         }
                 }
@@ -1410,7 +1413,10 @@ v3d_set_shader_images(struct pipe_context *pctx,
                         pipe_resource_reference(&iview->tex_state, NULL);
                 }
 
-                BITSET_CLEAR_RANGE(so->enabled_mask, start, start + count);
+                if (count == 32)
+                        so->enabled_mask = 0;
+                else
+                        so->enabled_mask &= ~(((1 << count) - 1) << start);
         }
 
         v3d->dirty |= V3D_DIRTY_SHADER_IMAGE;

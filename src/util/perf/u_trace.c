@@ -101,8 +101,7 @@ struct u_trace_chunk {
    struct util_queue_fence fence;
 
    bool last; /* this chunk is last in batch */
-   bool eof;  /* this chunk is last in frame, unless frame_nr is set */
-   uint32_t frame_nr; /* frame idx from the driver */
+   bool eof;  /* this chunk is last in frame */
 
    void *flush_data; /* assigned by u_trace_flush */
 
@@ -504,10 +503,6 @@ u_trace_context_fini(struct u_trace_context *utctx)
 #endif
 
    if (utctx->out) {
-      if (utctx->batch_nr > 0) {
-         utctx->out_printer->end_of_frame(utctx);
-      }
-
       utctx->out_printer->end(utctx);
       fflush(utctx->out);
    }
@@ -559,15 +554,6 @@ process_chunk(void *job, void *gdata, int thread_index)
 {
    struct u_trace_chunk *chunk = job;
    struct u_trace_context *utctx = chunk->utctx;
-
-   if (chunk->frame_nr != U_TRACE_FRAME_UNKNOWN &&
-       chunk->frame_nr != utctx->frame_nr) {
-      if (utctx->out) {
-         utctx->out_printer->end_of_frame(utctx);
-      }
-      utctx->frame_nr = chunk->frame_nr;
-      utctx->start_of_frame = true;
-   }
 
    if (utctx->start_of_frame) {
       utctx->start_of_frame = false;
@@ -853,7 +839,8 @@ u_trace_appendv(struct u_trace *ut,
    }
 
    /* record a timestamp for the trace: */
-   ut->utctx->record_timestamp(ut, cs, chunk->timestamps, tp_idx, tp->flags);
+   ut->utctx->record_timestamp(ut, cs, chunk->timestamps, tp_idx,
+                               tp->end_of_pipe);
 
    chunk->traces[tp_idx] = (struct u_trace_event) {
       .tp = tp,
@@ -865,16 +852,12 @@ u_trace_appendv(struct u_trace *ut,
 }
 
 void
-u_trace_flush(struct u_trace *ut,
-              void *flush_data,
-              uint32_t frame_nr,
-              bool free_data)
+u_trace_flush(struct u_trace *ut, void *flush_data, bool free_data)
 {
    list_for_each_entry (struct u_trace_chunk, chunk, &ut->trace_chunks,
                         node) {
       chunk->flush_data = flush_data;
       chunk->free_flush_data = false;
-      chunk->frame_nr = frame_nr;
    }
 
    if (free_data && !list_is_empty(&ut->trace_chunks)) {

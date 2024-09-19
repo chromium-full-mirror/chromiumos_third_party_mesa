@@ -57,7 +57,7 @@
 
 #include "os_memory_aligned.h"
 
-#if DETECT_OS_POSIX
+#if DETECT_OS_UNIX
 
 #include "os_memory_fd.h"
 

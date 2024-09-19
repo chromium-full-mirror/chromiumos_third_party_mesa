@@ -241,7 +241,7 @@ static void handle_immediate(struct tgsi_to_rc * ttr,
     struct rc_constant constant;
 
     constant.Type = RC_CONSTANT_IMMEDIATE;
-    constant.UseMask = RC_MASK_XYZW;
+    constant.Size = 4;
     for (unsigned i = 0; i < 4; ++i)
         constant.u.Immediate[i] = imm->u[i].Float;
     rc_constants_add(&ttr->compiler->Program.Constants, &constant);
@@ -264,7 +264,7 @@ void r300_tgsi_to_rc(struct tgsi_to_rc * ttr,
         struct rc_constant constant;
         memset(&constant, 0, sizeof(constant));
         constant.Type = RC_CONSTANT_EXTERNAL;
-        constant.UseMask = RC_MASK_XYZW;
+        constant.Size = 4;
         constant.u.External = i;
         rc_constants_add(&ttr->compiler->Program.Constants, &constant);
     }

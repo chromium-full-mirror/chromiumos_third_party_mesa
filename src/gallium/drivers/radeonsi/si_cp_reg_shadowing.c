@@ -65,7 +65,7 @@ void si_init_cp_reg_shadowing(struct si_context *sctx)
       struct si_pm4_state *shadowing_preamble = si_pm4_create_sized(sctx->screen, 256, false);
 
       ac_create_shadowing_ib_preamble(&sctx->screen->info,
-                                      (pm4_cmd_add_fn)ac_pm4_cmd_add, &shadowing_preamble->base,
+                                      (pm4_cmd_add_fn)si_pm4_cmd_add, shadowing_preamble,
                                       sctx->shadowing.registers->gpu_address, sctx->screen->dpbb_allowed);
 
       /* Initialize shadowed registers as follows. */
@@ -75,9 +75,7 @@ void si_init_cp_reg_shadowing(struct si_context *sctx)
          radeon_add_to_buffer_list(sctx, &sctx->gfx_cs, sctx->shadowing.csa,
                                    RADEON_USAGE_READWRITE | RADEON_PRIO_DESCRIPTORS);
       si_pm4_emit_commands(sctx, shadowing_preamble);
-
-      if (sctx->gfx_level < GFX12)
-         ac_emulate_clear_state(&sctx->screen->info, &sctx->gfx_cs, si_set_context_reg_array);
+      ac_emulate_clear_state(&sctx->screen->info, &sctx->gfx_cs, si_set_context_reg_array);
 
       /* TODO: Gfx11 fails GLCTS if we don't re-emit the preamble at the beginning of every IB. */
       /* TODO: Skipping this may have made register shadowing slower on Gfx11. */
@@ -89,14 +87,13 @@ void si_init_cp_reg_shadowing(struct si_context *sctx)
          sctx->cs_preamble_state = NULL;
       }
 
-      if (sctx->gfx_level < GFX12)
-         si_set_tracked_regs_to_clear_state(sctx);
+      si_set_tracked_regs_to_clear_state(sctx);
 
       /* Setup preemption. The shadowing preamble will be executed as a preamble IB,
        * which will load register values from memory on a context switch.
        */
-      sctx->ws->cs_setup_preemption(&sctx->gfx_cs, shadowing_preamble->base.pm4,
-                                    shadowing_preamble->base.ndw);
+      sctx->ws->cs_setup_preemption(&sctx->gfx_cs, shadowing_preamble->pm4,
+                                    shadowing_preamble->ndw);
       si_pm4_free_state(sctx, shadowing_preamble, ~0);
    }
 }

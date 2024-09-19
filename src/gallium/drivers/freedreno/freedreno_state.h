@@ -57,15 +57,10 @@ fd_blend_enabled(struct fd_context *ctx, unsigned n) assert_dt
 }
 
 static inline bool
-fd_rast_depth_clamp_enabled(const struct pipe_rasterizer_state *cso)
-{
-   return !(cso->depth_clip_near && cso->depth_clip_far);
-}
-
-static inline bool
 fd_depth_clamp_enabled(struct fd_context *ctx) assert_dt
 {
-   return fd_rast_depth_clamp_enabled(ctx->rasterizer);
+   return !(ctx->rasterizer->depth_clip_near &&
+            ctx->rasterizer->depth_clip_far);
 }
 
 void fd_set_shader_buffers(struct pipe_context *pctx,

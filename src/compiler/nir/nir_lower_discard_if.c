@@ -30,6 +30,10 @@ lower_discard_if(nir_builder *b, nir_intrinsic_instr *instr, void *cb_data)
    nir_lower_discard_if_options options = *(nir_lower_discard_if_options *)cb_data;
 
    switch (instr->intrinsic) {
+   case nir_intrinsic_discard_if:
+      if (!(options & nir_lower_discard_if_to_cf))
+         return false;
+      break;
    case nir_intrinsic_demote_if:
       if (!(options & nir_lower_demote_if_to_cf))
          return false;
@@ -46,6 +50,9 @@ lower_discard_if(nir_builder *b, nir_intrinsic_instr *instr, void *cb_data)
 
    nir_if *if_stmt = nir_push_if(b, instr->src[0].ssa);
    switch (instr->intrinsic) {
+   case nir_intrinsic_discard_if:
+      nir_discard(b);
+      break;
    case nir_intrinsic_demote_if:
       nir_demote(b);
       break;
@@ -87,7 +94,7 @@ lower_discard_if(nir_builder *b, nir_intrinsic_instr *instr, void *cb_data)
          }   else   {
             block   block_6:
             /   preds:   block_4   /
-            intrinsic   terminate   ()   () <-- not last instruction
+            intrinsic   discard   ()   () <-- not last instruction
             vec1   32   ssa_23   =   iadd   ssa_50,   ssa_31 <-- dead code loop itr increment
             /   succs:   block_7   /
          }
@@ -96,7 +103,7 @@ lower_discard_if(nir_builder *b, nir_intrinsic_instr *instr, void *cb_data)
 
       which means that we can't assert like this:
 
-      assert(instr->intrinsic != nir_intrinsic_terminate ||
+      assert(instr->intrinsic != nir_intrinsic_discard ||
              nir_block_last_instr(instr->instr.block) == &instr->instr);
 
 

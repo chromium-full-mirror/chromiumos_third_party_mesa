@@ -382,12 +382,7 @@ st_prog_to_nir_postprocess(struct st_context *st, nir_shader *nir,
 
    NIR_PASS(_, nir, st_nir_lower_wpos_ytransform, prog, screen);
    NIR_PASS(_, nir, nir_lower_system_values);
-
-   struct nir_lower_compute_system_values_options cs_options = {
-      .has_base_global_invocation_id = false,
-      .has_base_workgroup_id = false,
-   };
-   NIR_PASS(_, nir, nir_lower_compute_system_values, &cs_options);
+   NIR_PASS(_, nir, nir_lower_compute_system_values, NULL);
 
    /* Optimise NIR */
    NIR_PASS(_, nir, nir_opt_constant_folding);
@@ -587,6 +582,7 @@ static const struct nir_shader_compiler_options draw_nir_options = {
    .lower_fsat = true,
    .lower_bitfield_insert = true,
    .lower_bitfield_extract = true,
+   .lower_fdot = true,
    .lower_fdph = true,
    .lower_ffma16 = true,
    .lower_ffma32 = true,

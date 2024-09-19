@@ -888,11 +888,10 @@ nvc0_screen_resize_text_area(struct nvc0_screen *screen, struct nouveau_pushbuf 
    nouveau_heap_free(&screen->lib_code);
    nouveau_heap_destroy(&screen->text_heap);
 
-   /*
-    * Shader storage needs a 2K (from NVIDIA) overallocations at the end
-    * to avoid prefetch bugs.
+   /* XXX: getting a page fault at the end of the code buffer every few
+    *  launches, don't use the last 256 bytes to work around them - prefetch ?
     */
-   nouveau_heap_init(&screen->text_heap, 0, size - 0x800);
+   nouveau_heap_init(&screen->text_heap, 0, size - 0x100);
 
    /* update the code segment setup */
    if (screen->eng3d->oclass < GV100_3D_CLASS) {
@@ -1487,11 +1486,6 @@ nvc0_screen_create(struct nouveau_device *dev)
    if (!nvc0_blitter_create(screen))
       goto fail;
 
-   nouveau_device_set_classes_for_debug(dev,
-                                        screen->eng3d->oclass,
-                                        screen->compute->oclass,
-                                        screen->m2mf->oclass,
-                                        screen->copy ? screen->copy->oclass : 0);
    return &screen->base;
 
 fail:

@@ -108,7 +108,8 @@ lima_nir_duplicate_load_consts_impl(nir_shader *shader, nir_function_impl *impl)
       }
    }
 
-   nir_metadata_preserve(impl, nir_metadata_control_flow);
+   nir_metadata_preserve(impl, nir_metadata_block_index |
+                               nir_metadata_dominance);
 }
 
 /* Duplicate load consts for every user.

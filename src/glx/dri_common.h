@@ -38,7 +38,7 @@
 
 #ifdef GLX_DIRECT_RENDERING
 
-#include "mesa_interface.h"
+#include <GL/internal/dri_interface.h>
 #include <stdbool.h>
 #include "loader.h"
 #include "util/macros.h" /* for PRINTFLIKE */
@@ -64,7 +64,7 @@ extern void
 driReleaseDrawables(struct glx_context *gc);
 
 extern const __DRIextension **driOpenDriver(const char *driverName,
-                                            bool driver_name_is_inferred);
+                                            void **out_driver_handle);
 
 struct dri_ctx_attribs {
    unsigned major_ver;

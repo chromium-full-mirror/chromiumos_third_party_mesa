@@ -9,9 +9,6 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "util/build_id.h"
-#include "util/mesa-sha1.h"
-
 #include "vk_alloc.h"
 #include "vk_log.h"
 
@@ -38,6 +35,10 @@ static const struct debug_control panvk_debug_options[] = {
    {"no_known_warn", PANVK_DEBUG_NO_KNOWN_WARN},
    {NULL, 0}};
 
+#if defined(VK_USE_PLATFORM_WAYLAND_KHR)
+#define PANVK_USE_WSI_PLATFORM
+#endif
+
 VKAPI_ATTR VkResult VKAPI_CALL
 panvk_EnumerateInstanceVersion(uint32_t *pApiVersion)
 {
@@ -46,25 +47,16 @@ panvk_EnumerateInstanceVersion(uint32_t *pApiVersion)
 }
 
 static const struct vk_instance_extension_table panvk_instance_extensions = {
-   .KHR_device_group_creation = true,
    .KHR_get_physical_device_properties2 = true,
+   .EXT_debug_report = true,
+   .EXT_debug_utils = true,
+
 #ifdef PANVK_USE_WSI_PLATFORM
    .KHR_surface = true,
 #endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR
    .KHR_wayland_surface = true,
 #endif
-#ifdef VK_USE_PLATFORM_XCB_KHR
-   .KHR_xcb_surface = true,
-#endif
-#ifdef VK_USE_PLATFORM_XLIB_KHR
-   .KHR_xlib_surface = true,
-#endif
-#ifdef VK_USE_PLATFORM_XLIB_XRANDR_EXT
-   .EXT_acquire_xlib_display = true,
-#endif
-   .EXT_debug_report = true,
-   .EXT_debug_utils = true,
 #ifndef VK_USE_PLATFORM_WIN32_KHR
    .EXT_headless_surface = true,
 #endif
@@ -111,15 +103,9 @@ panvk_kmod_zalloc(const struct pan_kmod_allocator *allocator, size_t size,
 {
    const VkAllocationCallbacks *vkalloc = allocator->priv;
 
-   void *obj = vk_zalloc(vkalloc, size, 8,
-                         transient ? VK_SYSTEM_ALLOCATION_SCOPE_COMMAND
-                                   : VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
-
-   /* We force errno to -ENOMEM on host allocation failures so we can properly
-    * report it back as VK_ERROR_OUT_OF_HOST_MEMORY. */
-   errno = obj ? 0 : -ENOMEM;
-
-   return obj;
+   return vk_zalloc(vkalloc, size, 8,
+                    transient ? VK_SYSTEM_ALLOCATION_SCOPE_COMMAND
+                              : VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 }
 
 static void
@@ -139,19 +125,6 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
    VkResult result;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
-
-   const struct build_id_note *note =
-      build_id_find_nhdr_for_addr(panvk_CreateInstance);
-   if (!note) {
-      return vk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
-                       "Failed to find build-id");
-   }
-
-   unsigned build_id_len = build_id_length(note);
-   if (build_id_len < SHA1_DIGEST_LENGTH) {
-      return vk_errorf(NULL, VK_ERROR_INITIALIZATION_FAILED,
-                       "build-id too short.  It needs to be a SHA");
-   }
 
    pAllocator = pAllocator ?: vk_default_allocator();
    instance = vk_zalloc(pAllocator, sizeof(*instance), 8,
@@ -189,9 +162,6 @@ panvk_CreateInstance(const VkInstanceCreateInfo *pCreateInfo,
       vk_logi(VK_LOG_NO_OBJS(instance), "Created an instance");
 
    VG(VALGRIND_CREATE_MEMPOOL(instance, 0, false));
-
-   STATIC_ASSERT(sizeof(instance->driver_build_sha) == SHA1_DIGEST_LENGTH);
-   memcpy(instance->driver_build_sha, build_id_data(note), SHA1_DIGEST_LENGTH);
 
    *pInstance = panvk_instance_to_handle(instance);
 

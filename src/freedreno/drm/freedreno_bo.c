@@ -640,8 +640,7 @@ fd_bo_map_os_mmap(struct fd_bo *bo)
                   bo->dev->fd, offset);
 }
 
-/* For internal use only, does not check FD_BO_NOMAP: */
-void *
+static void *
 __fd_bo_map(struct fd_bo *bo)
 {
    if (!bo->map) {

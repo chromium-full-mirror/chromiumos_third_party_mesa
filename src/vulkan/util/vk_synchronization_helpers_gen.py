@@ -168,7 +168,7 @@ def access_is_read(name):
         print(name)
         assert False, "Invalid access bit name"
 
-def get_stages_access(xml, read, guards, all_commands_stages, group_stages):
+def get_stages_access(xml, read, guards):
     stages_access = {}
     for access in xml.findall('./sync/syncaccess'):
         access_name = access.attrib['name']
@@ -182,20 +182,6 @@ def get_stages_access(xml, read, guards, all_commands_stages, group_stages):
         support = access.find('./syncsupport')
         if support is not None:
             stages = support.attrib['stage'].split(',')
-
-            for stage in stages:
-                if (guard, stage) in all_commands_stages:
-                    stages.append('VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT')
-                    stages.append('VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT' if read else 'VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT')
-                    break
-
-            for (group, equiv) in group_stages.items():
-                for stage in stages:
-                    if stage in equiv:
-                        stages.append(group)
-                        break
-
-
             stages.sort()
             key = (guard, tuple(stages))
             if key in stages_access:
@@ -215,14 +201,11 @@ def main():
     xml = et.parse(args.xml);
 
     guards = get_guards(xml, 'vulkan')
-    all_commands_stages = get_all_commands_stages(xml, guards)
-    group_stages = get_group_stages(xml)
-
     environment = {
-        'all_commands_stages': all_commands_stages,
-        'group_stages': group_stages,
-        'stages_read_access': get_stages_access(xml, True, guards, all_commands_stages, group_stages),
-        'stages_write_access': get_stages_access(xml, False, guards, all_commands_stages, group_stages),
+        'all_commands_stages': get_all_commands_stages(xml, guards),
+        'group_stages': get_group_stages(xml),
+        'stages_read_access': get_stages_access(xml, True, guards),
+        'stages_write_access': get_stages_access(xml, False, guards),
     }
 
     try:

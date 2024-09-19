@@ -34,7 +34,7 @@
 #ifndef KOPPER_INTERFACE_H
 #define KOPPER_INTERFACE_H
 
-#include "mesa_interface.h"
+#include <GL/internal/dri_interface.h>
 #include <vulkan/vulkan_core.h>
 
 typedef struct __DRIkopperExtensionRec          __DRIkopperExtension;
@@ -97,7 +97,6 @@ struct kopper_loader_info {
    struct kopper_vk_surface_create_storage bos;
    int has_alpha;
    int initial_swap_interval;
-   bool present_opaque;
 };
 
 #define __DRI_KOPPER_LOADER "DRI_KopperLoader"

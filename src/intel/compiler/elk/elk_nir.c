@@ -330,7 +330,9 @@ elk_nir_lower_vs_inputs(nir_shader *nir,
                nir_def_init(&load->instr, &load->def, 1, 32);
                nir_builder_instr_insert(&b, &load->instr);
 
-               nir_def_replace(&intrin->def, &load->def);
+               nir_def_rewrite_uses(&intrin->def,
+                                        &load->def);
+               nir_instr_remove(&intrin->instr);
                break;
             }
 
@@ -449,7 +451,8 @@ lower_barycentric_per_sample(nir_builder *b,
    nir_def *centroid =
       nir_load_barycentric(b, nir_intrinsic_load_barycentric_sample,
                            nir_intrinsic_interp_mode(intrin));
-   nir_def_replace(&intrin->def, centroid);
+   nir_def_rewrite_uses(&intrin->def, centroid);
+   nir_instr_remove(&intrin->instr);
    return true;
 }
 
@@ -526,12 +529,14 @@ elk_nir_lower_fs_inputs(nir_shader *nir,
       nir_lower_single_sampled(nir);
    } else if (key->persample_interp == ELK_ALWAYS) {
       nir_shader_intrinsics_pass(nir, lower_barycentric_per_sample,
-                                   nir_metadata_control_flow,
+                                   nir_metadata_block_index |
+                                   nir_metadata_dominance,
                                    NULL);
    }
 
    nir_shader_intrinsics_pass(nir, lower_barycentric_at_offset,
-                                nir_metadata_control_flow,
+                                nir_metadata_block_index |
+                                nir_metadata_dominance,
                                 NULL);
 
    /* This pass needs actual constants */
@@ -1001,7 +1006,7 @@ elk_preprocess_nir(const struct elk_compiler *compiler, nir_shader *nir,
     * messages.
     */
    OPT(nir_lower_array_deref_of_vec,
-       nir_var_mem_ubo | nir_var_mem_ssbo, NULL,
+       nir_var_mem_ubo | nir_var_mem_ssbo,
        nir_lower_direct_array_deref_of_vec_load);
 
    /* Get rid of split copies */
@@ -1032,7 +1037,9 @@ elk_nir_zero_inputs_instr(struct nir_builder *b, nir_intrinsic_instr *intrin,
 
    nir_def *zero = nir_imm_zero(b, 1, 32);
 
-   nir_def_replace(&intrin->def, zero);
+   nir_def_rewrite_uses(&intrin->def, zero);
+
+   nir_instr_remove(&intrin->instr);
 
    return true;
 }
@@ -1041,7 +1048,7 @@ static bool
 elk_nir_zero_inputs(nir_shader *shader, uint64_t *zero_inputs)
 {
    return nir_shader_intrinsics_pass(shader, elk_nir_zero_inputs_instr,
-                                     nir_metadata_control_flow,
+                                     nir_metadata_block_index | nir_metadata_dominance,
                                      zero_inputs);
 }
 

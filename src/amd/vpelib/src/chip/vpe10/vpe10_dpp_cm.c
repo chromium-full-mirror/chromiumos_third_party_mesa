@@ -4,6 +4,8 @@
 #include "vpe10/inc/vpe10_cm_common.h"
 #include "vpe10_dpp.h"
 #include "conversion.h"
+#include "color_pwl.h"
+
 #define CTX      vpe10_dpp
 #define CTX_BASE dpp
 
@@ -194,8 +196,15 @@ void vpe10_dpp_program_input_transfer_func(struct dpp *dpp, struct transfer_func
     // VPE always do NL scaling using gamcor, thus skipping dgam (default bypass)
     // dpp->funcs->program_pre_dgam(dpp, tf);
     if (input_tf->type == TF_TYPE_DISTRIBUTED_POINTS) {
-        vpe10_cm_helper_translate_curve_to_degamma_hw_format(input_tf, &dpp->degamma_params);
-        params = &dpp->degamma_params;
+        if (!input_tf->use_pre_calculated_table || dpp->vpe_priv->init.debug.force_tf_calculation) {
+            vpe10_cm_helper_translate_curve_to_degamma_hw_format(input_tf, &dpp->degamma_params);
+            params = &dpp->degamma_params;
+        } else {
+            vpe10_cm_get_tf_pwl_params(input_tf, &params, CM_DEGAM);
+            VPE_ASSERT(params != NULL);
+            if (params == NULL)
+                return;
+        }
     }
     vpe10_dpp_program_gamcor_lut(dpp, params);
 }

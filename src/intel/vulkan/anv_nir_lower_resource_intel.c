@@ -164,6 +164,7 @@ anv_nir_lower_resource_intel(nir_shader *shader,
       .device = device,
    };
    return nir_shader_intrinsics_pass(shader, lower_resource_intel,
-                                       nir_metadata_control_flow,
+                                       nir_metadata_block_index |
+                                       nir_metadata_dominance,
                                        &state);
 }
