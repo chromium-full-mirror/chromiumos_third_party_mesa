@@ -103,8 +103,7 @@ util_perfetto_trace_full_end(const char *name, uint64_t track_id, uint64_t times
 void
 util_perfetto_counter_set(const char *name, double value)
 {
-   TRACE_COUNTER(UTIL_PERFETTO_CATEGORY_DEFAULT_STR,
-                 perfetto::DynamicString(name), value);
+   TRACE_COUNTER(UTIL_PERFETTO_CATEGORY_DEFAULT_STR, name, value);
 }
 
 uint64_t
