@@ -1124,16 +1124,13 @@ lower_sampler_logical_send(const fs_builder &bld, fs_inst *inst,
    inst->mlen = mlen;
    inst->header_size = header_size;
    inst->sfid = BRW_SFID_SAMPLER;
-   uint sampler_ret_type = brw_type_size_bits(inst->dst.type) == 16
-      ? GFX8_SAMPLER_RETURN_FORMAT_16BITS
-      : GFX8_SAMPLER_RETURN_FORMAT_32BITS;
    if (surface.file == IMM &&
        (sampler.file == IMM || sampler_handle.file != BAD_FILE)) {
       inst->desc = brw_sampler_desc(devinfo, surface.ud,
                                     sampler.file == IMM ? sampler.ud % 16 : 0,
                                     msg_type,
                                     simd_mode,
-                                    sampler_ret_type);
+                                    0 /* return_format unused on gfx7+ */);
       inst->src[0] = brw_imm_ud(0);
       inst->src[1] = brw_imm_ud(0);
    } else if (surface_handle.file != BAD_FILE) {
@@ -1143,7 +1140,7 @@ lower_sampler_logical_send(const fs_builder &bld, fs_inst *inst,
                                     sampler.file == IMM ? sampler.ud % 16 : 0,
                                     msg_type,
                                     simd_mode,
-                                    sampler_ret_type);
+                                    0 /* return_format unused on gfx7+ */);
 
       /* For bindless samplers, the entire address is included in the message
        * header so we can leave the portion in the message descriptor 0.
@@ -1169,7 +1166,7 @@ lower_sampler_logical_send(const fs_builder &bld, fs_inst *inst,
                                     0, /* sampler */
                                     msg_type,
                                     simd_mode,
-                                    sampler_ret_type);
+                                    0 /* return_format unused on gfx7+ */);
       const fs_builder ubld = bld.group(1, 0).exec_all();
       brw_reg desc = ubld.vgrf(BRW_TYPE_UD);
       if (surface.equals(sampler)) {
