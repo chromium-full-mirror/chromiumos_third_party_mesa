@@ -57,7 +57,19 @@ union iris_utrace_timestamp {
     *        [2] = 32b Context Timestamp End
     *        [3] = 32b Global Timestamp End"
     */
-   uint32_t compute_walker[4];
+   uint32_t gfx125_postsync_data[4];
+
+   /* Timestamp written by COMPUTE_WALKER::PostSync
+    *
+    * BSpec 56591:
+    *
+    *    "The timestamp layout :
+    *       [0] = 64b Context Timestamp Start
+    *       [1] = 64b Global Timestamp Start
+    *       [2] = 64b Context Timestamp End
+    *       [3] = 64b Global Timestamp End"
+    */
+   uint64_t gfx20_postsync_data[4];
 };
 
 static void *
@@ -92,7 +104,7 @@ iris_utrace_delete_ts_buffer(struct u_trace_context *utctx, void *timestamps)
 static void
 iris_utrace_record_ts(struct u_trace *trace, void *cs,
                       void *timestamps, unsigned idx,
-                      bool end_of_pipe)
+                      uint32_t flags)
 {
    struct iris_batch *batch = container_of(trace, struct iris_batch, trace);
    struct iris_context *ice = batch->ice;
@@ -102,12 +114,14 @@ iris_utrace_record_ts(struct u_trace *trace, void *cs,
    iris_use_pinned_bo(batch, bo, true, IRIS_DOMAIN_NONE);
 
    const bool is_end_compute =
-      (cs == NULL && ice->utrace.last_compute_walker != NULL && end_of_pipe);
+      cs == NULL &&
+      (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE_CS);
    if (is_end_compute) {
+      assert(ice->utrace.last_compute_walker != NULL);
       batch->screen->vtbl.rewrite_compute_walker_pc(
          batch, ice->utrace.last_compute_walker, bo, ts_offset);
       ice->utrace.last_compute_walker = NULL;
-   } else if (end_of_pipe) {
+   } else if (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE) {
       iris_emit_pipe_control_write(batch, "query: pipelined snapshot write",
                                    PIPE_CONTROL_WRITE_TIMESTAMP,
                                    bo, ts_offset, 0ull);
@@ -137,8 +151,15 @@ iris_utrace_read_ts(struct u_trace_context *utctx,
    if (ts[idx].timestamp == U_TRACE_NO_TIMESTAMP)
       return U_TRACE_NO_TIMESTAMP;
 
-   /* Detect a 16bytes timestamp write */
-   if (ts[idx].compute_walker[2] != 0 || ts[idx].compute_walker[3] != 0) {
+   /* Detect a 16/32 bytes timestamp write */
+   if (ts[idx].gfx20_postsync_data[1] != 0 ||
+       ts[idx].gfx20_postsync_data[2] != 0 ||
+       ts[idx].gfx20_postsync_data[3] != 0) {
+      if (screen->devinfo->ver >= 20) {
+         return intel_device_info_timebase_scale(screen->devinfo,
+                                                 ts[idx].gfx20_postsync_data[3]);
+      }
+
       /* The timestamp written by COMPUTE_WALKER::PostSync only as 32bits. We
        * need to rebuild the full 64bits using the previous timestamp. We
        * assume that utrace is reading the timestamp in order. Anyway
@@ -147,7 +168,7 @@ iris_utrace_read_ts(struct u_trace_context *utctx,
        */
       uint64_t timestamp =
          (ice->utrace.last_full_timestamp & 0xffffffff00000000) |
-         (uint64_t) ts[idx].compute_walker[3];
+         (uint64_t) ts[idx].gfx125_postsync_data[3];
 
       return intel_device_info_timebase_scale(screen->devinfo, timestamp);
    }
@@ -168,7 +189,8 @@ void iris_utrace_flush(struct iris_batch *batch, uint64_t submission_id)
 {
    struct intel_ds_flush_data *flush_data = malloc(sizeof(*flush_data));
    intel_ds_flush_data_init(flush_data, &batch->ds, submission_id);
-   intel_ds_queue_flush_data(&batch->ds, &batch->trace, flush_data, false);
+   intel_ds_queue_flush_data(&batch->ds, &batch->trace, flush_data,
+                             U_TRACE_FRAME_UNKNOWN, false);
 }
 
 void iris_utrace_init(struct iris_context *ice)

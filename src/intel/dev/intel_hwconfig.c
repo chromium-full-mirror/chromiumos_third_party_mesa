@@ -153,16 +153,24 @@ process_hwconfig_table(struct intel_device_info *devinfo,
    assert(current == end);
 }
 
-/* If devinfo->apply_hwconfig is true, then we apply the hwconfig value.
+static inline bool
+apply_hwconfig(const struct intel_device_info *devinfo)
+{
+   /* returns is true when the platform should apply hwconfig values */
+   return devinfo->verx10 >= 125;
+}
+
+/* If apply_hwconfig(devinfo) is true, then we apply the
+ * hwconfig value.
  *
- * For debug builds, if devinfo->apply_hwconfig is false, we will compare the
+ * For debug builds, if apply_hwconfig() is false, we will compare the
  * hwconfig value with the current value in the devinfo and log a warning
  * message if they differ. This should help to make sure the values in our
  * devinfo structures match what hwconfig is specified.
  */
 #define DEVINFO_HWCONFIG(F, V)                                          \
    do {                                                                 \
-      if (devinfo->apply_hwconfig)                                      \
+      if (apply_hwconfig(devinfo))                                      \
          devinfo->F = V;                                                \
       else if (DEBUG_BUILD && devinfo->F != (V))                        \
          mesa_logw("%s (%u) != devinfo->%s (%u)",                       \
@@ -209,9 +217,13 @@ apply_hwconfig_item(struct intel_device_info *devinfo,
       break;
    case INTEL_HWCONFIG_TOTAL_VS_THREADS_POCS:
       break; /* ignore */
-   case INTEL_HWCONFIG_TOTAL_PS_THREADS:
-      DEVINFO_HWCONFIG(max_threads_per_psd, item->val[0] / 2);
+   case INTEL_HWCONFIG_TOTAL_PS_THREADS: {
+      unsigned threads = item->val[0];
+      if (devinfo->ver == 12)
+         threads /= 2;
+      DEVINFO_HWCONFIG(max_threads_per_psd, threads);
       break;
+   }
    case INTEL_HWCONFIG_URB_SIZE_PER_SLICE_IN_KB:
       DEVINFO_HWCONFIG(urb.size, item->val[0]);
       break;
@@ -277,7 +289,7 @@ intel_hwconfig_process_table(struct intel_device_info *devinfo,
 {
    process_hwconfig_table(devinfo, data, len, apply_hwconfig_item);
 
-   return devinfo->apply_hwconfig;
+   return apply_hwconfig(devinfo);
 }
 
 static void

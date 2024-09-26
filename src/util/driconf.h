@@ -317,7 +317,7 @@
    DRI_CONF_OPT_B(ignore_discard_framebuffer, def, \
                   "Ignore glDiscardFramebuffer/glInvalidateFramebuffer, workaround for games that use it incorrectly")
 
-#define DRI_CONF_FORCE_VK_VENDOR(def) \
+#define DRI_CONF_FORCE_VK_VENDOR() \
    DRI_CONF_OPT_I(force_vk_vendor, 0, -1, 2147483647, "Override GPU vendor id")
 
 #define DRI_CONF_FAKE_SPARSE(def) \
@@ -327,6 +327,10 @@
 #define DRI_CONF_INTEL_ENABLE_WA_14018912822(def) \
    DRI_CONF_OPT_B(intel_enable_wa_14018912822, def, \
                   "Intel workaround for using zero blend constants")
+
+#define DRI_CONF_INTEL_SAMPLER_ROUTE_TO_LSC(def) \
+   DRI_CONF_OPT_B(intel_sampler_route_to_lsc, def, \
+                  "Intel specific toggle to enable sampler route to LSC")
 
 #define DRI_CONF_VK_REQUIRE_ETC2(def) \
   DRI_CONF_OPT_B(vk_require_etc2, def, \
@@ -637,10 +641,6 @@
    DRI_CONF_OPT_B(radv_zero_vram, def, \
                   "Initialize to zero all VRAM allocations")
 
-#define DRI_CONF_RADV_LOWER_DISCARD_TO_DEMOTE(def) \
-   DRI_CONF_OPT_B(radv_lower_discard_to_demote, def, \
-                  "Lower discard instructions to demote")
-
 #define DRI_CONF_RADV_INVARIANT_GEOM(def) \
    DRI_CONF_OPT_B(radv_invariant_geom, def, \
                   "Mark geometry-affecting outputs as invariant")
@@ -668,6 +668,10 @@
 #define DRI_CONF_RADV_DISABLE_SINKING_LOAD_INPUT_FS(def) \
    DRI_CONF_OPT_B(radv_disable_sinking_load_input_fs, def, \
                   "Disable sinking load inputs for fragment shaders")
+
+#define DRI_CONF_RADV_DISABLE_DEPTH_STORAGE(def) \
+  DRI_CONF_OPT_B(radv_disable_depth_storage, def, \
+                 "Hides support for storage access to depth formats")
 
 #define DRI_CONF_RADV_DGC(def) \
    DRI_CONF_OPT_B(radv_dgc, def, \
@@ -739,6 +743,10 @@
    DRI_CONF_OPT_I(anv_assume_full_subgroups, def, 0, 32, \
                   "Allow assuming full subgroups requirement even when it's not specified explicitly and set the given size")
 
+#define DRI_CONF_ANV_ASSUME_FULL_SUBGROUPS_WITH_BARRIER(def) \
+   DRI_CONF_OPT_B(anv_assume_full_subgroups_with_barrier, def, \
+                  "Assume full subgroups requirement for compute shaders that use control barriers")
+
 #define DRI_CONF_ANV_SAMPLE_MASK_OUT_OPENGL_BEHAVIOUR(def) \
    DRI_CONF_OPT_B(anv_sample_mask_out_opengl_behaviour, def, \
                   "Ignore sample mask out when having single sampled target")
@@ -784,11 +792,19 @@
    DRI_CONF_OPT_B(anv_disable_fcv, def, \
                   "Disable FCV optimization")
 
+#define DRI_CONF_ANV_DISABLE_XE2_CCS(def) \
+   DRI_CONF_OPT_B(anv_disable_xe2_ccs, def, \
+                  "Disable CCS optimization on Xe2")
+
 #define DRI_CONF_ANV_EXTERNAL_MEMORY_IMPLICIT_SYNC(def) \
    DRI_CONF_OPT_B(anv_external_memory_implicit_sync, def, "Implicit sync on external BOs")
 
 #define DRI_CONF_ANV_COMPRESSION_CONTROL_ENABLED(def) \
    DRI_CONF_OPT_B(compression_control_enabled, def, "Enable VK_EXT_image_compression_control support")
+
+#define DRI_CONF_ANV_FAKE_NONLOCAL_MEMORY(def) \
+   DRI_CONF_OPT_B(anv_fake_nonlocal_memory, def, \
+                  "Present host-visible device-local memory types as non device-local")
 
 /**
  * \brief HASVK specific configuration options

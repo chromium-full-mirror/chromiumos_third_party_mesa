@@ -173,6 +173,10 @@ rebind_sampler_views(struct v3d_context *v3d,
 
                         struct v3d_sampler_view *sview =
                                 v3d_sampler_view(psview);
+
+                        if (sview->serial_id == rsc->serial_id)
+                                continue;
+
                         struct v3d_device_info *devinfo =
                                 &v3d->screen->devinfo;
 
@@ -838,6 +842,7 @@ v3d_resource_create_with_modifiers(struct pipe_screen *pscreen,
         v3d_setup_slices(rsc, 0, tmpl->bind & PIPE_BIND_SHARED);
 
         if (screen->ro && (tmpl->bind & PIPE_BIND_SCANOUT)) {
+                assert(!rsc->tiled);
                 struct winsys_handle handle;
                 struct pipe_resource scanout_tmpl = {
                         .target = prsc->target,
@@ -908,7 +913,7 @@ v3d_resource_from_handle(struct pipe_screen *pscreen,
                 rsc->tiled = true;
                 break;
         case DRM_FORMAT_MOD_INVALID:
-                rsc->tiled = screen->ro == NULL;
+                rsc->tiled = false;
                 break;
         default:
                 switch(fourcc_mod_broadcom_mod(whandle->modifier)) {
@@ -1176,7 +1181,7 @@ v3d_resource_get_stencil(struct pipe_resource *prsc)
 {
         struct v3d_resource *rsc = v3d_resource(prsc);
 
-        return &rsc->separate_stencil->base;
+        return rsc->separate_stencil ? &rsc->separate_stencil->base : NULL;
 }
 
 static const struct u_transfer_vtbl transfer_vtbl = {

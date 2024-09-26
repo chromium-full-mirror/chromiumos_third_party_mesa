@@ -160,6 +160,7 @@ nir_options = {
    .linker_ignore_precision = true,
    .support_16bit_alu = true,
    .preserve_mediump = true,
+   .discard_is_demote = true,
 };
 
 const nir_shader_compiler_options*
@@ -4786,14 +4787,12 @@ emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
 {
    switch (intr->intrinsic) {
    case nir_intrinsic_load_global_invocation_id:
-   case nir_intrinsic_load_global_invocation_id_zero_base:
       return emit_load_global_invocation_id(ctx, intr);
    case nir_intrinsic_load_local_invocation_id:
       return emit_load_local_invocation_id(ctx, intr);
    case nir_intrinsic_load_local_invocation_index:
       return emit_load_local_invocation_index(ctx, intr);
    case nir_intrinsic_load_workgroup_id:
-   case nir_intrinsic_load_workgroup_id_zero_base:
       return emit_load_local_workgroup_id(ctx, intr);
    case nir_intrinsic_load_ssbo:
       return emit_load_ssbo(ctx, intr);
@@ -4834,10 +4833,10 @@ emit_intrinsic(struct ntd_context *ctx, nir_intrinsic_instr *intr)
       return emit_load_sample_mask_in(ctx, intr);
    case nir_intrinsic_load_tess_coord:
       return emit_load_tess_coord(ctx, intr);
-   case nir_intrinsic_discard_if:
+   case nir_intrinsic_terminate_if:
    case nir_intrinsic_demote_if:
       return emit_discard_if(ctx, intr);
-   case nir_intrinsic_discard:
+   case nir_intrinsic_terminate:
    case nir_intrinsic_demote:
       return emit_discard(ctx);
    case nir_intrinsic_emit_vertex:
@@ -6314,7 +6313,6 @@ optimize_nir(struct nir_shader *s, const struct nir_to_dxil_options *opts)
       NIR_PASS(progress, s, nir_lower_alu);
       NIR_PASS(progress, s, nir_opt_constant_folding);
       NIR_PASS(progress, s, nir_opt_undef);
-      NIR_PASS(progress, s, nir_lower_undef_to_zero);
       NIR_PASS(progress, s, nir_opt_deref);
       NIR_PASS(progress, s, dxil_nir_lower_upcast_phis, opts->lower_int16 ? 32 : 16);
       NIR_PASS(progress, s, nir_lower_64bit_phis);
@@ -6329,6 +6327,8 @@ optimize_nir(struct nir_shader *s, const struct nir_to_dxil_options *opts)
       progress = false;
       NIR_PASS(progress, s, nir_opt_algebraic_late);
    } while (progress);
+
+   NIR_PASS_V(s, nir_lower_undef_to_zero);
 }
 
 static
@@ -6600,7 +6600,7 @@ nir_to_dxil(struct nir_shader *s, const struct nir_to_dxil_options *opts,
     * might be too opaque for the pass to see that they're next to each other. */
    optimize_nir(s, opts);
 
-   /* Vectorize UBO/SSBO accesses aggressively. This can help increase alignment to enable us to do better
+/* Vectorize UBO/SSBO accesses aggressively. This can help increase alignment to enable us to do better
     * chunking of loads and stores after lowering bit sizes. Ignore load/store size limitations here, we'll
     * address them with lower_mem_access_bit_sizes */
    nir_load_store_vectorize_options vectorize_opts = {
