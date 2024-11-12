@@ -368,7 +368,6 @@ vn_extension_get_spec_version(const char *name);
 static inline void
 vn_watchdog_init(struct vn_watchdog *watchdog)
 {
-#ifndef NDEBUG
    /* ensure minimum check period is greater than maximum renderer
     * reporting period (with margin of safety to ensure no false
     * positives).
@@ -376,10 +375,14 @@ vn_watchdog_init(struct vn_watchdog *watchdog)
     * first_warn_time is pre-calculated based on parameters in vn_relax
     * and must update together.
     */
-   static const uint32_t first_warn_time = 3481600;
-   static const uint32_t safety_margin = 250000;
-   assert(first_warn_time - safety_margin >= VN_WATCHDOG_REPORT_PERIOD_US);
-#endif
+#define first_warn_time 3441920
+#define safety_margin   250000
+   static_assert(
+      first_warn_time - safety_margin >= VN_WATCHDOG_REPORT_PERIOD_US,
+      "watchdog reporting period must be shorter than first warn"
+      " time with additional safety margin. Either shorten the"
+      " watchdog reporting period, or change the vn_relax_profile"
+      " to extend the first_warn_time.");
 
    mtx_init(&watchdog->mutex, mtx_plain);
 
