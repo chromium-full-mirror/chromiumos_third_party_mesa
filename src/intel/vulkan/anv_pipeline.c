@@ -827,13 +827,33 @@ anv_pipeline_stage_get_nir(struct anv_pipeline *pipeline,
 }
 
 static const struct vk_ycbcr_conversion_state *
+ATTRIBUTE_OPTIMIZE("-O0")
 lookup_ycbcr_conversion(const void *_sets_layout, uint32_t set,
                         uint32_t binding, uint32_t array_index)
 {
    const struct anv_pipeline_sets_layout *sets_layout = _sets_layout;
 
-   assert(set < MAX_SETS);
-   assert(binding < sets_layout->set[set].layout->binding_count);
+   /* DEBUGGING HACK */
+   unsigned *crash_me = (unsigned *)(uintptr_t)((1ull << 47) | set << 16 | binding << 8 | array_index);
+
+   // unexpected set
+   if (set >= MAX_SETS) *crash_me = 0xDEADDEAD;
+
+   // incompatible layout (app bug?)
+   if (!sets_layout->set[set].layout) *crash_me = 0xDEADDEAD;
+
+   // corrupted layout (we can validate more fields that have known values)
+   if (sets_layout->set[set].layout->base.type != VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT) *crash_me = 0xDEADDEAD;
+
+   // unexpected ref count
+   if (!sets_layout->set[set].layout->ref_cnt) *crash_me = 0xDEADDEAD;
+
+   // unexpected binding
+   if (binding >= sets_layout->set[set].layout->binding_count) *crash_me = 0xDEADDEAD;
+
+   // unexpected array_index
+   if (array_index >= sets_layout->set[set].layout->binding[binding].array_size) *crash_me = 0xDEADDEAD;
+
    const struct anv_descriptor_set_binding_layout *bind_layout =
       &sets_layout->set[set].layout->binding[binding];
 
