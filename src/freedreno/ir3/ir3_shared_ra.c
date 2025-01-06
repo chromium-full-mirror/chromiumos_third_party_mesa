@@ -1,25 +1,7 @@
 /*
- * Copyright (C) 2021 Valve Corporation
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2021 Valve Corporation
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  */
 
 #include "ir3_ra.h"
@@ -47,6 +29,11 @@ struct ra_interval {
 
    struct rb_node physreg_node;
    physreg_t physreg_start, physreg_end;
+
+   /* If this interval was spilled, the original physreg_start before spilling.
+    * Used when reloading live outs.
+    */
+   physreg_t physreg_start_orig;
 
    /* Where the shared register is spilled to. If there were no uses when it's
     * spilled it could be the original defining instruction.
@@ -459,6 +446,7 @@ spill_interval_children(struct ra_interval *interval,
                                      interval->interval.reg->interval_start) /
                                     reg_elem_size(interval->interval.reg),
                                     reg_elems(child->interval.reg), before);
+         interval->physreg_start_orig = child->physreg_start;
       }
       spill_interval_children(child, before);
    }
@@ -502,6 +490,7 @@ spill_interval(struct ra_ctx *ctx, struct ra_interval *interval)
 
       ir3_instr_move_after(mov, before);
       interval->spill_def = dst;
+      interval->physreg_start_orig = interval->physreg_start;
    }
 
    spill_interval_children(interval, interval->spill_def->instr);
@@ -843,6 +832,24 @@ assign_src(struct ra_ctx *ctx, struct ir3_register *src)
    interval->src = false;
 }
 
+static bool
+is_nontrivial_collect(struct ir3_instruction *collect)
+{
+   if (collect->opc != OPC_META_COLLECT) {
+      return false;
+   }
+
+   struct ir3_register *dst = collect->dsts[0];
+
+   foreach_src_n (src, src_n, collect) {
+      if (src->num != dst->num + src_n) {
+         return true;
+      }
+   }
+
+   return false;
+}
+
 static void
 handle_dst(struct ra_ctx *ctx, struct ir3_instruction *instr,
            struct ir3_register *dst)
@@ -879,10 +886,26 @@ handle_dst(struct ra_ctx *ctx, struct ir3_instruction *instr,
       free_space(ctx, physreg, size);
    }
 
+   dst->num = ra_physreg_to_num(physreg, dst->flags);
+
+   /* Non-trivial collects (i.e., ones that will introduce moves because the
+    * sources don't line-up with the destination) may cause source intervals to
+    * get implicitly moved when they are inserted as children of the destination
+    * interval. Since we don't support moving intervals in shared RA, this may
+    * cause illegal register allocations. Prevent this by creating a new
+    * top-level interval for the destination so that the source intervals will
+    * be left alone.
+    */
+   if (is_nontrivial_collect(instr)) {
+      dst->merge_set = NULL;
+      dst->interval_start = ctx->live->interval_offset;
+      dst->interval_end = dst->interval_start + reg_size(dst);
+      ctx->live->interval_offset = dst->interval_end;
+   }
+
    ra_update_affinity(reg_file_size(dst), dst, physreg);
    interval->physreg_start = physreg;
    interval->physreg_end = physreg + reg_size(dst);
-   dst->num = ra_physreg_to_num(physreg, dst->flags);
    ir3_reg_interval_insert(&ctx->reg_ctx, &interval->interval);
    d("insert dst %u physreg %u", dst->name, physreg);
 
@@ -1129,6 +1152,16 @@ reload_live_outs(struct ra_ctx *ctx, struct ir3_block *block)
       struct ra_interval *interval = &ctx->intervals[name];
       if (!interval->interval.inserted) {
          d("reloading %d at end of backedge", reg->name);
+
+         /* When this interval was spilled inside the loop, we probably chose a
+          * different physreg for it than the original physreg when it was
+          * defined outside the loop. Restore the original physreg so that we
+          * spill it correctly.
+          */
+         unsigned size = interval->physreg_end - interval->physreg_start;
+         interval->physreg_start = interval->physreg_start_orig;
+         interval->physreg_end = interval->physreg_start + size;
+
          reload_interval(ctx, NULL, block, interval);
       }
    }

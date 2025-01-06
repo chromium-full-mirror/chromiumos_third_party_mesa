@@ -212,7 +212,7 @@ si_vpe_allocate_buffer(struct vpe_build_bufs **bufs)
       return VPE_STATUS_ERROR;
    }
 
-   *bufs = (struct vpe_build_bufs *)malloc(sizeof(struct vpe_build_bufs));
+   *bufs = (struct vpe_build_bufs *)MALLOC(sizeof(struct vpe_build_bufs));
    if (!*bufs) {
       return VPE_STATUS_NO_MEMORY;
    }
@@ -662,34 +662,27 @@ si_vpe_processor_destroy(struct pipe_video_codec *codec)
    unsigned int i;
    assert(codec);
 
-   if (vpeproc->process_fence) {
-      SIVPE_INFO(vpeproc->log_level, "Wait fence\n");
-      vpeproc->ws->fence_wait(vpeproc->ws, vpeproc->process_fence, PIPE_DEFAULT_DECODER_FEEDBACK_TIMEOUT_NS);
-   }
-   vpeproc->ws->cs_destroy(&vpeproc->cs);
-
    if (vpeproc->vpe_build_bufs)
       si_vpe_free_buffer(vpeproc->vpe_build_bufs);
+
    if (vpeproc->vpe_handle)
       vpe_destroy(&vpeproc->vpe_handle);
+
    if (vpeproc->vpe_build_param) {
       if (vpeproc->vpe_build_param->streams)
          FREE(vpeproc->vpe_build_param->streams);
       FREE(vpeproc->vpe_build_param);
    }
+
    if (vpeproc->emb_buffers) {
-      for (i = 0; i < vpeproc->bufs_num; i++) {
-         if (vpeproc->emb_buffers[i].res) {
-            vpeproc->ws->buffer_unmap(vpeproc->ws, vpeproc->emb_buffers[i].res->buf);
+      for (i = 0; i < vpeproc->bufs_num; i++)
+         if (vpeproc->emb_buffers[i].res)
             si_vid_destroy_buffer(&vpeproc->emb_buffers[i]);
-         }
-      }
       FREE(vpeproc->emb_buffers);
    }
-   if (vpeproc->mapped_cpu_va)
-      FREE(vpeproc->mapped_cpu_va);
-   vpeproc->bufs_num = 0;
 
+   vpeproc->bufs_num = 0;
+   vpeproc->ws->cs_destroy(&vpeproc->cs);
    SIVPE_DBG(vpeproc->log_level, "Success\n");
    FREE(vpeproc);
 }
@@ -728,7 +721,7 @@ si_vpe_cs_add_surface_buffer(struct vpe_video_processor *vpeproc,
    }
 }
 
-static void
+static int
 si_vpe_processor_process_frame(struct pipe_video_codec *codec,
                                struct pipe_video_buffer *input_texture,
                                const struct pipe_vpp_desc *process_properties)
@@ -749,7 +742,7 @@ si_vpe_processor_process_frame(struct pipe_video_codec *codec,
    src_surfaces = input_texture->get_surfaces(input_texture);
    if (!src_surfaces || !src_surfaces[0]) {
       SIVPE_ERR("Get source surface failed\n");
-      return;
+      return 1;
    }
    vpeproc->src_surfaces = src_surfaces;
 
@@ -758,12 +751,12 @@ si_vpe_processor_process_frame(struct pipe_video_codec *codec,
    build_param->num_streams = 1;
    if (build_param->num_streams > VPE_STREAM_MAX_NUM) {
       SIVPE_ERR("Can only suppport %d stream(s) now\n", VPE_STREAM_MAX_NUM);
-      return;
+      return 1;
    }
 
    if (!build_param->streams) {
       SIVPE_ERR("Streams structure is not allocated\n");
-      return;
+      return 1;
    }
 
    si_vpe_set_surface_info(vpeproc,
@@ -848,8 +841,17 @@ si_vpe_processor_process_frame(struct pipe_video_codec *codec,
    vpeproc->vpe_build_bufs->cmd_buf.size = vpeproc->cs.current.max_dw;
    vpeproc->vpe_build_bufs->cmd_buf.tmz = false;
 
+   /* Map EmbBuf for CPU access */
    emb_buf = &vpeproc->emb_buffers[vpeproc->cur_buf];
-   vpeproc->vpe_build_bufs->emb_buf.cpu_va = (uintptr_t)vpeproc->mapped_cpu_va[vpeproc->cur_buf];
+   vpe_ptr = (uint64_t *)vpeproc->ws->buffer_map(vpeproc->ws,
+                                                 emb_buf->res->buf,
+                                                 &vpeproc->cs,
+                                                 PIPE_MAP_WRITE | RADEON_MAP_TEMPORARY);
+   if (!vpe_ptr) {
+      SIVPE_ERR("Mapping Embbuf failed\n");
+      return 1;
+   }
+   vpeproc->vpe_build_bufs->emb_buf.cpu_va = (uintptr_t)vpe_ptr;
    vpeproc->vpe_build_bufs->emb_buf.gpu_va = vpeproc->ws->buffer_get_virtual_address(emb_buf->res->buf);
    vpeproc->vpe_build_bufs->emb_buf.size = VPE_EMBBUF_SIZE;
    vpeproc->vpe_build_bufs->emb_buf.tmz = false;
@@ -958,6 +960,9 @@ si_vpe_processor_process_frame(struct pipe_video_codec *codec,
       goto fail;
    }
 
+   /* unmap the emb_buf */
+   vpeproc->ws->buffer_unmap(vpeproc->ws, emb_buf->res->buf);
+
    /* Check buffer size */
    if (vpeproc->vpe_build_bufs->cmd_buf.size == 0 || vpeproc->vpe_build_bufs->cmd_buf.size == vpeproc->cs.current.max_dw) {
       SIVPE_ERR("Cmdbuf size wrong\n");
@@ -980,33 +985,26 @@ si_vpe_processor_process_frame(struct pipe_video_codec *codec,
    si_vpe_cs_add_surface_buffer(vpeproc, vpeproc->dst_surfaces, RADEON_USAGE_WRITE);
 
    SIVPE_DBG(vpeproc->log_level, "Success\n");
-   return;
+   return 0;
 
 fail:
    vpeproc->ws->buffer_unmap(vpeproc->ws, emb_buf->res->buf);
    SIVPE_ERR("Failed\n");
-   return;
+   return 1;
 }
 
-static void
+static int
 si_vpe_processor_end_frame(struct pipe_video_codec *codec,
                            struct pipe_video_buffer *target,
                            struct pipe_picture_desc *picture)
 {
    struct vpe_video_processor *vpeproc = (struct vpe_video_processor *)codec;
-   struct pipe_fence_handle *process_fence = NULL;
    assert(codec);
 
-   vpeproc->ws->cs_flush(&vpeproc->cs, picture->flush_flags, &process_fence);
+   vpeproc->ws->cs_flush(&vpeproc->cs, picture->flush_flags, picture->fence);
    next_buffer(vpeproc);
 
-   if (picture->fence && process_fence) {
-      *picture->fence = process_fence;
-      SIVPE_INFO(vpeproc->log_level, "Assign process fence\n");
-   } else
-      SIVPE_WARN(vpeproc->log_level, "Fence may have problem!\n");
-
-   SIVPE_INFO(vpeproc->log_level, "Success\n");
+   return 0;
 }
 
 static void
@@ -1019,9 +1017,9 @@ si_vpe_processor_flush(struct pipe_video_codec *codec)
    return;
 }
 
-static int si_vpe_processor_get_processor_fence(struct pipe_video_codec *codec,
-                                                struct pipe_fence_handle *fence,
-                                                uint64_t timeout)
+static int si_vpe_processor_fence_wait(struct pipe_video_codec *codec,
+                                       struct pipe_fence_handle *fence,
+                                       uint64_t timeout)
 {
    struct vpe_video_processor *vpeproc = (struct vpe_video_processor *)codec;
    assert(codec);
@@ -1033,6 +1031,15 @@ static int si_vpe_processor_get_processor_fence(struct pipe_video_codec *codec,
    }
    SIVPE_INFO(vpeproc->log_level, "Wait processor fence success\n");
    return 1;
+}
+
+static void si_vpe_processor_destroy_fence(struct pipe_video_codec *codec,
+                                           struct pipe_fence_handle *fence)
+{
+   struct vpe_video_processor *vpeproc = (struct vpe_video_processor *)codec;
+   assert(codec);
+
+   vpeproc->ws->fence_reference(vpeproc->ws, &fence, NULL);
 }
 
 struct pipe_video_codec*
@@ -1067,14 +1074,14 @@ si_vpe_create_processor(struct pipe_context *context, const struct pipe_video_co
    vpeproc->base.process_frame = si_vpe_processor_process_frame;
    vpeproc->base.end_frame = si_vpe_processor_end_frame;
    vpeproc->base.flush = si_vpe_processor_flush;
-   vpeproc->base.get_processor_fence = si_vpe_processor_get_processor_fence;
+   vpeproc->base.fence_wait = si_vpe_processor_fence_wait;
+   vpeproc->base.destroy_fence = si_vpe_processor_destroy_fence;
 
    vpeproc->ver_major = sctx->screen->info.ip[AMD_IP_VPE].ver_major;
    vpeproc->ver_minor = sctx->screen->info.ip[AMD_IP_VPE].ver_minor;
 
    vpeproc->screen = context->screen;
    vpeproc->ws = ws;
-   vpeproc->process_fence = NULL;
 
    init_data = &vpeproc->vpe_data;
    if (VPE_STATUS_OK != si_vpe_populate_init_data(sctx, init_data, vpeproc->log_level)){
@@ -1114,23 +1121,12 @@ si_vpe_create_processor(struct pipe_context *context, const struct pipe_video_co
    } else
       SIVPE_INFO(vpeproc->log_level, "Number of emb_buf is %d\n", vpeproc->bufs_num);
 
-   vpeproc->mapped_cpu_va = (void **)CALLOC(vpeproc->bufs_num, sizeof(void *));
-   if (!vpeproc->mapped_cpu_va) {
-       SIVPE_ERR("Can't allocated mapped_cpu_va for emb_buf buffers.\n");
-       goto fail;
-   }
-
    for (i = 0; i < vpeproc->bufs_num; i++) {
       if (!si_vid_create_buffer(vpeproc->screen, &vpeproc->emb_buffers[i], VPE_EMBBUF_SIZE, PIPE_USAGE_DEFAULT)) {
           SIVPE_ERR("Can't allocated emb_buf buffers.\n");
           goto fail;
       }
       si_vid_clear_buffer(context, &vpeproc->emb_buffers[i]);
-
-      vpeproc->mapped_cpu_va[i] = vpeproc->ws->buffer_map(vpeproc->ws, vpeproc->emb_buffers[i].res->buf,
-                                                          &vpeproc->cs, PIPE_MAP_WRITE);
-      if (!vpeproc->mapped_cpu_va[i])
-         goto fail;
    }
 
    /* Create VPE parameters structure */

@@ -279,43 +279,58 @@ static bool
 mesa_db_update_index(struct mesa_cache_db *db)
 {
    struct mesa_index_db_hash_entry *hash_entry;
-   struct mesa_index_db_file_entry index_entry;
+   struct mesa_index_db_file_entry *index_entries, *index_entry;
    size_t file_length;
+   size_t old_entries, new_entries;
+   size_t new_index_size;
+   bool ret = false;
+   int i;
 
    if (!mesa_db_seek_end(db->index.file))
       return false;
 
    file_length = ftell(db->index.file);
+   if (file_length < db->index.offset)
+      return false;
 
    if (!mesa_db_seek(db->index.file, db->index.offset))
       return false;
 
-   while (db->index.offset < file_length) {
-      if (!mesa_db_read(db->index.file, &index_entry))
-         break;
+   old_entries = _mesa_hash_table_num_entries(db->index_db->table);
+   new_entries = (file_length - db->index.offset) / sizeof(*index_entries);
+   _mesa_hash_table_reserve(db->index_db->table, old_entries + new_entries);
 
+   new_index_size = new_entries * sizeof(*index_entries);
+   index_entries = malloc(new_index_size);
+   if (!mesa_db_read_data(db->index.file, index_entries, new_index_size))
+      goto error;
+
+   for (i = 0, index_entry = index_entries; i < new_entries; i++, index_entry++) {
       /* Check whether the index entry looks valid or we have a corrupted DB */
-      if (!mesa_db_index_entry_valid(&index_entry))
+      if (!mesa_db_index_entry_valid(index_entry))
          break;
 
       hash_entry = ralloc(db->mem_ctx, struct mesa_index_db_hash_entry);
       if (!hash_entry)
          break;
 
-      hash_entry->cache_db_file_offset = index_entry.cache_db_file_offset;
+      hash_entry->cache_db_file_offset = index_entry->cache_db_file_offset;
       hash_entry->index_db_file_offset = db->index.offset;
-      hash_entry->last_access_time = index_entry.last_access_time;
-      hash_entry->size = index_entry.size;
+      hash_entry->last_access_time = index_entry->last_access_time;
+      hash_entry->size = index_entry->size;
 
-      _mesa_hash_table_u64_insert(db->index_db, index_entry.hash, hash_entry);
+      _mesa_hash_table_u64_insert(db->index_db, index_entry->hash, hash_entry);
 
-      db->index.offset += sizeof(index_entry);
+      db->index.offset += sizeof(*index_entry);
    }
 
-   if (!mesa_db_seek(db->index.file, db->index.offset))
-      return false;
+   if (mesa_db_seek(db->index.file, db->index.offset) &&
+       db->index.offset == file_length)
+      ret = true;
 
-   return db->index.offset == file_length;
+error:
+   free(index_entries);
+   return ret;
 }
 
 static void
@@ -352,10 +367,6 @@ mesa_db_load(struct mesa_cache_db *db, bool reload)
        !mesa_db_load_header(&db->index) ||
        db->cache.uuid != db->index.uuid) {
 
-      /* This is unexpected to happen on reload, bail out */
-      if (reload)
-         goto fail;
-
       if (!mesa_db_recreate_files(db))
          goto fail;
    } else {
@@ -367,8 +378,16 @@ mesa_db_load(struct mesa_cache_db *db, bool reload)
    if (reload)
       mesa_db_hash_table_reset(db);
 
-   if (!mesa_db_update_index(db))
-      goto fail;
+   /* The update failed so we assume the files are corrupt and
+    * recreate them.
+    */
+   if (!mesa_db_update_index(db)) {
+      mesa_db_recreate_files(db);
+      db->index.offset = ftell(db->index.file);
+
+      if (!mesa_db_update_index(db))
+         goto fail;
+   }
 
    if (!reload)
       mesa_db_unlock(db);

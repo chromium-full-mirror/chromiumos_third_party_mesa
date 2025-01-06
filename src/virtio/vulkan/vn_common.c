@@ -191,18 +191,18 @@ vn_relax_get_profile(enum vn_relax_reason reason)
    /* deliberately avoid default case for -Wswitch to catch upon compile */
    switch (reason) {
    case VN_RELAX_REASON_RING_SEQNO:
-      /* warn every 8129 iters after having already slept ~3.5s:
-       *   (yielded 1023 times)
-       *   stuck in wait with iter at 8192 (3.5 s slept already)
-       *   stuck in wait with iter at 16384 (14 s slept already)
-       *   stuck in wait with iter at 24576 (35 s slept already)
+      /* warn every 4096 iters after having already slept ~3.5s:
+       *   (yielded 255 times)
+       *   stuck in wait with iter at 4096  (3.5s slept already)
+       *   stuck in wait with iter at 8192  (14s slept already)
+       *   stuck in wait with iter at 12288 (35s slept already)
        *   ...
-       *   aborting after 224s
+       *   aborting after 895s
        */
       return (struct vn_relax_profile){
          .base_sleep_us = 160,
-         .busy_wait_order = 10,
-         .warn_order = 13,
+         .busy_wait_order = 8,
+         .warn_order = 12,
          .abort_order = 16,
       };
    case VN_RELAX_REASON_TLS_RING_SEQNO:
@@ -333,7 +333,8 @@ vn_tls_get_ring(struct vn_instance *instance)
    struct vn_ring_layout layout;
    vn_ring_get_layout(buf_size, extra_size, &layout);
 
-   tls_ring->ring = vn_ring_create(instance, &layout, direct_order);
+   tls_ring->ring =
+      vn_ring_create(instance, &layout, direct_order, true /* is_tls_ring */);
    if (!tls_ring->ring) {
       free(tls_ring);
       return NULL;

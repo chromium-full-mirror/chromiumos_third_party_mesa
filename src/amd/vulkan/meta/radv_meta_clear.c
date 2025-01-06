@@ -806,7 +806,8 @@ radv_get_htile_fast_clear_value(const struct radv_device *device, const struct r
 }
 
 static uint32_t
-radv_get_htile_mask(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *image, VkImageAspectFlags aspects)
+radv_get_htile_mask(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *image, VkImageAspectFlags aspects,
+                    bool is_clear)
 {
    const struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    uint32_t mask = 0;
@@ -819,6 +820,12 @@ radv_get_htile_mask(struct radv_cmd_buffer *cmd_buffer, const struct radv_image 
          mask |= 0xfffffc0f;
       if (aspects & VK_IMAGE_ASPECT_STENCIL_BIT)
          mask |= 0x000003f0;
+
+      /* Preserve VRS rates during clears but not during initialization. */
+      if (is_clear && radv_image_has_vrs_htile(device, image)) {
+         mask &= ~(0x3 << 6); /* VRS X-rate */
+         mask &= ~(0x3 << 10); /* VRS Y-rate */
+      }
 
       if (cmd_buffer->qf == RADV_QUEUE_TRANSFER) {
          /* Clear both aspects on SDMA, it's not ideal but there is no other way to initialize the
@@ -917,7 +924,8 @@ radv_fast_clear_depth(struct radv_cmd_buffer *cmd_buffer, const struct radv_imag
       .layerCount = iview->vk.layer_count,
    };
 
-   flush_bits = radv_clear_htile(cmd_buffer, iview->image, &range, clear_word);
+
+   flush_bits = radv_clear_htile(cmd_buffer, iview->image, &range, clear_word, true);
 
    if (iview->image->planes[0].surface.has_stencil &&
        !(aspects == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) {
@@ -1018,13 +1026,10 @@ create_dcc_comp_to_single_pipeline(struct radv_device *device, bool is_msaa, VkP
 }
 
 static VkResult
-init_meta_clear_dcc_comp_to_single_state(struct radv_device *device, bool on_demand)
+init_meta_clear_dcc_comp_to_single_state(struct radv_device *device)
 {
    struct radv_meta_state *state = &device->meta_state;
    VkResult result;
-
-   if (on_demand)
-      return VK_SUCCESS;
 
    for (uint32_t i = 0; i < 2; i++) {
       result = create_dcc_comp_to_single_pipeline(device, !!i, &state->clear_dcc_comp_to_single_pipeline[i]);
@@ -1041,12 +1046,12 @@ radv_device_init_meta_clear_state(struct radv_device *device, bool on_demand)
    VkResult res;
    struct radv_meta_state *state = &device->meta_state;
 
-   res = init_meta_clear_dcc_comp_to_single_state(device, on_demand);
-   if (res != VK_SUCCESS)
-      return res;
-
    if (on_demand)
       return VK_SUCCESS;
+
+   res = init_meta_clear_dcc_comp_to_single_state(device);
+   if (res != VK_SUCCESS)
+      return res;
 
    res = create_clear_htile_mask_pipeline(device);
    if (res != VK_SUCCESS)
@@ -1299,7 +1304,7 @@ radv_clear_dcc_comp_to_single(struct radv_cmd_buffer *cmd_buffer, struct radv_im
                                                    .baseArrayLayer = range->baseArrayLayer,
                                                    .layerCount = layer_count},
                            },
-                           0, &(struct radv_image_view_extra_create_info){.disable_compression = true});
+                           &(struct radv_image_view_extra_create_info){.disable_compression = true});
 
       radv_meta_push_descriptor_set(cmd_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     device->meta_state.clear_dcc_comp_to_single_p_layout, 0, 1,
@@ -1345,7 +1350,7 @@ radv_clear_dcc_comp_to_single(struct radv_cmd_buffer *cmd_buffer, struct radv_im
 
 uint32_t
 radv_clear_htile(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *image,
-                 const VkImageSubresourceRange *range, uint32_t value)
+                 const VkImageSubresourceRange *range, uint32_t value, bool is_clear)
 {
    struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
    const struct radv_physical_device *pdev = radv_device_physical(device);
@@ -1353,7 +1358,7 @@ radv_clear_htile(struct radv_cmd_buffer *cmd_buffer, const struct radv_image *im
    uint32_t flush_bits = 0;
    uint32_t htile_mask;
 
-   htile_mask = radv_get_htile_mask(cmd_buffer, image, range->aspectMask);
+   htile_mask = radv_get_htile_mask(cmd_buffer, image, range->aspectMask, is_clear);
 
    if (level_count != image->vk.mip_levels) {
       assert(pdev->info.gfx_level >= GFX10);
@@ -1449,7 +1454,7 @@ gfx8_get_fast_clear_parameters(struct radv_device *device, const struct radv_ima
        iview->vk.format == VK_FORMAT_B5G6R5_UNORM_PACK16)
       extra_channel = -1;
    else if (desc->layout == UTIL_FORMAT_LAYOUT_PLAIN) {
-      if (ac_alpha_is_on_msb(&pdev->info, vk_format_to_pipe_format(iview->vk.format)))
+      if (ac_alpha_is_on_msb(&pdev->info, radv_format_to_pipe_format(iview->vk.format)))
          extra_channel = desc->nr_channels - 1;
       else
          extra_channel = 0;
@@ -1549,7 +1554,7 @@ gfx11_get_fast_clear_parameters(struct radv_device *device, const struct radv_im
       uint32_t ui[4];
    } value;
    memset(&value, 0, sizeof(value));
-   util_format_pack_rgba(vk_format_to_pipe_format(iview->vk.format), &value, clear_value, 1);
+   util_format_pack_rgba(radv_format_to_pipe_format(iview->vk.format), &value, clear_value, 1);
 
    /* Check the cases where all components or bits are either all 0 or all 1. */
    bool all_bits_are_0 = true;
@@ -1975,7 +1980,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_image *im
                                                 .baseArrayLayer = range->baseArrayLayer,
                                                 .layerCount = layer_count},
                         },
-                        0, NULL);
+                        NULL);
 
    VkClearAttachment clear_att = {
       .aspectMask = range->aspectMask,
@@ -2003,6 +2008,7 @@ radv_clear_image_layer(struct radv_cmd_buffer *cmd_buffer, struct radv_image *im
 
    VkRenderingInfo rendering_info = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .flags = VK_RENDERING_INPUT_ATTACHMENT_NO_CONCURRENT_WRITES_BIT_MESA,
       .renderArea =
          {
             .offset = {0, 0},
@@ -2055,7 +2061,7 @@ radv_fast_clear_range(struct radv_cmd_buffer *cmd_buffer, struct radv_image *ima
                                  .layerCount = vk_image_subresource_layer_count(&image->vk, range),
                               },
                         },
-                        0, NULL);
+                        NULL);
 
    VkClearRect clear_rect = {
       .rect =
