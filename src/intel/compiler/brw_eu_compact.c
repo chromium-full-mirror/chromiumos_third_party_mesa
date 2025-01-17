@@ -2491,8 +2491,6 @@ brw_compact_instructions(struct brw_codegen *p, int start_offset,
          }
 
          group->offset = start_offset + offset;
-
-         offset = next_offset(devinfo, store, offset);
       }
    }
 
