@@ -192,7 +192,7 @@ vn_relax_get_profile(enum vn_relax_reason reason)
    switch (reason) {
    case VN_RELAX_REASON_RING_SEQNO:
       /* warn every 4096 iters after having already slept ~3.5s:
-       *   (yielded 1024 times)
+       *   (yielded 255 times)
        *   stuck in wait with iter at 4096  (3.5s slept already)
        *   stuck in wait with iter at 8192  (14s slept already)
        *   stuck in wait with iter at 12288 (35s slept already)
@@ -201,7 +201,7 @@ vn_relax_get_profile(enum vn_relax_reason reason)
        */
       return (struct vn_relax_profile){
          .base_sleep_us = 160,
-         .busy_wait_order = 10,
+         .busy_wait_order = 8,
          .warn_order = 12,
          .abort_order = 16,
       };
