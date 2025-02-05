@@ -49,6 +49,7 @@ deqp_args = [
     "--deqp-gl-config-name=rgba8888d24s8ms0",
     "--deqp-visibility=hidden"
 ]
+skips = ["/install/zink-anv-tgl-premerge-skips.txt"]
 timeout = 180.0
 [deqp.env]
   ZINK_DEBUG = "validation"
@@ -68,6 +69,7 @@ deqp_args = [
     "--deqp-gl-config-name=rgba8888d24s8ms0",
     "--deqp-visibility=hidden"
 ]
+skips = ["/install/zink-anv-tgl-premerge-skips.txt"]
 timeout = 180.0
 include = ["KHR-GL46.sample_variables.mask.rgba8.*.samples.*.mask.*"]
 prefix = "noopt-"
@@ -96,5 +98,6 @@ prefix = "noopt-"
 piglit_folder = "/piglit"
 profile = "quick_gl"
 process_isolation = true
+skips = ["/install/zink-anv-tgl-premerge-skips.txt"]
 timeout = 180.0
 fraction = 2

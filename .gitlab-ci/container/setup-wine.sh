@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-set -u
-
 export WINEPREFIX="$1"
 export WINEDEBUG="-all"
 

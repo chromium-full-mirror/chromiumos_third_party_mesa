@@ -56,8 +56,6 @@ files_mesa_util = files(
   'half_float.h',
   'hash_table.c',
   'hash_table.h',
-  'helpers.c',
-  'helpers.h',
   'hex.h',
   'u_idalloc.c',
   'u_idalloc.h',
@@ -382,7 +380,6 @@ if with_tests
     'tests/u_call_once_test.cpp',
     'tests/u_debug_stack_test.cpp',
     'tests/u_debug_test.cpp',
-    'tests/u_memstream_test.cpp',
     'tests/u_printf_test.cpp',
     'tests/u_qsort_test.cpp',
     'tests/vector_test.cpp',
@@ -410,7 +407,6 @@ if with_tests
     ),
     suite : ['util'],
     protocol : 'gtest',
-    is_parallel : false,
     timeout : 180,
   )
 

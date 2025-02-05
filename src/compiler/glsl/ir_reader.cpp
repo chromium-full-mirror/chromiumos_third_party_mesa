@@ -687,10 +687,7 @@ ir_reader::read_call(s_expression *expr)
    }
 
    ir_function_signature *callee =
-      f->matching_signature(state, &parameters,
-                            state->has_implicit_conversions(),
-                            state->has_implicit_int_to_uint_conversion(),
-                            true);
+      f->matching_signature(state, &parameters, true);
    if (callee == NULL) {
       ir_read_error(expr, "couldn't find matching signature for function "
                     "%s", name->value());

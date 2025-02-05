@@ -22,6 +22,7 @@
 
 #include "geometry.h"
 #include "tessellator.h"
+#include <agx_pack.h>
 
 #if 0
 #include <math.h>
@@ -96,6 +97,7 @@ struct INDEX_PATCH_CONTEXT2 {
 };
 
 struct CHWTessellator {
+   enum libagx_tess_output_primitive outputPrimitive;
    enum libagx_tess_mode mode;
    uint index_bias;
 
@@ -152,6 +154,51 @@ libagx_draw(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
       p->counts[patch] = count;
    }
 
+   if (mode == LIBAGX_TESS_MODE_VDM) {
+      uint32_t elsize_B = sizeof(uint16_t);
+      uint32_t alloc_B = libagx_heap_alloc(p->heap, elsize_B * count);
+      uint64_t ib = ((uintptr_t)p->heap->heap) + alloc_B;
+
+      global uint32_t *desc = p->out_draws + (patch * 6);
+      agx_pack(&desc[0], INDEX_LIST, cfg) {
+         cfg.index_buffer_hi = (ib >> 32);
+         cfg.primitive = lines ? AGX_PRIMITIVE_LINES : AGX_PRIMITIVE_TRIANGLES;
+         cfg.restart_enable = false;
+         cfg.index_size = AGX_INDEX_SIZE_U16;
+         cfg.index_buffer_size_present = true;
+         cfg.index_buffer_present = true;
+         cfg.index_count_present = true;
+         cfg.instance_count_present = true;
+         cfg.start_present = true;
+         cfg.unk_1_present = false;
+         cfg.indirect_buffer_present = false;
+         cfg.unk_2_present = false;
+         cfg.block_type = AGX_VDM_BLOCK_TYPE_INDEX_LIST;
+      }
+
+      agx_pack(&desc[1], INDEX_LIST_BUFFER_LO, cfg) {
+         cfg.buffer_lo = ib & 0xffffffff;
+      }
+
+      agx_pack(&desc[2], INDEX_LIST_COUNT, cfg) {
+         cfg.count = count;
+      }
+
+      agx_pack(&desc[3], INDEX_LIST_INSTANCES, cfg) {
+         cfg.count = 1;
+      }
+
+      agx_pack(&desc[4], INDEX_LIST_START, cfg) {
+         cfg.start = patch * LIBAGX_TES_PATCH_ID_STRIDE;
+      }
+
+      agx_pack(&desc[5], INDEX_LIST_BUFFER_SIZE, cfg) {
+         cfg.size = align(count * 2, 4);
+      }
+
+      return (global void *)ib;
+   }
+
    if (mode == LIBAGX_TESS_MODE_WITH_COUNTS) {
       /* The index buffer is already allocated, get a pointer inside it.
        * p->counts has had an inclusive prefix sum hence the subtraction.
@@ -170,26 +217,67 @@ static void
 libagx_draw_points(private struct CHWTessellator *ctx,
                    constant struct libagx_tess_args *p, uint patch, uint count)
 {
-   /* For points mode with a single draw, we need to generate a trivial index
-    * buffer to stuff in the patch ID in the right place.
-    */
-   global uint32_t *indices = libagx_draw(p, ctx->mode, false, patch, count);
+   if (ctx->mode == LIBAGX_TESS_MODE_VDM) {
+      /* Generate a non-indexed draw for points mode tessellation. */
+      global uint32_t *desc = p->out_draws + (patch * 4);
+      agx_pack(&desc[0], INDEX_LIST, cfg) {
+         cfg.index_buffer_hi = 0;
+         cfg.primitive = AGX_PRIMITIVE_POINTS;
+         cfg.restart_enable = false;
+         cfg.index_size = 0;
+         cfg.index_buffer_size_present = false;
+         cfg.index_buffer_present = false;
+         cfg.index_count_present = true;
+         cfg.instance_count_present = true;
+         cfg.start_present = true;
+         cfg.unk_1_present = false;
+         cfg.indirect_buffer_present = false;
+         cfg.unk_2_present = false;
+         cfg.block_type = AGX_VDM_BLOCK_TYPE_INDEX_LIST;
+      }
 
-   if (ctx->mode == LIBAGX_TESS_MODE_COUNT)
-      return;
+      agx_pack(&desc[1], INDEX_LIST_COUNT, cfg) {
+         cfg.count = count;
+      }
 
-   for (int i = 0; i < count; ++i) {
-      indices[i] = ctx->index_bias + i;
+      agx_pack(&desc[2], INDEX_LIST_INSTANCES, cfg) {
+         cfg.count = 1;
+      }
+
+      agx_pack(&desc[3], INDEX_LIST_START, cfg) {
+         cfg.start = patch * LIBAGX_TES_PATCH_ID_STRIDE;
+      }
+   } else {
+      /* For points mode with a single draw, we need to generate a trivial index
+       * buffer to stuff in the patch ID in the right place.
+       */
+      global uint32_t *indices = libagx_draw(p, ctx->mode, false, patch, count);
+
+      if (ctx->mode == LIBAGX_TESS_MODE_COUNT)
+         return;
+
+      for (int i = 0; i < count; ++i) {
+         indices[i] = ctx->index_bias + i;
+      }
    }
 }
 
 static void
 libagx_draw_empty(constant struct libagx_tess_args *p,
                   enum libagx_tess_mode mode,
+                  enum libagx_tess_output_primitive output_primitive,
                   uint patch)
 {
    if (mode == LIBAGX_TESS_MODE_COUNT) {
       p->counts[patch] = 0;
+   } else if (mode == LIBAGX_TESS_MODE_VDM) {
+      uint32_t words = (output_primitive == LIBAGX_TESS_OUTPUT_POINT) ? 4 : 6;
+      global uint32_t *desc = p->out_draws + (patch * words);
+      uint32_t nop_token = AGX_VDM_BLOCK_TYPE_BARRIER << 29;
+
+      for (uint32_t i = 0; i < words; ++i) {
+         desc[i] = nop_token;
+      }
    }
 }
 
@@ -267,6 +355,13 @@ floatToFixed(const float input)
    return mad(input, FXP_ONE, 0.5f);
 }
 
+static float
+fixedToFloat(const FXP input)
+{
+   // Don't need to worry about special cases because the bounds are reasonable.
+   return ((float)input) / FXP_ONE;
+}
+
 static bool
 isOdd(const float input)
 {
@@ -321,8 +416,8 @@ PatchIndexValue(private struct CHWTessellator *ctx, int index)
 static void
 DefinePoint(global struct libagx_tess_point *out, FXP fxpU, FXP fxpV)
 {
-   out->u = fxpU;
-   out->v = fxpV;
+   out->u = fixedToFloat(fxpU);
+   out->v = fixedToFloat(fxpV);
 }
 
 static void
@@ -344,9 +439,12 @@ static void
 DefineClockwiseTriangle(private struct CHWTessellator *ctx, int index0,
                         int index1, int index2, int indexStorageBaseOffset)
 {
+   // inputs a clockwise triangle, stores a CW or CCW triangle per state state
+   bool cw = ctx->outputPrimitive == LIBAGX_TESS_OUTPUT_TRIANGLE_CW;
+
    DefineIndex(ctx, index0, indexStorageBaseOffset);
-   DefineIndex(ctx, index1, indexStorageBaseOffset + 1);
-   DefineIndex(ctx, index2, indexStorageBaseOffset + 2);
+   DefineIndex(ctx, cw ? index1 : index2, indexStorageBaseOffset + 1);
+   DefineIndex(ctx, cw ? index2 : index1, indexStorageBaseOffset + 2);
 }
 
 static uint32_t
@@ -739,10 +837,11 @@ StitchTransition(private struct CHWTessellator *ctx, int baseIndexOffset,
 
 void
 libagx_tess_isoline(constant struct libagx_tess_args *p,
-                    enum libagx_tess_mode mode, uint patch)
+                    enum libagx_tess_mode mode,
+                    enum libagx_tess_partitioning partitioning,
+                    enum libagx_tess_output_primitive output_primitive,
+                    uint patch)
 {
-   enum libagx_tess_partitioning partitioning = p->partitioning;
-
    bool lineDensityOdd;
    bool lineDetailOdd;
    TESS_FACTOR_CONTEXT lineDensityTessFactorCtx;
@@ -754,7 +853,7 @@ libagx_tess_isoline(constant struct libagx_tess_args *p,
 
    // Is the patch culled? NaN will pass.
    if (!(TessFactor_V_LineDensity > 0) || !(TessFactor_U_LineDetail > 0)) {
-      libagx_draw_empty(p, mode, patch);
+      libagx_draw_empty(p, mode, output_primitive, patch);
       return;
    }
 
@@ -814,7 +913,7 @@ libagx_tess_isoline(constant struct libagx_tess_args *p,
    ctx.index_bias = patch * LIBAGX_TES_PATCH_ID_STRIDE;
 
    /* Connectivity */
-   if (!p->points_mode) {
+   if (output_primitive != LIBAGX_TESS_OUTPUT_POINT) {
       uint num_indices = numLines * (numPointsPerLine - 1) * 2;
       ctx.Index = libagx_draw(p, mode, true, patch, num_indices);
 
@@ -838,10 +937,10 @@ libagx_tess_isoline(constant struct libagx_tess_args *p,
 
 void
 libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
-                uint patch)
-{
-   enum libagx_tess_partitioning partitioning = p->partitioning;
 
+                enum libagx_tess_partitioning partitioning,
+                enum libagx_tess_output_primitive output_primitive, uint patch)
+{
    global float *factors = tess_factors(p, patch);
    float tessFactor_Ueq0 = factors[0];
    float tessFactor_Veq0 = factors[1];
@@ -849,6 +948,7 @@ libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
    float insideTessFactor_f = factors[4];
 
    struct CHWTessellator ctx;
+   ctx.outputPrimitive = output_primitive;
    ctx.Point = NULL;
    ctx.Index = NULL;
    ctx.mode = mode;
@@ -860,7 +960,7 @@ libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
    if (!(tessFactor_Ueq0 > 0) || !(tessFactor_Veq0 > 0) ||
        !(tessFactor_Weq0 > 0)) {
 
-      libagx_draw_empty(p, mode, patch);
+      libagx_draw_empty(p, mode, output_primitive, patch);
 
       return;
    }
@@ -932,7 +1032,7 @@ libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
          DefinePoint(&points[2], FXP_ONE,
                      0); // U=1 (beginning of Weq0 edge UV)
 
-         if (!p->points_mode) {
+         if (output_primitive != LIBAGX_TESS_OUTPUT_POINT) {
             ctx.Index = libagx_draw(p, mode, false, patch, 3);
 
             DefineClockwiseTriangle(&ctx, 0, 1, 2,
@@ -1003,11 +1103,12 @@ libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
 
             FXP fxpParam = PlacePointIn1D(&outsideTessFactorCtx[edge],
                                           outsideTessFactorOdd[edge], q);
-            bool first = edge == 0;
-            DefinePoint(&ctx.Point[pointOffset], (edge == 0) ? 0 : fxpParam,
-                        (edge == 0)   ? fxpParam
-                        : (edge == 2) ? FXP_ONE - fxpParam
-                                      : 0);
+            if (edge == 0) {
+               DefinePoint(&ctx.Point[pointOffset], 0, fxpParam);
+            } else {
+               DefinePoint(&ctx.Point[pointOffset], fxpParam,
+                           (edge == 2) ? FXP_ONE - fxpParam : 0);
+            }
          }
       }
 
@@ -1017,19 +1118,19 @@ libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
          int startPoint = ring;
          int endPoint = numPointsForInsideTessFactor - 1 - startPoint;
 
-         int perpendicularAxisPoint = startPoint;
-         FXP fxpPerpParam = PlacePointIn1D(
-            &insideTessFactorCtx, insideTessFactorOdd, perpendicularAxisPoint);
-
-         // Map location to the right size in
-         // barycentric space. We know this fixed
-         // point math won't over/underflow
-         fxpPerpParam *= FXP_TWO_THIRDS;
-         fxpPerpParam = (fxpPerpParam + FXP_ONE_HALF /*round*/) >>
-                        FXP_FRACTION_BITS; // get back to n.16
-
          for (int edge = 0; edge < TRI_EDGES; edge++) {
             int odd = edge & 0x1;
+            int perpendicularAxisPoint = startPoint;
+            FXP fxpPerpParam =
+               PlacePointIn1D(&insideTessFactorCtx, insideTessFactorOdd,
+                              perpendicularAxisPoint);
+
+            // Map location to the right size in
+            // barycentric space. We know this fixed
+            // point math won't over/underflow
+            fxpPerpParam *= FXP_TWO_THIRDS;
+            fxpPerpParam = (fxpPerpParam + FXP_ONE_HALF /*round*/) >>
+                           FXP_FRACTION_BITS; // get back to n.16
 
             // don't include end: next edge starts with it.
             for (int p = startPoint; p < endPoint; p++, pointOffset++) {
@@ -1065,7 +1166,7 @@ libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
       }
    }
 
-   if (p->points_mode) {
+   if (output_primitive == LIBAGX_TESS_OUTPUT_POINT) {
       libagx_draw_points(&ctx, p, patch, NumPoints);
       return;
    }
@@ -1169,9 +1270,10 @@ libagx_tess_tri(constant struct libagx_tess_args *p, enum libagx_tess_mode mode,
 
 void
 libagx_tess_quad(constant struct libagx_tess_args *p,
-                 enum libagx_tess_mode mode, uint patch)
+                 enum libagx_tess_mode mode,
+                 enum libagx_tess_partitioning partitioning,
+                 enum libagx_tess_output_primitive output_primitive, uint patch)
 {
-   enum libagx_tess_partitioning partitioning = p->partitioning;
    global float *factors = tess_factors(p, patch);
 
    float tessFactor_Ueq0 = factors[0];
@@ -1184,6 +1286,7 @@ libagx_tess_quad(constant struct libagx_tess_args *p,
 
    // TODO: fix designated initializer optimization in NIR
    struct CHWTessellator ctx;
+   ctx.outputPrimitive = output_primitive;
    ctx.Point = NULL;
    ctx.Index = NULL;
    ctx.mode = mode;
@@ -1195,7 +1298,7 @@ libagx_tess_quad(constant struct libagx_tess_args *p,
    if (!(tessFactor_Ueq0 > 0) || // NaN will pass
        !(tessFactor_Veq0 > 0) || !(tessFactor_Ueq1 > 0) ||
        !(tessFactor_Veq1 > 0)) {
-      libagx_draw_empty(p, mode, patch);
+      libagx_draw_empty(p, mode, output_primitive, patch);
       return;
    }
 
@@ -1230,28 +1333,29 @@ libagx_tess_quad(constant struct libagx_tess_args *p,
                                             tessFactor_Ueq1, tessFactor_Veq1};
    float insideTessFactor_f[QUAD_AXES] = {insideTessFactor_U,
                                           insideTessFactor_V};
+   int edge, axis;
    if (partitioning == LIBAGX_TESS_PARTITIONING_INTEGER) {
-      for (int edge = 0; edge < QUAD_EDGES; edge++) {
+      for (edge = 0; edge < QUAD_EDGES; edge++) {
          outsideTessFactorOdd[edge] = isOdd(outsideTessFactor_f[edge]);
       }
-      for (int axis = 0; axis < QUAD_AXES; axis++) {
+      for (axis = 0; axis < QUAD_AXES; axis++) {
          insideTessFactorOdd[axis] = isOdd(insideTessFactor_f[axis]) &&
                                      (1.0f != insideTessFactor_f[axis]);
       }
    } else {
       bool odd = (partitioning == LIBAGX_TESS_PARTITIONING_FRACTIONAL_ODD);
 
-      for (int edge = 0; edge < QUAD_EDGES; edge++) {
+      for (edge = 0; edge < QUAD_EDGES; edge++) {
          outsideTessFactorOdd[edge] = odd;
       }
       insideTessFactorOdd[U] = insideTessFactorOdd[V] = odd;
    }
 
    // Save fixed point TessFactors
-   for (int edge = 0; edge < QUAD_EDGES; edge++) {
+   for (edge = 0; edge < QUAD_EDGES; edge++) {
       outsideTessFactor[edge] = floatToFixed(outsideTessFactor_f[edge]);
    }
-   for (int axis = 0; axis < QUAD_AXES; axis++) {
+   for (axis = 0; axis < QUAD_AXES; axis++) {
       insideTessFactor[axis] = floatToFixed(insideTessFactor_f[axis]);
    }
 
@@ -1265,7 +1369,7 @@ libagx_tess_quad(constant struct libagx_tess_args *p,
           (FXP_ONE == outsideTessFactor[Veq1])) {
 
          /* Just do minimum tess factor */
-         if (!p->points_mode) {
+         if (output_primitive != LIBAGX_TESS_OUTPUT_POINT) {
             ctx.Index = libagx_draw(p, mode, false, patch, 6);
             if (mode == LIBAGX_TESS_MODE_COUNT)
                return;
@@ -1412,7 +1516,7 @@ libagx_tess_quad(constant struct libagx_tess_args *p,
       }
    }
 
-   if (p->points_mode) {
+   if (output_primitive == LIBAGX_TESS_OUTPUT_POINT) {
       libagx_draw_points(&ctx, p, patch, NumPoints);
       return;
    }

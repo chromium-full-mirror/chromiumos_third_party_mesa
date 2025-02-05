@@ -134,7 +134,6 @@ radv_build_printf(nir_builder *b, nir_def *cond, const char *format_string, ...)
 
    for (uint32_t i = 0; i < num_args; i++) {
       nir_def *arg = va_arg(arg_list, nir_def *);
-      bool divergent = arg->divergent;
 
       if (arg->bit_size == 1)
          arg = nir_b2i32(b, arg);
@@ -144,7 +143,9 @@ radv_build_printf(nir_builder *b, nir_def *cond, const char *format_string, ...)
       uint32_t arg_size = arg->bit_size == 1 ? 32 : arg->bit_size / 8;
       format.element_sizes[i] = arg_size;
 
-      if (divergent) {
+      nir_update_instr_divergence(b->shader, arg->parent_instr);
+
+      if (arg->divergent) {
          strides[i] = nir_imul_imm(b, active_invocation_count, arg_size);
          format.divergence_mask |= BITFIELD_BIT(i);
       } else {

@@ -586,7 +586,7 @@ radv_meta_resolve_compute_image(struct radv_cmd_buffer *cmd_buffer, struct radv_
                                     .layerCount = 1,
                                  },
                            },
-                           NULL);
+                           0, NULL);
 
       struct radv_image_view dst_iview;
       radv_image_view_init(&dst_iview, device,
@@ -604,7 +604,7 @@ radv_meta_resolve_compute_image(struct radv_cmd_buffer *cmd_buffer, struct radv_
                                     .layerCount = 1,
                                  },
                            },
-                           NULL);
+                           0, NULL);
 
       emit_resolve(cmd_buffer, &src_iview, &dst_iview, &(VkOffset2D){srcOffset.x, srcOffset.y},
                    &(VkOffset2D){dstOffset.x, dstOffset.y}, &(VkExtent2D){extent.width, extent.height});
@@ -703,7 +703,7 @@ radv_depth_stencil_resolve_rendering_cs(struct radv_cmd_buffer *cmd_buffer, VkIm
                                  .layerCount = layer_count,
                               },
                         },
-                        NULL);
+                        0, NULL);
 
    struct radv_image_view tdst_iview;
    radv_image_view_init(&tdst_iview, device,
@@ -721,7 +721,7 @@ radv_depth_stencil_resolve_rendering_cs(struct radv_cmd_buffer *cmd_buffer, VkIm
                                  .layerCount = layer_count,
                               },
                         },
-                        NULL);
+                        0, NULL);
 
    emit_depth_stencil_resolve(cmd_buffer, &tsrc_iview, &tdst_iview, &resolve_area.offset,
                               &(VkExtent3D){resolve_area.extent.width, resolve_area.extent.height, layer_count},
@@ -743,7 +743,7 @@ radv_depth_stencil_resolve_rendering_cs(struct radv_cmd_buffer *cmd_buffer, VkIm
 
       uint32_t htile_value = radv_get_htile_initial_value(device, dst_image);
 
-      cmd_buffer->state.flush_bits |= radv_clear_htile(cmd_buffer, dst_image, &range, htile_value, false);
+      cmd_buffer->state.flush_bits |= radv_clear_htile(cmd_buffer, dst_image, &range, htile_value);
    }
 
    radv_image_view_finish(&tsrc_iview);

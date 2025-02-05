@@ -183,17 +183,6 @@ genX(emit_slice_hashing_state)(struct anv_device *device,
 }
 
 static void
-state_system_mem_fence_address_emit(struct anv_device *device, struct anv_batch *batch)
-{
-#if GFX_VERx10 >= 200
-   struct anv_address addr = { .bo = device->mem_fence_bo };
-   anv_batch_emit(batch, GENX(STATE_SYSTEM_MEM_FENCE_ADDRESS), mem_fence_addr) {
-      mem_fence_addr.SystemMemoryFenceAddress = addr;
-   }
-#endif
-}
-
-static void
 init_common_queue_state(struct anv_queue *queue, struct anv_batch *batch)
 {
    UNUSED struct anv_device *device = queue->device;
@@ -367,8 +356,6 @@ init_common_queue_state(struct anv_queue *queue, struct anv_batch *batch)
       }
    }
 #endif
-
-   state_system_mem_fence_address_emit(device, batch);
 }
 
 #if GFX_VER >= 20
@@ -764,22 +751,9 @@ init_compute_queue_state(struct anv_queue *queue)
    }
 
    anv_batch_emit(batch, GENX(STATE_COMPUTE_MODE), cm) {
-#if GFX_VER >= 20
-      cm.AsyncComputeThreadLimit = ACTL_Max8;
-      cm.ZPassAsyncComputeThreadLimit = ZPACTL_Max60;
-      cm.ZAsyncThrottlesettings = ZATS_DefertoAsyncComputeThreadLimit;
-      cm.AsyncComputeThreadLimitMask = 0x7;
-      cm.ZPassAsyncComputeThreadLimitMask = 0x7;
-      cm.ZAsyncThrottlesettingsMask = 0x3;
-#else
-      cm.PixelAsyncComputeThreadLimit = PACTL_Max24;
-      cm.ZPassAsyncComputeThreadLimit = ZPACTL_Max60;
+#if GFX_VER < 20
+      cm.PixelAsyncComputeThreadLimit = 4;
       cm.PixelAsyncComputeThreadLimitMask = 0x7;
-      cm.ZPassAsyncComputeThreadLimitMask = 0x7;
-      if (intel_device_info_is_mtl_or_arl(devinfo)) {
-         cm.ZAsyncThrottlesettings = ZATS_DefertoPixelAsyncComputeThreadLimit;
-         cm.ZAsyncThrottlesettingsMask = 0x3;
-      }
 #endif
    }
 #endif
@@ -815,20 +789,20 @@ init_compute_queue_state(struct anv_queue *queue)
 static VkResult
 init_copy_video_queue_state(struct anv_queue *queue)
 {
-   struct anv_device *device = queue->device;
-   UNUSED const struct intel_device_info *devinfo = device->info;
-
-   struct anv_async_submit *submit;
-   VkResult result = anv_async_submit_create(queue,
-                                             &device->batch_bo_pool,
-                                             false, true, &submit);
-   if (result != VK_SUCCESS)
-      return result;
-
-   struct anv_batch *batch = &submit->batch;
-
 #if GFX_VER >= 12
+   struct anv_device *device = queue->device;
+   const struct intel_device_info *devinfo = device->info;
+
    if (devinfo->has_aux_map) {
+      struct anv_async_submit *submit;
+      VkResult result = anv_async_submit_create(queue,
+                                                &device->batch_bo_pool,
+                                                false, true, &submit);
+      if (result != VK_SUCCESS)
+         return result;
+
+      struct anv_batch *batch = &submit->batch;
+
       uint64_t reg = GENX(VD0_AUX_TABLE_BASE_ADDR_num);
 
       if (queue->family->engine_class == INTEL_ENGINE_CLASS_COPY) {
@@ -848,14 +822,7 @@ init_copy_video_queue_state(struct anv_queue *queue)
          lri.RegisterOffset = reg + 4;
          lri.DataDWord = aux_base_addr >> 32;
       }
-   }
-#else
-   assert(!queue->device->info->has_aux_map);
-#endif
 
-   state_system_mem_fence_address_emit(device, batch);
-
-   if (batch->start != batch->next) {
       anv_batch_emit(batch, GENX(MI_BATCH_BUFFER_END), bbe);
 
       result = batch->status;
@@ -871,9 +838,10 @@ init_copy_video_queue_state(struct anv_queue *queue)
       }
 
       queue->init_submit = submit;
-   } else {
-      anv_async_submit_destroy(submit);
    }
+#else
+   assert(!queue->device->info->has_aux_map);
+#endif
 
    return VK_SUCCESS;
 }
@@ -888,7 +856,6 @@ genX(init_physical_device_state)(ASSERTED struct anv_physical_device *pdevice)
 #endif
 
    pdevice->cmd_emit_timestamp = genX(cmd_emit_timestamp);
-   pdevice->cmd_capture_data = genX(cmd_capture_data);
 
    pdevice->gpgpu_pipeline_value = GPGPU;
 
@@ -1488,82 +1455,50 @@ genX(apply_task_urb_workaround)(struct anv_cmd_buffer *cmd_buffer)
 }
 
 VkResult
-genX(init_trtt_context_state)(struct anv_async_submit *submit)
+genX(init_trtt_context_state)(struct anv_device *device,
+                              struct anv_async_submit *submit)
 {
 #if GFX_VER >= 12
-   struct anv_queue *queue = submit->queue;
-   struct anv_device *device = queue->device;
    struct anv_trtt *trtt = &device->trtt;
    struct anv_batch *batch = &submit->batch;
 
-   assert((trtt->l3_addr & 0xFFF) == 0);
-   uint32_t l3_addr_low = (trtt->l3_addr & 0xFFFFF000) >> 12;
-   uint32_t l3_addr_high = (trtt->l3_addr >> 32) & 0xFFFF;
-
-   anv_batch_write_reg(batch, GENX(GFX_TRTT_INVAL), trtt_inval)
+   anv_batch_write_reg(batch, GENX(GFX_TRTT_INVAL), trtt_inval) {
       trtt_inval.InvalidTileDetectionValue = ANV_TRTT_L1_INVALID_TILE_VAL;
-   anv_batch_write_reg(batch, GENX(GFX_TRTT_NULL), trtt_null)
+   }
+   anv_batch_write_reg(batch, GENX(GFX_TRTT_NULL), trtt_null) {
       trtt_null.NullTileDetectionValue = ANV_TRTT_L1_NULL_TILE_VAL;
-   anv_batch_write_reg(batch, GENX(GFX_TRTT_L3_BASE_LOW), trtt_base_low)
-      trtt_base_low.TRVAL3PointerLowerAddress = l3_addr_low;
-   anv_batch_write_reg(batch, GENX(GFX_TRTT_L3_BASE_HIGH), trtt_base_high)
-      trtt_base_high.TRVAL3PointerUpperAddress = l3_addr_high;
-
-   anv_batch_write_reg(batch, GENX(BLT_TRTT_INVAL), trtt_inval)
-      trtt_inval.InvalidTileDetectionValue = ANV_TRTT_L1_INVALID_TILE_VAL;
-   anv_batch_write_reg(batch, GENX(BLT_TRTT_NULL), trtt_null)
-      trtt_null.NullTileDetectionValue = ANV_TRTT_L1_NULL_TILE_VAL;
-   anv_batch_write_reg(batch, GENX(BLT_TRTT_L3_BASE_LOW), trtt_base_low)
-      trtt_base_low.TRVAL3PointerLowerAddress = l3_addr_low;
-   anv_batch_write_reg(batch, GENX(BLT_TRTT_L3_BASE_HIGH), trtt_base_high)
-      trtt_base_high.TRVAL3PointerUpperAddress = l3_addr_high;
-
-   anv_batch_write_reg(batch, GENX(COMP_CTX0_TRTT_INVAL), trtt_inval)
-      trtt_inval.InvalidTileDetectionValue = ANV_TRTT_L1_INVALID_TILE_VAL;
-   anv_batch_write_reg(batch, GENX(COMP_CTX0_TRTT_NULL), trtt_null)
-      trtt_null.NullTileDetectionValue = ANV_TRTT_L1_NULL_TILE_VAL;
-   anv_batch_write_reg(batch, GENX(COMP_CTX0_TRTT_L3_BASE_LOW), trtt_base_low)
-      trtt_base_low.TRVAL3PointerLowerAddress = l3_addr_low;
-   anv_batch_write_reg(batch, GENX(COMP_CTX0_TRTT_L3_BASE_HIGH), trtt_base_high)
-      trtt_base_high.TRVAL3PointerUpperAddress = l3_addr_high;
-
+   }
 #if GFX_VER >= 20
-   uint32_t trva_base = device->physical->va.trtt.addr >> 44;
-   anv_batch_write_reg(batch, GENX(GFX_TRTT_VA_RANGE), trtt_va_range)
-      trtt_va_range.TRVABase = trva_base;
-   anv_batch_write_reg(batch, GENX(BLT_TRTT_VA_RANGE), trtt_va_range)
-      trtt_va_range.TRVABase = trva_base;
-   anv_batch_write_reg(batch, GENX(COMP_CTX0_TRTT_VA_RANGE), trtt_va_range)
-      trtt_va_range.TRVABase = trva_base;
+   anv_batch_write_reg(batch, GENX(GFX_TRTT_VA_RANGE), trtt_va_range) {
+      trtt_va_range.TRVABase = device->physical->va.trtt.addr >> 44;
+   }
 #else
    anv_batch_write_reg(batch, GENX(GFX_TRTT_VA_RANGE), trtt_va_range) {
       trtt_va_range.TRVAMaskValue = 0xF;
       trtt_va_range.TRVADataValue = 0xF;
    }
-   anv_batch_write_reg(batch, GENX(BLT_TRTT_VA_RANGE), trtt_va_range) {
-      trtt_va_range.TRVAMaskValue = 0xF;
-      trtt_va_range.TRVADataValue = 0xF;
-   }
-   anv_batch_write_reg(batch, GENX(COMP_CTX0_TRTT_VA_RANGE), trtt_va_range) {
-      trtt_va_range.TRVAMaskValue = 0xF;
-      trtt_va_range.TRVADataValue = 0xF;
-   }
 #endif
 
-   /* Enabling TR-TT needs to be done after setting up the other registers.
-    */
-   anv_batch_write_reg(batch, GENX(GFX_TRTT_CR), trtt_cr)
-      trtt_cr.TRTTEnable = true;
-   anv_batch_write_reg(batch, GENX(BLT_TRTT_CR), trtt_cr)
-      trtt_cr.TRTTEnable = true;
-   anv_batch_write_reg(batch, GENX(COMP_CTX0_TRTT_CR), trtt_cr)
-      trtt_cr.TRTTEnable = true;
-
-   if (queue->family->engine_class != INTEL_ENGINE_CLASS_COPY) {
-      genx_batch_emit_pipe_control(batch, device->info, _3D,
-                                   ANV_PIPE_CS_STALL_BIT |
-                                   ANV_PIPE_TLB_INVALIDATE_BIT);
+   uint64_t l3_addr = trtt->l3_addr;
+   assert((l3_addr & 0xFFF) == 0);
+   anv_batch_write_reg(batch, GENX(GFX_TRTT_L3_BASE_LOW), trtt_base_low) {
+      trtt_base_low.TRVAL3PointerLowerAddress =
+         (l3_addr & 0xFFFFF000) >> 12;
    }
+   anv_batch_write_reg(batch, GENX(GFX_TRTT_L3_BASE_HIGH),
+         trtt_base_high) {
+      trtt_base_high.TRVAL3PointerUpperAddress =
+         (l3_addr >> 32) & 0xFFFF;
+   }
+   /* Enabling TR-TT needs to be done after setting up the other registers.
+   */
+   anv_batch_write_reg(batch, GENX(GFX_TRTT_CR), trtt_cr) {
+      trtt_cr.TRTTEnable = true;
+   }
+
+   genx_batch_emit_pipe_control(batch, device->info, _3D,
+                                ANV_PIPE_CS_STALL_BIT |
+                                ANV_PIPE_TLB_INVALIDATE_BIT);
 #endif
    return VK_SUCCESS;
 }

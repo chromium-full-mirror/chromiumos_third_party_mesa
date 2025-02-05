@@ -115,7 +115,7 @@ pub static DISPATCH: cl_icd_dispatch = cl_icd_dispatch {
     clRetainDeviceEXT: None,
     clReleaseDeviceEXT: None,
     clCreateEventFromGLsyncKHR: None,
-    clCreateSubDevices: Some(clCreateSubDevices),
+    clCreateSubDevices: None,
     clRetainDevice: Some(clRetainDevice),
     clReleaseDevice: Some(clReleaseDevice),
     clCreateImage: Some(clCreateImage),
@@ -367,9 +367,12 @@ macro_rules! impl_cl_type_trait_base {
                 }
 
                 let offset = ::mesa_rust_util::offset_of!($t, $($field).+);
+                let mut obj_ptr: *const u8 = self.cast();
                 // SAFETY: We offset the pointer back from the ICD specified base type to our
                 //         internal type.
-                let obj_ptr: *const $t = unsafe { self.byte_sub(offset) }.cast();
+                unsafe { obj_ptr = obj_ptr.sub(offset) }
+
+                let obj_ptr: *const $t = obj_ptr.cast();
 
                 // Check at compile-time that we indeed got the right path
                 unsafe { let _: &Base = &(*obj_ptr).$($field).+; }
@@ -384,7 +387,7 @@ macro_rules! impl_cl_type_trait_base {
                 let offset = ::mesa_rust_util::offset_of!($t, $($field).+);
                 // SAFETY: The resulting pointer is safe as we simply offset into the ICD specified
                 //         base type.
-                unsafe { ptr.byte_add(offset) as Self }
+                unsafe { (ptr as *const u8).add(offset) as Self }
             }
         }
 
@@ -403,13 +406,13 @@ macro_rules! impl_cl_type_trait_base {
         impl std::cmp::Eq for $t {}
         impl std::cmp::PartialEq for $t {
             fn eq(&self, other: &Self) -> bool {
-                std::ptr::addr_eq(self, other)
+                (self as *const Self) == (other as *const Self)
             }
         }
 
         impl std::hash::Hash for $t {
             fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-                std::ptr::from_ref(self).hash(state);
+                (self as *const Self).hash(state);
             }
         }
     };

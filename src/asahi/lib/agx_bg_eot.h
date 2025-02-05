@@ -34,7 +34,7 @@ struct agx_bg_eot_shader {
    struct agx_bg_eot_key key;
    struct agx_shader_info info;
    struct agx_bo *bo;
-   uint64_t ptr;
+   uint32_t ptr;
 };
 
 struct agx_bg_eot_shader *agx_get_bg_eot_shader(struct agx_bg_eot_cache *cache,

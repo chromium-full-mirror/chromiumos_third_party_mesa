@@ -212,11 +212,10 @@ emit_blt_inplace(struct etna_cmd_stream *stream, const struct blt_inplace_op *op
 }
 
 static void
-etna_blit_clear_color_blt(struct pipe_context *pctx, unsigned idx,
+etna_blit_clear_color_blt(struct pipe_context *pctx, struct pipe_surface *dst,
                       const union pipe_color_union *color)
 {
    struct etna_context *ctx = etna_context(pctx);
-   struct pipe_surface *dst = ctx->framebuffer_s.cbufs[idx];
    struct etna_surface *surf = etna_surface(dst);
    uint64_t new_clear_value = etna_clear_blit_pack_rgba(surf->base.format, color);
    int msaa_xscale = 1, msaa_yscale = 1;
@@ -257,13 +256,8 @@ etna_blit_clear_color_blt(struct pipe_context *pctx, unsigned idx,
 
    /* This made the TS valid */
    if (surf->level->ts_size) {
-      if (idx == 0) {
-         ctx->framebuffer.TS_COLOR_CLEAR_VALUE = new_clear_value;
-         ctx->framebuffer.TS_COLOR_CLEAR_VALUE_EXT = new_clear_value >> 32;
-      } else {
-         ctx->framebuffer.RT_TS_COLOR_CLEAR_VALUE[idx - 1] = new_clear_value;
-         ctx->framebuffer.RT_TS_COLOR_CLEAR_VALUE_EXT[idx - 1] = new_clear_value >> 32;
-      }
+      ctx->framebuffer.TS_COLOR_CLEAR_VALUE = new_clear_value;
+      ctx->framebuffer.TS_COLOR_CLEAR_VALUE_EXT = new_clear_value >> 32;
 
       /* update clear color in SW meta area of the buffer if TS is exported */
       if (unlikely(new_clear_value != surf->level->clear_value &&
@@ -376,10 +370,8 @@ etna_clear_blt(struct pipe_context *pctx, unsigned buffers, const struct pipe_sc
       for (int idx = 0; idx < ctx->framebuffer_s.nr_cbufs; ++idx) {
          struct etna_surface *surf = etna_surface(ctx->framebuffer_s.cbufs[idx]);
 
-         if (!surf)
-            continue;
-
-         etna_blit_clear_color_blt(pctx, idx, color);
+         etna_blit_clear_color_blt(pctx, ctx->framebuffer_s.cbufs[idx],
+                               &color[idx]);
 
          if (!etna_resource(surf->prsc)->explicit_flush)
             etna_context_add_flush_resource(ctx, surf->prsc);
@@ -478,9 +470,7 @@ etna_try_blt_blit(struct pipe_context *pctx,
     * we can't use inplace resolve path with compression
     */
    if (src == dst) {
-      if (memcmp(&blit_info->src, &blit_info->dst, sizeof(blit_info->src)))
-         return false;
-
+      assert(!memcmp(&blit_info->src, &blit_info->dst, sizeof(blit_info->src)));
       if (!etna_resource_level_ts_valid(src_lev)) /* No TS, no worries */
          return true;
    }

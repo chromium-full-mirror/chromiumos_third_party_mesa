@@ -355,8 +355,8 @@ init_dri2_configs(int fd)
 
    void * (*peglGetProcAddress)(const char *) = dlsym(egl, "eglGetProcAddress");
    EGLDisplay (*peglGetPlatformDisplayEXT)(EGLenum, void *, const EGLint *) = peglGetProcAddress("eglGetPlatformDisplayEXT");
-   EGLBoolean (*peglInitialize)(EGLDisplay, int*, int*) = peglGetProcAddress("eglInitialize");
-   EGLBoolean (*peglTerminate)(EGLDisplay) = peglGetProcAddress("eglTerminate");
+   EGLDisplay (*peglInitialize)(EGLDisplay, int*, int*) = peglGetProcAddress("eglInitialize");
+   void (*peglTerminate)(EGLDisplay) = peglGetProcAddress("eglTerminate");
    EGLBoolean (*peglGetConfigs)(EGLDisplay, EGLConfig*, EGLint, EGLint*) = peglGetProcAddress("eglGetConfigs");
    EGLBoolean (*peglGetConfigAttrib)(EGLDisplay, EGLConfig, EGLint, EGLint *) = peglGetProcAddress("eglGetConfigAttrib");
    const char *(*peglQueryString)(EGLDisplay, EGLint) = peglGetProcAddress("eglQueryString");

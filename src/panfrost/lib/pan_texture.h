@@ -147,10 +147,6 @@ struct pan_image_view {
       unsigned offset;
       unsigned size;
    } buf;
-
-   struct {
-      unsigned narrow;
-   } astc;
 };
 
 static inline const struct pan_image *

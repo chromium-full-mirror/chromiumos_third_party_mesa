@@ -329,9 +329,7 @@ static VAStatus vlVaVidEngineBlit(vlVaDriver *drv, vlVaContext *context,
                                     &context->desc.base);
       context->needs_begin_frame = false;
    }
-
-   if (context->decoder->process_frame(context->decoder, src, &context->desc.vidproc))
-      return VA_STATUS_ERROR_OPERATION_FAILED;
+   context->decoder->process_frame(context->decoder, src, &context->desc.vidproc);
 
    return VA_STATUS_SUCCESS;
 }
@@ -558,8 +556,6 @@ vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContext *contex
    dst_surface = handle_table_get(drv->htab, context->target_id);
    if (!src_surface || !dst_surface)
       return VA_STATUS_ERROR_INVALID_SURFACE;
-   vlVaGetSurfaceBuffer(drv, src_surface);
-   vlVaGetSurfaceBuffer(drv, dst_surface);
    if (!src_surface->buffer || !dst_surface->buffer)
       return VA_STATUS_ERROR_INVALID_SURFACE;
 

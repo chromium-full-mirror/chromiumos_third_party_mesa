@@ -8,6 +8,7 @@
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "agx_internal_formats.h"
 #include "agx_nir_passes.h"
 #include "glsl_types.h"
 #include "libagx_shaders.h"
@@ -130,39 +131,31 @@ coords_for_buffer_texture(nir_builder *b, nir_def *coord)
  *       return txf(texture_as_2d, vec2(x % 1024, x / 1024));
  */
 static bool
-lower_buffer_texture(nir_builder *b, nir_tex_instr *tex, bool support_rgb32)
+lower_buffer_texture(nir_builder *b, nir_tex_instr *tex)
 {
    nir_def *coord = nir_steal_tex_src(tex, nir_tex_src_coord);
-   nir_def *size = nir_get_texture_size(b, tex);
-   nir_def *oob = nir_uge(b, coord, size);
-
-   /* Apply the buffer offset after calculating oob but before remapping */
-   nir_def *desc = texture_descriptor_ptr(b, tex);
-   coord = libagx_buffer_texture_offset(b, desc, coord);
 
    /* Map out-of-bounds indices to out-of-bounds coordinates for robustness2
     * semantics from the hardware.
     */
+   nir_def *size = nir_get_texture_size(b, tex);
+   nir_def *oob = nir_uge(b, coord, size);
    coord = nir_bcsel(b, oob, nir_imm_int(b, -1), coord);
 
+   nir_def *desc = texture_descriptor_ptr(b, tex);
    bool is_float = nir_alu_type_get_base_type(tex->dest_type) == nir_type_float;
 
    /* Lower RGB32 reads if the format requires. If we are out-of-bounds, we use
     * the hardware path so we get a zero texel.
     */
-   nir_if *nif = NULL;
-   nir_def *rgb32 = NULL;
-   if (support_rgb32) {
-      nif = nir_push_if(
-         b, nir_iand(b, libagx_texture_is_rgb32(b, desc), nir_inot(b, oob)));
+   nir_if *nif = nir_push_if(
+      b, nir_iand(b, libagx_texture_is_rgb32(b, desc), nir_inot(b, oob)));
 
-      rgb32 = nir_trim_vector(
-         b,
-         libagx_texture_load_rgb32(b, desc, coord, nir_imm_bool(b, is_float)),
-         nir_tex_instr_dest_size(tex));
+   nir_def *rgb32 = nir_trim_vector(
+      b, libagx_texture_load_rgb32(b, desc, coord, nir_imm_bool(b, is_float)),
+      nir_tex_instr_dest_size(tex));
 
-      nir_push_else(b, nif);
-   }
+   nir_push_else(b, nif);
 
    /* Otherwise, lower the texture instruction to read from 2D */
    assert(coord->num_components == 1 && "buffer textures are 1D");
@@ -174,19 +167,15 @@ lower_buffer_texture(nir_builder *b, nir_tex_instr *tex, bool support_rgb32)
    nir_tex_instr_add_src(tex, nir_tex_src_backend1, coord2d);
    nir_steal_tex_src(tex, nir_tex_src_sampler_handle);
    nir_steal_tex_src(tex, nir_tex_src_sampler_offset);
+   nir_block *else_block = nir_cursor_current_block(b->cursor);
+   nir_pop_if(b, nif);
 
-   if (support_rgb32) {
-      nir_block *else_block = nir_cursor_current_block(b->cursor);
-      nir_pop_if(b, nif);
-
-      /* Put it together with a phi */
-      nir_def *phi = nir_if_phi(b, rgb32, &tex->def);
-      nir_def_rewrite_uses(&tex->def, phi);
-      nir_phi_instr *phi_instr = nir_instr_as_phi(phi->parent_instr);
-      nir_phi_src *else_src = nir_phi_get_src_from_block(phi_instr, else_block);
-      nir_src_rewrite(&else_src->src, &tex->def);
-   }
-
+   /* Put it together with a phi */
+   nir_def *phi = nir_if_phi(b, rgb32, &tex->def);
+   nir_def_rewrite_uses(&tex->def, phi);
+   nir_phi_instr *phi_instr = nir_instr_as_phi(phi->parent_instr);
+   nir_phi_src *else_src = nir_phi_get_src_from_block(phi_instr, else_block);
+   nir_src_rewrite(&else_src->src, &tex->def);
    return true;
 }
 
@@ -198,7 +187,6 @@ lower_buffer_texture(nir_builder *b, nir_tex_instr *tex, bool support_rgb32)
 static bool
 lower_regular_texture(nir_builder *b, nir_instr *instr, UNUSED void *data)
 {
-   bool *support_rgb32 = data;
    if (instr->type != nir_instr_type_tex)
       return false;
 
@@ -209,7 +197,7 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, UNUSED void *data)
       return false;
 
    if (tex->sampler_dim == GLSL_SAMPLER_DIM_BUF)
-      return lower_buffer_texture(b, tex, *support_rgb32);
+      return lower_buffer_texture(b, tex);
 
    /* Don't lower twice */
    if (nir_tex_instr_src_index(tex, nir_tex_src_backend1) >= 0)
@@ -250,15 +238,8 @@ lower_regular_texture(nir_builder *b, nir_instr *instr, UNUSED void *data)
       coord = nir_trim_vector(b, coord, lidx);
 
       /* Round layer to nearest even */
-      if (!is_txf) {
-         unclamped_layer = nir_fround_even(b, unclamped_layer);
-
-         /* Explicitly round negative to avoid undefined behaviour when constant
-          * folding. This is load bearing on x86 builds.
-          */
-         unclamped_layer =
-            nir_f2u32(b, nir_fmax(b, unclamped_layer, nir_imm_float(b, 0.0f)));
-      }
+      if (!is_txf)
+         unclamped_layer = nir_f2u32(b, nir_fround_even(b, unclamped_layer));
 
       /* For a cube array, the layer is zero-indexed component 3 of the
        * coordinate but the number of layers is component 2 of the txs result.
@@ -521,15 +502,6 @@ lower_buffer_image(nir_builder *b, nir_intrinsic_instr *intr)
    nir_def *coord_vector = intr->src[1].ssa;
    nir_def *coord = nir_channel(b, coord_vector, 0);
 
-   /* If we're not bindless, assume we don't need an offset (GL driver) */
-   if (intr->intrinsic == nir_intrinsic_bindless_image_load) {
-      nir_def *desc = nir_load_from_texture_handle_agx(b, intr->src[0].ssa);
-      coord = libagx_buffer_texture_offset(b, desc, coord);
-   } else if (intr->intrinsic == nir_intrinsic_bindless_image_store) {
-      nir_def *desc = nir_load_from_texture_handle_agx(b, intr->src[0].ssa);
-      coord = libagx_buffer_image_offset(b, desc, coord);
-   }
-
    /* Lower the buffer load/store to a 2D image load/store, matching the 2D
     * texture/PBE descriptor the driver supplies for buffer images.
     */
@@ -695,17 +667,14 @@ lower_robustness(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *data)
    }
 
    /* Replace the last coordinate component with a large coordinate for
-    * out-of-bounds. We pick 0xFFF0 as it fits in 16-bit, and it is not signed
-    * as 32-bit so we won't get in-bounds coordinates for arrays due to two's
-    * complement wraparound. Additionally it still meets this requirement after
-    * adding 0xF, the maximum tail offset.
-    *
-    * This ensures the resulting hardware coordinate is definitely
-    * out-of-bounds, giving hardware-level robustness2 behaviour.
+    * out-of-bounds. We pick 65535 as it fits in 16-bit, and it is not signed as
+    * 32-bit so we won't get in-bounds coordinates for arrays due to two's
+    * complement wraparound. This ensures the resulting hardware coordinate is
+    * definitely out-of-bounds, giving hardware-level robustness2 behaviour.
     */
    unsigned c = size_components - 1;
    nir_def *r =
-      nir_bcsel(b, oob, nir_imm_int(b, 0xFFF0), nir_channel(b, coord, c));
+      nir_bcsel(b, oob, nir_imm_int(b, 65535), nir_channel(b, coord, c));
 
    nir_src_rewrite(&intr->src[1], nir_vector_insert_imm(b, coord, r, c));
    return true;
@@ -755,7 +724,7 @@ agx_nir_lower_texture_early(nir_shader *s, bool support_lod_bias)
 }
 
 bool
-agx_nir_lower_texture(nir_shader *s, bool support_rgb32)
+agx_nir_lower_texture(nir_shader *s)
 {
    bool progress = false;
 
@@ -763,7 +732,6 @@ agx_nir_lower_texture(nir_shader *s, bool support_rgb32)
       [nir_tex_src_lod] = {true, 16},
       [nir_tex_src_bias] = {true, 16},
       [nir_tex_src_ms_index] = {true, 16},
-      [nir_tex_src_min_lod] = {true, 16},
       [nir_tex_src_texture_offset] = {true, 16},
       [nir_tex_src_sampler_offset] = {true, 16},
    };
@@ -792,7 +760,7 @@ agx_nir_lower_texture(nir_shader *s, bool support_rgb32)
     * generates txs for array textures).
     */
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_regular_texture,
-            nir_metadata_none, &support_rgb32);
+            nir_metadata_none, NULL);
    NIR_PASS(progress, s, nir_shader_instructions_pass, lower_tex_crawl,
             nir_metadata_control_flow, NULL);
 

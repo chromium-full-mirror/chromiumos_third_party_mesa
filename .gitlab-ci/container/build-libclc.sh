@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -uex
+set -ex
 
 export LLVM_CONFIG="llvm-config-${LLVM_VERSION:?"llvm unset!"}"
 LLVM_TAG="llvmorg-15.0.7"

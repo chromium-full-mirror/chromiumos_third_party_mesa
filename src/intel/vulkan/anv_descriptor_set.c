@@ -781,11 +781,11 @@ VkResult anv_CreateDescriptorSetLayout(
          buffer_view_count += binding->descriptorCount;
       }
 
-      set_layout->binding[b].max_plane_count = 1;
       switch (binding->descriptorType) {
       case VK_DESCRIPTOR_TYPE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
       case VK_DESCRIPTOR_TYPE_MUTABLE_EXT:
+         set_layout->binding[b].max_plane_count = 1;
          if (binding->pImmutableSamplers) {
             set_layout->binding[b].immutable_samplers = samplers;
             samplers += binding->descriptorCount;
@@ -799,6 +799,10 @@ VkResult anv_CreateDescriptorSetLayout(
                   set_layout->binding[b].max_plane_count = sampler->n_planes;
             }
          }
+         break;
+
+      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+         set_layout->binding[b].max_plane_count = 1;
          break;
 
       default:
@@ -837,10 +841,10 @@ VkResult anv_CreateDescriptorSetLayout(
        * that common and likely won't be in the middle of big arrays.
        */
       set_layout->binding[b].descriptor_surface_stride =
-         set_layout->binding[b].max_plane_count *
+         MAX2(set_layout->binding[b].max_plane_count, 1) *
          set_layout->binding[b].descriptor_data_surface_size;
       set_layout->binding[b].descriptor_sampler_stride =
-         set_layout->binding[b].max_plane_count *
+         MAX2(set_layout->binding[b].max_plane_count, 1) *
          set_layout->binding[b].descriptor_data_sampler_size;
 
       if (binding->descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
@@ -2113,8 +2117,7 @@ anv_image_view_surface_data_for_plane_layout(struct anv_image_view *image_view,
    if (desc_type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
        desc_type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
        desc_type == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
-      return (layout == VK_IMAGE_LAYOUT_GENERAL ||
-              layout == VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR) ?
+      return layout == VK_IMAGE_LAYOUT_GENERAL ?
          &image_view->planes[plane].general_sampler.state_data :
          &image_view->planes[plane].optimal_sampler.state_data;
    }
@@ -2220,7 +2223,7 @@ anv_descriptor_set_write_image_view(struct anv_device *device,
        */
       assert(bind_layout->max_plane_count <= ARRAY_SIZE(desc_data));
       memcpy(desc_surface_map, desc_data,
-             bind_layout->max_plane_count * sizeof(desc_data[0]));
+             MAX2(1, bind_layout->max_plane_count) * sizeof(desc_data[0]));
    }
 
    if (data & ANV_DESCRIPTOR_INDIRECT_STORAGE_IMAGE) {

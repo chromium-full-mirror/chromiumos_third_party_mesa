@@ -9,13 +9,12 @@ use mesa_rust_util::string::*;
 
 use std::ffi::CString;
 use std::fmt::Debug;
-use std::ops::Not;
 use std::os::raw::c_char;
 use std::os::raw::c_void;
 use std::ptr;
 use std::slice;
 
-const INPUT_STR: *const c_char = b"input.cl\0".as_ptr().cast();
+const INPUT_STR: *const c_char = b"input.cl\0" as *const u8 as *const c_char;
 
 pub enum SpecConstant {
     None,
@@ -80,7 +79,7 @@ unsafe extern "C" fn spirv_to_nir_msg_callback(
 
 fn create_clc_logger(msgs: &mut Vec<String>) -> clc_logger {
     clc_logger {
-        priv_: ptr::from_mut(msgs).cast(),
+        priv_: msgs as *mut Vec<String> as *mut c_void,
         error: Some(spirv_msg_callback),
         warning: Some(spirv_msg_callback),
     }
@@ -176,12 +175,12 @@ impl SPIRVBin {
             None
         };
 
-        (res, msgs.join(""))
+        (res, msgs.join("\n"))
     }
 
     // TODO cache linking, parsing is around 25% of link time
     pub fn link(spirvs: &[&SPIRVBin], library: bool) -> (Option<Self>, String) {
-        let bins: Vec<_> = spirvs.iter().map(|s| ptr::from_ref(&s.spirv)).collect();
+        let bins: Vec<_> = spirvs.iter().map(|s| &s.spirv as *const _).collect();
 
         let linker_args = clc_linker_args {
             in_objs: bins.as_ptr(),
@@ -207,7 +206,7 @@ impl SPIRVBin {
             spirv: out,
             info: info,
         });
-        (res, msgs.join(""))
+        (res, msgs.join("\n"))
     }
 
     pub fn validate(&self, options: &clc_validator_options) -> (bool, String) {
@@ -215,7 +214,7 @@ impl SPIRVBin {
         let logger = create_clc_logger(&mut msgs);
         let res = unsafe { clc_validate_spirv(&self.spirv, &logger, options) };
 
-        (res, msgs.join(""))
+        (res, msgs.join("\n"))
     }
 
     pub fn clone_on_validate(&self, options: &clc_validator_options) -> (Option<Self>, String) {
@@ -232,7 +231,7 @@ impl SPIRVBin {
         }
     }
 
-    pub fn kernel_info(&self, name: &str) -> Option<&clc_kernel_info> {
+    fn kernel_info(&self, name: &str) -> Option<&clc_kernel_info> {
         self.kernel_infos()
             .iter()
             .find(|i| c_string_to_string(i.name) == name)
@@ -244,6 +243,46 @@ impl SPIRVBin {
             .map(|i| i.name)
             .map(c_string_to_string)
             .collect()
+    }
+
+    pub fn vec_type_hint(&self, name: &str) -> Option<String> {
+        self.kernel_info(name)
+            .filter(|info| [1, 2, 3, 4, 8, 16].contains(&info.vec_hint_size))
+            .map(|info| {
+                let cltype = match info.vec_hint_type {
+                    clc_vec_hint_type::CLC_VEC_HINT_TYPE_CHAR => "uchar",
+                    clc_vec_hint_type::CLC_VEC_HINT_TYPE_SHORT => "ushort",
+                    clc_vec_hint_type::CLC_VEC_HINT_TYPE_INT => "uint",
+                    clc_vec_hint_type::CLC_VEC_HINT_TYPE_LONG => "ulong",
+                    clc_vec_hint_type::CLC_VEC_HINT_TYPE_HALF => "half",
+                    clc_vec_hint_type::CLC_VEC_HINT_TYPE_FLOAT => "float",
+                    clc_vec_hint_type::CLC_VEC_HINT_TYPE_DOUBLE => "double",
+                };
+
+                format!("vec_type_hint({}{})", cltype, info.vec_hint_size)
+            })
+    }
+
+    pub fn local_size(&self, name: &str) -> Option<String> {
+        self.kernel_info(name)
+            .filter(|info| info.local_size != [0; 3])
+            .map(|info| {
+                format!(
+                    "reqd_work_group_size({},{},{})",
+                    info.local_size[0], info.local_size[1], info.local_size[2]
+                )
+            })
+    }
+
+    pub fn local_size_hint(&self, name: &str) -> Option<String> {
+        self.kernel_info(name)
+            .filter(|info| info.local_size_hint != [0; 3])
+            .map(|info| {
+                format!(
+                    "work_group_size_hint({},{},{})",
+                    info.local_size_hint[0], info.local_size_hint[1], info.local_size_hint[2]
+                )
+            })
     }
 
     pub fn args(&self, name: &str) -> Vec<SPIRVKernelArg> {
@@ -309,7 +348,7 @@ impl SPIRVBin {
 
         let debug = log.map(|log| spirv_to_nir_options__bindgen_ty_1 {
             func: Some(spirv_to_nir_msg_callback),
-            private_data: ptr::from_mut(log).cast(),
+            private_data: (log as *mut Vec<String>).cast(),
         });
 
         spirv_to_nir_options {
@@ -448,52 +487,46 @@ impl Drop for SPIRVBin {
 }
 
 impl SPIRVKernelArg {
-    pub fn serialize(&self, blob: &mut blob) {
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut res = Vec::new();
+
         let name_arr = self.name.as_bytes();
         let type_name_arr = self.type_name.as_bytes();
 
-        unsafe {
-            blob_write_uint32(blob, self.access_qualifier.0);
-            blob_write_uint32(blob, self.type_qualifier.0);
+        res.extend_from_slice(&name_arr.len().to_ne_bytes());
+        res.extend_from_slice(name_arr);
+        res.extend_from_slice(&type_name_arr.len().to_ne_bytes());
+        res.extend_from_slice(type_name_arr);
+        res.extend_from_slice(&u32::to_ne_bytes(self.access_qualifier.0));
+        res.extend_from_slice(&u32::to_ne_bytes(self.type_qualifier.0));
+        res.push(self.address_qualifier as u8);
 
-            blob_write_uint16(blob, name_arr.len() as u16);
-            blob_write_uint16(blob, type_name_arr.len() as u16);
-
-            blob_write_bytes(blob, name_arr.as_ptr().cast(), name_arr.len());
-            blob_write_bytes(blob, type_name_arr.as_ptr().cast(), type_name_arr.len());
-
-            blob_write_uint8(blob, self.address_qualifier as u8);
-        }
+        res
     }
 
-    pub fn deserialize(blob: &mut blob_reader) -> Option<Self> {
-        unsafe {
-            let access_qualifier = blob_read_uint32(blob);
-            let type_qualifier = blob_read_uint32(blob);
+    pub fn deserialize(bin: &mut &[u8]) -> Option<Self> {
+        let name_len = read_ne_usize(bin);
+        let name = read_string(bin, name_len)?;
+        let type_len = read_ne_usize(bin);
+        let type_name = read_string(bin, type_len)?;
+        let access_qualifier = read_ne_u32(bin);
+        let type_qualifier = read_ne_u32(bin);
 
-            let name_len = blob_read_uint16(blob) as usize;
-            let type_len = blob_read_uint16(blob) as usize;
+        let address_qualifier = match read_ne_u8(bin) {
+            0 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_PRIVATE,
+            1 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_CONSTANT,
+            2 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_LOCAL,
+            3 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_GLOBAL,
+            _ => return None,
+        };
 
-            let name = slice::from_raw_parts(blob_read_bytes(blob, name_len).cast(), name_len);
-            let type_name = slice::from_raw_parts(blob_read_bytes(blob, type_len).cast(), type_len);
-
-            let address_qualifier = match blob_read_uint8(blob) {
-                0 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_PRIVATE,
-                1 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_CONSTANT,
-                2 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_LOCAL,
-                3 => clc_kernel_arg_address_qualifier::CLC_KERNEL_ARG_ADDRESS_GLOBAL,
-                _ => return None,
-            };
-
-            // check overrun to ensure nothing went wrong
-            blob.overrun.not().then(|| Self {
-                name: String::from_utf8_unchecked(name.to_owned()),
-                type_name: String::from_utf8_unchecked(type_name.to_owned()),
-                access_qualifier: clc_kernel_arg_access_qualifier(access_qualifier),
-                address_qualifier: address_qualifier,
-                type_qualifier: clc_kernel_arg_type_qualifier(type_qualifier),
-            })
-        }
+        Some(Self {
+            name: name,
+            type_name: type_name,
+            access_qualifier: clc_kernel_arg_access_qualifier(access_qualifier),
+            address_qualifier: address_qualifier,
+            type_qualifier: clc_kernel_arg_type_qualifier(type_qualifier),
+        })
     }
 }
 
@@ -516,61 +549,5 @@ impl CLCSpecConstantType for clc_spec_constant_type {
             | Self::CLC_SPEC_CONSTANT_BOOL => 1,
             Self::CLC_SPEC_CONSTANT_UNKNOWN => 0,
         }
-    }
-}
-
-pub trait SpirvKernelInfo {
-    fn vec_type_hint(&self) -> Option<String>;
-    fn local_size(&self) -> Option<String>;
-    fn local_size_hint(&self) -> Option<String>;
-
-    fn attribute_str(&self) -> String {
-        let attributes_strings = [
-            self.vec_type_hint(),
-            self.local_size(),
-            self.local_size_hint(),
-        ];
-
-        let attributes_strings: Vec<_> = attributes_strings.into_iter().flatten().collect();
-        attributes_strings.join(",")
-    }
-}
-
-impl SpirvKernelInfo for clc_kernel_info {
-    fn vec_type_hint(&self) -> Option<String> {
-        if ![1, 2, 3, 4, 8, 16].contains(&self.vec_hint_size) {
-            return None;
-        }
-        let cltype = match self.vec_hint_type {
-            clc_vec_hint_type::CLC_VEC_HINT_TYPE_CHAR => "uchar",
-            clc_vec_hint_type::CLC_VEC_HINT_TYPE_SHORT => "ushort",
-            clc_vec_hint_type::CLC_VEC_HINT_TYPE_INT => "uint",
-            clc_vec_hint_type::CLC_VEC_HINT_TYPE_LONG => "ulong",
-            clc_vec_hint_type::CLC_VEC_HINT_TYPE_HALF => "half",
-            clc_vec_hint_type::CLC_VEC_HINT_TYPE_FLOAT => "float",
-            clc_vec_hint_type::CLC_VEC_HINT_TYPE_DOUBLE => "double",
-        };
-
-        Some(format!("vec_type_hint({}{})", cltype, self.vec_hint_size))
-    }
-
-    fn local_size(&self) -> Option<String> {
-        if self.local_size == [0; 3] {
-            return None;
-        }
-        Some(format!(
-            "reqd_work_group_size({},{},{})",
-            self.local_size[0], self.local_size[1], self.local_size[2]
-        ))
-    }
-
-    fn local_size_hint(&self) -> Option<String> {
-        if self.local_size_hint == [0; 3] {
-            return None;
-        }
-        Some(format!(
-            "work_group_size_hint({},{},{})",
-            self.local_size_hint[0], self.local_size_hint[1], self.local_size_hint[2]
-        ))
     }
 }

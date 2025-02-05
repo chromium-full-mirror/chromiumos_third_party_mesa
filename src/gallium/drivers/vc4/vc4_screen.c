@@ -33,7 +33,6 @@
 #include "util/u_hash_table.h"
 #include "util/u_screen.h"
 #include "util/u_transfer_helper.h"
-#include "util/perf/cpu_trace.h"
 #include "util/ralloc.h"
 
 #include <xf86drm.h>
@@ -549,8 +548,6 @@ vc4_screen_create(int fd, const struct pipe_screen_config *config,
         uint64_t syncobj_cap = 0;
         struct pipe_screen *pscreen;
         int err;
-
-        util_cpu_trace_init();
 
         pscreen = &screen->base;
 

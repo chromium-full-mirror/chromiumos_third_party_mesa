@@ -33,7 +33,6 @@
 #include "util/macros.h"
 #include "util/u_debug.h"
 #include "util/u_hexdump.h"
-#include "lib/pan_props.h"
 #include "decode.h"
 
 #include "compiler/bifrost/disassemble.h"

@@ -1,6 +1,24 @@
 /*
- * Copyright © 2012 Rob Clark <robclark@freedesktop.org>
- * SPDX-License-Identifier: MIT
+ * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -12,7 +30,6 @@
 #include "util/set.h"
 #include "util/u_drm.h"
 #include "util/u_inlines.h"
-#include "util/u_resource.h"
 #include "util/u_sample_positions.h"
 #include "util/u_string.h"
 #include "util/u_surface.h"
@@ -1136,39 +1153,6 @@ fd_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *pctx,
    return ret;
 }
 
-static bool
-fd_resource_get_param(struct pipe_screen *pscreen,
-                       struct pipe_context *pctx, struct pipe_resource *prsc,
-                       unsigned plane, unsigned layer, unsigned level,
-                       enum pipe_resource_param param,
-                       unsigned usage, uint64_t *value)
-{
-   struct fd_resource *rsc = fd_resource(util_resource_at_index(prsc, plane));
-
-   switch (param) {
-   case PIPE_RESOURCE_PARAM_STRIDE:
-      *value = fd_resource_pitch(rsc, 0);
-      return true;
-   case PIPE_RESOURCE_PARAM_OFFSET:
-      if (fd_resource_ubwc_enabled(rsc, level)) {
-         if (plane > 0)
-            debug_warning("Unsupported offset query!\n");
-         *value = fd_resource_ubwc_offset(rsc, level, layer);
-      } else {
-         *value = fd_resource_offset(rsc, level, layer);
-      }
-      return true;
-   case PIPE_RESOURCE_PARAM_MODIFIER:
-      *value = fd_resource_modifier(rsc);
-      return true;
-   case PIPE_RESOURCE_PARAM_NPLANES:
-      *value = util_resource_num(prsc);
-      return true;
-   default:
-      return false;
-   }
-}
-
 /* special case to resize query buf after allocated.. */
 void
 fd_resource_resize(struct pipe_resource *prsc, uint32_t sz)
@@ -1774,7 +1758,6 @@ fd_resource_screen_init(struct pipe_screen *pscreen)
    pscreen->resource_create_with_modifiers = fd_resource_create_with_modifiers;
    pscreen->resource_from_handle = fd_resource_from_handle;
    pscreen->resource_get_handle = fd_resource_get_handle;
-   pscreen->resource_get_param = fd_resource_get_param;
    pscreen->resource_destroy = u_transfer_helper_resource_destroy;
 
    pscreen->transfer_helper =

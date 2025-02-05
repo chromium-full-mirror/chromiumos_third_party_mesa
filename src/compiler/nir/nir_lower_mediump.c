@@ -39,7 +39,6 @@ get_io_intrinsic(nir_instr *instr, nir_variable_mode modes,
 
    switch (intr->intrinsic) {
    case nir_intrinsic_load_input:
-   case nir_intrinsic_load_per_primitive_input:
    case nir_intrinsic_load_input_vertex:
    case nir_intrinsic_load_interpolated_input:
    case nir_intrinsic_load_per_vertex_input:
@@ -91,7 +90,7 @@ nir_recompute_io_bases(nir_shader *nir, nir_variable_mode modes)
 
          if (mode == nir_var_shader_in) {
             for (unsigned i = 0; i < num_slots; i++) {
-               if (intr->intrinsic == nir_intrinsic_load_per_primitive_input)
+               if (sem.per_primitive)
                   BITSET_SET(per_prim_inputs, sem.location + i);
                else
                   BITSET_SET(inputs, sem.location + i);
@@ -124,7 +123,7 @@ nir_recompute_io_bases(nir_shader *nir, nir_variable_mode modes)
             num_slots = (num_slots + sem.high_16bits + 1) / 2;
 
          if (mode == nir_var_shader_in) {
-            if (intr->intrinsic == nir_intrinsic_load_per_primitive_input) {
+            if (sem.per_primitive) {
                nir_intrinsic_set_base(intr,
                                       num_normal_inputs +
                                       BITSET_PREFIX_SUM(per_prim_inputs, sem.location));

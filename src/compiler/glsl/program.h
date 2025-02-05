@@ -35,8 +35,7 @@ struct gl_shader_program;
 
 extern void
 _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
-                          FILE *dump_ir_file, bool dump_ast, bool dump_hir,
-                          bool force_recompile);
+			  bool dump_ast, bool dump_hir, bool force_recompile);
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -308,7 +308,7 @@ namespace {
          return true;
       }
 
-      if (is_send(inst) || inst->is_control_source(i) ||
+      if (is_send(inst) || inst->is_math() || inst->is_control_source(i) ||
           inst->opcode == BRW_OPCODE_DPAS) {
          return false;
       }
@@ -333,7 +333,7 @@ namespace {
    has_invalid_dst_region(const intel_device_info *devinfo,
                           const fs_inst *inst)
    {
-      if (is_send(inst)) {
+      if (is_send(inst) || inst->is_math()) {
          return false;
       } else {
          const brw_reg_type exec_type = get_exec_type(inst);

@@ -127,53 +127,10 @@ radv_emulate_rt(const struct radv_physical_device *pdev)
    return instance->perftest_flags & RADV_PERFTEST_EMULATE_RT;
 }
 
-static VkConformanceVersion
-radv_get_conformance_version(const struct radv_physical_device *pdev)
-{
-   VkConformanceVersion conformance_version = {0}; /* Non-conformant by default */
-
-   if (pdev->info.gfx_level == GFX10_3) {
-      conformance_version = (VkConformanceVersion){
-         .major = 1,
-         .minor = 3,
-         .subminor = 0,
-         .patch = 0,
-      };
-   } else if (pdev->info.gfx_level >= GFX8) {
-      conformance_version = (VkConformanceVersion){
-         .major = 1,
-         .minor = 2,
-         .subminor = 7,
-         .patch = 1,
-      };
-   } else {
-      /* GFX6-7 */
-      switch (pdev->info.family) {
-      case CHIP_TAHITI:
-      case CHIP_PITCAIRN:
-      case CHIP_OLAND:
-      case CHIP_BONAIRE:
-         conformance_version = (VkConformanceVersion){
-            .major = 1,
-            .minor = 3,
-            .subminor = 9,
-            .patch = 2,
-         };
-         break;
-      default:
-         break;
-      }
-   }
-
-   return conformance_version;
-}
-
 static bool
 radv_is_conformant(const struct radv_physical_device *pdev)
 {
-   VkConformanceVersion conformance_version = radv_get_conformance_version(pdev);
-
-   return conformance_version.major != 0;
+   return pdev->info.gfx_level >= GFX8;
 }
 
 static void
@@ -208,6 +165,7 @@ radv_physical_device_init_cache_key(struct radv_physical_device *pdev)
    key->ge_wave32 = pdev->ge_wave_size == 32;
    key->invariant_geom = !!(instance->debug_flags & RADV_DEBUG_INVARIANT_GEOM);
    key->lower_discard_to_demote = !!(instance->debug_flags & RADV_DEBUG_DISCARD_TO_DEMOTE);
+   key->mesh_fast_launch_2 = pdev->mesh_fast_launch_2;
    key->no_fmask = !!(instance->debug_flags & RADV_DEBUG_NO_FMASK);
    key->no_ngg_gs = !!(instance->debug_flags & RADV_DEBUG_NO_NGG_GS);
    key->no_rt = !!(instance->debug_flags & RADV_DEBUG_NO_RT);
@@ -216,7 +174,6 @@ radv_physical_device_init_cache_key(struct radv_physical_device *pdev)
    key->split_fma = !!(instance->debug_flags & RADV_DEBUG_SPLIT_FMA);
    key->ssbo_non_uniform = instance->drirc.ssbo_non_uniform;
    key->tex_non_uniform = instance->drirc.tex_non_uniform;
-   key->lower_terminate_to_discard = instance->drirc.lower_terminate_to_discard;
    key->use_llvm = pdev->use_llvm;
    key->use_ngg = pdev->use_ngg;
    key->use_ngg_culling = pdev->use_ngg_culling;
@@ -283,7 +240,7 @@ radv_physical_device_init_queue_table(struct radv_physical_device *pdev)
       idx++;
    }
 
-   if (pdev->video_decode_enabled) {
+   if (instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE) {
       if (pdev->info.ip[pdev->vid_decode_ip].num_queues > 0) {
          pdev->vk_queue_to_radv[idx] = RADV_QUEUE_VIDEO_DEC;
          idx++;
@@ -528,7 +485,6 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_16bit_storage = true,
       .KHR_acceleration_structure = radv_enable_rt(pdev, false),
       .KHR_calibrated_timestamps = radv_calibrated_timestamps_enabled(pdev),
-      .KHR_compute_shader_derivatives = true,
       .KHR_cooperative_matrix = pdev->info.gfx_level >= GFX11 && !pdev->use_llvm,
       .KHR_bind_memory2 = true,
       .KHR_buffer_device_address = true,
@@ -572,7 +528,6 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_map_memory2 = true,
       .KHR_multiview = true,
       .KHR_performance_query = radv_perf_query_supported(pdev),
-      .KHR_pipeline_binary = true,
       .KHR_pipeline_executable_properties = true,
       .KHR_pipeline_library = !pdev->use_llvm,
       /* Hide these behind dri configs for now since we cannot implement it reliably on
@@ -599,12 +554,10 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_shader_expect_assume = true,
       .KHR_shader_float16_int8 = true,
       .KHR_shader_float_controls = true,
-      .KHR_shader_float_controls2 = true,
       .KHR_shader_integer_dot_product = true,
       .KHR_shader_maximal_reconvergence = true,
       .KHR_shader_non_semantic_info = true,
       .KHR_shader_quad_control = true,
-      .KHR_shader_relaxed_extended_instruction = true,
       .KHR_shader_subgroup_extended_types = true,
       .KHR_shader_subgroup_rotate = true,
       .KHR_shader_subgroup_uniform_control_flow = true,
@@ -620,13 +573,12 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .KHR_uniform_buffer_standard_layout = true,
       .KHR_variable_pointers = true,
       .KHR_vertex_attribute_divisor = true,
-      .KHR_video_maintenance1 = pdev->video_decode_enabled || pdev->video_encode_enabled,
-      .KHR_video_queue = pdev->video_decode_enabled || pdev->video_encode_enabled,
+      .KHR_video_queue = !!(instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE) || pdev->video_encode_enabled,
       .KHR_video_decode_av1 = (pdev->info.vcn_ip_version >= VCN_3_0_0 && pdev->info.vcn_ip_version != VCN_3_0_33 &&
-                               VIDEO_CODEC_AV1DEC && pdev->video_decode_enabled),
-      .KHR_video_decode_queue = pdev->video_decode_enabled,
-      .KHR_video_decode_h264 = VIDEO_CODEC_H264DEC && pdev->video_decode_enabled,
-      .KHR_video_decode_h265 = VIDEO_CODEC_H265DEC && pdev->video_decode_enabled,
+                               VIDEO_CODEC_AV1DEC && !!(instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE)),
+      .KHR_video_decode_queue = !!(instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE),
+      .KHR_video_decode_h264 = VIDEO_CODEC_H264DEC && !!(instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE),
+      .KHR_video_decode_h265 = VIDEO_CODEC_H265DEC && !!(instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE),
       .KHR_video_encode_h264 = VIDEO_CODEC_H264ENC && pdev->video_encode_enabled,
       .KHR_video_encode_h265 = VIDEO_CODEC_H265ENC && pdev->video_encode_enabled,
       .KHR_video_encode_queue = pdev->video_encode_enabled,
@@ -646,7 +598,6 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_debug_marker = instance->vk.trace_mode & RADV_TRACE_MODE_RGP,
       .EXT_depth_bias_control = true,
       .EXT_depth_clamp_zero_one = true,
-      .EXT_depth_clamp_control = true,
       .EXT_depth_clip_control = true,
       .EXT_depth_clip_enable = true,
       .EXT_depth_range_unrestricted = true,
@@ -654,7 +605,6 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_descriptor_indexing = true,
       .EXT_device_address_binding_report = true,
       .EXT_device_fault = pdev->info.has_gpuvm_fault_query,
-      .EXT_device_generated_commands = pdev->info.gfx_level >= GFX8,
       .EXT_discard_rectangles = true,
 #ifdef VK_USE_PLATFORM_DISPLAY_KHR
       .EXT_display_control = true,
@@ -679,7 +629,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_image_view_min_lod = true,
       .EXT_index_type_uint8 = pdev->info.gfx_level >= GFX8,
       .EXT_inline_uniform_block = true,
-      .EXT_legacy_vertex_attributes = !pdev->use_llvm,
+      .EXT_legacy_vertex_attributes = !pdev->use_llvm && !instance->drirc.enable_dgc,
       .EXT_line_rasterization = true,
       .EXT_load_store_op_none = true,
       .EXT_map_memory_placed = true,
@@ -728,7 +678,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_tooling_info = true,
       .EXT_transform_feedback = true,
       .EXT_vertex_attribute_divisor = true,
-      .EXT_vertex_input_dynamic_state = !pdev->use_llvm,
+      .EXT_vertex_input_dynamic_state = !pdev->use_llvm && !instance->drirc.enable_dgc,
       .EXT_ycbcr_image_arrays = true,
       .AMD_buffer_marker = true,
       .AMD_device_coherent_memory = true,
@@ -758,6 +708,8 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .INTEL_shader_integer_functions2 = true,
       .MESA_image_alignment_control = pdev->info.gfx_level >= GFX9 && pdev->info.gfx_level <= GFX11_5,
       .NV_compute_shader_derivatives = true,
+      .NV_device_generated_commands = pdev->info.gfx_level >= GFX8 && instance->drirc.enable_dgc,
+      .NV_device_generated_commands_compute = pdev->info.gfx_level >= GFX8 && instance->drirc.enable_dgc,
       /* Undocumented extension purely for vkd3d-proton. This check is to prevent anyone else from
        * using it.
        */
@@ -932,7 +884,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
       /* VK_EXT_depth_clip_enable */
       .depthClipEnable = true,
 
-      /* VK_KHR_compute_shader_derivatives */
+      /* VK_NV_compute_shader_derivatives */
       .computeDerivativeGroupQuads = false,
       .computeDerivativeGroupLinear = true,
 
@@ -1136,6 +1088,9 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
       .performanceCounterQueryPools = has_perf_query,
       .performanceCounterMultipleQueryPools = has_perf_query,
 
+      /* VK_NV_device_generated_commands */
+      .deviceGeneratedCommands = true,
+
       /* VK_EXT_attachment_feedback_loop_layout */
       .attachmentFeedbackLoopLayout = true,
 
@@ -1177,7 +1132,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
 
       /* VK_EXT_descriptor_buffer */
       .descriptorBuffer = true,
-      .descriptorBufferCaptureReplay = true,
+      .descriptorBufferCaptureReplay = false,
       .descriptorBufferImageLayoutIgnored = true,
       .descriptorBufferPushDescriptors = true,
 
@@ -1217,6 +1172,11 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
 
       /* VK_KHR_maintenance5 */
       .maintenance5 = true,
+
+      /* VK_NV_device_generated_commands_compute */
+      .deviceGeneratedCompute = true,
+      .deviceGeneratedComputePipelines = true,
+      .deviceGeneratedComputeCaptureReplay = false,
 
       /* VK_KHR_cooperative_matrix */
       .cooperativeMatrix = pdev->info.gfx_level >= GFX11 && !pdev->use_llvm,
@@ -1273,25 +1233,6 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
 
       /* VK_KHR_maintenance7 */
       .maintenance7 = true,
-
-      /* VK_KHR_video_maintenance1 */
-      .videoMaintenance1 = true,
-
-      /* VK_KHR_pipeline_binary */
-      .pipelineBinaries = true,
-
-      /* VK_KHR_shader_relaxed_extended_instruction */
-      .shaderRelaxedExtendedInstruction = true,
-
-      /* VK_KHR_shader_float_controls2 */
-      .shaderFloatControls2 = true,
-
-      /* VK_EXT_depth_clamp_control */
-      .depthClampControl = true,
-
-      /* VK_EXT_device_generated_commands */
-      .deviceGeneratedCommands = true,
-      .dynamicGeneratedPipelineLayout = true,
    };
 }
 
@@ -1364,10 +1305,6 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    } else {
       device_type = VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
    }
-
-   VkShaderStageFlags taskmesh_stages =
-      radv_taskmesh_enabled(pdev) ? VK_SHADER_STAGE_MESH_BIT_EXT | VK_SHADER_STAGE_TASK_BIT_EXT : 0;
-   VkShaderStageFlags rt_stages = radv_enable_rt(pdev, true) ? RADV_RT_STAGE_BITS : 0;
 
    pdev->vk.properties = (struct vk_properties){
       .apiVersion = RADV_API_VERSION,
@@ -1526,7 +1463,30 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    snprintf(p->driverInfo, VK_MAX_DRIVER_INFO_SIZE, "Mesa " PACKAGE_VERSION MESA_GIT_SHA1 "%s",
             radv_get_compiler_string(pdev));
 
-   p->conformanceVersion = radv_get_conformance_version(pdev);
+   if (radv_is_conformant(pdev)) {
+      if (pdev->info.gfx_level >= GFX10_3) {
+         p->conformanceVersion = (VkConformanceVersion){
+            .major = 1,
+            .minor = 3,
+            .subminor = 0,
+            .patch = 0,
+         };
+      } else {
+         p->conformanceVersion = (VkConformanceVersion){
+            .major = 1,
+            .minor = 2,
+            .subminor = 7,
+            .patch = 1,
+         };
+      }
+   } else {
+      p->conformanceVersion = (VkConformanceVersion){
+         .major = 0,
+         .minor = 0,
+         .subminor = 0,
+         .patch = 0,
+      };
+   }
 
    /* On AMD hardware, denormals and rounding modes for fp16/fp64 are
     * controlled by the same config register.
@@ -1745,7 +1705,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    p->sampleLocationCoordinateRange[0] = 0.0f;
    p->sampleLocationCoordinateRange[1] = 0.9375f;
    p->sampleLocationSubPixelBits = 4;
-   p->variableSampleLocations = true;
+   p->variableSampleLocations = false;
 
    /* VK_KHR_line_rasterization */
    p->lineSubPixelPrecisionBits = 4;
@@ -1837,6 +1797,20 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    /* VK_KHR_performance_query */
    p->allowCommandBufferQueryCopies = false;
 
+   /* VK_NV_device_generated_commands */
+   p->maxIndirectCommandsStreamCount = 1;
+   p->maxIndirectCommandsStreamStride = UINT32_MAX;
+   p->maxIndirectCommandsTokenCount = 512;
+   p->maxIndirectCommandsTokenOffset = UINT16_MAX;
+   p->minIndirectCommandsBufferOffsetAlignment = 4;
+   p->minSequencesCountBufferOffsetAlignment = 4;
+   p->minSequencesIndexBufferOffsetAlignment = 4;
+   /* Don't support even a shader group count = 1 until we support shader
+    * overrides during pipeline creation. */
+   p->maxGraphicsShaderGroupCount = 0;
+   /* MSB reserved for signalling indirect count enablement. */
+   p->maxIndirectSequenceCount = UINT32_MAX >> 1;
+
    /* VK_EXT_graphics_pipeline_library */
    p->graphicsPipelineLibraryFastLinking = true;
    p->graphicsPipelineLibraryIndependentInterpolationDecoration = true;
@@ -1894,12 +1868,11 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    p->maxSamplerDescriptorBufferBindings = MAX_SETS;
    p->maxEmbeddedImmutableSamplerBindings = MAX_SETS;
    p->maxEmbeddedImmutableSamplers = radv_max_descriptor_set_size();
-   /* No data required for capture/replay but these values need to be non-zero. */
-   p->bufferCaptureReplayDescriptorDataSize = 1;
-   p->imageCaptureReplayDescriptorDataSize = 1;
-   p->imageViewCaptureReplayDescriptorDataSize = 1;
-   p->samplerCaptureReplayDescriptorDataSize = 1;
-   p->accelerationStructureCaptureReplayDescriptorDataSize = 1;
+   p->bufferCaptureReplayDescriptorDataSize = 0;
+   p->imageCaptureReplayDescriptorDataSize = 0;
+   p->imageViewCaptureReplayDescriptorDataSize = 0;
+   p->samplerCaptureReplayDescriptorDataSize = 0;
+   p->accelerationStructureCaptureReplayDescriptorDataSize = 0;
    p->samplerDescriptorSize = 16;
    p->combinedImageSamplerDescriptorSize = 96;
    p->sampledImageDescriptorSize = 64;
@@ -1930,12 +1903,12 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    p->defaultRobustnessImages = VK_PIPELINE_ROBUSTNESS_IMAGE_BEHAVIOR_ROBUST_IMAGE_ACCESS_2_EXT;
 
    /* VK_KHR_maintenance5 */
-   p->earlyFragmentMultisampleCoverageAfterSampleCounting = true;
-   p->earlyFragmentSampleMaskTestBeforeSampleCounting = true;
-   p->depthStencilSwizzleOneSupport = true;
+   p->earlyFragmentMultisampleCoverageAfterSampleCounting = false;
+   p->earlyFragmentSampleMaskTestBeforeSampleCounting = false;
+   p->depthStencilSwizzleOneSupport = false;
    p->polygonModePointSize = true;
-   p->nonStrictSinglePixelWideLinesUseParallelogram = true;
-   p->nonStrictWideLinesUseParallelogram = true;
+   p->nonStrictSinglePixelWideLinesUseParallelogram = false;
+   p->nonStrictWideLinesUseParallelogram = false;
 
    /* VK_KHR_cooperative_matrix */
    p->cooperativeMatrixSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1974,32 +1947,6 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
    p->maxDescriptorSetUpdateAfterBindTotalUniformBuffersDynamic = MAX_DYNAMIC_UNIFORM_BUFFERS;
    p->maxDescriptorSetUpdateAfterBindTotalStorageBuffersDynamic = MAX_DYNAMIC_STORAGE_BUFFERS;
    p->maxDescriptorSetUpdateAfterBindTotalBuffersDynamic = MAX_DYNAMIC_BUFFERS;
-
-   /* VK_KHR_pipeline_binary */
-   p->pipelineBinaryInternalCache = true;
-   p->pipelineBinaryInternalCacheControl = true;
-   p->pipelineBinaryPrefersInternalCache = false;
-   p->pipelineBinaryPrecompiledInternalCache = false;
-   p->pipelineBinaryCompressedData = false;
-
-   /* VK_KHR_compute_shader_derivatives */
-   p->meshAndTaskShaderDerivatives = radv_taskmesh_enabled(pdev);
-
-   /* VK_EXT_device_generated_commands */
-   p->maxIndirectPipelineCount = 4096;
-   p->maxIndirectShaderObjectCount = 4096;
-   p->maxIndirectSequenceCount = 1048576;
-   p->maxIndirectCommandsTokenCount = 128;
-   p->maxIndirectCommandsTokenOffset = 2047;
-   p->maxIndirectCommandsIndirectStride = 2048;
-   p->supportedIndirectCommandsInputModes =
-      VK_INDIRECT_COMMANDS_INPUT_MODE_VULKAN_INDEX_BUFFER_EXT | VK_INDIRECT_COMMANDS_INPUT_MODE_DXGI_INDEX_BUFFER_EXT;
-   p->supportedIndirectCommandsShaderStages =
-      VK_SHADER_STAGE_ALL_GRAPHICS | VK_SHADER_STAGE_COMPUTE_BIT | taskmesh_stages | rt_stages;
-   p->supportedIndirectCommandsShaderStagesPipelineBinding = VK_SHADER_STAGE_COMPUTE_BIT;
-   p->supportedIndirectCommandsShaderStagesShaderBinding = 0;
-   p->deviceGeneratedCommandsTransformFeedback = true;
-   p->deviceGeneratedCommandsMultiDrawIndirectCount = true;
 }
 
 static VkResult
@@ -2101,14 +2048,6 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
    pdev->local_fd = fd;
    pdev->ws->query_info(pdev->ws, &pdev->info);
 
-   if (drm_device) {
-      pdev->addrlib = ac_addrlib_create(&pdev->info, &pdev->info.max_alignment);
-      if (!pdev->addrlib) {
-         result = VK_ERROR_INITIALIZATION_FAILED;
-         goto fail_wsi;
-      }
-   }
-
    pdev->use_llvm = instance->debug_flags & RADV_DEBUG_LLVM;
 #if !AMD_LLVM_AVAILABLE
    if (pdev->use_llvm) {
@@ -2148,15 +2087,16 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
 
    /* TODO: Investigate if NGG culling helps on GFX11. */
    pdev->use_ngg_culling = pdev->use_ngg && pdev->info.max_render_backends > 1 &&
-                           (pdev->info.gfx_level == GFX10_3 || pdev->info.gfx_level == GFX10 ||
-                            (instance->perftest_flags & RADV_PERFTEST_NGGC)) &&
+                           (pdev->info.gfx_level == GFX10_3 || (instance->perftest_flags & RADV_PERFTEST_NGGC)) &&
                            !(instance->debug_flags & RADV_DEBUG_NO_NGGC);
 
    pdev->use_ngg_streamout = pdev->info.gfx_level >= GFX11;
 
    pdev->emulate_ngg_gs_query_pipeline_stat = pdev->use_ngg && pdev->info.gfx_level < GFX11;
 
-   pdev->mesh_fast_launch_2 = pdev->info.gfx_level >= GFX11;
+   pdev->mesh_fast_launch_2 =
+      (pdev->info.gfx_level >= GFX11 && !(instance->debug_flags & RADV_DEBUG_NO_GS_FAST_LAUNCH_2)) ||
+      pdev->info.gfx_level >= GFX12;
 
    pdev->emulate_mesh_shader_queries = pdev->info.gfx_level == GFX10_3;
 
@@ -2189,7 +2129,6 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
          pdev->rt_wave_size = 64;
    }
 
-   radv_probe_video_decode(pdev);
    radv_probe_video_encode(pdev);
 
    pdev->max_shared_size = pdev->info.gfx_level >= GFX7 ? 65536 : 32768;
@@ -2286,8 +2225,6 @@ fail_perfcounters:
    ac_destroy_perfcounters(&pdev->ac_perfcounters);
    disk_cache_destroy(pdev->vk.disk_cache);
 fail_wsi:
-   if (pdev->addrlib)
-      ac_addrlib_destroy(pdev->addrlib);
    pdev->ws->destroy(pdev->ws);
 fail_base:
    vk_physical_device_finish(&pdev->vk);
@@ -2338,8 +2275,6 @@ radv_physical_device_destroy(struct vk_physical_device *vk_device)
 
    radv_finish_wsi(pdev);
    ac_destroy_perfcounters(&pdev->ac_perfcounters);
-   if (pdev->addrlib)
-      ac_addrlib_destroy(pdev->addrlib);
    pdev->ws->destroy(pdev->ws);
    disk_cache_destroy(pdev->vk.disk_cache);
    if (pdev->local_fd != -1)
@@ -2360,7 +2295,7 @@ radv_get_physical_device_queue_family_properties(struct radv_physical_device *pd
    if (pdev->info.ip[AMD_IP_COMPUTE].num_queues > 0 && !(instance->debug_flags & RADV_DEBUG_NO_COMPUTE_QUEUE))
       num_queue_families++;
 
-   if (pdev->video_decode_enabled) {
+   if (instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE) {
       if (pdev->info.ip[pdev->vid_decode_ip].num_queues > 0)
          num_queue_families++;
    }
@@ -2415,7 +2350,7 @@ radv_get_physical_device_queue_family_properties(struct radv_physical_device *pd
       }
    }
 
-   if (pdev->video_decode_enabled) {
+   if (instance->perftest_flags & RADV_PERFTEST_VIDEO_DECODE) {
       if (pdev->info.ip[pdev->vid_decode_ip].num_queues > 0) {
          if (*pCount > idx) {
             *pQueueFamilyProperties[idx] = (VkQueueFamilyProperties){

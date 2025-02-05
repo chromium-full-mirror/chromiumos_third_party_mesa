@@ -526,7 +526,8 @@ namespace brw {
          return true;
       }
 
-      void dump(FILE *file = stderr) const;
+      void
+      dump() const;
 
    private:
       unsigned num_parents;
