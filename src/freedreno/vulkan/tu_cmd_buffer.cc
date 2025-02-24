@@ -6674,7 +6674,7 @@ tu_write_event(struct tu_cmd_buffer *cmd, struct tu_event *event,
 
    if (!(stageMask & ~top_of_pipe_flags)) {
       tu_cs_emit_pkt7(cs, CP_MEM_WRITE, 3);
-      tu_cs_emit_qw(cs, event->bo->iova); /* ADDR_LO/HI */
+      tu_cs_emit_qw(cs, event->bo.iova); /* ADDR_LO/HI */
       tu_cs_emit(cs, value);
    } else {
       /* Use a RB_DONE_TS event to wait for everything to complete. */
@@ -6689,7 +6689,7 @@ tu_write_event(struct tu_cmd_buffer *cmd, struct tu_event *event,
                                           .write_enabled = true).value);
       }
 
-      tu_cs_emit_qw(cs, event->bo->iova);
+      tu_cs_emit_qw(cs, event->bo.iova);
       tu_cs_emit(cs, value);
    }
 }
