@@ -758,3 +758,13 @@ option(
                 'the default driconf file is hardcoded into Mesa. ' +
                 'Requires expat.'
 )
+
+option(
+  'allow-fallback-for',
+  type : 'array',
+  value : [],
+  choices : [
+    'libdrm',
+  ],
+  description : 'Allows the fallback mechanism if the dependency is not available on the system, or too old.'
+)
