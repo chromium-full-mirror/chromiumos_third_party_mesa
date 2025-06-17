@@ -3083,21 +3083,22 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vk_icdGetInstanceProcAddr(
    return anv_GetInstanceProcAddr(instance, pName);
 }
 
+const struct gfx8_border_color anv_default_border_colors[] = {
+   [VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK] =  { .float32 = { 0.0, 0.0, 0.0, 0.0 } },
+   [VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK] =       { .float32 = { 0.0, 0.0, 0.0, 1.0 } },
+   [VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE] =       { .float32 = { 1.0, 1.0, 1.0, 1.0 } },
+   [VK_BORDER_COLOR_INT_TRANSPARENT_BLACK] =    { .uint32 = { 0, 0, 0, 0 } },
+   [VK_BORDER_COLOR_INT_OPAQUE_BLACK] =         { .uint32 = { 0, 0, 0, 1 } },
+   [VK_BORDER_COLOR_INT_OPAQUE_WHITE] =         { .uint32 = { 1, 1, 1, 1 } },
+};
+
 static void
 anv_device_init_border_colors(struct anv_device *device)
 {
-   static const struct gfx8_border_color border_colors[] = {
-      [VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK] =  { .float32 = { 0.0, 0.0, 0.0, 0.0 } },
-      [VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK] =       { .float32 = { 0.0, 0.0, 0.0, 1.0 } },
-      [VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE] =       { .float32 = { 1.0, 1.0, 1.0, 1.0 } },
-      [VK_BORDER_COLOR_INT_TRANSPARENT_BLACK] =    { .uint32 = { 0, 0, 0, 0 } },
-      [VK_BORDER_COLOR_INT_OPAQUE_BLACK] =         { .uint32 = { 0, 0, 0, 1 } },
-      [VK_BORDER_COLOR_INT_OPAQUE_WHITE] =         { .uint32 = { 1, 1, 1, 1 } },
-   };
-
    device->border_colors =
       anv_state_pool_emit_data(&device->dynamic_state_pool,
-                               sizeof(border_colors), 64, border_colors);
+                               sizeof(anv_default_border_colors),
+                               64, anv_default_border_colors);
 }
 
 static VkResult
@@ -5321,11 +5322,11 @@ VkResult anv_GetSamplerOpaqueCaptureDescriptorDataEXT(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_sampler, sampler, pInfo->sampler);
 
-   if (sampler->custom_border_color.alloc_size != 0) {
+   if (sampler->custom_border_color_state.alloc_size != 0) {
       *((uint32_t *)pData) =
          anv_state_reserved_array_pool_state_index(
             &device->custom_border_colors,
-            sampler->custom_border_color);
+            sampler->custom_border_color_state);
    } else {
       *((uint32_t *)pData) = 0;
    }
@@ -5349,9 +5350,9 @@ void anv_DestroySampler(
                           sampler->bindless_state);
    }
 
-   if (sampler->custom_border_color.map) {
+   if (sampler->custom_border_color_state.map) {
       anv_state_reserved_array_pool_free(&device->custom_border_colors,
-                                         sampler->custom_border_color);
+                                         sampler->custom_border_color_state);
    }
 
    vk_sampler_destroy(&device->vk, pAllocator, &sampler->vk);
