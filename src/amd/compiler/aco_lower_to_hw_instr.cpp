@@ -2429,6 +2429,7 @@ lower_to_hw_instr(Program* program)
                      discard_exit_block = discard_block;
                   }
                   block = &program->blocks[block_idx];
+                  ctx.block = block;
 
                   bld.reset(discard_block);
                   if (program->has_pops_overlapped_waves_wait &&
