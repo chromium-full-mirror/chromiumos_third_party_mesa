@@ -155,6 +155,18 @@ brw_fs_optimize(fs_visitor &s)
          OPT(brw_fs_opt_combine_constants);
       }
       OPT(brw_fs_opt_dead_code_eliminate);
+
+      /* Logical sends and load_payload can have large VGRFs that cannot be
+       * split. Once all of the lowering passes and optimization passes that
+       * might eliminate any of those instructions have completed, try to split
+       * larger VGRFs one last time.
+       *
+       * Register allocation can only handle VGRFs up to a certain size, so this
+       * is the last opportunity to prevent later failures due to VGRFs that are
+       * too large.
+       */
+      OPT(brw_fs_opt_split_virtual_grfs);
+
       OPT(brw_fs_lower_simd_width);
    }
 
