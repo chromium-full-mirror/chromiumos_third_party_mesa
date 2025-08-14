@@ -450,9 +450,9 @@ brw_fs_opt_algebraic(fs_visitor &s)
             inst->resize_sources(1);
             progress = true;
          } else if (inst->src[1].file == IMM) {
+            const unsigned comp = inst->src[1].ud & (inst->exec_size - 1);
             inst->opcode = BRW_OPCODE_MOV;
-            inst->src[0] = component(inst->src[0],
-                                     inst->src[1].ud);
+            inst->src[0] = component(inst->src[0], comp);
             inst->resize_sources(1);
             progress = true;
          }
