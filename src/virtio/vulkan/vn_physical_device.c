@@ -409,6 +409,7 @@ vn_physical_device_sanitize_properties(struct vn_physical_device *physical_dev)
       props->apiVersion = ver;
    }
 
+   physical_dev->renderer_driver_version = props->driverVersion;
    /* ANGLE relies on ARM proprietary driver version for workarounds */
    const char *engine_name = instance->base.base.app_info.engine_name;
    const bool forward_driver_version =

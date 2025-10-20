@@ -99,9 +99,16 @@ vn_CreateQueryPool(VkDevice device,
     *
     * We detect the renderer side implementation to align with the
     * implementation specific behavior.
+    *
+    * On recent ARM proprietary driver versions the behavior has changed from
+    * saturate to wrap.
     */
    switch (dev->physical_device->renderer_driver_id) {
    case VK_DRIVER_ID_ARM_PROPRIETARY:
+      pool->saturate_on_overflow =
+         dev->physical_device->renderer_driver_version <
+         VK_MAKE_VERSION(54, 0, 0);
+      break;
    case VK_DRIVER_ID_MESA_LLVMPIPE:
    case VK_DRIVER_ID_MESA_TURNIP:
       pool->saturate_on_overflow = true;
