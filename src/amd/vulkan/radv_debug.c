@@ -271,7 +271,7 @@ si_add_split_disasm(const char *disasm, uint64_t start_addr, unsigned *num,
                     struct radv_shader_inst *instructions)
 {
    struct radv_shader_inst *last_inst = *num ? &instructions[*num - 1] : NULL;
-   char *next;
+   const char *next;
 
    while ((next = strchr(disasm, '\n'))) {
       struct radv_shader_inst *inst = &instructions[*num];
