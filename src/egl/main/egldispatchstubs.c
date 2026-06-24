@@ -46,7 +46,7 @@ static int Compare(const void *l, const void *r)
 
 static int FindProcIndex(const char *name)
 {
-    const char **match = bsearch(name, __EGL_DISPATCH_FUNC_NAMES,
+    const char * const *match = bsearch(name, __EGL_DISPATCH_FUNC_NAMES,
             __EGL_DISPATCH_COUNT, sizeof(const char *), Compare);
 
     if (match == NULL)
@@ -135,4 +135,3 @@ __eglMustCastToProperFunctionPointerType __eglDispatchFetchByDevice(EGLDeviceEXT
     vendor = exports->getVendorFromDevice(dev);
     return FetchVendorFunc(vendor, index, EGL_BAD_DEVICE_EXT);
 }
-
