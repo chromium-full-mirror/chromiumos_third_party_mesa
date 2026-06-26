@@ -130,8 +130,12 @@ typedef pthread_key_t   tss_t;
 typedef pthread_mutex_t mtx_t;
 #ifndef __once_flag_defined
 typedef pthread_once_t  once_flag;
+#endif
 // FIXME: temporary non-standard hack to ease transition
+#ifndef _MTX_INITIALIZER_NP
 #  define _MTX_INITIALIZER_NP PTHREAD_MUTEX_INITIALIZER
+#endif
+#ifndef ONCE_FLAG_INIT
 #  define ONCE_FLAG_INIT PTHREAD_ONCE_INIT
 #endif
 #  ifdef PTHREAD_DESTRUCTOR_ITERATIONS
