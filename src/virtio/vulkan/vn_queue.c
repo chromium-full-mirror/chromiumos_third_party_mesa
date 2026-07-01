@@ -282,7 +282,7 @@ vn_has_zink_sync_batch(struct vn_queue_submission *submit)
    for (uint32_t i = 0; i < signal_count; i++) {
       struct vn_semaphore *sem = vn_semaphore_from_handle(
          vn_get_signal_semaphore(submit, last_batch_index, i));
-      if (sem->feedback.slot) {
+      if (vn_sync_feedback_enabled(&sem->feedback)) {
          return true;
       }
    }
@@ -433,7 +433,7 @@ vn_queue_submission_count_batch_feedback(struct vn_queue_submission *submit,
    for (uint32_t i = 0; i < signal_count; i++) {
       struct vn_semaphore *sem = vn_semaphore_from_handle(
          vn_get_signal_semaphore(submit, batch_index, i));
-      if (sem->feedback.slot) {
+      if (vn_sync_feedback_enabled(&sem->feedback)) {
          feedback_types |= VN_FEEDBACK_TYPE_SEMAPHORE;
          extra_cmd_count++;
       }
@@ -716,7 +716,7 @@ vn_queue_submission_add_semaphore_feedback(struct vn_queue_submission *submit,
 {
    struct vn_semaphore *sem = vn_semaphore_from_handle(
       vn_get_signal_semaphore(submit, batch_index, signal_index));
-   if (!sem->feedback.slot)
+   if (!vn_sync_feedback_enabled(&sem->feedback))
       return VK_SUCCESS;
 
    VK_FROM_HANDLE(vk_queue, queue_vk, submit->queue_handle);
@@ -818,7 +818,7 @@ vn_queue_submission_setup_batch(struct vn_queue_submission *submit,
    for (uint32_t i = 0; i < signal_count; i++) {
       struct vn_semaphore *sem = vn_semaphore_from_handle(
          vn_get_signal_semaphore(submit, batch_index, i));
-      if (sem->feedback.slot) {
+      if (vn_sync_feedback_enabled(&sem->feedback)) {
          feedback_types |= VN_FEEDBACK_TYPE_SEMAPHORE;
          extra_cmd_count++;
       }
@@ -922,7 +922,7 @@ vn_queue_submission_cleanup_semaphore_feedback(
       for (uint32_t j = 0; j < wait_count; j++) {
          VkSemaphore sem_handle = vn_get_wait_semaphore(submit, i, j);
          struct vn_semaphore *sem = vn_semaphore_from_handle(sem_handle);
-         if (!sem->feedback.slot)
+         if (!vn_sync_feedback_enabled(&sem->feedback))
             continue;
 
          /* sfb pending cmds are recycled when signaled counter is updated */
@@ -934,7 +934,7 @@ vn_queue_submission_cleanup_semaphore_feedback(
       for (uint32_t j = 0; j < signal_count; j++) {
          VkSemaphore sem_handle = vn_get_signal_semaphore(submit, i, j);
          struct vn_semaphore *sem = vn_semaphore_from_handle(sem_handle);
-         if (!sem->feedback.slot)
+         if (!vn_sync_feedback_enabled(&sem->feedback))
             continue;
 
          /* sfb pending cmds are recycled when signaled counter is updated */
@@ -2011,7 +2011,7 @@ vn_GetSemaphoreCounterValue(VkDevice device,
 
    assert(payload->type == VN_SYNC_TYPE_DEVICE_ONLY);
 
-   if (sem->feedback.slot) {
+   if (vn_sync_feedback_enabled(&sem->feedback)) {
       if (vn_sync_feedback_query(dev, &sem->feedback, pValue)) {
          /* When the timeline semaphore feedback slot gets signaled, the real
           * semaphore signal operation follows after but the signaling isr can
@@ -2058,7 +2058,7 @@ vn_SignalSemaphore(VkDevice device, const VkSemaphoreSignalInfo *pSignalInfo)
 
    vn_async_vkSignalSemaphore(dev->primary_ring, device, pSignalInfo);
 
-   if (sem->feedback.slot)
+   if (vn_sync_feedback_enabled(&sem->feedback))
       vn_sync_feedback_write(&sem->feedback, pSignalInfo->value);
 
    return VK_SUCCESS;
