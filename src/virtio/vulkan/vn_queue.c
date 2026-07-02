@@ -721,23 +721,17 @@ vn_queue_submission_add_semaphore_feedback(struct vn_queue_submission *submit,
 
    VK_FROM_HANDLE(vk_queue, queue_vk, submit->queue_handle);
    struct vn_device *dev = (void *)queue_vk->base.device;
-   struct vn_sync_feedback_cmd *sfb_cmd =
-      vn_sync_feedback_cmd_get(dev, &sem->feedback);
-   if (!sfb_cmd)
-      return VK_ERROR_OUT_OF_HOST_MEMORY;
-
    const uint64_t counter =
       vn_get_signal_semaphore_counter(submit, batch_index, signal_index);
-   vn_feedback_set_counter(sfb_cmd->src_slot, counter);
 
-   for (uint32_t i = 0; i < dev->queue_family_count; i++) {
-      if (dev->queue_families[i] == queue_vk->queue_family_index) {
-         vn_set_temp_cmd(submit, (*new_cmd_count)++, sfb_cmd->cmd_handles[i]);
-         return VK_SUCCESS;
-      }
-   }
+   VkCommandBuffer sfb_cmd_handle = vn_sync_feedback_command(
+      dev, &sem->feedback, queue_vk->queue_family_index, counter);
+   if (sfb_cmd_handle == VK_NULL_HANDLE)
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-   unreachable("bad feedback sem");
+   vn_set_temp_cmd(submit, (*new_cmd_count)++, sfb_cmd_handle);
+
+   return VK_SUCCESS;
 }
 
 static void
