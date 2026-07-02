@@ -75,11 +75,8 @@ struct vn_fence {
    struct vn_sync_payload permanent;
    struct vn_sync_payload temporary;
 
-   struct {
-      /* non-NULL if VN_PERF_NO_FENCE_FEEDBACK is disabled */
-      struct vn_feedback_slot *slot;
-      VkCommandBuffer *commands;
-   } feedback;
+   uint64_t signal_counter;
+   struct vn_sync_feedback feedback;
 
    bool is_external;
    struct vn_sync_payload_external external_payload;
