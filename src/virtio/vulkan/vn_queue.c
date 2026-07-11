@@ -1524,8 +1524,6 @@ vn_ResetFences(VkDevice device, uint32_t fenceCount, const VkFence *pFences)
       fence->payload = perm;
 
       if (vn_sync_feedback_enabled(&fence->feedback)) {
-         /* sfb pending cmds are recycled when signaled counter is updated */
-         vn_GetFenceStatus(device, pFences[i]);
          fence->signal_counter++;
       }
    }
