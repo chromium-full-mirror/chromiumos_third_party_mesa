@@ -1574,6 +1574,9 @@ vn_GetFenceStatus(VkDevice device, VkFence _fence)
              */
             vn_async_vkWaitForFences(dev->primary_ring, device, 1, &_fence,
                                      VK_TRUE, UINT64_MAX);
+
+            /* Recycle idle cmds after async fence wait. */
+            vn_sync_feedback_cmd_recycle(dev, &fence->feedback);
          }
 
          const bool signaled = counter == fence->signal_counter;
@@ -1991,6 +1994,9 @@ vn_GetSemaphoreCounterValue(VkDevice device,
 
          vn_async_vkWaitSemaphores(dev->primary_ring, device, &wait_info,
                                    UINT64_MAX);
+
+         /* Recycle idle cmds after async semaphore wait. */
+         vn_sync_feedback_cmd_recycle(dev, &sem->feedback);
       }
 
       return VK_SUCCESS;
